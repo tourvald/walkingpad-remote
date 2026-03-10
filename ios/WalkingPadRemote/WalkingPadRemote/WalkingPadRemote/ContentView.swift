@@ -2932,14 +2932,17 @@ private func exportTrainingHistoryCsv(manager: BluetoothManager) {
         }
     }
 
-    guard let url = manager.exportTrainingLogsCsvToTemporaryFile() else {
+    guard let export = manager.prepareTrainingLogsCsvExport() else {
         let message = "Training logs not found yet. Start HR session first."
         let vc = UIActivityViewController(activityItems: [message], applicationActivities: nil)
         present(vc)
         return
     }
 
-    let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    let vc = UIActivityViewController(activityItems: [export.csvURL], applicationActivities: nil)
+    vc.completionWithItemsHandler = { _, completed, _, _ in
+        manager.finalizeTrainingLogsCsvExport(export, completed: completed)
+    }
     present(vc)
 }
 

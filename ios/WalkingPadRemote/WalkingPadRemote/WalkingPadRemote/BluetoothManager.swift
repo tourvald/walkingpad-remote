@@ -157,6 +157,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+    struct TrainingLogsCsvExport {
+        let csvURL: URL
+        let rowCount: Int
+        fileprivate let sourceFiles: [URL]
+    }
     private var trainingLogSessionId: String? = nil
     private var trainingLogFileURL: URL? = nil
     private var trainingLogFileHandle: FileHandle? = nil
@@ -851,7 +856,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         appendLog("Training log closed: \(reason)")
     }
 
-    func exportTrainingLogsCsvToTemporaryFile() -> URL? {
+    func prepareTrainingLogsCsvExport() -> TrainingLogsCsvExport? {
         trainingLogQueue.sync {
             trainingLogFileHandle?.synchronizeFile()
         }
@@ -1005,10 +1010,59 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         do {
             try lines.joined(separator: "\n").write(to: outURL, atomically: true, encoding: .utf8)
             appendLog("Training CSV exported: \(outURL.lastPathComponent) rows=\(exportedRows)")
-            return outURL
+            return TrainingLogsCsvExport(
+                csvURL: outURL,
+                rowCount: exportedRows,
+                sourceFiles: jsonlFiles
+            )
         } catch {
             appendLog("Training CSV export failed: \(error.localizedDescription)")
             return nil
+        }
+    }
+
+    func finalizeTrainingLogsCsvExport(_ export: TrainingLogsCsvExport, completed: Bool) {
+        defer {
+            try? FileManager.default.removeItem(at: export.csvURL)
+        }
+
+        guard completed else {
+            appendLog("Training CSV share cancelled: \(export.csvURL.lastPathComponent)")
+            return
+        }
+
+        let activeLogFile: URL? = trainingLogQueue.sync { trainingLogFileURL?.standardizedFileURL }
+        let protectedFiles = Set(activeLogFile.map { [$0] } ?? [])
+        let cleanup = TrainingTelemetryWriter.cleanupExportedJsonlFiles(
+            export.sourceFiles,
+            keeping: protectedFiles
+        )
+
+        if let dir = trainingLogsDirectoryURL() {
+            pruneTrainingLogs(in: dir)
+        }
+
+        let reclaimedText = ByteCountFormatter.string(
+            fromByteCount: cleanup.reclaimedBytes,
+            countStyle: .file
+        )
+
+        let message: String
+        if cleanup.removedCount > 0 {
+            if cleanup.skippedCount > 0 {
+                message = "CSV выгружен. Очищено \(cleanup.removedCount) raw логов, освобождено \(reclaimedText), пропущено \(cleanup.skippedCount)."
+            } else {
+                message = "CSV выгружен. Очищено \(cleanup.removedCount) raw логов, освобождено \(reclaimedText)."
+            }
+        } else if cleanup.skippedCount > 0 {
+            message = "CSV выгружен. Raw логи не удалены: активная сессия ещё открыта или файлы уже были очищены."
+        } else {
+            message = "CSV выгружен. Дополнительная очистка raw логов не потребовалась."
+        }
+
+        appendLog("Training raw logs cleanup: removed=\(cleanup.removedCount) skipped=\(cleanup.skippedCount) freed=\(cleanup.reclaimedBytes) rows=\(export.rowCount)")
+        DispatchQueue.main.async {
+            self.infoToastMessage = message
         }
     }
 

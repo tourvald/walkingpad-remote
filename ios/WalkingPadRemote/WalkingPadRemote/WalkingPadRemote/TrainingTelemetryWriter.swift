@@ -1,6 +1,12 @@
 import Foundation
 
 enum TrainingTelemetryWriter {
+    struct CleanupSummary: Equatable {
+        let removedCount: Int
+        let skippedCount: Int
+        let reclaimedBytes: Int64
+    }
+
     static func makeDirectoryURL(
         directoryName: String,
         onError: (String) -> Void
@@ -41,6 +47,49 @@ enum TrainingTelemetryWriter {
         for file in sorted.prefix(max(0, sorted.count - maxFiles)) {
             try? fileManager.removeItem(at: file)
         }
+    }
+
+    static func cleanupExportedJsonlFiles(
+        _ files: [URL],
+        keeping protectedFiles: Set<URL> = []
+    ) -> CleanupSummary {
+        let fileManager = FileManager.default
+        let protectedPaths = Set(protectedFiles.map { $0.standardizedFileURL.path })
+
+        var removedCount = 0
+        var skippedCount = 0
+        var reclaimedBytes: Int64 = 0
+
+        for file in files {
+            let normalized = file.standardizedFileURL
+            guard normalized.pathExtension.lowercased() == "jsonl" else {
+                skippedCount += 1
+                continue
+            }
+            guard !protectedPaths.contains(normalized.path) else {
+                skippedCount += 1
+                continue
+            }
+            guard fileManager.fileExists(atPath: normalized.path) else {
+                skippedCount += 1
+                continue
+            }
+
+            let size = Int64((try? normalized.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            do {
+                try fileManager.removeItem(at: normalized)
+                removedCount += 1
+                reclaimedBytes += max(0, size)
+            } catch {
+                skippedCount += 1
+            }
+        }
+
+        return CleanupSummary(
+            removedCount: removedCount,
+            skippedCount: skippedCount,
+            reclaimedBytes: reclaimedBytes
+        )
     }
 
     static func csvString(_ value: Any?) -> String {

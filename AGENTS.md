@@ -37,6 +37,10 @@
   - GitHub-hosted `macos-latest` currently exposes `Xcode 16.4` with `iPhoneOS 18.5` / `WatchOS 11.5` SDKs
   - app targets currently rely on `iOS 26` HealthKit workout APIs (`WorkoutSessionController.swift`), so hosted CI cannot always perform the full unsigned app build
   - `.github/workflows/ci.yml` now gates the full Xcode build on hosted SDK availability and falls back to `xcodebuild -list` project validation when the runner lags behind local Xcode
+- Training log export cleanup (2026-03-10):
+  - `Export Training CSV` now deletes exported raw `jsonl` logs only after the user completes the iOS share sheet (`completed == true`)
+  - cleanup skips the currently active session log, reports removed-file count plus reclaimed bytes, and shows the result through `infoToastMessage`
+  - raw log cleanup logic is centralized in `TrainingTelemetryWriter.cleanupExportedJsonlFiles(...)` and covered by Swift package tests
 - Manual control and HR control are unified under one bottom tab.
 - Last-selected navigation state is persisted:
   - bottom tab selection in `ContentView` is stored in `UserDefaults` (`content_selected_root_tab_v1`)
