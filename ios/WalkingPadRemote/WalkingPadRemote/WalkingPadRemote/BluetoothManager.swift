@@ -118,6 +118,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var hrCooldownEndBPM: Int = 0
     private var hrCooldownPeakBPM: Int = 0
     private var hrCooldownTargetHitElapsedSeconds: Int? = nil
+    private var hrCooldownFirstMinSpeedElapsedSeconds: Int? = nil
+    private var hrCooldownFirstStableElapsedSeconds: Int? = nil
+    private var hrCooldownBelowTargetSeconds: Int = 0
+    private var hrCooldownMinSpeedSeconds: Int = 0
+    private var hrCooldownTargetAndMinSpeedSeconds: Int = 0
+    private var hrCooldownMaxStableStreakSeconds: Int = 0
+    private var hrCooldownFinishReason: String = ""
+    private var hrCooldownTimeoutBlocker: String = ""
     private var isAdjustingZoneBounds: Bool = false
     private var isUpdatingZonePlan: Bool = false
     private var hrNoDataSeconds: Int = 0
@@ -591,6 +599,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrCooldownEndBPM = 0
         hrCooldownPeakBPM = 0
         hrCooldownTargetHitElapsedSeconds = nil
+        hrCooldownFirstMinSpeedElapsedSeconds = nil
+        hrCooldownFirstStableElapsedSeconds = nil
+        hrCooldownBelowTargetSeconds = 0
+        hrCooldownMinSpeedSeconds = 0
+        hrCooldownTargetAndMinSpeedSeconds = 0
+        hrCooldownMaxStableStreakSeconds = 0
+        hrCooldownFinishReason = ""
+        hrCooldownTimeoutBlocker = ""
         hrZoneSeconds = Array(repeating: 0, count: 5)
     }
 
@@ -709,6 +725,26 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return (Double(cooldownHrDropBPMSnapshot()) * 60.0) / Double(elapsed)
     }
 
+    private func cooldownFirstMinSpeedElapsedSnapshot() -> Int {
+        hrCooldownFirstMinSpeedElapsedSeconds ?? -1
+    }
+
+    private func cooldownFirstStableElapsedSnapshot() -> Int {
+        hrCooldownFirstStableElapsedSeconds ?? -1
+    }
+
+    private func cooldownStabilityBlocker(
+        hrAvailable: Bool,
+        hrOk: Bool,
+        minSpeedOk: Bool
+    ) -> String {
+        if !hrAvailable { return "no_hr" }
+        if !hrOk && !minSpeedOk { return "hr_above_target_and_speed_above_min" }
+        if !hrOk { return "hr_above_target" }
+        if !minSpeedOk { return "speed_above_min" }
+        return "ready"
+    }
+
     private func trainingLogsDirectoryURL() -> URL? {
         TrainingTelemetryWriter.makeDirectoryURL(directoryName: trainingLogsDirectoryName) { [weak self] message in
             self?.appendLog(message)
@@ -746,6 +782,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "cooldown_target_hit_elapsed_s": hrCooldownTargetHitElapsedSeconds ?? -1,
             "cooldown_hr_drop_bpm": cooldownHrDropBPMSnapshot(),
             "cooldown_hr_recovery_bpm_per_min": cooldownRecoveryBpmPerMinuteSnapshot(),
+            "cooldown_finish_reason": hrCooldownFinishReason,
+            "cooldown_timeout_blocker": hrCooldownTimeoutBlocker,
+            "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
+            "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
+            "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
+            "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
+            "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
+            "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
             "speed_actual_kmh": speedKmh,
             "speed_target_kmh": desiredSpeedKmh,
             "speed_device_target_kmh": deviceTargetSpeedKmh,
@@ -879,60 +923,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
         guard !jsonlFiles.isEmpty else { return nil }
 
-        let headers: [String] = [
-            "source_file",
-            "ts",
-            "session_id",
-            "event",
-            "phase",
-            "session_state",
-            "is_hr_running",
-            "hr_bpm",
-            "hr_last_bpm",
-            "target_bpm",
-            "target_zone_index",
-            "target_zone_lower_bpm",
-            "target_zone_upper_bpm",
-            "session_peak_bpm",
-            "main_avg_bpm",
-            "main_peak_bpm",
-            "zone1_s",
-            "zone2_s",
-            "zone3_s",
-            "zone4_s",
-            "zone5_s",
-            "zone4plus_s",
-            "cooldown_start_hr_bpm",
-            "cooldown_end_hr_bpm",
-            "cooldown_peak_hr_bpm",
-            "cooldown_planned_s",
-            "cooldown_elapsed_s",
-            "cooldown_target_hit_elapsed_s",
-            "cooldown_hr_drop_bpm",
-            "cooldown_hr_recovery_bpm_per_min",
-            "speed_actual_kmh",
-            "speed_target_kmh",
-            "speed_device_target_kmh",
-            "speed_reported_kmh",
-            "speed_reported_app_kmh",
-            "speed_delta_kmh",
-            "decision",
-            "reason",
-            "diff_bpm",
-            "diff_percent",
-            "step_tag",
-            "step_kmh",
-            "label",
-            "char_uuid",
-            "write_type",
-            "queue_size",
-            "delay_s",
-            "status",
-            "error",
-            "raw_json"
-        ]
-
-        var lines: [String] = [headers.map(csvEscape).joined(separator: ",")]
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        var lines: [String] = [headers.map(TrainingTelemetryWriter.csvEscape).joined(separator: ",")]
         var exportedRows = 0
 
         for file in jsonlFiles {
@@ -944,62 +936,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                       let payload = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
                     continue
                 }
-                let zoneSeconds = zoneSecondsFromPayload(payload)
+                let row = TrainingTelemetryWriter.csvRow(
+                    sourceFile: file.lastPathComponent,
+                    payload: payload
+                )
 
-                let row: [String] = [
-                    file.lastPathComponent,
-                    csvString(payload["ts"]),
-                    csvString(payload["session_id"]),
-                    csvString(payload["event"]),
-                    csvString(payload["phase"]),
-                    csvString(payload["session_state"]),
-                    csvString(payload["is_hr_running"]),
-                    csvString(payload["hr_bpm"]),
-                    csvString(payload["hr_last_bpm"]),
-                    csvString(payload["target_bpm"]),
-                    csvString(payload["target_zone_index"]),
-                    csvString(payload["target_zone_lower_bpm"]),
-                    csvString(payload["target_zone_upper_bpm"]),
-                    csvString(payload["session_peak_bpm"]),
-                    csvString(payload["main_avg_bpm"]),
-                    csvString(payload["main_peak_bpm"]),
-                    String(zoneSeconds[0]),
-                    String(zoneSeconds[1]),
-                    String(zoneSeconds[2]),
-                    String(zoneSeconds[3]),
-                    String(zoneSeconds[4]),
-                    csvString(payload["zone4plus_seconds"]),
-                    csvString(payload["cooldown_start_hr_bpm"]),
-                    csvString(payload["cooldown_end_hr_bpm"]),
-                    csvString(payload["cooldown_peak_hr_bpm"]),
-                    csvString(payload["cooldown_planned_s"]),
-                    csvString(payload["cooldown_elapsed_s"]),
-                    csvString(payload["cooldown_target_hit_elapsed_s"]),
-                    csvString(payload["cooldown_hr_drop_bpm"]),
-                    csvString(payload["cooldown_hr_recovery_bpm_per_min"]),
-                    csvString(payload["speed_actual_kmh"]),
-                    csvString(payload["speed_target_kmh"]),
-                    csvString(payload["speed_device_target_kmh"]),
-                    csvString(payload["speed_reported_kmh"]),
-                    csvString(payload["speed_reported_app_kmh"]),
-                    csvString(payload["speed_delta_kmh"]),
-                    csvString(payload["decision"]),
-                    csvString(payload["reason"]),
-                    csvString(payload["diff_bpm"]),
-                    csvString(payload["diff_percent"]),
-                    csvString(payload["step_tag"]),
-                    csvString(payload["step_kmh"]),
-                    csvString(payload["label"]),
-                    csvString(payload["char_uuid"]),
-                    csvString(payload["write_type"]),
-                    csvString(payload["queue_size"]),
-                    csvString(payload["delay_s"]),
-                    csvString(payload["status"]),
-                    csvString(payload["error"]),
-                    jsonString(payload)
-                ]
-
-                lines.append(row.map(csvEscape).joined(separator: ","))
+                lines.append(row.map(TrainingTelemetryWriter.csvEscape).joined(separator: ","))
                 exportedRows += 1
             }
         }
@@ -1064,22 +1006,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.async {
             self.infoToastMessage = message
         }
-    }
-
-    private func csvString(_ value: Any?) -> String {
-        TrainingTelemetryWriter.csvString(value)
-    }
-
-    private func zoneSecondsFromPayload(_ payload: [String: Any]) -> [Int] {
-        TrainingTelemetryWriter.zoneSeconds(from: payload)
-    }
-
-    private func csvEscape(_ value: String) -> String {
-        TrainingTelemetryWriter.csvEscape(value)
-    }
-
-    private func jsonString(_ value: Any) -> String {
-        TrainingTelemetryWriter.jsonString(value)
     }
 
     private func hex(_ data: Data) -> String {
@@ -2278,6 +2204,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 hrCooldownEndBPM = hrCooldownStartBPM
                 hrCooldownPeakBPM = hrCooldownStartBPM
                 hrCooldownTargetHitElapsedSeconds = nil
+                hrCooldownFirstMinSpeedElapsedSeconds = nil
+                hrCooldownFirstStableElapsedSeconds = nil
+                hrCooldownBelowTargetSeconds = 0
+                hrCooldownMinSpeedSeconds = 0
+                hrCooldownTargetAndMinSpeedSeconds = 0
+                hrCooldownMaxStableStreakSeconds = 0
+                hrCooldownFinishReason = ""
+                hrCooldownTimeoutBlocker = ""
                 let cooldownPlan = HRDomainService.cooldownPlan(
                     baseMinutes: hrCooldownMaxMinutes,
                     startBpm: hrCooldownStartBPM,
@@ -2317,24 +2251,60 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     appReportedSpeedKmh: deviceReportedAppSpeedKmh,
                     rawReportedSpeedKmh: deviceReportedSpeedKmh
                 )
-                let hrOk = heartRateBPM > 0 && heartRateBPM <= hrCooldownTargetBpm
+                let hrAvailable = heartRateBPM > 0
+                let hrOk = hrAvailable && heartRateBPM <= hrCooldownTargetBpm
+                let minSpeedOk = observedSpeed <= hrCooldownMinSpeed + 0.05
+                let stableOk = hrOk && minSpeedOk
+                let blocker = cooldownStabilityBlocker(
+                    hrAvailable: hrAvailable,
+                    hrOk: hrOk,
+                    minSpeedOk: minSpeedOk
+                )
                 if hrOk && hrCooldownTargetHitElapsedSeconds == nil {
                     hrCooldownTargetHitElapsedSeconds = elapsed
                 }
-                if observedSpeed <= hrCooldownMinSpeed + 0.05 && hrOk {
+                if minSpeedOk && hrCooldownFirstMinSpeedElapsedSeconds == nil {
+                    hrCooldownFirstMinSpeedElapsedSeconds = elapsed
+                }
+                if hrOk {
+                    hrCooldownBelowTargetSeconds += 1
+                }
+                if minSpeedOk {
+                    hrCooldownMinSpeedSeconds += 1
+                }
+                if stableOk && hrCooldownFirstStableElapsedSeconds == nil {
+                    hrCooldownFirstStableElapsedSeconds = elapsed
+                }
+                if stableOk {
                     hrCooldownStableSeconds += 1
+                    hrCooldownTargetAndMinSpeedSeconds += 1
+                    hrCooldownMaxStableStreakSeconds = max(hrCooldownMaxStableStreakSeconds, hrCooldownStableSeconds)
                 } else {
                     hrCooldownStableSeconds = 0
+                }
+                if blocker != "ready" {
+                    hrCooldownTimeoutBlocker = blocker
                 }
                 logTrainingEvent("cooldown_state", fields: [
                     "hr_bpm": heartRateBPM,
                     "target_bpm": hrCooldownTargetBpm,
                     "speed_kmh": observedSpeed,
+                    "cooldown_observed_speed_kmh": observedSpeed,
                     "elapsed_s": elapsed,
                     "stable_s": hrCooldownStableSeconds,
                     "stable_required_s": hrCooldownHoldSeconds,
                     "remaining_s": hrCooldownRemainingSeconds,
                     "target_hit_elapsed_s": hrCooldownTargetHitElapsedSeconds ?? -1,
+                    "cooldown_hr_ok": hrOk,
+                    "cooldown_min_speed_ok": minSpeedOk,
+                    "cooldown_stable_ok": stableOk,
+                    "cooldown_stability_blocker": blocker,
+                    "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
+                    "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
+                    "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
+                    "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
+                    "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
+                    "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
                     "start_hr_bpm": hrCooldownStartBPM,
                     "session_peak_bpm": hrSessionPeakBPM,
                     "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
@@ -2377,15 +2347,56 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
                 if hrCooldownStableSeconds >= hrCooldownHoldSeconds || hrCooldownRemainingSeconds == 0 {
                     let finishReason = hrCooldownStableSeconds >= hrCooldownHoldSeconds ? "stable_reached" : "timeout"
+                    hrCooldownFinishReason = finishReason
+                    if finishReason == "timeout" {
+                        hrCooldownTimeoutBlocker = blocker == "ready" ? "hold_not_satisfied" : blocker
+                    } else {
+                        hrCooldownTimeoutBlocker = ""
+                    }
+                    logTrainingEvent("cooldown_analysis", fields: [
+                        "reason": finishReason,
+                        "timeout_blocker": hrCooldownTimeoutBlocker,
+                        "hr_bpm": heartRateBPM,
+                        "target_bpm": hrCooldownTargetBpm,
+                        "cooldown_observed_speed_kmh": observedSpeed,
+                        "cooldown_hr_ok": hrOk,
+                        "cooldown_min_speed_ok": minSpeedOk,
+                        "cooldown_stable_ok": stableOk,
+                        "cooldown_stability_blocker": blocker,
+                        "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
+                        "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
+                        "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
+                        "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
+                        "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
+                        "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
+                        "stable_s": hrCooldownStableSeconds,
+                        "stable_required_s": hrCooldownHoldSeconds,
+                        "elapsed_s": cooldownElapsedSecondsSnapshot(),
+                        "planned_s": hrCooldownTotalSeconds
+                    ])
                     logTrainingEvent("cooldown_complete", fields: [
                         "reason": finishReason,
+                        "cooldown_finish_reason": finishReason,
+                        "cooldown_timeout_blocker": hrCooldownTimeoutBlocker,
                         "stable_s": hrCooldownStableSeconds,
+                        "stable_required_s": hrCooldownHoldSeconds,
                         "remaining_s": hrCooldownRemainingSeconds,
                         "hr_bpm": heartRateBPM,
                         "target_bpm": hrCooldownTargetBpm,
+                        "cooldown_observed_speed_kmh": observedSpeed,
+                        "cooldown_hr_ok": hrOk,
+                        "cooldown_min_speed_ok": minSpeedOk,
+                        "cooldown_stable_ok": stableOk,
+                        "cooldown_stability_blocker": blocker,
                         "elapsed_s": cooldownElapsedSecondsSnapshot(),
                         "planned_s": hrCooldownTotalSeconds,
                         "target_hit_elapsed_s": hrCooldownTargetHitElapsedSeconds ?? -1,
+                        "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
+                        "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
+                        "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
+                        "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
+                        "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
+                        "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
                         "start_hr_bpm": hrCooldownStartBPM,
                         "end_hr_bpm": hrCooldownEndBPM,
                         "peak_hr_bpm": hrCooldownPeakBPM,
@@ -2402,6 +2413,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             "hr_bpm": heartRateBPM,
                             "target_bpm": hrCooldownTargetBpm,
                             "excess_bpm": heartRateBPM - hrCooldownTargetBpm,
+                            "cooldown_finish_reason": finishReason,
+                            "cooldown_timeout_blocker": hrCooldownTimeoutBlocker,
+                            "cooldown_observed_speed_kmh": observedSpeed,
+                            "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
+                            "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
+                            "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
+                            "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
+                            "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
+                            "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
                             "elapsed_s": cooldownElapsedSecondsSnapshot(),
                             "planned_s": hrCooldownTotalSeconds,
                             "start_hr_bpm": hrCooldownStartBPM,

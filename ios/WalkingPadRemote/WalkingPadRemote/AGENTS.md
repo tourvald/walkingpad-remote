@@ -20,6 +20,12 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - cooldown duration now expands from the base user setting by `+0 / +60 / +120 / +180s` depending on how far the start HR is above the cooldown target (`<15 / 15...29 / 30...44 / 45+ bpm`)
   - cooldown speed reduction is now front-loaded for higher start HR, so the belt reaches `hrCooldownMinSpeed` earlier and leaves more of the cooldown window for actual HR recovery
   - pure XCTest coverage was added for cooldown plan duration, stability speed selection, and front-loaded reduction step sizing
+- Detailed cooldown export patch (2026-03-10):
+  - `BluetoothManager` now accumulates cooldown-analysis snapshots during cooldown and writes a dedicated one-shot `cooldown_analysis` event before `cooldown_complete`
+  - normalized cooldown export fields now include finish reason/blocker, first-hit times, total time below target, total time at min speed, total time satisfying both conditions, and max consecutive stable streak
+  - `cooldown_state` rows also expose boolean analysis flags (`cooldown_hr_ok`, `cooldown_min_speed_ok`, `cooldown_stable_ok`) plus `cooldown_stability_blocker`
+  - export column definitions now live in `TrainingTelemetryWriter.trainingCsvHeaders` and row materialization in `TrainingTelemetryWriter.csvRow(...)`
+  - Swift tests now assert that the detailed cooldown-analysis columns are preserved in normalized CSV rows
 
 ## File Decomposition (2026-02-26)
 - `ContentView.swift` was split so root navigation/composition stays in one file, and reusable UI blocks are isolated:

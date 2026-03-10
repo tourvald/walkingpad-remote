@@ -46,6 +46,16 @@
   - cooldown duration is now adaptive from the start HR overshoot above the cooldown target: base duration plus `+0 / +60 / +120 / +180` seconds for `<15 / 15...29 / 30...44 / 45+ bpm`
   - cooldown speed reduction is now front-loaded for harder sessions through `HRDomainService.cooldownReductionStepKmh(...)`, so high-start-HR sessions reach `hrCooldownMinSpeed` sooner instead of spending most of the 5-minute window on the descent
   - `HRDomainService` now owns these cooldown rules and Swift package tests cover plan duration, stability speed selection, and front-loaded reduction step sizing
+- Detailed cooldown analysis export (2026-03-10):
+  - telemetry now maintains normalized cooldown-analysis snapshots in `BluetoothManager`, not only raw per-second rows
+  - new cooldown fields available in JSONL and exported CSV include:
+    - `cooldown_finish_reason`, `cooldown_timeout_blocker`
+    - `cooldown_first_min_speed_elapsed_s`, `cooldown_first_stable_elapsed_s`
+    - `cooldown_hr_below_target_s`, `cooldown_min_speed_s`
+    - `cooldown_target_and_min_speed_s`, `cooldown_target_and_min_speed_max_streak_s`
+  - per-second `cooldown_state` rows now also expose `cooldown_observed_speed_kmh`, `cooldown_hr_ok`, `cooldown_min_speed_ok`, `cooldown_stable_ok`, and `cooldown_stability_blocker`
+  - on cooldown completion, a dedicated one-shot telemetry event `cooldown_analysis` is written before `cooldown_complete`
+  - CSV export schema is now centralized in `TrainingTelemetryWriter.trainingCsvHeaders` / `csvRow(...)`, and Swift tests cover the cooldown-analysis columns
 - Manual control and HR control are unified under one bottom tab.
 - Last-selected navigation state is persisted:
   - bottom tab selection in `ContentView` is stored in `UserDefaults` (`content_selected_root_tab_v1`)
