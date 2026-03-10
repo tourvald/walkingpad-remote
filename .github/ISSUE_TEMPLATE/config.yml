@@ -3,3 +3,9 @@ contact_links:
   - name: Setup and usage notes
     url: https://github.com/tourvald/walkingpad-remote/blob/main/README.md
     about: Check repository setup notes before opening a support-style issue.
+  - name: Support and troubleshooting guide
+    url: https://github.com/tourvald/walkingpad-remote/blob/main/SUPPORT.md
+    about: Read this before opening setup or usage questions.
+  - name: Security reporting guidance
+    url: https://github.com/tourvald/walkingpad-remote/blob/main/SECURITY.md
+    about: Use this path for vulnerabilities, unsafe control flow, or sensitive data exposure.

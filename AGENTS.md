@@ -29,6 +29,10 @@
 - Public repo remote move (2026-03-10):
   - canonical GitHub repository slug is `tourvald/walkingpad-remote`
   - `.github/ISSUE_TEMPLATE/config.yml` and local `origin` should point to the hyphenated public repo
+- OSS application polish (2026-03-10):
+  - root `README.md` now explains project value, scope, quick start, CI, safety, and contributor entry points for external reviewers
+  - added `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `ROADMAP.md`, and `.github/pull_request_template.md`
+  - `ios/README.md` now includes target overview and public validation commands
 - Manual control and HR control are unified under one bottom tab.
 - Last-selected navigation state is persisted:
   - bottom tab selection in `ContentView` is stored in `UserDefaults` (`content_selected_root_tab_v1`)

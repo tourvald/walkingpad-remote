@@ -8,6 +8,7 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
 - The public repo now contains only treadmill, workout, watch, and plank functionality.
 - `Package.swift` excludes UI/resources that are outside the pure logic target so `swift test` stays focused on core logic without SwiftPM file warnings.
 - Public repo CI now validates this project through `swift test` and an unsigned `xcodebuild` invocation.
+- `ios/README.md` now serves as the public contributor-facing entry point for Xcode setup, target overview, and safe validation commands.
 
 ## File Decomposition (2026-02-26)
 - `ContentView.swift` was split so root navigation/composition stays in one file, and reusable UI blocks are isolated:
