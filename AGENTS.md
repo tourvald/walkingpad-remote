@@ -26,6 +26,9 @@
   - added `MIT` license file
   - added GitHub Actions CI workflow for Python syntax check, Swift tests, and unsigned Xcode build
   - added `.github/CODEOWNERS` and issue forms under `.github/ISSUE_TEMPLATE`
+- Public repo remote move (2026-03-10):
+  - canonical GitHub repository slug is `tourvald/walkingpad-remote`
+  - `.github/ISSUE_TEMPLATE/config.yml` and local `origin` should point to the hyphenated public repo
 - Manual control and HR control are unified under one bottom tab.
 - Last-selected navigation state is persisted:
   - bottom tab selection in `ContentView` is stored in `UserDefaults` (`content_selected_root_tab_v1`)

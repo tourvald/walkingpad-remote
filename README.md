@@ -1,4 +1,4 @@
-# walkingpad_remote
+# WalkingPad Remote
 
 WalkingPad control project with an iOS/watchOS app, HR-driven treadmill control, and a small set of Python BLE utilities for local diagnostics.
 
