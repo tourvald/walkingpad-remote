@@ -74,7 +74,8 @@ GitHub Actions currently runs:
 
 - Python syntax compilation for the public BLE/MCP utilities
 - `swift test` for the pure core-logic package
-- unsigned `xcodebuild` for the iOS/watchOS project
+- unsigned `xcodebuild` for the iOS/watchOS project when the hosted runner has matching iOS/watchOS SDKs
+- transparent fallback project validation (`xcodebuild -list`) when GitHub-hosted Xcode lags behind the local app deployment targets
 
 ## Safety and privacy
 

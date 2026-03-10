@@ -33,6 +33,10 @@
   - root `README.md` now explains project value, scope, quick start, CI, safety, and contributor entry points for external reviewers
   - added `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `ROADMAP.md`, and `.github/pull_request_template.md`
   - `ios/README.md` now includes target overview and public validation commands
+- Hosted CI compatibility note (2026-03-10):
+  - GitHub-hosted `macos-latest` currently exposes `Xcode 16.4` with `iPhoneOS 18.5` / `WatchOS 11.5` SDKs
+  - app targets currently rely on `iOS 26` HealthKit workout APIs (`WorkoutSessionController.swift`), so hosted CI cannot always perform the full unsigned app build
+  - `.github/workflows/ci.yml` now gates the full Xcode build on hosted SDK availability and falls back to `xcodebuild -list` project validation when the runner lags behind local Xcode
 - Manual control and HR control are unified under one bottom tab.
 - Last-selected navigation state is persisted:
   - bottom tab selection in `ContentView` is stored in `UserDefaults` (`content_selected_root_tab_v1`)

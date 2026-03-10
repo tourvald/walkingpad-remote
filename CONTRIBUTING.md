@@ -67,6 +67,8 @@ swift test
 xcodebuild -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj -scheme WalkingPadRemote -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
+GitHub-hosted runners may lag behind the local Xcode/SDK version used by the app targets. In that case, the hosted CI keeps Python checks, Swift package tests, and Xcode project validation, while the full unsigned app build stays gated on hosted SDK availability.
+
 ## Pull request expectations
 
 Each PR should make it easy for a reviewer to answer four questions:

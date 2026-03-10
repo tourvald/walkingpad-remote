@@ -60,7 +60,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Inspect hosted Xcode and SDK availability
+        id: hosted_sdk
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+          if xcodebuild -showsdks | grep -q "iphoneos26" && xcodebuild -showsdks | grep -q "watchos26"; then
+            echo "can_full_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipping full app build on this hosted runner because it does not provide the iOS 26 / watchOS 26 SDKs required by the current app targets."
+            echo "can_full_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate Xcode project metadata on older hosted runners
+        if: steps.hosted_sdk.outputs.can_full_build != 'true'
+        run: |
+          xcodebuild -list -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj
+
       - name: Build iOS app without code signing
+        if: steps.hosted_sdk.outputs.can_full_build == 'true'
         run: >
           xcodebuild
           -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj

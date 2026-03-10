@@ -9,6 +9,7 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
 - `Package.swift` excludes UI/resources that are outside the pure logic target so `swift test` stays focused on core logic without SwiftPM file warnings.
 - Public repo CI now validates this project through `swift test` and an unsigned `xcodebuild` invocation.
 - `ios/README.md` now serves as the public contributor-facing entry point for Xcode setup, target overview, and safe validation commands.
+- Hosted GitHub CI may skip the full unsigned app build when runner Xcode lacks the iOS 26 / watchOS 26 SDKs required by the current HealthKit workout controller path; in that case CI still validates the project via `xcodebuild -list`.
 
 ## File Decomposition (2026-02-26)
 - `ContentView.swift` was split so root navigation/composition stays in one file, and reusable UI blocks are isolated:
