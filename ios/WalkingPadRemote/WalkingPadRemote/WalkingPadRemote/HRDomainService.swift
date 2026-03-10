@@ -6,6 +6,10 @@ enum HRDomainService {
         let stepKmh: Double
     }
 
+    struct CooldownPlan {
+        let totalSeconds: Int
+    }
+
     struct AdaptiveThresholdPercents {
         let deadband: Double
         let downLevel2Start: Double
@@ -68,5 +72,73 @@ enum HRDomainService {
     static func stepForLevel(_ level: Int) -> Double {
         let normalized = max(1, min(4, level))
         return Double(normalized) * 0.1
+    }
+
+    static func cooldownPlan(
+        baseMinutes: Int,
+        startBpm: Int,
+        targetBpm: Int
+    ) -> CooldownPlan {
+        let baseSeconds = max(60, baseMinutes * 60)
+        let excessBpm = max(0, startBpm - targetBpm)
+
+        let extraSeconds: Int
+        switch excessBpm {
+        case ..<15:
+            extraSeconds = 0
+        case ..<30:
+            extraSeconds = 60
+        case ..<45:
+            extraSeconds = 120
+        default:
+            extraSeconds = 180
+        }
+
+        return CooldownPlan(totalSeconds: baseSeconds + extraSeconds)
+    }
+
+    static func cooldownObservedSpeedKmh(
+        desiredSpeedKmh: Double,
+        deviceTargetSpeedKmh: Double,
+        appReportedSpeedKmh: Double,
+        rawReportedSpeedKmh: Double
+    ) -> Double {
+        let controllerSpeed = max(0, max(desiredSpeedKmh, deviceTargetSpeedKmh))
+        let reportedSpeed = appReportedSpeedKmh > 0.05 ? appReportedSpeedKmh : max(0, rawReportedSpeedKmh)
+        return max(controllerSpeed, reportedSpeed)
+    }
+
+    static func cooldownReductionStepKmh(
+        baseStepKmh: Double,
+        currentBpm: Int,
+        targetBpm: Int,
+        startBpm: Int,
+        elapsedSeconds: Int,
+        totalSeconds: Int
+    ) -> Double {
+        let safeBaseStep = max(0.1, baseStepKmh)
+        let currentExcessBpm = max(0, currentBpm - targetBpm)
+        let startExcessBpm = max(0, startBpm - targetBpm)
+        let progress = totalSeconds > 0 ? min(1.0, max(0.0, Double(elapsedSeconds) / Double(totalSeconds))) : 1.0
+
+        var factor = 1.0
+        if currentExcessBpm >= 20 {
+            factor += 0.5
+        } else if currentExcessBpm >= 10 {
+            factor += 0.25
+        }
+
+        if progress < 0.25 {
+            if startExcessBpm >= 45 {
+                factor += 0.5
+            } else if startExcessBpm >= 30 {
+                factor += 0.25
+            }
+        } else if progress < 0.5, startExcessBpm >= 45 {
+            factor += 0.25
+        }
+
+        let scaledStep = min(1.0, safeBaseStep * factor)
+        return quantizeSpeedStep(scaledStep)
     }
 }

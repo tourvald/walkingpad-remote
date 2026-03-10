@@ -2278,20 +2278,27 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 hrCooldownEndBPM = hrCooldownStartBPM
                 hrCooldownPeakBPM = hrCooldownStartBPM
                 hrCooldownTargetHitElapsedSeconds = nil
-                hrCooldownTotalSeconds = hrCooldownMaxSeconds
-                hrCooldownRemainingSeconds = hrCooldownMaxSeconds
+                let cooldownPlan = HRDomainService.cooldownPlan(
+                    baseMinutes: hrCooldownMaxMinutes,
+                    startBpm: hrCooldownStartBPM,
+                    targetBpm: hrCooldownTargetBpm
+                )
+                hrCooldownTotalSeconds = cooldownPlan.totalSeconds
+                hrCooldownRemainingSeconds = cooldownPlan.totalSeconds
                 hrCooldownProgress = 0
                 hrNextDecisionSeconds = 0
                 hrStatusLine = "Заминка"
                 hrDecisionDetails = "Заминка: цель \(hrCooldownTargetBpm) bpm, мин. скорость \(String(format: "%.1f", hrCooldownMinSpeed)) км/ч"
-                appendLog("HR cooldown start: from \(String(format: "%.1f", hrCooldownStartSpeed)) to \(String(format: "%.1f", hrCooldownMinSpeed)) target=\(hrCooldownTargetBpm) bpm step=\(String(format: "%.1f", step)) interval=\(interval)s max=\(hrCooldownMaxSeconds)s")
+                appendLog("HR cooldown start: from \(String(format: "%.1f", hrCooldownStartSpeed)) to \(String(format: "%.1f", hrCooldownMinSpeed)) target=\(hrCooldownTargetBpm) bpm step=\(String(format: "%.1f", step)) interval=\(interval)s max=\(cooldownPlan.totalSeconds)s")
                 logTrainingEvent("cooldown_start", fields: [
                     "from_speed_kmh": hrCooldownStartSpeed,
                     "target_bpm": hrCooldownTargetBpm,
                     "min_speed_kmh": hrCooldownMinSpeed,
                     "step_kmh": step,
                     "interval_s": interval,
-                    "max_s": hrCooldownMaxSeconds,
+                    "base_max_s": hrCooldownMaxSeconds,
+                    "max_s": cooldownPlan.totalSeconds,
+                    "extra_s": cooldownPlan.totalSeconds - hrCooldownMaxSeconds,
                     "start_hr_bpm": hrCooldownStartBPM,
                     "session_peak_bpm": hrSessionPeakBPM,
                     "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
@@ -2304,7 +2311,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 hrCooldownProgress = hrCooldownTotalSeconds > 0 ? (1.0 - (Double(hrCooldownRemainingSeconds) / Double(hrCooldownTotalSeconds))) : 0
 
                 let elapsed = hrCooldownTotalSeconds - hrCooldownRemainingSeconds
-                let observedSpeed = max(speedKmh, deviceReportedSpeedKmh)
+                let observedSpeed = HRDomainService.cooldownObservedSpeedKmh(
+                    desiredSpeedKmh: desiredSpeedKmh,
+                    deviceTargetSpeedKmh: deviceTargetSpeedKmh,
+                    appReportedSpeedKmh: deviceReportedAppSpeedKmh,
+                    rawReportedSpeedKmh: deviceReportedSpeedKmh
+                )
                 let hrOk = heartRateBPM > 0 && heartRateBPM <= hrCooldownTargetBpm
                 if hrOk && hrCooldownTargetHitElapsedSeconds == nil {
                     hrCooldownTargetHitElapsedSeconds = elapsed
@@ -2330,9 +2342,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 ])
 
                 if hrCooldownTotalSeconds > 0 && hrCooldownStepIntervalSeconds > 0 && elapsed % hrCooldownStepIntervalSeconds == 0 {
-                    let diff = heartRateBPM > 0 ? (heartRateBPM - hrCooldownTargetBpm) : 1
-                    let adaptiveFactor = diff > 0 ? min(1.0, Double(diff) / 12.0) : 1.0
-                    let rawTarget = hrCooldownLastSentSpeed - (hrCooldownStepKmh * adaptiveFactor)
+                    let reductionStep = HRDomainService.cooldownReductionStepKmh(
+                        baseStepKmh: hrCooldownStepKmh,
+                        currentBpm: heartRateBPM > 0 ? heartRateBPM : hrCooldownTargetBpm,
+                        targetBpm: hrCooldownTargetBpm,
+                        startBpm: hrCooldownStartBPM > 0 ? hrCooldownStartBPM : heartRateBPM,
+                        elapsedSeconds: elapsed,
+                        totalSeconds: hrCooldownTotalSeconds
+                    )
+                    let adaptiveFactor = reductionStep / max(0.1, hrCooldownStepKmh)
+                    let rawTarget = hrCooldownLastSentSpeed - reductionStep
                     let target = max(hrCooldownMinSpeed, rawTarget)
                     if abs(target - hrCooldownLastSentSpeed) >= 0.01 {
                         let old = deviceTargetSpeedKmh
@@ -2342,11 +2361,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         lastCommandLine = String(format: "CMD cooldown adjust -> %.1f", target)
                         sendTreadmillSetSpeed(target, label: String(format: "SPEED %.1f km/h (cooldown)", target))
                         hrCooldownLastSentSpeed = target
-                        appendLog("HR cooldown speed: \(String(format: "%.1f", target)) HR=\(heartRateBPM)")
+                        appendLog("HR cooldown speed: \(String(format: "%.1f", target)) HR=\(heartRateBPM) step=\(String(format: "%.1f", reductionStep))")
                         logTrainingEvent("cooldown_speed_set", fields: [
                             "hr_bpm": heartRateBPM,
                             "target_bpm": hrCooldownTargetBpm,
                             "adaptive_factor": adaptiveFactor,
+                            "step_kmh": reductionStep,
                             "speed_before_kmh": old,
                             "speed_after_kmh": target
                         ])

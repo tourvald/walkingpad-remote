@@ -41,6 +41,11 @@
   - `Export Training CSV` now deletes exported raw `jsonl` logs only after the user completes the iOS share sheet (`completed == true`)
   - cleanup skips the currently active session log, reports removed-file count plus reclaimed bytes, and shows the result through `infoToastMessage`
   - raw log cleanup logic is centralized in `TrainingTelemetryWriter.cleanupExportedJsonlFiles(...)` and covered by Swift package tests
+- Adaptive cooldown patch (2026-03-10):
+  - cooldown runtime no longer uses the lagging raw FE01 speed alone for stability checks; `BluetoothManager` now evaluates cooldown stability through `HRDomainService.cooldownObservedSpeedKmh(...)`, which prefers controller/app-reported speed and falls back to raw reported speed only when needed
+  - cooldown duration is now adaptive from the start HR overshoot above the cooldown target: base duration plus `+0 / +60 / +120 / +180` seconds for `<15 / 15...29 / 30...44 / 45+ bpm`
+  - cooldown speed reduction is now front-loaded for harder sessions through `HRDomainService.cooldownReductionStepKmh(...)`, so high-start-HR sessions reach `hrCooldownMinSpeed` sooner instead of spending most of the 5-minute window on the descent
+  - `HRDomainService` now owns these cooldown rules and Swift package tests cover plan duration, stability speed selection, and front-loaded reduction step sizing
 - Manual control and HR control are unified under one bottom tab.
 - Last-selected navigation state is persisted:
   - bottom tab selection in `ContentView` is stored in `UserDefaults` (`content_selected_root_tab_v1`)

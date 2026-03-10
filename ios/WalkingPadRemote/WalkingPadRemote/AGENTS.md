@@ -14,6 +14,12 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - raw `TrainingLogs/*.jsonl` files included in the exported CSV are removed only when the share action completes successfully
   - the currently active session log is preserved
   - cleanup outcome is surfaced to the user through the existing info toast flow
+- Cooldown runtime patch (2026-03-10):
+  - `HRDomainService.swift` now owns the cooldown-specific pure rules used by `BluetoothManager`
+  - cooldown stability no longer depends on the lagging raw FE01 speed alone; the effective cooldown speed now prefers controller/app-reported speed and only falls back to raw reported speed when app-side speed is unavailable
+  - cooldown duration now expands from the base user setting by `+0 / +60 / +120 / +180s` depending on how far the start HR is above the cooldown target (`<15 / 15...29 / 30...44 / 45+ bpm`)
+  - cooldown speed reduction is now front-loaded for higher start HR, so the belt reaches `hrCooldownMinSpeed` earlier and leaves more of the cooldown window for actual HR recovery
+  - pure XCTest coverage was added for cooldown plan duration, stability speed selection, and front-loaded reduction step sizing
 
 ## File Decomposition (2026-02-26)
 - `ContentView.swift` was split so root navigation/composition stays in one file, and reusable UI blocks are isolated:

@@ -41,4 +41,52 @@ final class HRDomainServiceTests: XCTestCase {
         XCTAssertEqual(HRDomainService.stepForLevel(4), 0.4, accuracy: 0.0001)
         XCTAssertEqual(HRDomainService.stepForLevel(7), 0.4, accuracy: 0.0001)
     }
+
+    func testCooldownPlanExtendsDurationForHighStartHeartRate() {
+        XCTAssertEqual(
+            HRDomainService.cooldownPlan(baseMinutes: 5, startBpm: 136, targetBpm: 110).totalSeconds,
+            360
+        )
+        XCTAssertEqual(
+            HRDomainService.cooldownPlan(baseMinutes: 5, startBpm: 141, targetBpm: 110).totalSeconds,
+            420
+        )
+        XCTAssertEqual(
+            HRDomainService.cooldownPlan(baseMinutes: 5, startBpm: 176, targetBpm: 110).totalSeconds,
+            480
+        )
+    }
+
+    func testCooldownObservedSpeedPrefersControllerAndAppSpeedOverLaggingRawValue() {
+        let observed = HRDomainService.cooldownObservedSpeedKmh(
+            desiredSpeedKmh: 3.5,
+            deviceTargetSpeedKmh: 3.5,
+            appReportedSpeedKmh: 3.5,
+            rawReportedSpeedKmh: 3.9
+        )
+
+        XCTAssertEqual(observed, 3.5, accuracy: 0.0001)
+    }
+
+    func testCooldownReductionStepIsFrontLoadedForHighIntensitySessions() {
+        let earlyStep = HRDomainService.cooldownReductionStepKmh(
+            baseStepKmh: 0.5,
+            currentBpm: 176,
+            targetBpm: 110,
+            startBpm: 176,
+            elapsedSeconds: 0,
+            totalSeconds: 480
+        )
+        let lateStep = HRDomainService.cooldownReductionStepKmh(
+            baseStepKmh: 0.5,
+            currentBpm: 127,
+            targetBpm: 110,
+            startBpm: 176,
+            elapsedSeconds: 360,
+            totalSeconds: 480
+        )
+
+        XCTAssertEqual(earlyStep, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(lateStep, 0.6, accuracy: 0.0001)
+    }
 }
