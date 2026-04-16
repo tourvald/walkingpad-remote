@@ -20,12 +20,59 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - cooldown duration now expands from the base user setting by `+0 / +60 / +120 / +180s` depending on how far the start HR is above the cooldown target (`<15 / 15...29 / 30...44 / 45+ bpm`)
   - cooldown speed reduction is now front-loaded for higher start HR, so the belt reaches `hrCooldownMinSpeed` earlier and leaves more of the cooldown window for actual HR recovery
   - pure XCTest coverage was added for cooldown plan duration, stability speed selection, and front-loaded reduction step sizing
+- Cooldown truth-source fix / default target update (2026-04-05):
+  - cooldown stability now resolves speed through `HRDomainService.cooldownSpeedSnapshot(...)`, with factual-speed priority `deviceReportedAppSpeedKmh -> deviceReportedSpeedKmh -> speedKmh -> controller fallback`
+  - `BluetoothManager` cooldown state machine and blocker names are unchanged, but `minSpeedOk` now uses the factual snapshot instead of `max(controller, reported)`; this fixes false `speed_above_min` timeouts when controller target lags above the actual treadmill speed
+  - cooldown telemetry/export now includes `cooldown_controller_speed_kmh` next to `cooldown_observed_speed_kmh` for direct diagnosis of stale commanded-speed cases
+  - clean installs / profiles without saved HR settings now default to `115 bpm` cooldown target via `HRSettingsDefaults.swift`; persisted per-profile cooldown targets are not migrated or overridden
+- Immediate cooldown first-step patch (2026-04-15):
+  - cooldown no longer waits for the first `hrDecisionIntervalSeconds` boundary before lowering treadmill speed; the first cooldown speed reduction is now sent immediately on entering cooldown
+  - later cooldown speed reductions still use the configured interval cadence, so only the initial latency was removed
+  - `BluetoothManager` now routes both the immediate and interval-based cooldown reductions through one shared helper, while `HRDomainService.cooldownNextTargetSpeedKmh(...)` owns the pure next-target clamp logic
+  - cooldown telemetry event `cooldown_speed_set` now records `elapsed_s` and `trigger` (`cooldown_start` or `interval`) for descent-timing analysis
+- Cooldown runtime engine refactor (2026-04-15):
+  - full cooldown runtime flow now lives in `WalkingPadRemote/CooldownRuntimeEngine.swift`; `BluetoothManager` is only the adapter that builds inputs, executes effects, and publishes state to UI
+  - the engine preserves the existing cooldown telemetry/export contract (`cooldown_start`, `cooldown_speed_set`, `cooldown_state`, `cooldown_analysis`, `cooldown_complete`, `cooldown_insufficient`) while owning runtime counters and finish/blocker logic
+  - manager-side private cooldown counters were collapsed into a single `cooldownRuntimeState`, which is also the source for `session_end` and raw JSONL cooldown snapshots
+  - `WalkingPadRemoteCoreTests/CooldownRuntimeEngineTests.swift` covers the runtime state machine directly, including immediate first step, interval reductions, stable completion, timeout blockers, and insufficient cooldown events
+- HR control CTA restyle (2026-04-16):
+  - `ContentSharedUIComponents.swift` now includes `PrimaryActionButton`, a full-width gradient CTA component matching the existing tile-based action language
+  - `HRControlPanel` uses `PrimaryActionButton` for `Запустить HR‑контроль`; the button now shows the active start-block reason in its subtitle when unavailable instead of falling back to a generic disabled bordered button
+  - the bottom `HR‑контроль` tab icon was simplified from `heart.text.square` to `heart.circle` so the tab bar reads closer to the rest of the app's icon set
 - Detailed cooldown export patch (2026-03-10):
   - `BluetoothManager` now accumulates cooldown-analysis snapshots during cooldown and writes a dedicated one-shot `cooldown_analysis` event before `cooldown_complete`
   - normalized cooldown export fields now include finish reason/blocker, first-hit times, total time below target, total time at min speed, total time satisfying both conditions, and max consecutive stable streak
   - `cooldown_state` rows also expose boolean analysis flags (`cooldown_hr_ok`, `cooldown_min_speed_ok`, `cooldown_stable_ok`) plus `cooldown_stability_blocker`
   - export column definitions now live in `TrainingTelemetryWriter.trainingCsvHeaders` and row materialization in `TrainingTelemetryWriter.csvRow(...)`
   - Swift tests now assert that the detailed cooldown-analysis columns are preserved in normalized CSV rows
+- Training-log export scope patch (2026-03-19):
+  - debug export now offers `Все логи`, `Последние 3 тренировки`, and `Последние 5 тренировок`
+  - last-N export filters session files by presence of `workout_saved`, so incomplete runs do not get mixed into quick analysis exports
+  - normalized CSV now includes explicit `cooldown_target_bpm`, because generic `target_bpm` is event-scoped and can refer either to main-session target or cooldown target depending on row type
+  - cleanup after a successful share continues to delete only the raw JSONL files that participated in the selected export scope
+- Session summary export (2026-03-19):
+  - Debug UI now has a second export action, `Export Session Summary`, next to the full raw training CSV export
+  - session summary export uses the same scope menu (`Все логи`, `Последние 3 тренировки`, `Последние 5 тренировок`), but for `.all` it still includes only completed workouts (`workout_saved`)
+  - the generated CSV contains one row per saved workout with aggregated metrics for main-stage HR compliance and cooldown quality, plus derived cooldown last-30s/last-60s HR slopes for quicker tuning analysis
+  - full raw event export remains necessary for drilling into anomalous sessions; session summary is the default high-signal view for tuning decisions
+- Training logs inventory / explicit clear (2026-03-21):
+  - Debug `Training Logs` block now surfaces active-profile inventory before export: raw-session count, completed-workout count, total byte size, and clearable-file count
+  - export menus now show how many workouts each scope will actually export instead of relying on generic static titles
+  - Debug UI now includes destructive `Clear Training Logs`, which removes only raw JSONL telemetry logs for the active profile
+  - clear action does not touch `workoutHistory`/stats, and the currently active session log stays protected
+  - `lastTrainingLogPath` is refreshed from the remaining active-profile files after cleanup, so the label does not point to a stale deleted file
+- Debug card extraction / standardized layout (2026-03-21):
+  - `Training Logs` and `HR Failures` were extracted from `ContentView.swift` into `DebugTrainingLogsCard.swift` and `DebugHrFailuresCard.swift`
+  - `DebugView` now builds explicit presentation props for both cards; card views themselves do not talk to `BluetoothManager`
+  - extracted debug cards now share one visual standard through `DebugSharedUIComponents.swift`: section header, compact metric tiles, and action-tile labels
+  - `Runtime Snapshot` remains in `ContentView.swift`, but now uses the same section-card style as the extracted cards
+  - `Package.swift` excludes the new debug UI files from the SwiftPM logic target, keeping `swift test` warning-free
+- Local user profiles (2026-03-20):
+  - `BluetoothManager` now owns local `UserProfile` state: active profile, profile list, per-profile migration from legacy global settings, and CRUD helpers for create/rename/delete/switch
+  - per-profile storage is scoped by profile UUID for `hr_settings_v1`, `zone_plan_v1`, and `workout_history_v1`, so two people on the same phone no longer overwrite each other’s zones/duration/cooldown preferences or stats history
+  - `HRParametersFormView` now exposes profile management directly in `Параметры`; new profile creation clones the current settings but starts with empty workout history, and profile edits are locked during an active HR workout
+  - telemetry/export now carries `installation_id`, `profile_id`, and `profile_label`; both raw export and session-summary export filter JSONL files to the active profile
+  - legacy JSONL files without a `profile_id` are treated as belonging only to the first/default profile, so old mixed exports do not bleed into newly created profiles
 
 ## File Decomposition (2026-02-26)
 - `ContentView.swift` was split so root navigation/composition stays in one file, and reusable UI blocks are isolated:

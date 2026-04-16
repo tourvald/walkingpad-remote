@@ -6,6 +6,12 @@ enum HRDomainService {
         let stepKmh: Double
     }
 
+    struct CooldownSpeedSnapshot: Equatable {
+        let observedSpeedKmh: Double
+        let controllerSpeedKmh: Double
+        let factualSpeedKmh: Double?
+    }
+
     struct CooldownPlan {
         let totalSeconds: Int
     }
@@ -97,15 +103,31 @@ enum HRDomainService {
         return CooldownPlan(totalSeconds: baseSeconds + extraSeconds)
     }
 
-    static func cooldownObservedSpeedKmh(
+    static func cooldownSpeedSnapshot(
         desiredSpeedKmh: Double,
         deviceTargetSpeedKmh: Double,
         appReportedSpeedKmh: Double,
-        rawReportedSpeedKmh: Double
-    ) -> Double {
-        let controllerSpeed = max(0, max(desiredSpeedKmh, deviceTargetSpeedKmh))
-        let reportedSpeed = appReportedSpeedKmh > 0.05 ? appReportedSpeedKmh : max(0, rawReportedSpeedKmh)
-        return max(controllerSpeed, reportedSpeed)
+        rawReportedSpeedKmh: Double,
+        currentActualSpeedKmh: Double
+    ) -> CooldownSpeedSnapshot {
+        let controllerSpeedKmh = max(0, max(desiredSpeedKmh, deviceTargetSpeedKmh))
+
+        let factualSpeedKmh: Double?
+        if appReportedSpeedKmh > 0.05 {
+            factualSpeedKmh = appReportedSpeedKmh
+        } else if rawReportedSpeedKmh > 0.05 {
+            factualSpeedKmh = rawReportedSpeedKmh
+        } else if currentActualSpeedKmh > 0.05 {
+            factualSpeedKmh = currentActualSpeedKmh
+        } else {
+            factualSpeedKmh = nil
+        }
+
+        return CooldownSpeedSnapshot(
+            observedSpeedKmh: factualSpeedKmh ?? controllerSpeedKmh,
+            controllerSpeedKmh: controllerSpeedKmh,
+            factualSpeedKmh: factualSpeedKmh
+        )
     }
 
     static func cooldownReductionStepKmh(
@@ -140,5 +162,15 @@ enum HRDomainService {
 
         let scaledStep = min(1.0, safeBaseStep * factor)
         return quantizeSpeedStep(scaledStep)
+    }
+
+    static func cooldownNextTargetSpeedKmh(
+        currentSentSpeedKmh: Double,
+        minSpeedKmh: Double,
+        reductionStepKmh: Double
+    ) -> Double? {
+        let rawTarget = currentSentSpeedKmh - reductionStepKmh
+        let target = max(minSpeedKmh, rawTarget)
+        return abs(target - currentSentSpeedKmh) >= 0.01 ? target : nil
     }
 }

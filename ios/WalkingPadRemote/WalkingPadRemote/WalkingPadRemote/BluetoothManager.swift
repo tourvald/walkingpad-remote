@@ -70,11 +70,30 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     // Discovery
     struct DiscoveredPeripheral: Identifiable { let id: UUID; let name: String; let rssi: Int; let isKnown: Bool }
     struct KnownPeripheral: Identifiable { let id: UUID; var name: String }
+    struct UserProfile: Identifiable, Equatable {
+        let id: UUID
+        var label: String
+        let createdAt: Date
+    }
     @Published var discoveredPeripherals: [DiscoveredPeripheral] = []
     @Published var knownPeripherals: [KnownPeripheral] = []
+    @Published private(set) var userProfiles: [UserProfile] = []
+    @Published private(set) var activeUserProfileID: UUID? = nil
+    @Published private(set) var installationID: String = ""
 
     private struct KnownPeripheralDTO: Codable { let id: UUID; let name: String }
+    private struct UserProfileDTO: Codable {
+        let id: UUID
+        let label: String
+        let createdAt: Date
+    }
+    private struct UserProfilesStateDTO: Codable {
+        let profiles: [UserProfileDTO]
+        let activeProfileID: UUID?
+    }
     private let knownStoreKey = "known_peripherals_store_v1"
+    private let userProfilesStoreKey = "user_profiles_state_v1"
+    private let installationIDStoreKey = "installation_id_v1"
     private let hrSettingsStoreKey = "hr_settings_v1"
     private let zonePlanStoreKey = "zone_plan_v1"
     private let workoutHistoryStoreKey = "workout_history_v1"
@@ -82,17 +101,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var autoConnectSuppressed: Bool = false
     private var hrSessionTotalSeconds: Int = 0
     private var hrControlStartedBelt: Bool = false
-    private var hrCooldownTotalSeconds: Int = 0
-    private var hrCooldownStartSpeed: Double = 0
-    private var hrCooldownLastSentSpeed: Double = 0
-    private var hrCooldownStepKmh: Double = 0.0
-    private var hrCooldownStepIntervalSeconds: Int = 1
+    private var cooldownRuntimeState: CooldownRuntimeEngine.State? = nil
     @Published var hrCooldownMinSpeed: Double = 3.5 { didSet { saveHrSettingsIfNeeded() } }
-    @Published var hrCooldownTargetBpm: Int = 100 { didSet { saveHrSettingsIfNeeded() } }
+    @Published var hrCooldownTargetBpm: Int = HRSettingsDefaults.defaultCooldownTargetBpm { didSet { saveHrSettingsIfNeeded() } }
     @Published var hrCooldownMaxMinutes: Int = 5 { didSet { saveHrSettingsIfNeeded() } }
     private let hrCooldownHoldSeconds: Int = 20
     private var hrCooldownMaxSeconds: Int { hrCooldownMaxMinutes * 60 }
-    private var hrCooldownStableSeconds: Int = 0
     private let hrMaxSessionMinutes: Int = 120
     private var manualModeSet: Bool = false
     private var hrControlStartedAt: Date? = nil
@@ -114,18 +128,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var hrMainSumBPM: Int = 0
     private var hrMainCountBPM: Int = 0
     private var hrMainPeakBPM: Int = 0
-    private var hrCooldownStartBPM: Int = 0
-    private var hrCooldownEndBPM: Int = 0
-    private var hrCooldownPeakBPM: Int = 0
-    private var hrCooldownTargetHitElapsedSeconds: Int? = nil
-    private var hrCooldownFirstMinSpeedElapsedSeconds: Int? = nil
-    private var hrCooldownFirstStableElapsedSeconds: Int? = nil
-    private var hrCooldownBelowTargetSeconds: Int = 0
-    private var hrCooldownMinSpeedSeconds: Int = 0
-    private var hrCooldownTargetAndMinSpeedSeconds: Int = 0
-    private var hrCooldownMaxStableStreakSeconds: Int = 0
-    private var hrCooldownFinishReason: String = ""
-    private var hrCooldownTimeoutBlocker: String = ""
     private var isAdjustingZoneBounds: Bool = false
     private var isUpdatingZonePlan: Bool = false
     private var hrNoDataSeconds: Int = 0
@@ -145,6 +147,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var commandQueueEpoch: Int = 0
     private var nextCommandAllowedAt: Date = .distantPast
     private var pendingHealthkitWorkoutUUID: String? = nil
+    private var pendingHealthkitWorkoutProfileID: UUID? = nil
     private var hrControlFailed: Bool = false
     private var expectedSpeedKmh: Double? = nil
     private var expectedSpeedSetAt: Date? = nil
@@ -160,6 +163,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         return formatter
     }()
+
+    var activeUserProfileLabel: String {
+        activeUserProfile?.label ?? "Пользователь 1"
+    }
+
+    private var activeUserProfile: UserProfile? {
+        guard let activeUserProfileID else { return userProfiles.first }
+        return userProfiles.first(where: { $0.id == activeUserProfileID }) ?? userProfiles.first
+    }
     private let trainingLogIsoFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -168,6 +180,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     struct TrainingLogsCsvExport {
         let csvURL: URL
         let rowCount: Int
+        let scope: TrainingLogCsvExportScope
         fileprivate let sourceFiles: [URL]
     }
     private var trainingLogSessionId: String? = nil
@@ -229,43 +242,345 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
-    private func loadWorkoutHistory() {
-        guard let data = UserDefaults.standard.data(forKey: workoutHistoryStoreKey),
-              let list = try? JSONDecoder().decode([WorkoutEntryDTO].self, from: data) else {
-            return
-        }
-        self.workoutHistory = list.map {
-            WorkoutEntry(
-                id: $0.id,
-                date: $0.date,
-                beatsPerMeter: $0.beatsPerMeter,
-                targetBpm: $0.targetBpm,
-                durationSeconds: $0.durationSeconds,
-                avgBpm: $0.avgBpm,
-                avgSpeedKmh: $0.avgSpeedKmh,
-                healthkitWorkoutUUID: $0.healthkitWorkoutUUID,
-                zoneSeconds: $0.zoneSeconds
-            )
+    private func userProfileDTO(from profile: UserProfile) -> UserProfileDTO {
+        UserProfileDTO(id: profile.id, label: profile.label, createdAt: profile.createdAt)
+    }
+
+    private func userProfile(from dto: UserProfileDTO) -> UserProfile {
+        UserProfile(id: dto.id, label: dto.label, createdAt: dto.createdAt)
+    }
+
+    private func sortedProfiles(_ profiles: [UserProfile]) -> [UserProfile] {
+        profiles.sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt < rhs.createdAt
+            }
+            return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
         }
     }
 
+    private func profileScopedStoreKey(_ baseKey: String, profileID: UUID) -> String {
+        "\(baseKey)_profile_\(profileID.uuidString.lowercased())"
+    }
+
+    private var legacyFallbackProfileID: String? {
+        sortedProfiles(userProfiles).first?.id.uuidString
+    }
+
+    private func makeDefaultProfileLabel() -> String {
+        "Пользователь \(max(1, userProfiles.count + 1))"
+    }
+
+    private func normalizedProfileLabel(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? makeDefaultProfileLabel() : trimmed
+    }
+
+    private func makeUniqueProfileLabel(_ rawValue: String, excluding profileID: UUID? = nil) -> String {
+        let base = normalizedProfileLabel(rawValue)
+        let existing = Set(
+            userProfiles
+                .filter { $0.id != profileID }
+                .map { $0.label.lowercased() }
+        )
+
+        guard existing.contains(base.lowercased()) else {
+            return base
+        }
+
+        var suffix = 2
+        while existing.contains("\(base) \(suffix)".lowercased()) {
+            suffix += 1
+        }
+        return "\(base) \(suffix)"
+    }
+
+    private func loadInstallationID() {
+        let defaults = UserDefaults.standard
+        if let existing = defaults.string(forKey: installationIDStoreKey),
+           !existing.isEmpty {
+            installationID = existing
+            return
+        }
+
+        let generated = UUID().uuidString
+        defaults.set(generated, forKey: installationIDStoreKey)
+        installationID = generated
+    }
+
+    private func migrateLegacyProfileStoresIfNeeded(to profileID: UUID) {
+        let defaults = UserDefaults.standard
+
+        for baseKey in [hrSettingsStoreKey, zonePlanStoreKey, workoutHistoryStoreKey] {
+            let scopedKey = profileScopedStoreKey(baseKey, profileID: profileID)
+            guard defaults.object(forKey: scopedKey) == nil,
+                  let legacyValue = defaults.object(forKey: baseKey) else {
+                continue
+            }
+            defaults.set(legacyValue, forKey: scopedKey)
+        }
+    }
+
+    private func saveProfilesState() {
+        let dto = UserProfilesStateDTO(
+            profiles: sortedProfiles(userProfiles).map { userProfileDTO(from: $0) },
+            activeProfileID: activeUserProfileID
+        )
+        guard let data = try? JSONEncoder().encode(dto) else { return }
+        UserDefaults.standard.set(data, forKey: userProfilesStoreKey)
+    }
+
+    private func loadProfilesState() {
+        loadInstallationID()
+
+        if let data = UserDefaults.standard.data(forKey: userProfilesStoreKey),
+           let dto = try? JSONDecoder().decode(UserProfilesStateDTO.self, from: data),
+           !dto.profiles.isEmpty {
+            let profiles = sortedProfiles(dto.profiles.map(userProfile(from:)))
+            userProfiles = profiles
+            activeUserProfileID = dto.activeProfileID.flatMap { candidate in
+                profiles.contains(where: { $0.id == candidate }) ? candidate : profiles.first?.id
+            } ?? profiles.first?.id
+            if dto.activeProfileID != activeUserProfileID {
+                saveProfilesState()
+            }
+            return
+        }
+
+        let defaultProfile = UserProfile(
+            id: UUID(),
+            label: "Пользователь 1",
+            createdAt: Date()
+        )
+        userProfiles = [defaultProfile]
+        activeUserProfileID = defaultProfile.id
+        migrateLegacyProfileStoresIfNeeded(to: defaultProfile.id)
+        saveProfilesState()
+    }
+
+    private func applyDefaultHrSettings() {
+        hrTargetBPM = 130
+        hrDurationMinutes = 10
+        hrAdaptiveStepEnabled = true
+        hrDecisionIntervalSeconds = 10
+        hrSpeedStepKmh = 0.5
+        hrAdaptiveDeadbandPercent = 3.0
+        hrAdaptiveDownLevel2StartPercent = 8.0
+        hrAdaptiveDownLevel3StartPercent = 15.0
+        hrAdaptiveDownLevel4StartPercent = 23.0
+        hrAdaptiveUpLevel2StartPercent = 23.0
+        hrAdaptiveUpLevel3StartPercent = 31.0
+        hrAdaptiveUpLevel4StartPercent = 46.0
+        hrTrendWindowSeconds = 20
+        hrTrendEmaAlpha = 0.25
+        hrTrendSlopeMaxBpmPerSecond = 0.6
+        hrZone1Max = 134
+        hrZone2Max = 146
+        hrZone3Max = 158
+        hrZone4Max = 170
+        hrCooldownTargetBpm = HRSettingsDefaults.defaultCooldownTargetBpm
+        hrCooldownMinSpeed = 3.5
+        hrCooldownMaxMinutes = 5
+    }
+
+    private func makeHrSettingsDTO() -> HrSettingsDTO {
+        HrSettingsDTO(
+            targetBpm: hrTargetBPM,
+            durationMinutes: hrDurationMinutes,
+            adaptiveStepEnabled: hrAdaptiveStepEnabled,
+            decisionIntervalSeconds: hrDecisionIntervalSeconds,
+            speedStepKmh: hrSpeedStepKmh,
+            adaptiveDeadbandPercent: hrAdaptiveDeadbandPercent,
+            adaptiveDownLevel2StartPercent: hrAdaptiveDownLevel2StartPercent,
+            adaptiveDownLevel3StartPercent: hrAdaptiveDownLevel3StartPercent,
+            adaptiveDownLevel4StartPercent: hrAdaptiveDownLevel4StartPercent,
+            adaptiveUpLevel2StartPercent: hrAdaptiveUpLevel2StartPercent,
+            adaptiveUpLevel3StartPercent: hrAdaptiveUpLevel3StartPercent,
+            adaptiveUpLevel4StartPercent: hrAdaptiveUpLevel4StartPercent,
+            trendWindowSeconds: hrTrendWindowSeconds,
+            trendEmaAlpha: hrTrendEmaAlpha,
+            trendSlopeMaxBpmPerSecond: hrTrendSlopeMaxBpmPerSecond,
+            zone1Max: hrZone1Max,
+            zone2Max: hrZone2Max,
+            zone3Max: hrZone3Max,
+            zone4Max: hrZone4Max,
+            cooldownTargetBpm: hrCooldownTargetBpm,
+            cooldownMinSpeed: hrCooldownMinSpeed,
+            cooldownMaxMinutes: hrCooldownMaxMinutes
+        )
+    }
+
+    private func saveHrSettings(profileID: UUID) {
+        guard let data = try? JSONEncoder().encode(makeHrSettingsDTO()) else { return }
+        UserDefaults.standard.set(data, forKey: profileScopedStoreKey(hrSettingsStoreKey, profileID: profileID))
+    }
+
+    private func saveZonePlan(profileID: UUID) {
+        let normalized = normalizeZonePlan(zonePlanMinutes)
+        guard let data = try? JSONEncoder().encode(normalized) else { return }
+        UserDefaults.standard.set(data, forKey: profileScopedStoreKey(zonePlanStoreKey, profileID: profileID))
+    }
+
+    private func workoutEntry(from dto: WorkoutEntryDTO) -> WorkoutEntry {
+        WorkoutEntry(
+            id: dto.id,
+            date: dto.date,
+            beatsPerMeter: dto.beatsPerMeter,
+            targetBpm: dto.targetBpm,
+            durationSeconds: dto.durationSeconds,
+            avgBpm: dto.avgBpm,
+            avgSpeedKmh: dto.avgSpeedKmh,
+            healthkitWorkoutUUID: dto.healthkitWorkoutUUID,
+            zoneSeconds: dto.zoneSeconds
+        )
+    }
+
+    private func workoutEntryDTO(from entry: WorkoutEntry) -> WorkoutEntryDTO {
+        WorkoutEntryDTO(
+            id: entry.id,
+            date: entry.date,
+            beatsPerMeter: entry.beatsPerMeter,
+            targetBpm: entry.targetBpm,
+            durationSeconds: entry.durationSeconds,
+            avgBpm: entry.avgBpm,
+            avgSpeedKmh: entry.avgSpeedKmh,
+            healthkitWorkoutUUID: entry.healthkitWorkoutUUID,
+            zoneSeconds: entry.zoneSeconds
+        )
+    }
+
+    private func loadWorkoutHistory(profileID: UUID) -> [WorkoutEntry] {
+        let key = profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let list = try? JSONDecoder().decode([WorkoutEntryDTO].self, from: data) else {
+            return []
+        }
+
+        return list.map { workoutEntry(from: $0) }
+    }
+
+    private func saveWorkoutHistory(_ entries: [WorkoutEntry], profileID: UUID) {
+        let list = entries.prefix(50).map { workoutEntryDTO(from: $0) }
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        UserDefaults.standard.set(data, forKey: profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID))
+    }
+
+    private func removeStoredData(for profileID: UUID) {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: profileScopedStoreKey(hrSettingsStoreKey, profileID: profileID))
+        defaults.removeObject(forKey: profileScopedStoreKey(zonePlanStoreKey, profileID: profileID))
+        defaults.removeObject(forKey: profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID))
+    }
+
+    private func loadActiveProfileScopedData() {
+        loadHrSettings()
+        loadZonePlan()
+        loadWorkoutHistory()
+    }
+
+    func selectUserProfile(id: UUID) {
+        guard userProfiles.contains(where: { $0.id == id }) else { return }
+        guard !isHrControlRunning else {
+            infoToastMessage = "Во время активной тренировки профиль переключать нельзя."
+            return
+        }
+        guard activeUserProfileID != id else { return }
+
+        saveHrSettingsIfNeeded()
+        saveZonePlan()
+        saveWorkoutHistory()
+
+        activeUserProfileID = id
+        saveProfilesState()
+        loadActiveProfileScopedData()
+        refreshTrainingLogsInventory()
+        appendLog("Active profile switched: \(activeUserProfileLabel)")
+        infoToastMessage = "Активный профиль: \(activeUserProfileLabel)"
+    }
+
+    func createUserProfile(named rawLabel: String) {
+        guard !isHrControlRunning else {
+            infoToastMessage = "Во время активной тренировки профиль менять нельзя."
+            return
+        }
+
+        let profile = UserProfile(
+            id: UUID(),
+            label: makeUniqueProfileLabel(rawLabel),
+            createdAt: Date()
+        )
+
+        saveHrSettingsIfNeeded()
+        saveZonePlan()
+        saveWorkoutHistory()
+
+        saveHrSettings(profileID: profile.id)
+        saveZonePlan(profileID: profile.id)
+        saveWorkoutHistory([], profileID: profile.id)
+
+        userProfiles = sortedProfiles(userProfiles + [profile])
+        activeUserProfileID = profile.id
+        saveProfilesState()
+        loadActiveProfileScopedData()
+        refreshTrainingLogsInventory()
+        appendLog("Profile created: \(profile.label)")
+        infoToastMessage = "Создан профиль: \(profile.label)"
+    }
+
+    func renameActiveUserProfile(to rawLabel: String) {
+        guard !isHrControlRunning else {
+            infoToastMessage = "Во время активной тренировки профиль менять нельзя."
+            return
+        }
+        guard let activeUserProfileID,
+              let index = userProfiles.firstIndex(where: { $0.id == activeUserProfileID }) else {
+            return
+        }
+
+        let label = makeUniqueProfileLabel(rawLabel, excluding: activeUserProfileID)
+        guard userProfiles[index].label != label else { return }
+
+        userProfiles[index].label = label
+        userProfiles = sortedProfiles(userProfiles)
+        saveProfilesState()
+        appendLog("Profile renamed: \(label)")
+        infoToastMessage = "Профиль переименован: \(label)"
+    }
+
+    func deleteActiveUserProfile() {
+        guard !isHrControlRunning else {
+            infoToastMessage = "Во время активной тренировки профиль менять нельзя."
+            return
+        }
+        guard let activeUserProfileID,
+              userProfiles.count > 1 else {
+            infoToastMessage = "Нельзя удалить единственный профиль."
+            return
+        }
+
+        let deletedLabel = activeUserProfileLabel
+        removeStoredData(for: activeUserProfileID)
+
+        userProfiles = sortedProfiles(userProfiles.filter { $0.id != activeUserProfileID })
+        self.activeUserProfileID = userProfiles.first?.id
+        saveProfilesState()
+        loadActiveProfileScopedData()
+        refreshTrainingLogsInventory()
+        appendLog("Profile deleted: \(deletedLabel)")
+        infoToastMessage = "Профиль удалён: \(deletedLabel)"
+    }
+
+    private func loadWorkoutHistory() {
+        guard let activeUserProfileID else {
+            workoutHistory = []
+            return
+        }
+        workoutHistory = loadWorkoutHistory(profileID: activeUserProfileID)
+    }
+
     private func saveWorkoutHistory() {
-        let list = workoutHistory.prefix(50).map {
-            WorkoutEntryDTO(
-                id: $0.id,
-                date: $0.date,
-                beatsPerMeter: $0.beatsPerMeter,
-                targetBpm: $0.targetBpm,
-                durationSeconds: $0.durationSeconds,
-                avgBpm: $0.avgBpm,
-                avgSpeedKmh: $0.avgSpeedKmh,
-                healthkitWorkoutUUID: $0.healthkitWorkoutUUID,
-                zoneSeconds: $0.zoneSeconds
-            )
-        }
-        if let data = try? JSONEncoder().encode(list) {
-            UserDefaults.standard.set(data, forKey: workoutHistoryStoreKey)
-        }
+        guard let activeUserProfileID else { return }
+        saveWorkoutHistory(workoutHistory, profileID: activeUserProfileID)
     }
 
     func deleteWorkoutEntry(id: UUID) {
@@ -324,11 +639,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func loadHrSettings() {
-        guard let data = UserDefaults.standard.data(forKey: hrSettingsStoreKey),
+        isLoadingHrSettings = true
+        applyDefaultHrSettings()
+
+        defer {
+            normalizeAdaptivePercentThresholdSettings()
+            isLoadingHrSettings = false
+            normalizeZoneBounds()
+            sendHrTargetBpm()
+        }
+
+        guard let activeUserProfileID else { return }
+        let key = profileScopedStoreKey(hrSettingsStoreKey, profileID: activeUserProfileID)
+        guard let data = UserDefaults.standard.data(forKey: key),
               let dto = try? JSONDecoder().decode(HrSettingsDTO.self, from: data) else {
             return
         }
-        isLoadingHrSettings = true
+
         hrTargetBPM = max(60, min(220, dto.targetBpm))
         hrDurationMinutes = max(1, min(120, dto.durationMinutes))
         hrAdaptiveStepEnabled = dto.adaptiveStepEnabled
@@ -370,7 +697,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if let z3 = dto.zone3Max { hrZone3Max = max(82, min(220, z3)) }
         if let z4 = dto.zone4Max { hrZone4Max = max(83, min(230, z4)) }
         if let cooldownTarget = dto.cooldownTargetBpm {
-            hrCooldownTargetBpm = max(80, min(140, cooldownTarget))
+            hrCooldownTargetBpm = HRSettingsDefaults.resolvedCooldownTargetBpm(savedValue: cooldownTarget)
         }
         if let cooldownMin = dto.cooldownMinSpeed {
             hrCooldownMinSpeed = max(2.0, min(6.0, cooldownMin))
@@ -378,41 +705,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if let cooldownMaxMinutes = dto.cooldownMaxMinutes {
             hrCooldownMaxMinutes = max(1, min(30, cooldownMaxMinutes))
         }
-        normalizeAdaptivePercentThresholdSettings()
-        isLoadingHrSettings = false
-        normalizeZoneBounds()
-        sendHrTargetBpm()
     }
 
     private func saveHrSettingsIfNeeded() {
-        guard !isLoadingHrSettings else { return }
-        let dto = HrSettingsDTO(
-            targetBpm: hrTargetBPM,
-            durationMinutes: hrDurationMinutes,
-            adaptiveStepEnabled: hrAdaptiveStepEnabled,
-            decisionIntervalSeconds: hrDecisionIntervalSeconds,
-            speedStepKmh: hrSpeedStepKmh,
-            adaptiveDeadbandPercent: hrAdaptiveDeadbandPercent,
-            adaptiveDownLevel2StartPercent: hrAdaptiveDownLevel2StartPercent,
-            adaptiveDownLevel3StartPercent: hrAdaptiveDownLevel3StartPercent,
-            adaptiveDownLevel4StartPercent: hrAdaptiveDownLevel4StartPercent,
-            adaptiveUpLevel2StartPercent: hrAdaptiveUpLevel2StartPercent,
-            adaptiveUpLevel3StartPercent: hrAdaptiveUpLevel3StartPercent,
-            adaptiveUpLevel4StartPercent: hrAdaptiveUpLevel4StartPercent,
-            trendWindowSeconds: hrTrendWindowSeconds,
-            trendEmaAlpha: hrTrendEmaAlpha,
-            trendSlopeMaxBpmPerSecond: hrTrendSlopeMaxBpmPerSecond,
-            zone1Max: hrZone1Max,
-            zone2Max: hrZone2Max,
-            zone3Max: hrZone3Max,
-            zone4Max: hrZone4Max,
-            cooldownTargetBpm: hrCooldownTargetBpm,
-            cooldownMinSpeed: hrCooldownMinSpeed,
-            cooldownMaxMinutes: hrCooldownMaxMinutes
-        )
-        if let data = try? JSONEncoder().encode(dto) {
-            UserDefaults.standard.set(data, forKey: hrSettingsStoreKey)
-        }
+        guard !isLoadingHrSettings,
+              let activeUserProfileID else { return }
+        saveHrSettings(profileID: activeUserProfileID)
     }
 
     private func quantizeAdaptivePercent(_ value: Double) -> Double {
@@ -447,20 +745,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func loadZonePlan() {
-        guard let data = UserDefaults.standard.data(forKey: zonePlanStoreKey),
+        isUpdatingZonePlan = true
+        defer { isUpdatingZonePlan = false }
+        zonePlanMinutes = Array(repeating: 0, count: 5)
+
+        guard let activeUserProfileID else { return }
+        let key = profileScopedStoreKey(zonePlanStoreKey, profileID: activeUserProfileID)
+        guard let data = UserDefaults.standard.data(forKey: key),
               let list = try? JSONDecoder().decode([Int].self, from: data) else {
             return
         }
-        isUpdatingZonePlan = true
         zonePlanMinutes = normalizeZonePlan(list)
-        isUpdatingZonePlan = false
     }
 
     private func saveZonePlan() {
-        let normalized = normalizeZonePlan(zonePlanMinutes)
-        if let data = try? JSONEncoder().encode(normalized) {
-            UserDefaults.standard.set(data, forKey: zonePlanStoreKey)
-        }
+        guard let activeUserProfileID else { return }
+        saveZonePlan(profileID: activeUserProfileID)
     }
 
     private func normalizeZoneBounds() {
@@ -595,18 +895,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrMainSumBPM = 0
         hrMainCountBPM = 0
         hrMainPeakBPM = 0
-        hrCooldownStartBPM = 0
-        hrCooldownEndBPM = 0
-        hrCooldownPeakBPM = 0
-        hrCooldownTargetHitElapsedSeconds = nil
-        hrCooldownFirstMinSpeedElapsedSeconds = nil
-        hrCooldownFirstStableElapsedSeconds = nil
-        hrCooldownBelowTargetSeconds = 0
-        hrCooldownMinSpeedSeconds = 0
-        hrCooldownTargetAndMinSpeedSeconds = 0
-        hrCooldownMaxStableStreakSeconds = 0
-        hrCooldownFinishReason = ""
-        hrCooldownTimeoutBlocker = ""
+        clearCooldownRuntimeState()
         hrZoneSeconds = Array(repeating: 0, count: 5)
     }
 
@@ -623,6 +912,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var lastCommandLine: String = ""
     @Published var debugLog: String = ""
     @Published var lastTrainingLogPath: String = ""
+    @Published private(set) var trainingLogsInventory: TrainingTelemetryWriter.TrainingLogsInventory = .empty
 
     private func appendLog(_ line: String) {
         guard loggingEnabled else { return }
@@ -709,40 +999,258 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return Int(round(Double(hrMainSumBPM) / Double(hrMainCountBPM)))
     }
 
-    private func cooldownElapsedSecondsSnapshot() -> Int {
-        guard hrCooldownTotalSeconds > 0 else { return 0 }
-        return max(0, hrCooldownTotalSeconds - hrCooldownRemainingSeconds)
+    private func syncPublishedCooldownRuntimeState() {
+        hrCooldownRemainingSeconds = cooldownRuntimeState?.remainingSeconds ?? 0
+        hrCooldownProgress = cooldownRuntimeState?.progress ?? 0
     }
 
-    private func cooldownHrDropBPMSnapshot() -> Int {
-        guard hrCooldownStartBPM > 0, hrCooldownEndBPM > 0 else { return 0 }
-        return hrCooldownStartBPM - hrCooldownEndBPM
+    private func clearCooldownRuntimeState() {
+        cooldownRuntimeState = nil
+        syncPublishedCooldownRuntimeState()
     }
 
-    private func cooldownRecoveryBpmPerMinuteSnapshot() -> Double {
-        let elapsed = cooldownElapsedSecondsSnapshot()
-        guard elapsed > 0 else { return 0 }
-        return (Double(cooldownHrDropBPMSnapshot()) * 60.0) / Double(elapsed)
+    private func currentCooldownConfig() -> CooldownRuntimeEngine.Config {
+        CooldownRuntimeEngine.Config(
+            targetBpm: hrCooldownTargetBpm,
+            minSpeedKmh: hrCooldownMinSpeed,
+            maxMinutes: hrCooldownMaxMinutes,
+            holdSeconds: hrCooldownHoldSeconds,
+            baseStepKmh: max(0.1, min(2.0, hrSpeedStepKmh)),
+            stepIntervalSeconds: max(1, hrDecisionIntervalSeconds)
+        )
     }
 
-    private func cooldownFirstMinSpeedElapsedSnapshot() -> Int {
-        hrCooldownFirstMinSpeedElapsedSeconds ?? -1
+    private func currentCooldownSessionAggregates() -> CooldownRuntimeEngine.SessionAggregates {
+        CooldownRuntimeEngine.SessionAggregates(
+            sessionPeakBpm: hrSessionPeakBPM,
+            mainAvgBpm: mainPhaseAverageBPMSnapshot(),
+            mainPeakBpm: hrMainPeakBPM,
+            zoneSeconds: zoneSecondsSnapshot(),
+            zone4PlusSeconds: zone4PlusSecondsSnapshot()
+        )
     }
 
-    private func cooldownFirstStableElapsedSnapshot() -> Int {
-        hrCooldownFirstStableElapsedSeconds ?? -1
+    private func currentCooldownSpeedSnapshot() -> HRDomainService.CooldownSpeedSnapshot {
+        HRDomainService.cooldownSpeedSnapshot(
+            desiredSpeedKmh: desiredSpeedKmh,
+            deviceTargetSpeedKmh: deviceTargetSpeedKmh,
+            appReportedSpeedKmh: deviceReportedAppSpeedKmh,
+            rawReportedSpeedKmh: deviceReportedSpeedKmh,
+            currentActualSpeedKmh: speedKmh
+        )
     }
 
-    private func cooldownStabilityBlocker(
-        hrAvailable: Bool,
-        hrOk: Bool,
-        minSpeedOk: Bool
-    ) -> String {
-        if !hrAvailable { return "no_hr" }
-        if !hrOk && !minSpeedOk { return "hr_above_target_and_speed_above_min" }
-        if !hrOk { return "hr_above_target" }
-        if !minSpeedOk { return "speed_above_min" }
-        return "ready"
+    private func applyCooldownOutput(
+        _ output: CooldownRuntimeEngine.Output,
+        sessionElapsedSeconds: Int?
+    ) {
+        cooldownRuntimeState = output.state
+        syncPublishedCooldownRuntimeState()
+
+        for effect in output.effects {
+            executeCooldownEffect(effect, sessionElapsedSeconds: sessionElapsedSeconds)
+        }
+    }
+
+    private func executeCooldownEffect(
+        _ effect: CooldownRuntimeEngine.Effect,
+        sessionElapsedSeconds: Int?
+    ) {
+        switch effect {
+        case .status(let presentation):
+            hrStatusLine = presentation.statusLine
+            hrDecisionDetails = presentation.decisionDetails
+            hrCooldownRemainingSeconds = presentation.remainingSeconds
+            hrCooldownProgress = presentation.progress
+
+        case .setSpeed(let speedEffect):
+            let old = deviceTargetSpeedKmh
+            desiredSpeedKmh = speedEffect.targetKmh
+            deviceTargetSpeedKmh = speedEffect.targetKmh
+            recordSpeedChange(from: old, to: speedEffect.targetKmh, reason: "cooldown_set")
+            lastCommandLine = String(format: "CMD cooldown adjust -> %.1f", speedEffect.targetKmh)
+            sendTreadmillSetSpeed(speedEffect.targetKmh, label: String(format: "SPEED %.1f km/h (cooldown)", speedEffect.targetKmh))
+            appendLog(
+                "HR cooldown speed: \(String(format: "%.1f", speedEffect.targetKmh)) " +
+                "HR=\(speedEffect.hrBpm) step=\(String(format: "%.1f", speedEffect.stepKmh)) " +
+                "trigger=\(speedEffect.trigger)"
+            )
+
+        case .telemetry(let telemetryEffect):
+            logCooldownTelemetry(telemetryEffect)
+
+        case .complete(let completionEffect):
+            if completionEffect.shouldRecordWorkout {
+                recordHrWorkoutIfNeeded(durationOverride: sessionElapsedSeconds, failed: false)
+            }
+            if completionEffect.shouldStopSession {
+                isHrControlRunning = false
+                hrControlStartedAt = nil
+            }
+            stopTrainingStructuredLog(reason: completionEffect.structuredLogReason)
+            if completionEffect.shouldStopWatch {
+                sendWatchCommand("stop_hr")
+            }
+            if completionEffect.shouldStopBelt {
+                stopBeltWithToggle(reason: "hr_cooldown_done")
+            }
+        }
+    }
+
+    private func logCooldownTelemetry(_ effect: CooldownRuntimeEngine.TelemetryEffect) {
+        switch effect {
+        case .start(let telemetry):
+            appendLog(
+                "HR cooldown start: from \(String(format: "%.1f", telemetry.fromSpeedKmh)) " +
+                "to \(String(format: "%.1f", telemetry.minSpeedKmh)) target=\(telemetry.targetBpm) bpm " +
+                "step=\(String(format: "%.1f", telemetry.stepKmh)) interval=\(telemetry.intervalSeconds)s " +
+                "max=\(telemetry.maxSeconds)s"
+            )
+            logTrainingEvent("cooldown_start", fields: [
+                "from_speed_kmh": telemetry.fromSpeedKmh,
+                "target_bpm": telemetry.targetBpm,
+                "min_speed_kmh": telemetry.minSpeedKmh,
+                "step_kmh": telemetry.stepKmh,
+                "interval_s": telemetry.intervalSeconds,
+                "base_max_s": telemetry.baseMaxSeconds,
+                "max_s": telemetry.maxSeconds,
+                "extra_s": telemetry.extraSeconds,
+                "start_hr_bpm": telemetry.startBpm,
+                "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
+                "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
+                "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm,
+                "zone_seconds": telemetry.sessionAggregates.zoneSeconds,
+                "zone4plus_seconds": telemetry.sessionAggregates.zone4PlusSeconds
+            ])
+
+        case .speedSet(let telemetry):
+            logTrainingEvent("cooldown_speed_set", fields: [
+                "hr_bpm": telemetry.hrBpm,
+                "target_bpm": telemetry.targetBpm,
+                "adaptive_factor": telemetry.adaptiveFactor,
+                "step_kmh": telemetry.stepKmh,
+                "speed_before_kmh": telemetry.speedBeforeKmh,
+                "speed_after_kmh": telemetry.speedAfterKmh,
+                "elapsed_s": telemetry.elapsedSeconds,
+                "trigger": telemetry.trigger
+            ])
+
+        case .state(let telemetry):
+            logTrainingEvent("cooldown_state", fields: [
+                "hr_bpm": telemetry.hrBpm,
+                "target_bpm": telemetry.targetBpm,
+                "speed_kmh": telemetry.observedSpeedKmh,
+                "cooldown_observed_speed_kmh": telemetry.observedSpeedKmh,
+                "cooldown_controller_speed_kmh": telemetry.controllerSpeedKmh,
+                "elapsed_s": telemetry.elapsedSeconds,
+                "stable_s": telemetry.stableSeconds,
+                "stable_required_s": telemetry.stableRequiredSeconds,
+                "remaining_s": telemetry.remainingSeconds,
+                "target_hit_elapsed_s": telemetry.targetHitElapsedSeconds ?? -1,
+                "cooldown_hr_ok": telemetry.hrOk,
+                "cooldown_min_speed_ok": telemetry.minSpeedOk,
+                "cooldown_stable_ok": telemetry.stableOk,
+                "cooldown_stability_blocker": telemetry.blocker,
+                "cooldown_first_min_speed_elapsed_s": telemetry.firstMinSpeedElapsedSeconds ?? -1,
+                "cooldown_first_stable_elapsed_s": telemetry.firstStableElapsedSeconds ?? -1,
+                "cooldown_hr_below_target_s": telemetry.belowTargetSeconds,
+                "cooldown_min_speed_s": telemetry.minSpeedSeconds,
+                "cooldown_target_and_min_speed_s": telemetry.targetAndMinSpeedSeconds,
+                "cooldown_target_and_min_speed_max_streak_s": telemetry.maxStableStreakSeconds,
+                "start_hr_bpm": telemetry.startBpm,
+                "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
+                "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
+                "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm
+            ])
+
+        case .analysis(let telemetry):
+            logTrainingEvent("cooldown_analysis", fields: [
+                "reason": telemetry.reason,
+                "timeout_blocker": telemetry.timeoutBlocker,
+                "hr_bpm": telemetry.hrBpm,
+                "target_bpm": telemetry.targetBpm,
+                "cooldown_observed_speed_kmh": telemetry.observedSpeedKmh,
+                "cooldown_controller_speed_kmh": telemetry.controllerSpeedKmh,
+                "cooldown_hr_ok": telemetry.hrOk,
+                "cooldown_min_speed_ok": telemetry.minSpeedOk,
+                "cooldown_stable_ok": telemetry.stableOk,
+                "cooldown_stability_blocker": telemetry.blocker,
+                "cooldown_first_min_speed_elapsed_s": telemetry.firstMinSpeedElapsedSeconds ?? -1,
+                "cooldown_first_stable_elapsed_s": telemetry.firstStableElapsedSeconds ?? -1,
+                "cooldown_hr_below_target_s": telemetry.belowTargetSeconds,
+                "cooldown_min_speed_s": telemetry.minSpeedSeconds,
+                "cooldown_target_and_min_speed_s": telemetry.targetAndMinSpeedSeconds,
+                "cooldown_target_and_min_speed_max_streak_s": telemetry.maxStableStreakSeconds,
+                "stable_s": telemetry.stableSeconds,
+                "stable_required_s": telemetry.stableRequiredSeconds,
+                "elapsed_s": telemetry.elapsedSeconds,
+                "planned_s": telemetry.plannedSeconds
+            ])
+
+        case .complete(let telemetry):
+            logTrainingEvent("cooldown_complete", fields: [
+                "reason": telemetry.reason,
+                "cooldown_finish_reason": telemetry.reason,
+                "cooldown_timeout_blocker": telemetry.timeoutBlocker,
+                "stable_s": telemetry.stableSeconds,
+                "stable_required_s": telemetry.stableRequiredSeconds,
+                "remaining_s": telemetry.remainingSeconds,
+                "hr_bpm": telemetry.hrBpm,
+                "target_bpm": telemetry.targetBpm,
+                "cooldown_observed_speed_kmh": telemetry.observedSpeedKmh,
+                "cooldown_controller_speed_kmh": telemetry.controllerSpeedKmh,
+                "cooldown_hr_ok": telemetry.hrOk,
+                "cooldown_min_speed_ok": telemetry.minSpeedOk,
+                "cooldown_stable_ok": telemetry.stableOk,
+                "cooldown_stability_blocker": telemetry.blocker,
+                "elapsed_s": telemetry.elapsedSeconds,
+                "planned_s": telemetry.plannedSeconds,
+                "target_hit_elapsed_s": telemetry.targetHitElapsedSeconds ?? -1,
+                "cooldown_first_min_speed_elapsed_s": telemetry.firstMinSpeedElapsedSeconds ?? -1,
+                "cooldown_first_stable_elapsed_s": telemetry.firstStableElapsedSeconds ?? -1,
+                "cooldown_hr_below_target_s": telemetry.belowTargetSeconds,
+                "cooldown_min_speed_s": telemetry.minSpeedSeconds,
+                "cooldown_target_and_min_speed_s": telemetry.targetAndMinSpeedSeconds,
+                "cooldown_target_and_min_speed_max_streak_s": telemetry.maxStableStreakSeconds,
+                "start_hr_bpm": telemetry.startBpm,
+                "end_hr_bpm": telemetry.endBpm,
+                "peak_hr_bpm": telemetry.peakBpm,
+                "hr_drop_bpm": telemetry.hrDropBpm,
+                "hr_recovery_bpm_per_min": telemetry.recoveryBpmPerMinute,
+                "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
+                "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
+                "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm,
+                "zone_seconds": telemetry.sessionAggregates.zoneSeconds,
+                "zone4plus_seconds": telemetry.sessionAggregates.zone4PlusSeconds
+            ])
+
+        case .insufficient(let telemetry):
+            logTrainingEvent("cooldown_insufficient", fields: [
+                "hr_bpm": telemetry.hrBpm,
+                "target_bpm": telemetry.targetBpm,
+                "excess_bpm": telemetry.excessBpm,
+                "cooldown_finish_reason": telemetry.finishReason,
+                "cooldown_timeout_blocker": telemetry.timeoutBlocker,
+                "cooldown_observed_speed_kmh": telemetry.observedSpeedKmh,
+                "cooldown_controller_speed_kmh": telemetry.controllerSpeedKmh,
+                "cooldown_first_min_speed_elapsed_s": telemetry.firstMinSpeedElapsedSeconds ?? -1,
+                "cooldown_first_stable_elapsed_s": telemetry.firstStableElapsedSeconds ?? -1,
+                "cooldown_hr_below_target_s": telemetry.belowTargetSeconds,
+                "cooldown_min_speed_s": telemetry.minSpeedSeconds,
+                "cooldown_target_and_min_speed_s": telemetry.targetAndMinSpeedSeconds,
+                "cooldown_target_and_min_speed_max_streak_s": telemetry.maxStableStreakSeconds,
+                "elapsed_s": telemetry.elapsedSeconds,
+                "planned_s": telemetry.plannedSeconds,
+                "start_hr_bpm": telemetry.startBpm,
+                "end_hr_bpm": telemetry.endBpm,
+                "hr_drop_bpm": telemetry.hrDropBpm,
+                "hr_recovery_bpm_per_min": telemetry.recoveryBpmPerMinute,
+                "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
+                "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
+                "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm,
+                "zone4plus_seconds": telemetry.sessionAggregates.zone4PlusSeconds
+            ])
+        }
     }
 
     private func trainingLogsDirectoryURL() -> URL? {
@@ -755,11 +1263,36 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         TrainingTelemetryWriter.pruneJsonlFiles(in: directory, maxFiles: trainingLogMaxFiles)
     }
 
+    private func synchronizeTrainingLogFileIfNeeded() {
+        trainingLogQueue.sync {
+            trainingLogFileHandle?.synchronizeFile()
+        }
+    }
+
+    private func currentProtectedTrainingLogFiles() -> Set<URL> {
+        let activeLogFile: URL? = trainingLogQueue.sync {
+            trainingLogFileURL?.standardizedFileURL
+        }
+        return Set(activeLogFile.map { [$0] } ?? [])
+    }
+
+    private func scheduleTrainingLogsInventoryRefresh() {
+        trainingLogQueue.async { [weak self] in
+            DispatchQueue.main.async {
+                self?.refreshTrainingLogsInventory()
+            }
+        }
+    }
+
     private func makeTrainingLogPayload(event: String, fields: [String: Any]) -> [String: Any] {
         let zone = currentTargetZoneSnapshot()
+        let cooldownState = cooldownRuntimeState
         var payload: [String: Any] = [
             "ts": trainingLogIsoFormatter.string(from: Date()),
             "event": event,
+            "installation_id": installationID,
+            "profile_id": activeUserProfile?.id.uuidString ?? "",
+            "profile_label": activeUserProfileLabel,
             "phase": currentTrainingPhase(),
             "session_state": currentSessionState(),
             "is_hr_running": isHrControlRunning,
@@ -774,22 +1307,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "main_peak_bpm": hrMainPeakBPM,
             "zone_seconds": zoneSecondsSnapshot(),
             "zone4plus_seconds": zone4PlusSecondsSnapshot(),
-            "cooldown_start_hr_bpm": hrCooldownStartBPM,
-            "cooldown_end_hr_bpm": hrCooldownEndBPM,
-            "cooldown_peak_hr_bpm": hrCooldownPeakBPM,
-            "cooldown_planned_s": hrCooldownTotalSeconds,
-            "cooldown_elapsed_s": cooldownElapsedSecondsSnapshot(),
-            "cooldown_target_hit_elapsed_s": hrCooldownTargetHitElapsedSeconds ?? -1,
-            "cooldown_hr_drop_bpm": cooldownHrDropBPMSnapshot(),
-            "cooldown_hr_recovery_bpm_per_min": cooldownRecoveryBpmPerMinuteSnapshot(),
-            "cooldown_finish_reason": hrCooldownFinishReason,
-            "cooldown_timeout_blocker": hrCooldownTimeoutBlocker,
-            "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
-            "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
-            "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
-            "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
-            "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
-            "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
+            "cooldown_start_hr_bpm": cooldownState?.startBpm ?? 0,
+            "cooldown_end_hr_bpm": cooldownState?.endBpm ?? 0,
+            "cooldown_peak_hr_bpm": cooldownState?.peakBpm ?? 0,
+            "cooldown_target_bpm": hrCooldownTargetBpm,
+            "cooldown_planned_s": cooldownState?.totalSeconds ?? 0,
+            "cooldown_elapsed_s": cooldownState?.elapsedSeconds ?? 0,
+            "cooldown_target_hit_elapsed_s": cooldownState?.targetHitElapsedSeconds ?? -1,
+            "cooldown_hr_drop_bpm": cooldownState?.hrDropBpm ?? 0,
+            "cooldown_hr_recovery_bpm_per_min": cooldownState?.recoveryBpmPerMinute ?? 0,
+            "cooldown_finish_reason": cooldownState?.finishReason ?? "",
+            "cooldown_timeout_blocker": cooldownState?.timeoutBlocker ?? "",
+            "cooldown_first_min_speed_elapsed_s": cooldownState?.firstMinSpeedElapsedSeconds ?? -1,
+            "cooldown_first_stable_elapsed_s": cooldownState?.firstStableElapsedSeconds ?? -1,
+            "cooldown_hr_below_target_s": cooldownState?.belowTargetSeconds ?? 0,
+            "cooldown_min_speed_s": cooldownState?.minSpeedSeconds ?? 0,
+            "cooldown_target_and_min_speed_s": cooldownState?.targetAndMinSpeedSeconds ?? 0,
+            "cooldown_target_and_min_speed_max_streak_s": cooldownState?.maxStableStreakSeconds ?? 0,
             "speed_actual_kmh": speedKmh,
             "speed_target_kmh": desiredSpeedKmh,
             "speed_device_target_kmh": deviceTargetSpeedKmh,
@@ -847,6 +1381,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             DispatchQueue.main.async {
                 self.lastTrainingLogPath = fileURL.path
+                self.refreshTrainingLogsInventory()
             }
             appendLog("Training log started: \(fileName)")
             let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
@@ -862,6 +1397,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "cooldown_min_speed_kmh": hrCooldownMinSpeed,
                 "zone_bounds": [hrZone1Max, hrZone2Max, hrZone3Max, hrZone4Max]
             ])
+            scheduleTrainingLogsInventoryRefresh()
         } catch {
             appendLog("Training log file open error: \(error.localizedDescription)")
         }
@@ -870,6 +1406,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func stopTrainingStructuredLog(reason: String) {
         trainingLogQueue.sync {
             guard trainingLogFileHandle != nil else { return }
+            let cooldownState = self.cooldownRuntimeState
             writeTrainingLogLocked(event: "session_end", fields: [
                 "reason": reason,
                 "remaining_s": hrRemainingSeconds,
@@ -880,14 +1417,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "main_peak_bpm": hrMainPeakBPM,
                 "zone_seconds": zoneSecondsSnapshot(),
                 "zone4plus_seconds": zone4PlusSecondsSnapshot(),
-                "cooldown_start_hr_bpm": hrCooldownStartBPM,
-                "cooldown_end_hr_bpm": hrCooldownEndBPM,
-                "cooldown_peak_hr_bpm": hrCooldownPeakBPM,
-                "cooldown_planned_s": hrCooldownTotalSeconds,
-                "cooldown_elapsed_s": cooldownElapsedSecondsSnapshot(),
-                "cooldown_target_hit_elapsed_s": hrCooldownTargetHitElapsedSeconds ?? -1,
-                "cooldown_hr_drop_bpm": cooldownHrDropBPMSnapshot(),
-                "cooldown_hr_recovery_bpm_per_min": cooldownRecoveryBpmPerMinuteSnapshot(),
+                "cooldown_start_hr_bpm": cooldownState?.startBpm ?? 0,
+                "cooldown_end_hr_bpm": cooldownState?.endBpm ?? 0,
+                "cooldown_peak_hr_bpm": cooldownState?.peakBpm ?? 0,
+                "cooldown_planned_s": cooldownState?.totalSeconds ?? 0,
+                "cooldown_elapsed_s": cooldownState?.elapsedSeconds ?? 0,
+                "cooldown_target_hit_elapsed_s": cooldownState?.targetHitElapsedSeconds ?? -1,
+                "cooldown_hr_drop_bpm": cooldownState?.hrDropBpm ?? 0,
+                "cooldown_hr_recovery_bpm_per_min": cooldownState?.recoveryBpmPerMinute ?? 0,
                 "distance_km": distKm,
                 "duration_s": timeSec
             ])
@@ -898,44 +1435,25 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             trainingLogSessionId = nil
         }
         appendLog("Training log closed: \(reason)")
+        DispatchQueue.main.async {
+            self.refreshTrainingLogsInventory()
+        }
     }
 
-    func prepareTrainingLogsCsvExport() -> TrainingLogsCsvExport? {
+    func prepareTrainingLogsCsvExport(scope: TrainingLogCsvExportScope = .all) -> TrainingLogsCsvExport? {
         trainingLogQueue.sync {
             trainingLogFileHandle?.synchronizeFile()
         }
-        guard let dir = trainingLogsDirectoryURL() else { return nil }
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: [.creationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
+        guard let jsonlFiles = availableTrainingJsonlFiles(scope: scope) else {
             return nil
         }
-
-        let jsonlFiles = files
-            .filter { $0.pathExtension.lowercased() == "jsonl" }
-            .sorted { lhs, rhs in
-                let l = (try? lhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-                let r = (try? rhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-                return l < r
-            }
-        guard !jsonlFiles.isEmpty else { return nil }
 
         let headers = TrainingTelemetryWriter.trainingCsvHeaders
         var lines: [String] = [headers.map(TrainingTelemetryWriter.csvEscape).joined(separator: ",")]
         var exportedRows = 0
 
         for file in jsonlFiles {
-            guard let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
-            for rawLine in content.split(whereSeparator: \.isNewline) {
-                let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !line.isEmpty else { continue }
-                guard let data = line.data(using: .utf8),
-                      let payload = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
-                    continue
-                }
+            for payload in TrainingTelemetryWriter.loadJsonlPayloads(from: file) {
                 let row = TrainingTelemetryWriter.csvRow(
                     sourceFile: file.lastPathComponent,
                     payload: payload
@@ -948,17 +1466,73 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         guard exportedRows > 0 else { return nil }
         let ts = trainingLogTimestampFormatter.string(from: Date())
-        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("Training_History_\(ts).csv")
+        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("Training_History\(scope.fileNameSuffix)_\(ts).csv")
         do {
             try lines.joined(separator: "\n").write(to: outURL, atomically: true, encoding: .utf8)
-            appendLog("Training CSV exported: \(outURL.lastPathComponent) rows=\(exportedRows)")
+            appendLog("Training CSV exported: \(outURL.lastPathComponent) scope=\(scope.logDescription) rows=\(exportedRows) files=\(jsonlFiles.count)")
             return TrainingLogsCsvExport(
                 csvURL: outURL,
                 rowCount: exportedRows,
+                scope: scope,
                 sourceFiles: jsonlFiles
             )
         } catch {
             appendLog("Training CSV export failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func prepareTrainingSessionSummaryCsvExport(
+        scope: TrainingLogCsvExportScope = .all
+    ) -> TrainingLogsCsvExport? {
+        trainingLogQueue.sync {
+            trainingLogFileHandle?.synchronizeFile()
+        }
+        guard let allJsonlFiles = allTrainingJsonlFiles(),
+              !allJsonlFiles.isEmpty else {
+            return nil
+        }
+
+        let filteredFiles = TrainingTelemetryWriter.filterJsonlFiles(
+            allJsonlFiles,
+            matchingProfileID: activeUserProfileID?.uuidString,
+            legacyFallbackProfileID: legacyFallbackProfileID
+        )
+        let jsonlFiles = TrainingTelemetryWriter.selectCompletedJsonlFilesForExport(filteredFiles, scope: scope)
+        guard !jsonlFiles.isEmpty else { return nil }
+
+        let headers = TrainingTelemetryWriter.trainingSessionSummaryHeaders
+        var lines: [String] = [headers.map(TrainingTelemetryWriter.csvEscape).joined(separator: ",")]
+        var exportedRows = 0
+
+        for file in jsonlFiles {
+            let payloads = TrainingTelemetryWriter.loadJsonlPayloads(from: file)
+            guard let row = TrainingTelemetryWriter.sessionSummaryRow(
+                sourceFile: file.lastPathComponent,
+                payloads: payloads
+            ) else {
+                continue
+            }
+
+            lines.append(row.map(TrainingTelemetryWriter.csvEscape).joined(separator: ","))
+            exportedRows += 1
+        }
+
+        guard exportedRows > 0 else { return nil }
+        let ts = trainingLogTimestampFormatter.string(from: Date())
+        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("Training_Session_Summary\(scope.fileNameSuffix)_\(ts).csv")
+
+        do {
+            try lines.joined(separator: "\n").write(to: outURL, atomically: true, encoding: .utf8)
+            appendLog("Training session summary exported: \(outURL.lastPathComponent) scope=\(scope.logDescription) rows=\(exportedRows) files=\(jsonlFiles.count)")
+            return TrainingLogsCsvExport(
+                csvURL: outURL,
+                rowCount: exportedRows,
+                scope: scope,
+                sourceFiles: jsonlFiles
+            )
+        } catch {
+            appendLog("Training session summary export failed: \(error.localizedDescription)")
             return nil
         }
     }
@@ -984,6 +1558,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             pruneTrainingLogs(in: dir)
         }
 
+        refreshTrainingLogsInventory()
+
         let reclaimedText = ByteCountFormatter.string(
             fromByteCount: cleanup.reclaimedBytes,
             countStyle: .file
@@ -1002,7 +1578,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             message = "CSV выгружен. Дополнительная очистка raw логов не потребовалась."
         }
 
-        appendLog("Training raw logs cleanup: removed=\(cleanup.removedCount) skipped=\(cleanup.skippedCount) freed=\(cleanup.reclaimedBytes) rows=\(export.rowCount)")
+        appendLog("Training raw logs cleanup: scope=\(export.scope.logDescription) removed=\(cleanup.removedCount) skipped=\(cleanup.skippedCount) freed=\(cleanup.reclaimedBytes) rows=\(export.rowCount)")
         DispatchQueue.main.async {
             self.infoToastMessage = message
         }
@@ -1010,6 +1586,134 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func hex(_ data: Data) -> String {
         data.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    private func allTrainingJsonlFiles() -> [URL]? {
+        guard let dir = trainingLogsDirectoryURL() else { return nil }
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.creationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        return files
+            .filter { $0.pathExtension.lowercased() == "jsonl" }
+            .sorted { lhs, rhs in
+                let l = (try? lhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let r = (try? rhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                return l < r
+            }
+    }
+
+    func refreshTrainingLogsInventory() {
+        synchronizeTrainingLogFileIfNeeded()
+        let protectedFiles = currentProtectedTrainingLogFiles()
+        guard let allJsonlFiles = allTrainingJsonlFiles(),
+              !allJsonlFiles.isEmpty else {
+            trainingLogsInventory = .empty
+            lastTrainingLogPath = ""
+            return
+        }
+
+        let filteredFiles = TrainingTelemetryWriter.filterJsonlFiles(
+            allJsonlFiles,
+            matchingProfileID: activeUserProfileID?.uuidString,
+            legacyFallbackProfileID: legacyFallbackProfileID
+        )
+        trainingLogsInventory = TrainingTelemetryWriter.trainingLogsInventory(
+            allJsonlFiles,
+            matchingProfileID: activeUserProfileID?.uuidString,
+            legacyFallbackProfileID: legacyFallbackProfileID,
+            keeping: protectedFiles
+        )
+        lastTrainingLogPath = filteredFiles.last?.path ?? ""
+    }
+
+    func trainingLogsExportCount(
+        for scope: TrainingLogCsvExportScope,
+        sessionSummaryOnly: Bool
+    ) -> Int {
+        switch scope {
+        case .all:
+            return sessionSummaryOnly
+                ? trainingLogsInventory.matchingProfileCompletedWorkoutFiles
+                : trainingLogsInventory.matchingProfileSessionFiles
+        case .lastCompletedWorkouts(let count):
+            let completedCount = trainingLogsInventory.matchingProfileCompletedWorkoutFiles
+            return min(max(0, count), completedCount)
+        }
+    }
+
+    func clearTrainingLogsForActiveProfile() {
+        synchronizeTrainingLogFileIfNeeded()
+        guard let allJsonlFiles = allTrainingJsonlFiles(),
+              !allJsonlFiles.isEmpty else {
+            trainingLogsInventory = .empty
+            infoToastMessage = "Raw training logs не найдены."
+            return
+        }
+
+        let protectedFiles = currentProtectedTrainingLogFiles()
+        let selectedFiles = TrainingTelemetryWriter.selectJsonlFilesForClear(
+            allJsonlFiles,
+            matchingProfileID: activeUserProfileID?.uuidString,
+            legacyFallbackProfileID: legacyFallbackProfileID,
+            keeping: protectedFiles
+        )
+
+        guard !selectedFiles.isEmpty else {
+            refreshTrainingLogsInventory()
+            infoToastMessage = "Для активного профиля нечего очищать. Активная сессия не удаляется."
+            return
+        }
+
+        let cleanup = TrainingTelemetryWriter.cleanupExportedJsonlFiles(
+            selectedFiles,
+            keeping: protectedFiles
+        )
+
+        if let dir = trainingLogsDirectoryURL() {
+            pruneTrainingLogs(in: dir)
+        }
+
+        refreshTrainingLogsInventory()
+
+        let reclaimedText = ByteCountFormatter.string(
+            fromByteCount: cleanup.reclaimedBytes,
+            countStyle: .file
+        )
+
+        let message: String
+        if cleanup.removedCount > 0 {
+            if cleanup.skippedCount > 0 {
+                message = "Raw training logs очищены: удалено \(cleanup.removedCount) файлов, освобождено \(reclaimedText), пропущено \(cleanup.skippedCount). История тренировок в статистике сохранена."
+            } else {
+                message = "Raw training logs очищены: удалено \(cleanup.removedCount) файлов, освобождено \(reclaimedText). История тренировок в статистике сохранена."
+            }
+        } else {
+            message = "Raw training logs не очищены: активная сессия ещё открыта или файлы уже отсутствуют."
+        }
+
+        appendLog("Training raw logs cleared manually: removed=\(cleanup.removedCount) skipped=\(cleanup.skippedCount) freed=\(cleanup.reclaimedBytes)")
+        infoToastMessage = message
+    }
+
+    private func availableTrainingJsonlFiles(scope: TrainingLogCsvExportScope) -> [URL]? {
+        guard let allJsonlFiles = allTrainingJsonlFiles(),
+              !allJsonlFiles.isEmpty else {
+            return nil
+        }
+
+        let filteredFiles = TrainingTelemetryWriter.filterJsonlFiles(
+            allJsonlFiles,
+            matchingProfileID: activeUserProfileID?.uuidString,
+            legacyFallbackProfileID: legacyFallbackProfileID
+        )
+        let selected = TrainingTelemetryWriter.selectJsonlFilesForExport(filteredFiles, scope: scope)
+        return selected.isEmpty ? nil : selected
     }
 
     // UI messaging hooks
@@ -1037,9 +1741,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         autoConnectSuppressed = false
         manualModeSet = false
         loadKnownPeripherals()
+        loadProfilesState()
         loadHrSettings()
         loadZonePlan()
         loadWorkoutHistory()
+        refreshTrainingLogsInventory()
 #if canImport(WatchConnectivity)
         startWatchConnectivity()
 #endif
@@ -1740,12 +2446,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrTrendEmaBpm = nil
             hrNoDataSeconds = 0
             hrControlFailed = false
-            hrCooldownRemainingSeconds = 0
-            hrCooldownProgress = 0
-            hrCooldownTotalSeconds = 0
-            hrCooldownStartSpeed = 0
-            hrCooldownLastSentSpeed = 0
-            hrCooldownStableSeconds = 0
+            clearCooldownRuntimeState()
             // Ensure treadmill is running when HR control starts
             hrControlStartedBelt = false
             let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
@@ -1794,10 +2495,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrProgress = 0
         hrDecisionDetails = ""
         hrPredictorStatusLine = ""
-        hrCooldownRemainingSeconds = 0
-        hrCooldownProgress = 0
-        hrCooldownTotalSeconds = 0
-        hrCooldownStableSeconds = 0
+        clearCooldownRuntimeState()
         hrNoDataSeconds = 0
         hrControlStartBlockReasonText = nil
         recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: false)
@@ -1960,13 +2658,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     hrMainCountBPM += 1
                     hrMainPeakBPM = max(hrMainPeakBPM, heartRateBPM)
                 }
-                if hrCooldownRemainingSeconds > 0 {
-                    if hrCooldownStartBPM <= 0 {
-                        hrCooldownStartBPM = heartRateBPM
-                    }
-                    hrCooldownEndBPM = heartRateBPM
-                    hrCooldownPeakBPM = max(hrCooldownPeakBPM, heartRateBPM)
-                }
                 if let trend = currentHrTrendBpmPerSecond() {
                     let predicted = Double(heartRateBPM) + trend * hrPredictSeconds
                     let trendPerMin = trend * 60.0
@@ -2010,10 +2701,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         hrProgress = 0
                         hrDecisionDetails = ""
                         hrPredictorStatusLine = ""
-                        hrCooldownRemainingSeconds = 0
-                        hrCooldownProgress = 0
-                        hrCooldownTotalSeconds = 0
-                        hrCooldownStableSeconds = 0
+                        clearCooldownRuntimeState()
                         hrNoDataSeconds = 0
                         recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
                         hrControlStartedAt = nil
@@ -2056,10 +2744,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         hrProgress = 0
                         hrDecisionDetails = ""
                         hrPredictorStatusLine = ""
-                        hrCooldownRemainingSeconds = 0
-                        hrCooldownProgress = 0
-                        hrCooldownTotalSeconds = 0
-                        hrCooldownStableSeconds = 0
+                        clearCooldownRuntimeState()
                         hrNoDataSeconds = 0
                         recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
                         hrControlStartedAt = nil
@@ -2191,258 +2876,34 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         ])
                     }
                 }
-            } else if hrCooldownRemainingSeconds <= 0 {
-                let step = max(0.1, min(2.0, hrSpeedStepKmh))
-                let interval = max(1, hrDecisionIntervalSeconds)
-                hrCooldownStepKmh = step
-                hrCooldownStepIntervalSeconds = interval
-                hrCooldownStartSpeed = max(hrCooldownMinSpeed, deviceTargetSpeedKmh > 0.1 ? deviceTargetSpeedKmh : speedKmh)
-                hrCooldownLastSentSpeed = hrCooldownStartSpeed
-                hrCooldownStableSeconds = 0
-                let cooldownStartBPM = heartRateBPM > 0 ? heartRateBPM : lastKnownHeartRateBPM
-                hrCooldownStartBPM = max(0, cooldownStartBPM)
-                hrCooldownEndBPM = hrCooldownStartBPM
-                hrCooldownPeakBPM = hrCooldownStartBPM
-                hrCooldownTargetHitElapsedSeconds = nil
-                hrCooldownFirstMinSpeedElapsedSeconds = nil
-                hrCooldownFirstStableElapsedSeconds = nil
-                hrCooldownBelowTargetSeconds = 0
-                hrCooldownMinSpeedSeconds = 0
-                hrCooldownTargetAndMinSpeedSeconds = 0
-                hrCooldownMaxStableStreakSeconds = 0
-                hrCooldownFinishReason = ""
-                hrCooldownTimeoutBlocker = ""
-                let cooldownPlan = HRDomainService.cooldownPlan(
-                    baseMinutes: hrCooldownMaxMinutes,
-                    startBpm: hrCooldownStartBPM,
-                    targetBpm: hrCooldownTargetBpm
-                )
-                hrCooldownTotalSeconds = cooldownPlan.totalSeconds
-                hrCooldownRemainingSeconds = cooldownPlan.totalSeconds
-                hrCooldownProgress = 0
+            } else if cooldownRuntimeState == nil {
                 hrNextDecisionSeconds = 0
-                hrStatusLine = "Заминка"
-                hrDecisionDetails = "Заминка: цель \(hrCooldownTargetBpm) bpm, мин. скорость \(String(format: "%.1f", hrCooldownMinSpeed)) км/ч"
-                appendLog("HR cooldown start: from \(String(format: "%.1f", hrCooldownStartSpeed)) to \(String(format: "%.1f", hrCooldownMinSpeed)) target=\(hrCooldownTargetBpm) bpm step=\(String(format: "%.1f", step)) interval=\(interval)s max=\(cooldownPlan.totalSeconds)s")
-                logTrainingEvent("cooldown_start", fields: [
-                    "from_speed_kmh": hrCooldownStartSpeed,
-                    "target_bpm": hrCooldownTargetBpm,
-                    "min_speed_kmh": hrCooldownMinSpeed,
-                    "step_kmh": step,
-                    "interval_s": interval,
-                    "base_max_s": hrCooldownMaxSeconds,
-                    "max_s": cooldownPlan.totalSeconds,
-                    "extra_s": cooldownPlan.totalSeconds - hrCooldownMaxSeconds,
-                    "start_hr_bpm": hrCooldownStartBPM,
-                    "session_peak_bpm": hrSessionPeakBPM,
-                    "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
-                    "main_peak_bpm": hrMainPeakBPM,
-                    "zone_seconds": zoneSecondsSnapshot(),
-                    "zone4plus_seconds": zone4PlusSecondsSnapshot()
-                ])
-            } else {
-                hrCooldownRemainingSeconds = max(0, hrCooldownRemainingSeconds - 1)
-                hrCooldownProgress = hrCooldownTotalSeconds > 0 ? (1.0 - (Double(hrCooldownRemainingSeconds) / Double(hrCooldownTotalSeconds))) : 0
-
-                let elapsed = hrCooldownTotalSeconds - hrCooldownRemainingSeconds
-                let observedSpeed = HRDomainService.cooldownObservedSpeedKmh(
-                    desiredSpeedKmh: desiredSpeedKmh,
-                    deviceTargetSpeedKmh: deviceTargetSpeedKmh,
-                    appReportedSpeedKmh: deviceReportedAppSpeedKmh,
-                    rawReportedSpeedKmh: deviceReportedSpeedKmh
-                )
-                let hrAvailable = heartRateBPM > 0
-                let hrOk = hrAvailable && heartRateBPM <= hrCooldownTargetBpm
-                let minSpeedOk = observedSpeed <= hrCooldownMinSpeed + 0.05
-                let stableOk = hrOk && minSpeedOk
-                let blocker = cooldownStabilityBlocker(
-                    hrAvailable: hrAvailable,
-                    hrOk: hrOk,
-                    minSpeedOk: minSpeedOk
-                )
-                if hrOk && hrCooldownTargetHitElapsedSeconds == nil {
-                    hrCooldownTargetHitElapsedSeconds = elapsed
-                }
-                if minSpeedOk && hrCooldownFirstMinSpeedElapsedSeconds == nil {
-                    hrCooldownFirstMinSpeedElapsedSeconds = elapsed
-                }
-                if hrOk {
-                    hrCooldownBelowTargetSeconds += 1
-                }
-                if minSpeedOk {
-                    hrCooldownMinSpeedSeconds += 1
-                }
-                if stableOk && hrCooldownFirstStableElapsedSeconds == nil {
-                    hrCooldownFirstStableElapsedSeconds = elapsed
-                }
-                if stableOk {
-                    hrCooldownStableSeconds += 1
-                    hrCooldownTargetAndMinSpeedSeconds += 1
-                    hrCooldownMaxStableStreakSeconds = max(hrCooldownMaxStableStreakSeconds, hrCooldownStableSeconds)
-                } else {
-                    hrCooldownStableSeconds = 0
-                }
-                if blocker != "ready" {
-                    hrCooldownTimeoutBlocker = blocker
-                }
-                logTrainingEvent("cooldown_state", fields: [
-                    "hr_bpm": heartRateBPM,
-                    "target_bpm": hrCooldownTargetBpm,
-                    "speed_kmh": observedSpeed,
-                    "cooldown_observed_speed_kmh": observedSpeed,
-                    "elapsed_s": elapsed,
-                    "stable_s": hrCooldownStableSeconds,
-                    "stable_required_s": hrCooldownHoldSeconds,
-                    "remaining_s": hrCooldownRemainingSeconds,
-                    "target_hit_elapsed_s": hrCooldownTargetHitElapsedSeconds ?? -1,
-                    "cooldown_hr_ok": hrOk,
-                    "cooldown_min_speed_ok": minSpeedOk,
-                    "cooldown_stable_ok": stableOk,
-                    "cooldown_stability_blocker": blocker,
-                    "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
-                    "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
-                    "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
-                    "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
-                    "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
-                    "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
-                    "start_hr_bpm": hrCooldownStartBPM,
-                    "session_peak_bpm": hrSessionPeakBPM,
-                    "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
-                    "main_peak_bpm": hrMainPeakBPM
-                ])
-
-                if hrCooldownTotalSeconds > 0 && hrCooldownStepIntervalSeconds > 0 && elapsed % hrCooldownStepIntervalSeconds == 0 {
-                    let reductionStep = HRDomainService.cooldownReductionStepKmh(
-                        baseStepKmh: hrCooldownStepKmh,
-                        currentBpm: heartRateBPM > 0 ? heartRateBPM : hrCooldownTargetBpm,
-                        targetBpm: hrCooldownTargetBpm,
-                        startBpm: hrCooldownStartBPM > 0 ? hrCooldownStartBPM : heartRateBPM,
-                        elapsedSeconds: elapsed,
-                        totalSeconds: hrCooldownTotalSeconds
+                let output = CooldownRuntimeEngine.start(
+                    config: currentCooldownConfig(),
+                    input: CooldownRuntimeEngine.StartInput(
+                        currentBpm: heartRateBPM > 0 ? heartRateBPM : lastKnownHeartRateBPM,
+                        deviceTargetSpeedKmh: deviceTargetSpeedKmh,
+                        actualSpeedKmh: speedKmh,
+                        sessionAggregates: currentCooldownSessionAggregates()
                     )
-                    let adaptiveFactor = reductionStep / max(0.1, hrCooldownStepKmh)
-                    let rawTarget = hrCooldownLastSentSpeed - reductionStep
-                    let target = max(hrCooldownMinSpeed, rawTarget)
-                    if abs(target - hrCooldownLastSentSpeed) >= 0.01 {
-                        let old = deviceTargetSpeedKmh
-                        desiredSpeedKmh = target
-                        deviceTargetSpeedKmh = target
-                        recordSpeedChange(from: old, to: target, reason: "cooldown_set")
-                        lastCommandLine = String(format: "CMD cooldown adjust -> %.1f", target)
-                        sendTreadmillSetSpeed(target, label: String(format: "SPEED %.1f km/h (cooldown)", target))
-                        hrCooldownLastSentSpeed = target
-                        appendLog("HR cooldown speed: \(String(format: "%.1f", target)) HR=\(heartRateBPM) step=\(String(format: "%.1f", reductionStep))")
-                        logTrainingEvent("cooldown_speed_set", fields: [
-                            "hr_bpm": heartRateBPM,
-                            "target_bpm": hrCooldownTargetBpm,
-                            "adaptive_factor": adaptiveFactor,
-                            "step_kmh": reductionStep,
-                            "speed_before_kmh": old,
-                            "speed_after_kmh": target
-                        ])
-                    }
-                }
-
-                hrDecisionDetails = "Заминка: HR \(heartRateBPM) / цель \(hrCooldownTargetBpm) · скорость \(String(format: "%.1f", observedSpeed)) · стаб \(hrCooldownStableSeconds)/\(hrCooldownHoldSeconds)с"
-
-                if hrCooldownStableSeconds >= hrCooldownHoldSeconds || hrCooldownRemainingSeconds == 0 {
-                    let finishReason = hrCooldownStableSeconds >= hrCooldownHoldSeconds ? "stable_reached" : "timeout"
-                    hrCooldownFinishReason = finishReason
-                    if finishReason == "timeout" {
-                        hrCooldownTimeoutBlocker = blocker == "ready" ? "hold_not_satisfied" : blocker
-                    } else {
-                        hrCooldownTimeoutBlocker = ""
-                    }
-                    logTrainingEvent("cooldown_analysis", fields: [
-                        "reason": finishReason,
-                        "timeout_blocker": hrCooldownTimeoutBlocker,
-                        "hr_bpm": heartRateBPM,
-                        "target_bpm": hrCooldownTargetBpm,
-                        "cooldown_observed_speed_kmh": observedSpeed,
-                        "cooldown_hr_ok": hrOk,
-                        "cooldown_min_speed_ok": minSpeedOk,
-                        "cooldown_stable_ok": stableOk,
-                        "cooldown_stability_blocker": blocker,
-                        "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
-                        "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
-                        "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
-                        "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
-                        "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
-                        "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
-                        "stable_s": hrCooldownStableSeconds,
-                        "stable_required_s": hrCooldownHoldSeconds,
-                        "elapsed_s": cooldownElapsedSecondsSnapshot(),
-                        "planned_s": hrCooldownTotalSeconds
-                    ])
-                    logTrainingEvent("cooldown_complete", fields: [
-                        "reason": finishReason,
-                        "cooldown_finish_reason": finishReason,
-                        "cooldown_timeout_blocker": hrCooldownTimeoutBlocker,
-                        "stable_s": hrCooldownStableSeconds,
-                        "stable_required_s": hrCooldownHoldSeconds,
-                        "remaining_s": hrCooldownRemainingSeconds,
-                        "hr_bpm": heartRateBPM,
-                        "target_bpm": hrCooldownTargetBpm,
-                        "cooldown_observed_speed_kmh": observedSpeed,
-                        "cooldown_hr_ok": hrOk,
-                        "cooldown_min_speed_ok": minSpeedOk,
-                        "cooldown_stable_ok": stableOk,
-                        "cooldown_stability_blocker": blocker,
-                        "elapsed_s": cooldownElapsedSecondsSnapshot(),
-                        "planned_s": hrCooldownTotalSeconds,
-                        "target_hit_elapsed_s": hrCooldownTargetHitElapsedSeconds ?? -1,
-                        "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
-                        "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
-                        "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
-                        "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
-                        "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
-                        "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
-                        "start_hr_bpm": hrCooldownStartBPM,
-                        "end_hr_bpm": hrCooldownEndBPM,
-                        "peak_hr_bpm": hrCooldownPeakBPM,
-                        "hr_drop_bpm": cooldownHrDropBPMSnapshot(),
-                        "hr_recovery_bpm_per_min": cooldownRecoveryBpmPerMinuteSnapshot(),
-                        "session_peak_bpm": hrSessionPeakBPM,
-                        "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
-                        "main_peak_bpm": hrMainPeakBPM,
-                        "zone_seconds": zoneSecondsSnapshot(),
-                        "zone4plus_seconds": zone4PlusSecondsSnapshot()
-                    ])
-                    if finishReason == "timeout", heartRateBPM > hrCooldownTargetBpm {
-                        logTrainingEvent("cooldown_insufficient", fields: [
-                            "hr_bpm": heartRateBPM,
-                            "target_bpm": hrCooldownTargetBpm,
-                            "excess_bpm": heartRateBPM - hrCooldownTargetBpm,
-                            "cooldown_finish_reason": finishReason,
-                            "cooldown_timeout_blocker": hrCooldownTimeoutBlocker,
-                            "cooldown_observed_speed_kmh": observedSpeed,
-                            "cooldown_first_min_speed_elapsed_s": cooldownFirstMinSpeedElapsedSnapshot(),
-                            "cooldown_first_stable_elapsed_s": cooldownFirstStableElapsedSnapshot(),
-                            "cooldown_hr_below_target_s": hrCooldownBelowTargetSeconds,
-                            "cooldown_min_speed_s": hrCooldownMinSpeedSeconds,
-                            "cooldown_target_and_min_speed_s": hrCooldownTargetAndMinSpeedSeconds,
-                            "cooldown_target_and_min_speed_max_streak_s": hrCooldownMaxStableStreakSeconds,
-                            "elapsed_s": cooldownElapsedSecondsSnapshot(),
-                            "planned_s": hrCooldownTotalSeconds,
-                            "start_hr_bpm": hrCooldownStartBPM,
-                            "end_hr_bpm": hrCooldownEndBPM,
-                            "hr_drop_bpm": cooldownHrDropBPMSnapshot(),
-                            "hr_recovery_bpm_per_min": cooldownRecoveryBpmPerMinuteSnapshot(),
-                            "session_peak_bpm": hrSessionPeakBPM,
-                            "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
-                            "main_peak_bpm": hrMainPeakBPM,
-                            "zone4plus_seconds": zone4PlusSecondsSnapshot()
-                        ])
-                    }
-                    hrStatusLine = "Заминка завершена"
-                    let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-                    recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: false)
-                    isHrControlRunning = false
-                    hrControlStartedAt = nil
-                    stopTrainingStructuredLog(reason: "cooldown_\(finishReason)")
-                    sendWatchCommand("stop_hr")
-                    stopBeltWithToggle(reason: "hr_cooldown_done")
-                }
+                )
+                let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
+                applyCooldownOutput(output, sessionElapsedSeconds: elapsed)
+            } else if let cooldownState = cooldownRuntimeState {
+                hrNextDecisionSeconds = 0
+                let output = CooldownRuntimeEngine.tick(
+                    state: cooldownState,
+                    config: currentCooldownConfig(),
+                    input: CooldownRuntimeEngine.TickInput(
+                        hrBpm: heartRateBPM,
+                        decisionBpm: heartRateBPM > 0 ? heartRateBPM : hrCooldownTargetBpm,
+                        hrAvailable: heartRateBPM > 0,
+                        speedSnapshot: currentCooldownSpeedSnapshot(),
+                        sessionAggregates: currentCooldownSessionAggregates()
+                    )
+                )
+                let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
+                applyCooldownOutput(output, sessionElapsedSeconds: elapsed)
             }
         }
         updateTreadmillStatus()
@@ -3041,6 +3502,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         let averageSpeed = (avgSpeedActive && avgSpeedKmh > 0.05) ? avgSpeedKmh : nil
+        let workoutProfileID = activeUserProfileID
+        let attachedHealthkitWorkoutUUID = pendingHealthkitWorkoutUUID
         let entry = WorkoutEntry(
             id: UUID(),
             date: Date(),
@@ -3049,11 +3512,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             durationSeconds: actualDuration,
             avgBpm: hrAverageBPM,
             avgSpeedKmh: averageSpeed,
-            healthkitWorkoutUUID: pendingHealthkitWorkoutUUID,
+            healthkitWorkoutUUID: attachedHealthkitWorkoutUUID,
             zoneSeconds: hrZoneSeconds
         )
         workoutHistory.insert(entry, at: 0)
         pendingHealthkitWorkoutUUID = nil
+        pendingHealthkitWorkoutProfileID = attachedHealthkitWorkoutUUID == nil ? workoutProfileID : nil
         hrWorkoutRecorded = true
         saveWorkoutHistory()
         logTrainingEvent("workout_saved", fields: [
@@ -3065,30 +3529,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "distance_km": distKm,
             "beats_per_meter": beatsPerMeter ?? -1
         ])
+        scheduleTrainingLogsInventoryRefresh()
     }
 
     private func attachHealthkitWorkoutUUID(_ uuid: String, endedAt: Date?) {
         let matchWindow: TimeInterval = 15 * 60
-        if let endDate = endedAt,
-           let idx = workoutHistory.firstIndex(where: { $0.healthkitWorkoutUUID == nil && abs($0.date.timeIntervalSince(endDate)) <= matchWindow }) {
-            let entry = workoutHistory[idx]
-            workoutHistory[idx] = WorkoutEntry(
-                id: entry.id,
-                date: entry.date,
-                beatsPerMeter: entry.beatsPerMeter,
-                targetBpm: entry.targetBpm,
-                durationSeconds: entry.durationSeconds,
-                avgBpm: entry.avgBpm,
-                avgSpeedKmh: entry.avgSpeedKmh,
-                healthkitWorkoutUUID: uuid,
-                zoneSeconds: entry.zoneSeconds
-            )
-            saveWorkoutHistory()
+        let targetProfileID = pendingHealthkitWorkoutProfileID ?? activeUserProfileID
+        guard let targetProfileID else {
+            pendingHealthkitWorkoutUUID = uuid
             return
         }
-        if let idx = workoutHistory.firstIndex(where: { $0.healthkitWorkoutUUID == nil }) {
-            let entry = workoutHistory[idx]
-            workoutHistory[idx] = WorkoutEntry(
+
+        var entries = loadWorkoutHistory(profileID: targetProfileID)
+
+        let attachUUID: (Int) -> Void = { index in
+            let entry = entries[index]
+            entries[index] = WorkoutEntry(
                 id: entry.id,
                 date: entry.date,
                 beatsPerMeter: entry.beatsPerMeter,
@@ -3099,10 +3555,25 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 healthkitWorkoutUUID: uuid,
                 zoneSeconds: entry.zoneSeconds
             )
-            saveWorkoutHistory()
-        } else {
-            pendingHealthkitWorkoutUUID = uuid
+            self.saveWorkoutHistory(entries, profileID: targetProfileID)
+            if self.activeUserProfileID == targetProfileID {
+                self.workoutHistory = entries
+            }
+            self.pendingHealthkitWorkoutProfileID = nil
         }
+
+        if let endDate = endedAt,
+           let idx = entries.firstIndex(where: { $0.healthkitWorkoutUUID == nil && abs($0.date.timeIntervalSince(endDate)) <= matchWindow }) {
+            attachUUID(idx)
+            return
+        }
+        if let idx = entries.firstIndex(where: { $0.healthkitWorkoutUUID == nil }) {
+            attachUUID(idx)
+            return
+        }
+
+        pendingHealthkitWorkoutUUID = uuid
+        pendingHealthkitWorkoutProfileID = targetProfileID
     }
 
     // KS-F0 protocol: F7 A2 <cmd> <val> <crc> FD, crc = sum(bytes[1..3]) % 256

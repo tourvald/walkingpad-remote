@@ -53,7 +53,7 @@ struct ContentView: View {
             ControlSwipeView()
                 .environmentObject(manager)
                 .tabItem {
-                    Label("HR‑контроль", systemImage: "heart.text.square")
+                    Label("HR‑контроль", systemImage: "heart.circle")
                 }
                 .tag(RootTab.control)
 
@@ -942,6 +942,15 @@ private struct HRControlPanel: View {
         let hrSessionMaxMinutes = debugPreview?.hrSessionMaxMinutes ?? manager.hrSessionMaxMinutes
         let canStartHrControl = manager.isHrControlStartAllowed && manager.watchReachable && manager.hrStreamingActive
         let headerTint: Color = isHrControlRunning ? .accentColor : (hrStreamingActive ? .green : .orange)
+        let hrStartSubtitle: String = {
+            if isPreviewMode {
+                return "Preview mode: команды на дорожку отключены"
+            }
+            if canStartHrControl {
+                return "Автоподстройка скорости по пульсу и зоне"
+            }
+            return manager.hrControlStartBlockReasonText ?? "Проверьте дорожку и Apple Watch"
+        }()
 
         Card {
             let watchIssue = hrWatchIssue(for: manager)
@@ -1139,18 +1148,19 @@ private struct HRControlPanel: View {
                 }
 
                 if !isHrControlRunning {
-                    Button {
+                    PrimaryActionButton(
+                        title: isPreviewMode ? "HR‑контроль (preview)" : "Запустить HR‑контроль",
+                        subtitle: hrStartSubtitle,
+                        systemImage: "heart.circle.fill",
+                        enabled: !isPreviewMode && canStartHrControl,
+                        tint: .accentColor,
+                        accessibilityLabel: "Запустить HR-контроль",
+                        accessibilityHint: "Запускает автоматическую тренировку с контролем по пульсу"
+                    ) {
                         if !isPreviewMode {
                             manager.startHrControl()
                         }
-                    } label: {
-                        Text(isPreviewMode ? "Запустить HR‑контроль (preview)" : "Запустить HR‑контроль")
-                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.accentColor)
-                    .disabled(isPreviewMode || !canStartHrControl)
-                    .opacity((isPreviewMode || !canStartHrControl) ? 0.5 : 1.0)
                 }
 
                 if !hrStatusLine.isEmpty {
@@ -1600,9 +1610,55 @@ private struct HRParametersFormView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @State private var showAdaptiveStepInfo = false
     @State private var previewHrBpm: Double = 130
+    @State private var showCreateProfileAlert = false
+    @State private var showRenameProfileAlert = false
+    @State private var showDeleteProfileAlert = false
+    @State private var newProfileName = ""
+    @State private var renamedProfileName = ""
 
     var body: some View {
         Form {
+            Section(
+                header: Text("Профиль"),
+                footer: Text("Профиль разделяет целевой пульс, длительность, заминку, кардио‑зоны, историю тренировок и training export. CSV и session summary теперь выгружаются только по активному профилю, а для объединения логов с разных телефонов дополнительно пишется installation_id.")
+            ) {
+                Picker("Активный профиль", selection: Binding(
+                    get: { manager.activeUserProfileID },
+                    set: { newValue in
+                        guard let newValue else { return }
+                        manager.selectUserProfile(id: newValue)
+                    }
+                )) {
+                    ForEach(manager.userProfiles) { profile in
+                        Text(profile.label).tag(Optional(profile.id))
+                    }
+                }
+                .disabled(manager.isHrControlRunning)
+
+                Button("Новый профиль") {
+                    newProfileName = ""
+                    showCreateProfileAlert = true
+                }
+                .disabled(manager.isHrControlRunning)
+
+                Button("Переименовать текущий") {
+                    renamedProfileName = manager.activeUserProfileLabel
+                    showRenameProfileAlert = true
+                }
+                .disabled(manager.isHrControlRunning || manager.activeUserProfileID == nil)
+
+                Button("Удалить текущий", role: .destructive) {
+                    showDeleteProfileAlert = true
+                }
+                .disabled(manager.isHrControlRunning || manager.userProfiles.count <= 1)
+
+                if manager.isHrControlRunning {
+                    Text("Во время активной тренировки переключение и редактирование профиля заблокировано.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Section(header: Text("Параметры")) {
                 Toggle(isOn: Binding(
                     get: { manager.hrAdaptiveStepEnabled },
@@ -1989,6 +2045,35 @@ private struct HRParametersFormView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             previewHrBpm = Double(manager.hrTargetBPM)
+        }
+        .onChange(of: manager.activeUserProfileID) { _, _ in
+            previewHrBpm = Double(manager.hrTargetBPM)
+        }
+        .alert("Новый профиль", isPresented: $showCreateProfileAlert) {
+            TextField("Имя профиля", text: $newProfileName)
+            Button("Отмена", role: .cancel) {}
+            Button("Создать") {
+                manager.createUserProfile(named: newProfileName)
+            }
+        } message: {
+            Text("Новый профиль создаётся как копия текущих настроек, но с пустой историей тренировок.")
+        }
+        .alert("Переименовать профиль", isPresented: $showRenameProfileAlert) {
+            TextField("Имя профиля", text: $renamedProfileName)
+            Button("Отмена", role: .cancel) {}
+            Button("Сохранить") {
+                manager.renameActiveUserProfile(to: renamedProfileName)
+            }
+        } message: {
+            Text("Новое имя попадёт и в будущие тренировочные логи.")
+        }
+        .alert("Удалить профиль?", isPresented: $showDeleteProfileAlert) {
+            Button("Отмена", role: .cancel) {}
+            Button("Удалить", role: .destructive) {
+                manager.deleteActiveUserProfile()
+            }
+        } message: {
+            Text("Будут удалены локальные настройки и история текущего профиля. Уже записанные raw-логи на диске останутся как архив.")
         }
     }
 
@@ -2652,6 +2737,132 @@ private struct DebugView: View {
     @State private var hrControlPreviewMode: HrControlPreviewMode = .workout
     @State private var previewNoHrSignal = false
 
+    private var trainingLogScopeOptions: [TrainingLogCsvExportScope] {
+        [.all, .lastCompletedWorkouts(3), .lastCompletedWorkouts(5)]
+    }
+
+    private func formattedByteCount(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func trainingLogsMenuItemTitle(
+        scope: TrainingLogCsvExportScope,
+        sessionSummaryOnly: Bool
+    ) -> String {
+        let count = manager.trainingLogsExportCount(for: scope, sessionSummaryOnly: sessionSummaryOnly)
+
+        switch scope {
+        case .all:
+            if sessionSummaryOnly {
+                return "Все тренировки (\(count))"
+            }
+            return "Все raw логи (\(count))"
+        case .lastCompletedWorkouts(let limit):
+            return "Последние \(limit) тренировки (будет \(count))"
+        }
+    }
+
+    private var trainingLogsCardPresentation: DebugTrainingLogsCard.Presentation {
+        let inventory = manager.trainingLogsInventory
+        let lastLogName = manager.lastTrainingLogPath.isEmpty
+            ? nil
+            : URL(fileURLWithPath: manager.lastTrainingLogPath).lastPathComponent
+        let detailLines = [
+            "Session Summary включает только завершённые тренировки (`workout_saved`).",
+            inventory.clearableSessionFiles > 0
+                ? "Ручная очистка удаляет только raw JSONL-логи активного профиля; статистика тренировок сохраняется."
+                : "Активная сессия защищена от удаления и не участвует в ручной очистке.",
+            lastLogName.map { "Последний JSONL: \($0)" }
+        ].compactMap { $0 }
+
+        let rawExportOptions = trainingLogScopeOptions.map { scope in
+            DebugTrainingLogsCard.Presentation.ExportOption(
+                id: "raw_\(scope.logDescription)",
+                title: trainingLogsMenuItemTitle(scope: scope, sessionSummaryOnly: false),
+                scope: scope
+            )
+        }
+        let summaryExportOptions = trainingLogScopeOptions.map { scope in
+            DebugTrainingLogsCard.Presentation.ExportOption(
+                id: "summary_\(scope.logDescription)",
+                title: trainingLogsMenuItemTitle(scope: scope, sessionSummaryOnly: true),
+                scope: scope
+            )
+        }
+
+        return DebugTrainingLogsCard.Presentation(
+            subtitle: "Активный профиль: \(manager.activeUserProfileLabel)",
+            profileMetrics: [
+                .init(id: "profile_raw", title: "Raw", value: "\(inventory.matchingProfileSessionFiles)", tint: .accentColor),
+                .init(id: "profile_completed", title: "Трен.", value: "\(inventory.matchingProfileCompletedWorkoutFiles)", tint: .blue),
+                .init(id: "profile_size", title: "Размер", value: formattedByteCount(inventory.matchingProfileBytes), tint: .green)
+            ],
+            deviceMetrics: [
+                .init(id: "device_raw", title: "Все raw", value: "\(inventory.totalSessionFiles)", tint: .secondary),
+                .init(id: "device_completed", title: "Все тр.", value: "\(inventory.completedWorkoutFiles)", tint: .secondary),
+                .init(id: "device_size", title: "Память", value: formattedByteCount(inventory.totalBytes), tint: .secondary)
+            ],
+            rawExportOptions: rawExportOptions,
+            rawExportSubtitle: inventory.matchingProfileSessionFiles > 0
+                ? "\(inventory.matchingProfileSessionFiles) raw сессий доступно"
+                : "Нет raw логов",
+            canExportRaw: inventory.matchingProfileSessionFiles > 0,
+            sessionSummaryOptions: summaryExportOptions,
+            sessionSummarySubtitle: inventory.matchingProfileCompletedWorkoutFiles > 0
+                ? "\(inventory.matchingProfileCompletedWorkoutFiles) тренировок готово"
+                : "Нет завершённых тренировок",
+            canExportSessionSummary: inventory.matchingProfileCompletedWorkoutFiles > 0,
+            clearSubtitle: inventory.clearableSessionFiles > 0
+                ? "\(inventory.clearableSessionFiles) файлов · \(formattedByteCount(inventory.clearableBytes))"
+                : "Сейчас очищать нечего",
+            canClear: inventory.clearableSessionFiles > 0,
+            clearConfirmationMessage: "Будут удалены только raw JSONL training logs активного профиля: \(inventory.clearableSessionFiles) файлов, \(formattedByteCount(inventory.clearableBytes)). История тренировок в статистике останется.",
+            detailLines: detailLines,
+            footer: inventory.matchingProfileCompletedWorkoutFiles < 3
+                ? "Для анализа лучше накопить хотя бы 3 завершённые тренировки."
+                : nil
+        )
+    }
+
+    private var hrFailuresCardPresentation: DebugHrFailuresCard.Presentation {
+        let reports = manager.hrFailureReports
+        let latestFailureDate = reports.map(\.end).max()
+        let reportPreviews = reports.prefix(3).map { report in
+            DebugHrFailuresCard.Presentation.ReportPreview(
+                id: report.id,
+                title: report.reason,
+                subtitle: "\(report.start.formatted(date: .abbreviated, time: .shortened)) → \(report.end.formatted(date: .abbreviated, time: .shortened))",
+                body: report.lines.isEmpty
+                    ? "Подробных строк нет."
+                    : report.lines.prefix(8).joined(separator: "\n")
+            )
+        }
+
+        return DebugHrFailuresCard.Presentation(
+            subtitle: "Сохранённые инциденты потери или сбоя пульса",
+            metrics: [
+                .init(id: "reports_total", title: "Отчётов", value: "\(reports.count)", tint: .orange),
+                .init(id: "reports_visible", title: "Показано", value: "\(reportPreviews.count)", tint: .blue),
+                .init(
+                    id: "reports_latest",
+                    title: "Последний",
+                    value: latestFailureDate.map { $0.formatted(date: .omitted, time: .shortened) } ?? "—",
+                    tint: .red
+                )
+            ],
+            exportSubtitle: reports.isEmpty ? "Нет данных" : "\(reports.count) отчётов",
+            canExport: !reports.isEmpty,
+            clearSubtitle: reports.isEmpty ? "Список уже пуст" : "Удалить \(reports.count) отчётов",
+            canClear: !reports.isEmpty,
+            clearConfirmationMessage: "Будут удалены все сохранённые HR failure reports в Debug. Structured training logs и история тренировок не изменятся.",
+            reports: Array(reportPreviews),
+            emptyState: reports.isEmpty ? "Ошибок пульса пока нет." : nil,
+            footer: reports.count > reportPreviews.count
+                ? "Показаны последние \(reportPreviews.count) отчёта из \(reports.count). Полный набор уйдёт в export."
+                : "HR failure export сохраняет полный набор инцидентов."
+        )
+    }
+
     private var hrControlPreviewState: HRControlPanelPreviewState {
         switch hrControlPreviewMode {
         case .workout:
@@ -2720,12 +2931,13 @@ private struct DebugView: View {
                         }
                     }
 
-                    Card {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Debug")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-
+                    DebugSectionCard(
+                        title: "Runtime Snapshot",
+                        subtitle: manager.loggingEnabled
+                            ? "Logging ON · локальные runtime и BLE метрики"
+                            : "Logging OFF · локальные runtime и BLE метрики"
+                    ) {
+                        VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Button("Copy Logs") {
                                     copyLogs(
@@ -2737,7 +2949,6 @@ private struct DebugView: View {
                                 .buttonStyle(.bordered)
 
                                 Button("Clear") {
-                                    // Clear directly in the view to avoid relying on a missing helper.
                                     manager.debugLog = ""
                                     manager.lastCommandLine = ""
                                     manager.hrStatusLine = ""
@@ -2753,108 +2964,41 @@ private struct DebugView: View {
                                 Spacer()
                             }
 
-                            Divider()
-                                .overlay(Color(.separator))
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("Training Logs")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Button("Export Training CSV") {
-                                        exportTrainingHistoryCsv(manager: manager)
-                                    }
-                                    .buttonStyle(.bordered)
-                                }
-                                if !manager.lastTrainingLogPath.isEmpty {
-                                    Text("Last session log: \(URL(fileURLWithPath: manager.lastTrainingLogPath).lastPathComponent)")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("HR Failures")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    Button("Export HR Failures") {
-                                        exportHrFailures(reports: manager.hrFailureReports)
-                                    }
-                                    .buttonStyle(.bordered)
-                                    Button("Clear HR Failures", role: .destructive) {
-                                        manager.clearHrFailureReports()
-                                    }
-                                    .buttonStyle(.bordered)
-                                }
-
-                                if manager.hrFailureReports.isEmpty {
-                                    Text("No HR failures recorded")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                } else {
-                                    ForEach(manager.hrFailureReports.prefix(5)) { report in
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            let start = report.start.formatted(date: .abbreviated, time: .shortened)
-                                            let end = report.end.formatted(date: .abbreviated, time: .shortened)
-                                            Text("\(report.reason) • \(start) → \(end)")
-                                                .font(.footnote.weight(.semibold))
-                                            if !report.lines.isEmpty {
-                                                ScrollView {
-                                                    Text(report.lines.joined(separator: "\n"))
-                                                        .font(.system(.caption2, design: .monospaced))
-                                                        .foregroundColor(.secondary)
-                                                        .multilineTextAlignment(.leading)
-                                                        .textSelection(.enabled)
-                                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                                }
-                                                .frame(height: 140)
-                                            }
-                                        }
-                                        .padding(8)
-                                        .background(Color(.tertiarySystemFill))
-                                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                    }
-                                }
-                            }
-
                             if !manager.loggingEnabled {
                                 Text("Logging is OFF — turn it on to record new events")
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
 
                             if !manager.lastCommandLine.isEmpty {
                                 Text("Last cmd: \(manager.lastCommandLine)")
-                                    .font(.caption2)
+                                    .font(.caption)
                             }
 
                             if !manager.treadmillStatusText.isEmpty {
                                 Text("Treadmill: \(manager.treadmillStatusText)")
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                             if manager.lastNotifyAgeSeconds > 0 {
                                 Text("Last notify: \(manager.lastNotifyAgeSeconds)s ago")
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                             if !manager.lastCommandAckStatusText.isEmpty {
                                 Text("Cmd ack: \(manager.lastCommandAckStatusText)")
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                             if manager.lastCommandTimeoutsCount > 0 {
                                 Text("Cmd timeouts: \(manager.lastCommandTimeoutsCount)")
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
 
                             if !manager.hrStatusLine.isEmpty {
                                 Text(manager.hrStatusLine)
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
 
@@ -2862,26 +3006,26 @@ private struct DebugView: View {
                             let targetStr = String(format: "%.1f", manager.desiredSpeedKmh)
                             let deviceStr = String(format: "%.1f", manager.deviceTargetSpeedKmh)
                             Text("Speed \(actualStr)  Target \(targetStr)  AppSet \(deviceStr)  HR \(manager.heartRateBPM) (last \(manager.lastKnownHeartRateBPM))")
-                                .font(.caption2)
+                                .font(.caption)
                                 .foregroundColor(.secondary)
                             Text("Reported speed: \(String(format: "%.1f", manager.deviceReportedSpeedKmh))  AppSpeed: \(String(format: "%.1f", manager.deviceReportedAppSpeedKmh))")
-                                .font(.caption2)
+                                .font(.caption)
                                 .foregroundColor(.secondary)
                             Text("State \(manager.deviceReportedState)  Mode \(manager.deviceReportedManualMode)  Button \(manager.deviceReportedButton)  Checksum \(manager.deviceReportedChecksumOk ? "ok" : "bad")")
-                                .font(.caption2)
+                                .font(.caption)
                                 .foregroundColor(.secondary)
                             Text("Time \(manager.deviceReportedTimeSeconds)s  Dist \(manager.deviceReportedDistance10m * 10)m  Steps \(manager.deviceReportedSteps)")
-                                .font(.caption2)
+                                .font(.caption)
                                 .foregroundColor(.secondary)
                             if !manager.deviceReportedRawHex.isEmpty {
                                 Text("FE01 raw: \(manager.deviceReportedRawHex)")
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
 
                             let wcState = "WCSession: paired=\(manager.watchPaired ? "yes" : "no") installed=\(manager.watchAppInstalled ? "yes" : "no") reachable=\(manager.watchReachable ? "yes" : "no")"
                             Text(wcState)
-                                .font(.caption2)
+                                .font(.caption)
                                 .foregroundColor(.secondary)
 
                             if !manager.debugLog.isEmpty {
@@ -2897,16 +3041,42 @@ private struct DebugView: View {
                                 .padding(.top, 4)
                             } else {
                                 Text("No logs yet")
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                         }
                     }
+
+                    DebugTrainingLogsCard(
+                        presentation: trainingLogsCardPresentation,
+                        onExportRaw: { scope in
+                            exportTrainingHistoryCsv(manager: manager, scope: scope)
+                        },
+                        onExportSessionSummary: { scope in
+                            exportTrainingSessionSummaryCsv(manager: manager, scope: scope)
+                        },
+                        onClear: {
+                            manager.clearTrainingLogsForActiveProfile()
+                        }
+                    )
+
+                    DebugHrFailuresCard(
+                        presentation: hrFailuresCardPresentation,
+                        onExport: {
+                            exportHrFailures(reports: manager.hrFailureReports)
+                        },
+                        onClear: {
+                            manager.clearHrFailureReports()
+                        }
+                    )
                 }
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .navigationTitle("Отладка")
+            .onAppear {
+                manager.refreshTrainingLogsInventory()
+            }
         }
     }
 }
@@ -2924,7 +3094,10 @@ private func copyLogs(lastCmd: String, hrStatus: String, log: String) {
     UIPasteboard.general.string = text
 }
 
-private func exportTrainingHistoryCsv(manager: BluetoothManager) {
+private func exportTrainingHistoryCsv(
+    manager: BluetoothManager,
+    scope: TrainingLogCsvExportScope
+) {
     let present: (UIActivityViewController) -> Void = { vc in
         if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let root = scene.windows.first?.rootViewController {
@@ -2932,8 +3105,33 @@ private func exportTrainingHistoryCsv(manager: BluetoothManager) {
         }
     }
 
-    guard let export = manager.prepareTrainingLogsCsvExport() else {
-        let message = "Training logs not found yet. Start HR session first."
+    guard let export = manager.prepareTrainingLogsCsvExport(scope: scope) else {
+        let message = scope.missingLogsMessage
+        let vc = UIActivityViewController(activityItems: [message], applicationActivities: nil)
+        present(vc)
+        return
+    }
+
+    let vc = UIActivityViewController(activityItems: [export.csvURL], applicationActivities: nil)
+    vc.completionWithItemsHandler = { _, completed, _, _ in
+        manager.finalizeTrainingLogsCsvExport(export, completed: completed)
+    }
+    present(vc)
+}
+
+private func exportTrainingSessionSummaryCsv(
+    manager: BluetoothManager,
+    scope: TrainingLogCsvExportScope
+) {
+    let present: (UIActivityViewController) -> Void = { vc in
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let root = scene.windows.first?.rootViewController {
+            root.present(vc, animated: true)
+        }
+    }
+
+    guard let export = manager.prepareTrainingSessionSummaryCsvExport(scope: scope) else {
+        let message = "Completed training logs not found yet. Start and save an HR workout first."
         let vc = UIActivityViewController(activityItems: [message], applicationActivities: nil)
         present(vc)
         return

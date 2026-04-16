@@ -353,6 +353,7 @@
 				CODE_SIGN_ENTITLEMENTS = WalkingPadRemote/WalkingPadRemote.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to your walking pad via Bluetooth.";
@@ -388,6 +389,7 @@
 				CODE_SIGN_ENTITLEMENTS = WalkingPadRemote/WalkingPadRemote.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to your walking pad via Bluetooth.";
@@ -423,6 +425,7 @@
 				CODE_SIGN_ENTITLEMENTS = "WalkingPadRemoteWatch Watch App/WalkingPadRemoteWatch Watch App.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = WalkingPadRemoteWatch;
@@ -458,6 +461,7 @@
 				CODE_SIGN_ENTITLEMENTS = "WalkingPadRemoteWatch Watch App/WalkingPadRemoteWatch Watch App.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = WalkingPadRemoteWatch;

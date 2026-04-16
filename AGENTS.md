@@ -46,6 +46,25 @@
   - cooldown duration is now adaptive from the start HR overshoot above the cooldown target: base duration plus `+0 / +60 / +120 / +180` seconds for `<15 / 15...29 / 30...44 / 45+ bpm`
   - cooldown speed reduction is now front-loaded for harder sessions through `HRDomainService.cooldownReductionStepKmh(...)`, so high-start-HR sessions reach `hrCooldownMinSpeed` sooner instead of spending most of the 5-minute window on the descent
   - `HRDomainService` now owns these cooldown rules and Swift package tests cover plan duration, stability speed selection, and front-loaded reduction step sizing
+- Cooldown truth-source fix / default target update (2026-04-05):
+  - cooldown `minSpeedOk` no longer depends on the maximum of controller and reported speed; `HRDomainService.cooldownSpeedSnapshot(...)` now resolves cooldown speed with factual-speed priority: `appReported -> rawReported -> speedKmh -> controller fallback`
+  - raw cooldown telemetry now writes both `cooldown_observed_speed_kmh` (the speed actually used for `minSpeedOk`) and `cooldown_controller_speed_kmh` (controller/commanded diagnostic), so stale target-speed bugs remain visible in exports
+  - default cooldown target for clean installs / profiles without saved HR settings is now `115 bpm` through `HRSettingsDefaults.defaultCooldownTargetBpm`; existing persisted per-profile cooldown targets are preserved as-is
+  - Swift package coverage now includes cooldown factual-speed fallback behavior and cooldown-target default resolution
+- Immediate cooldown first-step patch (2026-04-15):
+  - cooldown no longer waits for the first `hrDecisionIntervalSeconds` boundary before lowering treadmill speed; the first cooldown speed reduction is now sent immediately on entering cooldown
+  - periodic cooldown adjustments still reuse the same interval cadence after the immediate first step
+  - speed-step calculation was deduplicated: `BluetoothManager` now routes both the immediate and interval-based cooldown adjustments through one shared helper, while `HRDomainService.cooldownNextTargetSpeedKmh(...)` owns the pure target-speed clamp logic
+  - `cooldown_speed_set` telemetry now includes `elapsed_s` and `trigger` (`cooldown_start` vs `interval`) for easier analysis of descent timing
+- HR control CTA style alignment (2026-04-16):
+  - `ContentSharedUIComponents.swift` now provides `PrimaryActionButton` for full-width gradient CTA buttons in the same visual language as existing action tiles
+  - `HRControlPanel` start action now uses this shared CTA instead of the default bordered-prominent style and surfaces the current start-block reason as subtitle when unavailable
+  - bottom `HR‑контроль` tab icon was simplified to `heart.circle` to better match the lighter tab icon set
+- Cooldown runtime engine refactor (2026-04-15):
+  - all cooldown runtime state transitions now live in `CooldownRuntimeEngine.swift`; `BluetoothManager` only assembles live inputs, executes typed effects, and syncs published UI state
+  - the engine owns cooldown start/tick/completion, stability checks, timeout blocker selection, analytics counters, and completion branching, while telemetry/export schema remains unchanged
+  - `BluetoothManager` runtime cooldown internals were collapsed into one `cooldownRuntimeState`; old scattered `hrCooldown*` private counters were removed from the manager
+  - Swift package tests now include `CooldownRuntimeEngineTests` for immediate first step, factual-speed truth source, counter updates, stable completion, timeout blocker selection, and insufficient cooldown signaling
 - Detailed cooldown analysis export (2026-03-10):
   - telemetry now maintains normalized cooldown-analysis snapshots in `BluetoothManager`, not only raw per-second rows
   - new cooldown fields available in JSONL and exported CSV include:
@@ -56,6 +75,33 @@
   - per-second `cooldown_state` rows now also expose `cooldown_observed_speed_kmh`, `cooldown_hr_ok`, `cooldown_min_speed_ok`, `cooldown_stable_ok`, and `cooldown_stability_blocker`
   - on cooldown completion, a dedicated one-shot telemetry event `cooldown_analysis` is written before `cooldown_complete`
   - CSV export schema is now centralized in `TrainingTelemetryWriter.trainingCsvHeaders` / `csvRow(...)`, and Swift tests cover the cooldown-analysis columns
+- Training-log export scope/clarity patch (2026-03-19):
+  - `Export Training CSV` now supports three scopes: all logs, last 3 completed workouts, and last 5 completed workouts
+  - filtered export scope includes only session files containing `workout_saved`, so aborted short runs do not pollute last-N exports
+  - post-share raw-log cleanup still runs only for the files that were actually exported
+  - CSV now includes explicit `cooldown_target_bpm` alongside the existing event-level `target_bpm`, so cooldown analysis no longer has to infer the cooldown target from mixed event rows
+- Session summary export (2026-03-19):
+  - Debug tab now also supports `Export Session Summary`, with the same scopes: all completed workouts, last 3 completed workouts, last 5 completed workouts
+  - session summary is derived from per-session JSONL logs and emits one CSV row per saved workout
+  - summary columns include main-stage target/compliance metrics, cooldown target/outcome metrics, session duration, distance, derived average speed, and cooldown recovery slopes for the last 30s/60s
+  - summary export skips incomplete sessions by design; it is intended for algorithm tuning, while the full raw CSV remains the source of truth for event-level debugging
+- Training logs inventory / explicit clear (2026-03-21):
+  - `BluetoothManager` now exposes `trainingLogsInventory` for the active profile: raw-session count, completed-workout count, clearable-file count, and byte sizes for both profile scope and full app scope
+  - Debug `Training Logs` UI now shows how much history is currently available before export, including how many workouts each export scope will actually include
+  - Debug UI now has explicit destructive action `Clear Training Logs`; it deletes only raw `TrainingLogs/*.jsonl` files for the active profile, never `workoutHistory`
+  - active session log remains protected from both manual clear and post-share export cleanup
+  - `lastTrainingLogPath` is now refreshed from the currently available active-profile JSONL files, so the debug label does not point to a deleted log after cleanup
+- Debug card extraction / presentation props (2026-03-21):
+  - `ContentView.swift` no longer renders `Training Logs` and `HR Failures` inline; these blocks now live in `DebugTrainingLogsCard.swift` and `DebugHrFailuresCard.swift`
+  - both debug cards use presentation models/props assembled in `DebugView`, instead of reading `BluetoothManager` directly inside the card views
+  - shared visual skeleton for extracted debug cards now lives in `DebugSharedUIComponents.swift` (`DebugSectionCard`, metric tiles, action-tile labels)
+  - `Package.swift` excludes these new UI files from the SwiftPM core target so `swift test` stays warning-free
+- Local multi-user profiles (2026-03-20):
+  - app now keeps local `UserProfile` records in `BluetoothManager`; each profile has its own HR settings, cardio-zone bounds, zone plan, and workout history in profile-scoped `UserDefaults` keys
+  - legacy global `hr_settings_v1`, `zone_plan_v1`, and `workout_history_v1` are migrated into the first created default profile (`Пользователь 1`) on first launch after the patch
+  - `Параметры` now contains profile management: select active profile, create a new profile (copies current settings, starts with empty workout history), rename active profile, and delete active profile; profile switching/editing is blocked while HR control is running
+  - training telemetry now includes `installation_id`, `profile_id`, and `profile_label` in every JSONL row, raw CSV row, and session-summary row
+  - raw/session-summary exports are now filtered to the active profile; legacy pre-profile JSONL logs are treated as belonging to the first/default profile only
 - Manual control and HR control are unified under one bottom tab.
 - Last-selected navigation state is persisted:
   - bottom tab selection in `ContentView` is stored in `UserDefaults` (`content_selected_root_tab_v1`)

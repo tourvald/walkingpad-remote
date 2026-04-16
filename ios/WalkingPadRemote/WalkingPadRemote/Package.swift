@@ -23,6 +23,9 @@ let package = Package(
                 "CommonInfoCard.swift",
                 "ContentSharedUIComponents.swift",
                 "ContentView.swift",
+                "DebugHrFailuresCard.swift",
+                "DebugSharedUIComponents.swift",
+                "DebugTrainingLogsCard.swift",
                 "DevicePickerView.swift",
                 "PlankTimerView.swift",
                 "StatsRightAlignedBlock.swift",
@@ -32,7 +35,9 @@ let package = Package(
             ],
             sources: [
                 "BLETransportCodec.swift",
+                "CooldownRuntimeEngine.swift",
                 "HRDomainService.swift",
+                "HRSettingsDefaults.swift",
                 "TrainingTelemetryWriter.swift",
                 "CommandQueueService.swift",
                 "TreadmillSpeedBoundsService.swift"

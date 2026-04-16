@@ -57,15 +57,32 @@ final class HRDomainServiceTests: XCTestCase {
         )
     }
 
-    func testCooldownObservedSpeedPrefersControllerAndAppSpeedOverLaggingRawValue() {
-        let observed = HRDomainService.cooldownObservedSpeedKmh(
+    func testCooldownSpeedSnapshotPrefersFactualSpeedOverStaleControllerTarget() {
+        let snapshot = HRDomainService.cooldownSpeedSnapshot(
             desiredSpeedKmh: 3.5,
-            deviceTargetSpeedKmh: 3.5,
+            deviceTargetSpeedKmh: 4.7,
             appReportedSpeedKmh: 3.5,
-            rawReportedSpeedKmh: 3.9
+            rawReportedSpeedKmh: 3.9,
+            currentActualSpeedKmh: 3.5
         )
 
-        XCTAssertEqual(observed, 3.5, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.observedSpeedKmh, 3.5, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.controllerSpeedKmh, 4.7, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.factualSpeedKmh ?? 0, 3.5, accuracy: 0.0001)
+    }
+
+    func testCooldownSpeedSnapshotFallsBackToControllerWhenNoFactualSpeedExists() {
+        let snapshot = HRDomainService.cooldownSpeedSnapshot(
+            desiredSpeedKmh: 4.7,
+            deviceTargetSpeedKmh: 4.5,
+            appReportedSpeedKmh: 0,
+            rawReportedSpeedKmh: 0,
+            currentActualSpeedKmh: 0
+        )
+
+        XCTAssertEqual(snapshot.observedSpeedKmh, 4.7, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.controllerSpeedKmh, 4.7, accuracy: 0.0001)
+        XCTAssertNil(snapshot.factualSpeedKmh)
     }
 
     func testCooldownReductionStepIsFrontLoadedForHighIntensitySessions() {
@@ -88,5 +105,25 @@ final class HRDomainServiceTests: XCTestCase {
 
         XCTAssertEqual(earlyStep, 1.0, accuracy: 0.0001)
         XCTAssertEqual(lateStep, 0.6, accuracy: 0.0001)
+    }
+
+    func testCooldownNextTargetSpeedReducesImmediatelyWhenAboveMinSpeed() {
+        let target = HRDomainService.cooldownNextTargetSpeedKmh(
+            currentSentSpeedKmh: 6.0,
+            minSpeedKmh: 3.5,
+            reductionStepKmh: 0.5
+        )
+
+        XCTAssertEqual(target ?? 0, 5.5, accuracy: 0.0001)
+    }
+
+    func testCooldownNextTargetSpeedDoesNotEmitChangeAtMinSpeed() {
+        let target = HRDomainService.cooldownNextTargetSpeedKmh(
+            currentSentSpeedKmh: 3.5,
+            minSpeedKmh: 3.5,
+            reductionStepKmh: 0.5
+        )
+
+        XCTAssertNil(target)
     }
 }
