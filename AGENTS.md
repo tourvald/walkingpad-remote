@@ -60,6 +60,10 @@
   - `ContentSharedUIComponents.swift` now provides `PrimaryActionButton` for full-width gradient CTA buttons in the same visual language as existing action tiles
   - `HRControlPanel` start action now uses this shared CTA instead of the default bordered-prominent style and surfaces the current start-block reason as subtitle when unavailable
   - bottom `HR‑контроль` tab icon was simplified to `heart.circle` to better match the lighter tab icon set
+- Simulator build recovery (2026-04-19):
+  - after updating local Xcode to `iphonesimulator SDK 23E252`, simulator builds required the matching `iOS 26.4.1 Simulator (23E254a)` runtime; until it was installed, Xcode/`xcodebuild` could emit `No simulator runtime version from ["23C54", "23E244"] available`
+  - keep project-level `SDKROOT = iphoneos` in `WalkingPadRemote.xcodeproj/project.pbxproj`; removing it makes the main app scheme collapse to `My Mac` as the only runnable destination
+  - once the matching runtime is installed and `SDKROOT` is preserved, `WalkingPadRemote` again exposes normal iPhone/iPad simulator destinations and `xcodebuild -destination 'platform=iOS Simulator,…' build` succeeds
 - Cooldown runtime engine refactor (2026-04-15):
   - all cooldown runtime state transitions now live in `CooldownRuntimeEngine.swift`; `BluetoothManager` only assembles live inputs, executes typed effects, and syncs published UI state
   - the engine owns cooldown start/tick/completion, stability checks, timeout blocker selection, analytics counters, and completion branching, while telemetry/export schema remains unchanged

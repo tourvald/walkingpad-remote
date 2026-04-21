@@ -153,7 +153,7 @@ struct StatusPill: View {
                 Capsule().fill(.regularMaterial)
             )
             .overlay(
-                Capsule().stroke(Color(UIColor.separator).opacity(0.25), lineWidth: 1)
+                Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -195,8 +195,7 @@ struct StatusPillLabel: View {
             Capsule().fill(.regularMaterial)
         )
         .overlay(
-            Capsule().stroke(Color(UIColor.separator).opacity(0.25), lineWidth: 1)
+            Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1)
         )
     }
 }
-

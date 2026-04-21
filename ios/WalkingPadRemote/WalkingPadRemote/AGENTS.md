@@ -39,6 +39,10 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - `ContentSharedUIComponents.swift` now includes `PrimaryActionButton`, a full-width gradient CTA component matching the existing tile-based action language
   - `HRControlPanel` uses `PrimaryActionButton` for `Запустить HR‑контроль`; the button now shows the active start-block reason in its subtitle when unavailable instead of falling back to a generic disabled bordered button
   - the bottom `HR‑контроль` tab icon was simplified from `heart.text.square` to `heart.circle` so the tab bar reads closer to the rest of the app's icon set
+- Simulator/Xcode recovery note (2026-04-19):
+  - local Xcode `26.4.1` uses `iphonesimulator SDK 23E252`; simulator builds need the matching `iOS 26.4.1 Simulator (23E254a)` runtime, otherwise `Assets.xcassets` can fail with `No simulator runtime version from ["23C54", "23E244"] available`
+  - the main iOS app scheme must keep project-level `SDKROOT = iphoneos`; removing it makes `WalkingPadRemote` appear as `My Mac`-only in `xcodebuild -showdestinations`
+  - UI helper/previews that are shared with non-iOS destinations should prefer pure SwiftUI colors/modifiers when possible; direct UIKit-only references in those files can surface misleading compile failures while the scheme is mis-targeted
 - Detailed cooldown export patch (2026-03-10):
   - `BluetoothManager` now accumulates cooldown-analysis snapshots during cooldown and writes a dedicated one-shot `cooldown_analysis` event before `cooldown_complete`
   - normalized cooldown export fields now include finish reason/blocker, first-hit times, total time below target, total time at min speed, total time satisfying both conditions, and max consecutive stable streak

@@ -72,12 +72,15 @@ struct StatsRightAlignedBlock: View {
 }
 
 #Preview {
-    let manager = BluetoothManager()
-    manager.timeSec = 75
-    manager.distKm = 0.42
-    manager.stepsCount = 356
+    let manager: BluetoothManager = {
+        let manager = BluetoothManager()
+        manager.timeSec = 75
+        manager.distKm = 0.42
+        manager.stepsCount = 356
+        return manager
+    }()
 
-    return StatsRightAlignedBlock(manager: manager)
+    StatsRightAlignedBlock(manager: manager)
         .padding()
-        .background(Color(.secondarySystemBackground))
+        .background(Color.primary.opacity(0.06))
 }
