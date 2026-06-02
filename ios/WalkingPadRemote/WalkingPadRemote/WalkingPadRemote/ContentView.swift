@@ -85,6 +85,7 @@ struct ContentView: View {
             applyScreenAwakePolicy()
         }
         .onChange(of: scenePhase) { _, phase in
+            manager.noteSceneActive(phase == .active)
             if phase == .active {
                 manager.pingWatch()
                 // iOS ignores isIdleTimerDisabled in the background and resets it,

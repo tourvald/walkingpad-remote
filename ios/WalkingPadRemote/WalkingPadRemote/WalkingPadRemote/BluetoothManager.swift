@@ -157,6 +157,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let hrPredictMarginBpm: Int = 2
     private var hrTrendSamples: [(Date, Double)] = []
     private var hrTrendEmaBpm: Double? = nil
+    // Runtime-gap detection (observational only): timestamp of the last session tick, plus the
+    // moment the app last left the foreground, so a stall can be attributed to backgrounding.
+    private var lastRuntimeTickAt: Date? = nil
+    private var sceneBackgroundedAt: Date? = nil
+    private let runtimeGapMinReportableSeconds: Double = 3.0
     private var hrTrendMinWindowSeconds: TimeInterval {
         max(6, hrTrendWindowSeconds * 0.4)
     }
@@ -3092,6 +3097,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrControlStartedAt = Date()
             hrDecisionDetails = ""
             hrPredictorStatusLine = ""
+            lastRuntimeTickAt = nil
+            sceneBackgroundedAt = nil
             hrWorkoutRecorded = false
             hrTrendSamples.removeAll()
             hrTrendEmaBpm = nil
@@ -3303,6 +3310,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
 
         if isHrControlRunning {
+            let runtimeTickNow = Date()
+            if let gap = RuntimeGapMonitor.evaluate(
+                lastTickAt: lastRuntimeTickAt,
+                now: runtimeTickNow,
+                expectedIntervalSeconds: 1.0,
+                minReportableSeconds: runtimeGapMinReportableSeconds
+            ) {
+                logRuntimeGap(gap, now: runtimeTickNow)
+            }
+            lastRuntimeTickAt = runtimeTickNow
             if hrAwaitingInitialHeartRateSample {
                 let waitSeconds = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
                 if waitSeconds >= hrNoDataMaxSeconds {
@@ -4207,6 +4224,42 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             minWindowSeconds: hrTrendMinWindowSeconds,
             clampMaxBpmPerSecond: hrTrendSlopeMaxBpmPerSecond
         )
+    }
+
+    /// Records leaving the foreground during a session so a later runtime gap can be attributed
+    /// to backgrounding. Returning to the foreground needs no action here — the next telemetry
+    /// tick measures any stall directly. Called from the SwiftUI scene-phase observer.
+    func noteSceneActive(_ isActive: Bool) {
+        guard !isActive, isHrControlRunning else { return }
+        sceneBackgroundedAt = Date()
+    }
+
+    /// Writes an observational `runtime_gap` telemetry event. Does not affect treadmill control.
+    private func logRuntimeGap(_ gap: RuntimeGapMonitor.Gap, now: Date) {
+        let gapStart = now.addingTimeInterval(-gap.seconds)
+        let wasBackgrounded: Bool
+        let backgroundSeconds: Double
+        if let backgroundedAt = sceneBackgroundedAt, backgroundedAt >= gapStart {
+            wasBackgrounded = true
+            backgroundSeconds = max(0, now.timeIntervalSince(backgroundedAt))
+        } else {
+            wasBackgrounded = false
+            backgroundSeconds = 0
+        }
+        sceneBackgroundedAt = nil
+        let hrAgeSeconds = hrLastValueAt.map { max(0, Int(now.timeIntervalSince($0))) } ?? -1
+        appendLog("Runtime gap: \(String(format: "%.1f", gap.seconds))s backgrounded=\(wasBackgrounded)")
+        logTrainingEvent("runtime_gap", fields: [
+            "gap_s": gap.seconds,
+            "expected_interval_s": gap.expectedIntervalSeconds,
+            "was_backgrounded": wasBackgrounded,
+            "background_s": backgroundSeconds,
+            "session_state": currentSessionState(),
+            "is_cooldown": cooldownRuntimeState != nil,
+            "hr_age_s": hrAgeSeconds,
+            "remaining_s": hrRemainingSeconds,
+            "cooldown_remaining_s": hrCooldownRemainingSeconds
+        ])
     }
 
     private func recordHrWorkoutIfNeeded() {
