@@ -1,0 +1,10 @@
+source_file,ts,session_id,event,session_state,is_hr_running,speed_target_kmh,speed_device_target_kmh,speed_reported_kmh,speed_actual_kmh,stop_confirmed,raw_json
+sess-A.jsonl,2026-06-02T09:00:55Z,sess-A,hr_decision,hr_control,true,4.2,4.2,4.1,4.1,,
+sess-A.jsonl,2026-06-02T09:00:56Z,sess-A,hr_sample,hr_control,true,4.2,4.2,4.1,4.1,,
+sess-A.jsonl,2026-06-02T09:00:57Z,sess-A,hr_decision,hr_control,true,4.2,4.2,4.1,4.1,,
+sess-A.jsonl,2026-06-02T09:00:58Z,sess-A,hr_sample,hr_control,true,4.2,4.2,4.1,4.1,,
+sess-A.jsonl,2026-06-02T09:00:59Z,sess-A,hr_decision,hr_control,true,4.2,4.2,4.1,4.1,,
+sess-A.jsonl,2026-06-02T09:01:21Z,sess-A,runtime_gap,hr_control,true,4.2,4.2,4.1,4.1,,"{""event"": ""runtime_gap"", ""gap_s"": 22.0, ""was_backgrounded"": true, ""background_s"": 21.5, ""session_state"": ""hr_control""}"
+sess-A.jsonl,2026-06-02T09:01:22Z,sess-A,hr_sample,hr_control,true,4.2,4.2,4.1,4.1,,
+sess-A.jsonl,2026-06-02T09:01:23Z,sess-A,hr_decision,hr_control,true,4.2,4.2,4.0,4.0,,
+sess-A.jsonl,2026-06-02T09:01:24Z,sess-A,hr_sample,hr_control,true,4.2,4.2,4.1,4.1,,
