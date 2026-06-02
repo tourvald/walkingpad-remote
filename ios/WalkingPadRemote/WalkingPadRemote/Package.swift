@@ -27,6 +27,7 @@ let package = Package(
                 "DebugSharedUIComponents.swift",
                 "DebugTrainingLogsCard.swift",
                 "DevicePickerView.swift",
+                "IPhoneHealthKitHeartRateManager.swift",
                 "PlankTimerView.swift",
                 "StatsRightAlignedBlock.swift",
                 "StatusPillsRow.swift",
@@ -36,11 +37,13 @@ let package = Package(
             sources: [
                 "BLETransportCodec.swift",
                 "CooldownRuntimeEngine.swift",
+                "HRControlDecisionEngine.swift",
                 "HRDomainService.swift",
                 "HRSettingsDefaults.swift",
                 "TrainingTelemetryWriter.swift",
                 "CommandQueueService.swift",
-                "TreadmillSpeedBoundsService.swift"
+                "TreadmillSpeedBoundsService.swift",
+                "TreadmillTestRunPlanService.swift"
             ]
         ),
         .testTarget(

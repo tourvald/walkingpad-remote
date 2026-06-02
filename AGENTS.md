@@ -64,6 +64,12 @@
   - after updating local Xcode to `iphonesimulator SDK 23E252`, simulator builds required the matching `iOS 26.4.1 Simulator (23E254a)` runtime; until it was installed, Xcode/`xcodebuild` could emit `No simulator runtime version from ["23C54", "23E244"] available`
   - keep project-level `SDKROOT = iphoneos` in `WalkingPadRemote.xcodeproj/project.pbxproj`; removing it makes the main app scheme collapse to `My Mac` as the only runnable destination
   - once the matching runtime is installed and `SDKROOT` is preserved, `WalkingPadRemote` again exposes normal iPhone/iPad simulator destinations and `xcodebuild -destination 'platform=iOS Simulator,…' build` succeeds
+- HR failure diagnostics wiring (2026-04-21):
+  - raw log export scope is now separated from session-summary scope: `TrainingRawLogExportScope` uses `all` / `last N sessions`, while `TrainingSessionSummaryExportScope` stays `all completed` / `last N completed workouts`
+  - `Export Training CSV` recent scopes now mean the latest retained raw session logs for the active profile, including failed or otherwise unfinished HR sessions; `Export Session Summary` remains completed-only via `workout_saved`
+  - `TrainingTelemetryWriter.SessionLogSummary` now tracks session outcome metadata (`endedAt`, `sessionEndReason`, `containsFailedWorkout`, `hrFailureReason`) so failed HR sessions can be classified without changing workout-history persistence
+  - `HR Failures` is now rebuilt from retained raw `TrainingLogs/*.jsonl` for the active profile; live in-memory append still happens at runtime, but refresh/relaunch uses raw logs as the canonical source
+  - after a successful share/export, exported raw `jsonl` files are still deleted; if a failed session log is cleaned up, its rebuilt `HR Failures` entry can disappear after refresh or relaunch
 - Cooldown runtime engine refactor (2026-04-15):
   - all cooldown runtime state transitions now live in `CooldownRuntimeEngine.swift`; `BluetoothManager` only assembles live inputs, executes typed effects, and syncs published UI state
   - the engine owns cooldown start/tick/completion, stability checks, timeout blocker selection, analytics counters, and completion branching, while telemetry/export schema remains unchanged
@@ -95,6 +101,11 @@
   - Debug UI now has explicit destructive action `Clear Training Logs`; it deletes only raw `TrainingLogs/*.jsonl` files for the active profile, never `workoutHistory`
   - active session log remains protected from both manual clear and post-share export cleanup
   - `lastTrainingLogPath` is now refreshed from the currently available active-profile JSONL files, so the debug label does not point to a deleted log after cleanup
+- Debug treadmill test run (2026-05-19):
+  - Debug `Training Logs` now includes `Start Test Run` / `Stop Test Run` for a 3-minute treadmill-only diagnostic scenario
+  - the scenario starts the belt at the configured running minimum/base speed, ramps toward 8.0 km/h, ramps back down, sends the normal stop sequence, and keeps the structured log open for the existing 30-second post-stop observation window
+  - the pure speed plan lives in `TreadmillTestRunPlanService.swift`; `BluetoothManager` only executes the plan, sends BLE commands, and writes `treadmill_test_*` telemetry events
+  - raw CSV export includes normalized test-run columns (`test_phase`, elapsed/remaining/progress, target speed, duration, peak speed) while retaining full payloads in `raw_json`
 - Debug card extraction / presentation props (2026-03-21):
   - `ContentView.swift` no longer renders `Training Logs` and `HR Failures` inline; these blocks now live in `DebugTrainingLogsCard.swift` and `DebugHrFailuresCard.swift`
   - both debug cards use presentation models/props assembled in `DebugView`, instead of reading `BluetoothManager` directly inside the card views
@@ -310,6 +321,23 @@
 - Temporary rollback note (2026-02-16):
   - attempted session reliability patch (`idleTimerDisabled` in `ContentView` + BLE state restoration + `UIBackgroundModes bluetooth-central`) was reverted after a user-reported launch issue (white screen on real device)
   - app is currently back to pre-patch behavior for these parts; root cause needs re-validation on-device before re-introducing changes
+- HR source modes update (2026-05-06):
+  - `BluetoothManager.HeartRateSourceMode` now supports two HR paths: legacy `apple_watch_legacy` via watch app + WatchConnectivity, and `iphone_healthkit` via an iPhone `HKWorkoutSession`/`HKLiveWorkoutBuilder`
+  - iPhone HealthKit mode intentionally does not start the watch HR session; Apple HealthKit supplies the live HR stream and system source selection can use Apple Watch, AirPods, or other supported system HR sources
+  - `IPhoneHealthKitHeartRateManager.swift` owns the iPhone workout/session integration; `BluetoothManager` remains the orchestrator for source selection, HR sample ingestion, treadmill start/stop, stale handling, and telemetry
+  - in iPhone HealthKit mode the treadmill waits for the first live HR sample before starting from HR-control start
+  - HR telemetry and CSV export include `hr_source_mode` to distinguish source behavior in future analysis
+  - research notes are kept in `docs/research/apple-watch-airpods-heart-rate.md`
+- Treadmill speed truth-source / post-session diagnostics (2026-05-17):
+  - UI-facing speed now uses fresh device-reported treadmill speed when available; the old internally modeled speed remains logged as `speed_model_kmh`
+  - training CSV rows include explicit speed diagnostics: `speed_actual_kmh`, `speed_model_kmh`, `speed_reported_kmh`, `speed_reported_app_kmh`, `speed_source`, `speed_has_fresh_report`, and `speed_report_age_s`
+  - normal HR-session terminal paths write `session_finished` at logical workout end, then keep the JSONL log open for a 30-second post-session observation window before `session_end`
+  - session summaries use `session_finished` as the logical end time when present, so delayed log closure does not inflate workout duration
+  - training-log inventory and HR-failure rebuild run on `BluetoothManager.trainingLogAnalysis` instead of the main thread; keep JSONL parsing off app launch/UI paths to avoid black-screen startup stalls
+- WalkingPad stop hardening (2026-05-18):
+  - WalkingPad stop flow no longer sends the `0x04/0x01` start/stop toggle after `speed=0`; logs showed that this could leave the belt running at the 0.8 km/h app minimum
+  - stop assist now uses the reference-client pattern: send `speed=0`, then `MODE STANDBY`, with bounded retries/checks during the 30-second post-session observation window
+  - raw CSV includes `stop_verification` fields (`stop_confirmed`, assist command/sent flag, source, report age, reported speed/app speed/state) so stale model fallback cannot hide an unconfirmed stop
 
 ## Current Navigation (iOS)
 - `HR‑контроль`

@@ -1,15 +1,15 @@
 import Foundation
 
-enum TrainingLogCsvExportScope: Equatable {
+enum TrainingRawLogExportScope: Equatable {
     case all
-    case lastCompletedWorkouts(Int)
+    case lastSessions(Int)
 
     var buttonTitle: String {
         switch self {
         case .all:
-            return "Все логи"
-        case .lastCompletedWorkouts(let count):
-            return "Последние \(count) тренировки"
+            return "Все raw логи"
+        case .lastSessions(let count):
+            return "Последние \(count) сессии"
         }
     }
 
@@ -17,6 +17,47 @@ enum TrainingLogCsvExportScope: Equatable {
         switch self {
         case .all:
             return "Training logs not found yet. Start HR session first."
+        case .lastSessions(let count):
+            return "Training logs not found yet. Need at least \(count) retained sessions or fewer available ones."
+        }
+    }
+
+    var fileNameSuffix: String {
+        switch self {
+        case .all:
+            return ""
+        case .lastSessions(let count):
+            return "_last\(count)"
+        }
+    }
+
+    var logDescription: String {
+        switch self {
+        case .all:
+            return "all_sessions"
+        case .lastSessions(let count):
+            return "last_\(count)_sessions"
+        }
+    }
+}
+
+enum TrainingSessionSummaryExportScope: Equatable {
+    case allCompleted
+    case lastCompletedWorkouts(Int)
+
+    var buttonTitle: String {
+        switch self {
+        case .allCompleted:
+            return "Все тренировки"
+        case .lastCompletedWorkouts(let count):
+            return "Последние \(count) тренировки"
+        }
+    }
+
+    var missingLogsMessage: String {
+        switch self {
+        case .allCompleted:
+            return "Completed training logs not found yet. Start and save an HR workout first."
         case .lastCompletedWorkouts(let count):
             return "Completed training logs not found yet. Need at least \(count) saved workouts or fewer completed ones."
         }
@@ -24,7 +65,7 @@ enum TrainingLogCsvExportScope: Equatable {
 
     var fileNameSuffix: String {
         switch self {
-        case .all:
+        case .allCompleted:
             return ""
         case .lastCompletedWorkouts(let count):
             return "_last\(count)"
@@ -33,10 +74,10 @@ enum TrainingLogCsvExportScope: Equatable {
 
     var logDescription: String {
         switch self {
-        case .all:
-            return "all"
+        case .allCompleted:
+            return "all_completed"
         case .lastCompletedWorkouts(let count):
-            return "last_\(count)_workouts"
+            return "last_\(count)_completed_workouts"
         }
     }
 }
@@ -49,12 +90,34 @@ enum TrainingTelemetryWriter {
     }
 
     struct SessionLogSummary: Equatable {
+        enum Outcome: String, Equatable {
+            case saved
+            case failed
+            case aborted
+            case unknown
+        }
+
         let fileURL: URL
         let startedAt: Date
+        let endedAt: Date?
+        let sessionID: String?
+        let outcome: Outcome
+        let sessionEndReason: String?
         let containsSavedWorkout: Bool
+        let containsFailedWorkout: Bool
+        let hrFailureReason: String?
         let profileID: String?
         let profileLabel: String?
         let fileSizeBytes: Int64
+    }
+
+    struct HrFailureLogReport: Equatable {
+        let sourceFile: String
+        let sessionID: String
+        let reason: String
+        let start: Date
+        let end: Date
+        let lines: [String]
     }
 
     struct TrainingLogsInventory: Equatable {
@@ -106,6 +169,7 @@ enum TrainingTelemetryWriter {
         "phase",
         "session_state",
         "is_hr_running",
+        "hr_source_mode",
         "hr_bpm",
         "hr_last_bpm",
         "target_bpm",
@@ -147,13 +211,27 @@ enum TrainingTelemetryWriter {
         "cooldown_stable_ok",
         "cooldown_stability_blocker",
         "speed_actual_kmh",
+        "speed_model_kmh",
         "speed_target_kmh",
         "speed_device_target_kmh",
         "speed_reported_kmh",
         "speed_reported_app_kmh",
+        "speed_source",
+        "speed_has_fresh_report",
+        "speed_report_age_s",
+        "stop_confirmed",
+        "stop_assist_command",
+        "stop_assist_sent",
+        "stop_source",
+        "stop_report_age_s",
+        "stop_reported_speed_kmh",
+        "stop_reported_app_speed_kmh",
+        "stop_reported_state",
+        "stop_has_fresh_report",
         "speed_delta_kmh",
         "decision",
         "reason",
+        "post_session_observation_s",
         "diff_bpm",
         "diff_percent",
         "step_tag",
@@ -165,6 +243,14 @@ enum TrainingTelemetryWriter {
         "delay_s",
         "status",
         "error",
+        "test_run_active",
+        "test_phase",
+        "test_elapsed_s",
+        "test_remaining_s",
+        "test_progress",
+        "test_target_speed_kmh",
+        "test_duration_s",
+        "test_peak_speed_kmh",
         "raw_json"
     ]
 
@@ -306,7 +392,7 @@ enum TrainingTelemetryWriter {
 
     nonisolated static func selectJsonlFilesForExport(
         _ files: [URL],
-        scope: TrainingLogCsvExportScope
+        scope: TrainingRawLogExportScope
     ) -> [URL] {
         let summaries = files.compactMap(summarizeJsonlFile)
 
@@ -322,10 +408,9 @@ enum TrainingTelemetryWriter {
                 let right = (try? rhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
                 return left < right
             }
-        case .lastCompletedWorkouts(let limit):
+        case .lastSessions(let limit):
             guard limit > 0 else { return [] }
             return summaries
-                .filter(\.containsSavedWorkout)
                 .sorted { $0.startedAt < $1.startedAt }
                 .suffix(limit)
                 .map(\.fileURL)
@@ -334,7 +419,7 @@ enum TrainingTelemetryWriter {
 
     nonisolated static func selectCompletedJsonlFilesForExport(
         _ files: [URL],
-        scope: TrainingLogCsvExportScope
+        scope: TrainingSessionSummaryExportScope
     ) -> [URL] {
         let completed = files
             .compactMap(summarizeJsonlFile)
@@ -342,12 +427,18 @@ enum TrainingTelemetryWriter {
             .sorted { $0.startedAt < $1.startedAt }
 
         switch scope {
-        case .all:
+        case .allCompleted:
             return completed.map(\.fileURL)
         case .lastCompletedWorkouts(let limit):
             guard limit > 0 else { return [] }
             return completed.suffix(limit).map(\.fileURL)
         }
+    }
+
+    nonisolated static func hrFailureLogReports(from files: [URL]) -> [HrFailureLogReport] {
+        files
+            .compactMap(hrFailureLogReport(from:))
+            .sorted { $0.end > $1.end }
     }
 
     nonisolated static func selectJsonlFilesForClear(
@@ -520,49 +611,97 @@ enum TrainingTelemetryWriter {
     }
 
     nonisolated static func summarizeJsonlFile(_ file: URL) -> SessionLogSummary? {
-        let payloads = loadJsonlPayloads(from: file)
+        let payloads = sortedPayloads(loadJsonlPayloads(from: file))
         guard !payloads.isEmpty else {
             return nil
         }
 
-        var startedAt: Date? = nil
-        var containsSavedWorkout = false
-        var profileID: String? = nil
-        var profileLabel: String? = nil
-        let fileSizeBytes = fileSizeBytes(for: file)
-
-        for payload in payloads {
-            if let event = payload["event"] as? String, event == "workout_saved" {
-                containsSavedWorkout = true
-            }
-
-            if profileID == nil,
-               let value = stringValue(payload["profile_id"]),
-               !value.isEmpty {
-                profileID = value
-            }
-
-            if profileLabel == nil,
-               let value = stringValue(payload["profile_label"]),
-               !value.isEmpty {
-                profileLabel = value
-            }
-
-            if startedAt == nil,
-               let timestamp = payload["ts"] as? String,
-               let date = iso8601Date(timestamp) {
-                startedAt = date
-            }
-        }
-
         let fallbackDate = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+        let startedAt = payloadTimestamp(payloads.first) ?? fallbackDate
+        let endedAt = payloadTimestamp(payloads.last)
+        let sessionID = sessionIdentifier(sourceFile: file.lastPathComponent, payloads: payloads)
+
+        let containsSavedWorkout = payloads.contains { payloadEvent($0) == "workout_saved" }
+        let sessionEndReason = payloads.reversed().compactMap { payload -> String? in
+            guard payloadEvent(payload) == "session_end" else { return nil }
+            return stringValue(payload["reason"])
+        }.first
+        let hrFailureReason = payloads.reversed().compactMap(hrFailureReason(from:)).first
+        let containsFailedWorkout = payloads.contains(where: isFailedWorkoutPayload)
+
+        let outcome: SessionLogSummary.Outcome = {
+            if containsSavedWorkout {
+                return .saved
+            }
+            if containsFailedWorkout {
+                return .failed
+            }
+            if sessionEndReason != nil {
+                return .aborted
+            }
+            return .unknown
+        }()
+
+        let profileID = payloads.compactMap { payload -> String? in
+            guard let value = stringValue(payload["profile_id"]), !value.isEmpty else { return nil }
+            return value
+        }.first
+        let profileLabel = payloads.compactMap { payload -> String? in
+            guard let value = stringValue(payload["profile_label"]), !value.isEmpty else { return nil }
+            return value
+        }.first
+
         return SessionLogSummary(
             fileURL: file,
-            startedAt: startedAt ?? fallbackDate,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            sessionID: sessionID,
+            outcome: outcome,
+            sessionEndReason: sessionEndReason,
             containsSavedWorkout: containsSavedWorkout,
+            containsFailedWorkout: containsFailedWorkout,
+            hrFailureReason: hrFailureReason,
             profileID: profileID,
             profileLabel: profileLabel,
-            fileSizeBytes: fileSizeBytes
+            fileSizeBytes: fileSizeBytes(for: file)
+        )
+    }
+
+    private nonisolated static func hrFailureLogReport(from file: URL) -> HrFailureLogReport? {
+        let payloads = sortedPayloads(loadJsonlPayloads(from: file))
+        guard !payloads.isEmpty else { return nil }
+
+        let failureIndex = payloads.indices.reversed().first(where: {
+            payloadEvent(payloads[$0]) == "hr_control_failed" && hrFailureReason(from: payloads[$0]) != nil
+        }) ?? payloads.indices.reversed().first(where: {
+            payloadEvent(payloads[$0]) == "session_end" && hrFailureReason(from: payloads[$0]) != nil
+        })
+        let failureCode = failureIndex.flatMap { hrFailureReason(from: payloads[$0]) }
+
+        guard let failureIndex, let failureCode else { return nil }
+
+        let failurePayload = payloads[failureIndex]
+        let sessionEndIndex = (failureIndex..<payloads.count).first(where: { payloadEvent(payloads[$0]) == "session_end" })
+        let fallbackDate = payloadTimestamp(failurePayload) ?? .distantPast
+        let start = hrFailureStartDate(
+            failureCode: failureCode,
+            payloads: payloads,
+            failureIndex: failureIndex,
+            fallbackDate: fallbackDate
+        )
+        let end = sessionEndIndex.flatMap { payloadTimestamp(payloads[$0]) } ?? fallbackDate
+
+        return HrFailureLogReport(
+            sourceFile: file.lastPathComponent,
+            sessionID: sessionIdentifier(sourceFile: file.lastPathComponent, payloads: payloads),
+            reason: hrFailureDisplayReason(failureCode),
+            start: start,
+            end: end,
+            lines: diagnosticLines(
+                payloads: payloads,
+                failureIndex: failureIndex,
+                sessionEndIndex: sessionEndIndex
+            )
         )
     }
 
@@ -593,12 +732,14 @@ enum TrainingTelemetryWriter {
             return nil
         }
 
-        let startedAt = iso8601Date(stringValue(sortedPayloads.first?["ts"]) ?? "")
-        let endedAt = iso8601Date(stringValue(sortedPayloads.last?["ts"]) ?? "")
-        let sessionDurationSeconds = max(0, Int((endedAt ?? .distantPast).timeIntervalSince(startedAt ?? .distantPast)))
-
         let sessionStartPayload = sortedPayloads.first(where: { stringValue($0["event"]) == "session_start" })
+        let sessionFinishedPayload = sortedPayloads.last(where: { stringValue($0["event"]) == "session_finished" })
         let sessionEndPayload = sortedPayloads.last(where: { stringValue($0["event"]) == "session_end" })
+        let logicalEndPayload = sessionFinishedPayload ?? sessionEndPayload ?? sortedPayloads.last
+
+        let startedAt = iso8601Date(stringValue(sessionStartPayload?["ts"]) ?? stringValue(sortedPayloads.first?["ts"]) ?? "")
+        let endedAt = iso8601Date(stringValue(logicalEndPayload?["ts"]) ?? "")
+        let sessionDurationSeconds = max(0, Int((endedAt ?? .distantPast).timeIntervalSince(startedAt ?? .distantPast)))
 
         let sessionID = stringValue(sessionStartPayload?["session_id"])
             ?? stringValue(sortedPayloads.first?["session_id"])
@@ -615,7 +756,7 @@ enum TrainingTelemetryWriter {
             ?? stringValue(sortedPayloads.first?["profile_label"])
             ?? stringValue(sortedPayloads.last?["profile_label"])
             ?? ""
-        let sessionEndReason = stringValue(sessionEndPayload?["reason"]) ?? ""
+        let sessionEndReason = stringValue(logicalEndPayload?["reason"]) ?? ""
 
         let zonePayload = sortedPayloads.last(where: { $0["zone_seconds"] != nil }) ?? sortedPayloads.last
         let zones = zoneSeconds(from: zonePayload ?? [:])
@@ -765,6 +906,172 @@ enum TrainingTelemetryWriter {
         payloads.reversed().compactMap { doubleValue($0[key]) }.first
     }
 
+    private nonisolated static func sortedPayloads(_ payloads: [[String: Any]]) -> [[String: Any]] {
+        payloads.sorted {
+            let left = payloadTimestamp($0) ?? .distantPast
+            let right = payloadTimestamp($1) ?? .distantPast
+            return left < right
+        }
+    }
+
+    private nonisolated static func payloadTimestamp(_ payload: [String: Any]?) -> Date? {
+        guard let payload, let timestamp = stringValue(payload["ts"]) else { return nil }
+        return iso8601Date(timestamp)
+    }
+
+    private nonisolated static func payloadEvent(_ payload: [String: Any]) -> String {
+        stringValue(payload["event"]) ?? ""
+    }
+
+    private nonisolated static func sessionIdentifier(sourceFile: String, payloads: [[String: Any]]) -> String {
+        for payload in payloads {
+            if let value = stringValue(payload["session_id"]), !value.isEmpty {
+                return value
+            }
+        }
+        return sourceFile
+    }
+
+    private nonisolated static func normalizedHrFailureReason(_ value: String?) -> String? {
+        guard let rawValue = value else {
+            return nil
+        }
+
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else {
+            return nil
+        }
+
+        switch value {
+        case "no_hr_signal", "hr_no_signal":
+            return "no_hr_signal"
+        case "no_connection", "hr_no_connection":
+            return "no_connection"
+        default:
+            return nil
+        }
+    }
+
+    private nonisolated static func hrFailureDisplayReason(_ code: String) -> String {
+        switch code {
+        case "no_hr_signal":
+            return "Нет данных пульса"
+        case "no_connection":
+            return "Нет подключения к дорожке"
+        default:
+            return code
+        }
+    }
+
+    private nonisolated static func hrFailureReason(from payload: [String: Any]) -> String? {
+        let event = payloadEvent(payload)
+        switch event {
+        case "hr_control_failed", "session_end":
+            return normalizedHrFailureReason(stringValue(payload["reason"]))
+        default:
+            return nil
+        }
+    }
+
+    private nonisolated static func isFailedWorkoutPayload(_ payload: [String: Any]) -> Bool {
+        let event = payloadEvent(payload)
+        if event == "workout_not_saved" {
+            return stringValue(payload["reason"]) == "failed"
+        }
+        return hrFailureReason(from: payload) != nil
+    }
+
+    private nonisolated static func hrFailureStartDate(
+        failureCode: String,
+        payloads: [[String: Any]],
+        failureIndex: Int,
+        fallbackDate: Date
+    ) -> Date {
+        if failureCode == "no_hr_signal" {
+            for index in stride(from: failureIndex, through: 0, by: -1) {
+                let payload = payloads[index]
+                if payloadEvent(payload) == "hr_stream_state",
+                   let active = payload["active"] as? Bool,
+                   !active,
+                   let timestamp = payloadTimestamp(payload) {
+                    return timestamp
+                }
+            }
+
+            for index in stride(from: failureIndex, through: 0, by: -1) {
+                let payload = payloads[index]
+                if payloadEvent(payload) == "hr_sample",
+                   let timestamp = payloadTimestamp(payload) {
+                    return timestamp
+                }
+            }
+        }
+
+        return fallbackDate
+    }
+
+    private nonisolated static func diagnosticLines(
+        payloads: [[String: Any]],
+        failureIndex: Int,
+        sessionEndIndex: Int?
+    ) -> [String] {
+        var selectedIndices = Array(payloads[..<failureIndex]
+            .indices
+            .filter { isRelevantFailureDiagnosticEvent(payloadEvent(payloads[$0])) }
+            .suffix(4))
+
+        selectedIndices.append(failureIndex)
+        if let sessionEndIndex, sessionEndIndex != failureIndex {
+            selectedIndices.append(sessionEndIndex)
+        }
+
+        return selectedIndices.map { formatDiagnosticLine(payloads[$0]) }
+    }
+
+    private nonisolated static func isRelevantFailureDiagnosticEvent(_ event: String) -> Bool {
+        switch event {
+        case "hr_stream_state", "hr_sample", "command_write", "speed_target_changed":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private nonisolated static func formatDiagnosticLine(_ payload: [String: Any]) -> String {
+        let timestamp = stringValue(payload["ts"]) ?? "unknown_ts"
+        let event = payloadEvent(payload)
+        var fields: [String] = []
+
+        let keys = [
+            "reason",
+            "post_session_observation_s",
+            "session_state",
+            "hr_bpm",
+            "hr_last_bpm",
+            "last_age_s",
+            "missing_s",
+            "elapsed_s",
+            "speed_target_kmh",
+            "speed_actual_kmh",
+            "speed_model_kmh",
+            "speed_device_target_kmh",
+            "speed_reported_kmh",
+            "speed_source",
+            "speed_report_age_s",
+            "label",
+            "status"
+        ]
+
+        for key in keys {
+            guard let value = payload[key] else { continue }
+            let string = csvString(value)
+            guard !string.isEmpty else { continue }
+            fields.append("\(key)=\(string)")
+        }
+
+        return "[\(timestamp)] \(event)\(fields.isEmpty ? "" : " · " + fields.joined(separator: " · "))"
+    }
+
     private nonisolated static func intValue(_ value: Any?) -> Int? {
         if let int = value as? Int { return int }
         if let number = value as? NSNumber { return number.intValue }
@@ -825,6 +1132,7 @@ enum TrainingTelemetryWriter {
             csvString(payload["phase"]),
             csvString(payload["session_state"]),
             csvString(payload["is_hr_running"]),
+            csvString(payload["hr_source_mode"]),
             csvString(payload["hr_bpm"]),
             csvString(payload["hr_last_bpm"]),
             csvString(payload["target_bpm"]),
@@ -866,13 +1174,27 @@ enum TrainingTelemetryWriter {
             csvString(payload["cooldown_stable_ok"]),
             csvString(payload["cooldown_stability_blocker"]),
             csvString(payload["speed_actual_kmh"]),
+            csvString(payload["speed_model_kmh"]),
             csvString(payload["speed_target_kmh"]),
             csvString(payload["speed_device_target_kmh"]),
             csvString(payload["speed_reported_kmh"]),
             csvString(payload["speed_reported_app_kmh"]),
+            csvString(payload["speed_source"]),
+            csvString(payload["speed_has_fresh_report"]),
+            csvString(payload["speed_report_age_s"]),
+            csvString(payload["stop_confirmed"]),
+            csvString(payload["stop_assist_command"]),
+            csvString(payload["stop_assist_sent"]),
+            csvString(payload["stop_source"]),
+            csvString(payload["stop_report_age_s"]),
+            csvString(payload["stop_reported_speed_kmh"]),
+            csvString(payload["stop_reported_app_speed_kmh"]),
+            csvString(payload["stop_reported_state"]),
+            csvString(payload["stop_has_fresh_report"]),
             csvString(payload["speed_delta_kmh"]),
             csvString(payload["decision"]),
             csvString(payload["reason"]),
+            csvString(payload["post_session_observation_s"]),
             csvString(payload["diff_bpm"]),
             csvString(payload["diff_percent"]),
             csvString(payload["step_tag"]),
@@ -884,6 +1206,14 @@ enum TrainingTelemetryWriter {
             csvString(payload["delay_s"]),
             csvString(payload["status"]),
             csvString(payload["error"]),
+            csvString(payload["test_run_active"]),
+            csvString(payload["test_phase"]),
+            csvString(payload["test_elapsed_s"]),
+            csvString(payload["test_remaining_s"]),
+            csvString(payload["test_progress"]),
+            csvString(payload["test_target_speed_kmh"]),
+            csvString(payload["test_duration_s"]),
+            csvString(payload["test_peak_speed_kmh"]),
             jsonString(payload)
         ]
     }

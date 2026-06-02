@@ -77,12 +77,31 @@ struct ContentView: View {
                 }
                 .tag(RootTab.debug)
         }
-        .onAppear { manager.start() }
+        .onAppear {
+            manager.start()
+            applyScreenAwakePolicy()
+        }
+        .onChange(of: manager.isHrControlRunning) { _, _ in
+            applyScreenAwakePolicy()
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 manager.pingWatch()
+                // iOS ignores isIdleTimerDisabled in the background and resets it,
+                // so re-apply when the app returns to the foreground.
+                applyScreenAwakePolicy()
             }
         }
+    }
+
+    /// Keep the screen awake only while an HR-control session (training or cooldown) is active.
+    /// The decision/command/cooldown loop runs on foreground main-thread timers, which iOS
+    /// suspends when the device locks; keeping the screen on keeps that control loop alive.
+    /// Reset otherwise so we do not drain the battery on idle/stats screens.
+    private func applyScreenAwakePolicy() {
+        #if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = manager.isHrControlRunning
+        #endif
     }
 }
 
@@ -316,7 +335,7 @@ private struct ManualView: View {
         return SpeedBounds(min: minV, max: cappedMax, increment: cappedInc)
     }
 
-    private var currentSpeed: Double { max(0.0, min(speedBounds.max, manager.speedKmh)) }
+    private var currentSpeed: Double { max(0.0, min(speedBounds.max, manager.treadmillActualSpeedKmh)) }
     private var targetSpeed: Double { max(speedBounds.min, min(speedBounds.max, manager.desiredSpeedKmh)) }
 
     private var targetSpeedBinding: Binding<Double> {
@@ -502,6 +521,8 @@ private func hrZoneIndex(for bpm: Int, manager: BluetoothManager) -> Int {
 }
 
 private func hrWatchIssue(for manager: BluetoothManager) -> HrWatchIssue? {
+    guard manager.hrSourceMode == .appleWatchLegacy else { return nil }
+
     if !manager.watchPaired {
         return HrWatchIssue(
             title: "Часы не сопряжены",
@@ -940,7 +961,7 @@ private struct HRControlPanel: View {
         let hrStatusLine = debugPreview?.hrStatusLine ?? manager.hrStatusLine
         let canExtendHrSession = debugPreview?.canExtendHrSession ?? manager.canExtendHrSession
         let hrSessionMaxMinutes = debugPreview?.hrSessionMaxMinutes ?? manager.hrSessionMaxMinutes
-        let canStartHrControl = manager.isHrControlStartAllowed && manager.watchReachable && manager.hrStreamingActive
+        let canStartHrControl = manager.isHrControlStartAllowed
         let headerTint: Color = isHrControlRunning ? .accentColor : (hrStreamingActive ? .green : .orange)
         let hrStartSubtitle: String = {
             if isPreviewMode {
@@ -949,7 +970,7 @@ private struct HRControlPanel: View {
             if canStartHrControl {
                 return "Автоподстройка скорости по пульсу и зоне"
             }
-            return manager.hrControlStartBlockReasonText ?? "Проверьте дорожку и Apple Watch"
+            return manager.hrControlStartBlockReasonText ?? "Проверьте дорожку и источник пульса"
         }()
 
         Card {
@@ -1654,6 +1675,44 @@ private struct HRParametersFormView: View {
 
                 if manager.isHrControlRunning {
                     Text("Во время активной тренировки переключение и редактирование профиля заблокировано.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section(
+                header: Text("Источник пульса"),
+                footer: Text(manager.hrSourceMode.detail)
+            ) {
+                Picker("Источник", selection: Binding(
+                    get: { manager.hrSourceMode },
+                    set: { manager.hrSourceMode = $0 }
+                )) {
+                    ForEach(BluetoothManager.HeartRateSourceMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(manager.isHrControlRunning)
+
+                switch manager.hrSourceMode {
+                case .appleWatchLegacy:
+                    Label("Используется watch app и WatchConnectivity", systemImage: "applewatch")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                case .iPhoneHealthKit:
+                    Label("iPhone запускает HealthKit workout без запуска watch HR session", systemImage: "heart.text.square")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                    if !manager.iPhoneHealthKitHrStatusText.isEmpty {
+                        Text(manager.iPhoneHealthKitHrStatusText)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if manager.isHrControlRunning {
+                    Text("Во время активной тренировки источник пульса заблокирован.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -2737,29 +2796,42 @@ private struct DebugView: View {
     @State private var hrControlPreviewMode: HrControlPreviewMode = .workout
     @State private var previewNoHrSignal = false
 
-    private var trainingLogScopeOptions: [TrainingLogCsvExportScope] {
-        [.all, .lastCompletedWorkouts(3), .lastCompletedWorkouts(5)]
+    private var rawTrainingLogScopeOptions: [TrainingRawLogExportScope] {
+        [.all, .lastSessions(3), .lastSessions(5)]
+    }
+
+    private var sessionSummaryScopeOptions: [TrainingSessionSummaryExportScope] {
+        [.allCompleted, .lastCompletedWorkouts(3), .lastCompletedWorkouts(5)]
     }
 
     private func formattedByteCount(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
-    private func trainingLogsMenuItemTitle(
-        scope: TrainingLogCsvExportScope,
-        sessionSummaryOnly: Bool
-    ) -> String {
-        let count = manager.trainingLogsExportCount(for: scope, sessionSummaryOnly: sessionSummaryOnly)
-
+    private func rawTrainingLogsMenuItemTitle(scope: TrainingRawLogExportScope) -> String {
+        let count = manager.trainingRawLogsExportCount(for: scope)
         switch scope {
         case .all:
-            if sessionSummaryOnly {
-                return "Все тренировки (\(count))"
-            }
             return "Все raw логи (\(count))"
+        case .lastSessions(let limit):
+            return "Последние \(limit) сессии (будет \(count))"
+        }
+    }
+
+    private func sessionSummaryMenuItemTitle(scope: TrainingSessionSummaryExportScope) -> String {
+        let count = manager.trainingSessionSummaryExportCount(for: scope)
+        switch scope {
+        case .allCompleted:
+            return "Все тренировки (\(count))"
         case .lastCompletedWorkouts(let limit):
             return "Последние \(limit) тренировки (будет \(count))"
         }
+    }
+
+    private func compactDuration(_ seconds: Int) -> String {
+        let minutes = max(0, seconds) / 60
+        let rest = max(0, seconds) % 60
+        return "\(minutes):\(String(format: "%02d", rest))"
     }
 
     private var trainingLogsCardPresentation: DebugTrainingLogsCard.Presentation {
@@ -2768,24 +2840,26 @@ private struct DebugView: View {
             ? nil
             : URL(fileURLWithPath: manager.lastTrainingLogPath).lastPathComponent
         let detailLines = [
-            "Session Summary включает только завершённые тренировки (`workout_saved`).",
+            "Raw export включает retained session JSONL, в том числе незавершённые и failed HR‑сессии.",
+            "Session Summary остаётся completed-only и строится только по `workout_saved`.",
+            "После успешного share экспортированные raw JSONL удаляются; связанные записи в `HR Failures` могут исчезнуть после refresh или перезапуска.",
             inventory.clearableSessionFiles > 0
                 ? "Ручная очистка удаляет только raw JSONL-логи активного профиля; статистика тренировок сохраняется."
                 : "Активная сессия защищена от удаления и не участвует в ручной очистке.",
             lastLogName.map { "Последний JSONL: \($0)" }
         ].compactMap { $0 }
 
-        let rawExportOptions = trainingLogScopeOptions.map { scope in
-            DebugTrainingLogsCard.Presentation.ExportOption(
+        let rawExportOptions = rawTrainingLogScopeOptions.map { scope in
+            DebugTrainingLogsCard.Presentation.RawExportOption(
                 id: "raw_\(scope.logDescription)",
-                title: trainingLogsMenuItemTitle(scope: scope, sessionSummaryOnly: false),
+                title: rawTrainingLogsMenuItemTitle(scope: scope),
                 scope: scope
             )
         }
-        let summaryExportOptions = trainingLogScopeOptions.map { scope in
-            DebugTrainingLogsCard.Presentation.ExportOption(
+        let summaryExportOptions = sessionSummaryScopeOptions.map { scope in
+            DebugTrainingLogsCard.Presentation.SessionSummaryExportOption(
                 id: "summary_\(scope.logDescription)",
-                title: trainingLogsMenuItemTitle(scope: scope, sessionSummaryOnly: true),
+                title: sessionSummaryMenuItemTitle(scope: scope),
                 scope: scope
             )
         }
@@ -2804,14 +2878,23 @@ private struct DebugView: View {
             ],
             rawExportOptions: rawExportOptions,
             rawExportSubtitle: inventory.matchingProfileSessionFiles > 0
-                ? "\(inventory.matchingProfileSessionFiles) raw сессий доступно"
+                ? "\(inventory.matchingProfileSessionFiles) retained raw сессий"
                 : "Нет raw логов",
             canExportRaw: inventory.matchingProfileSessionFiles > 0,
             sessionSummaryOptions: summaryExportOptions,
             sessionSummarySubtitle: inventory.matchingProfileCompletedWorkoutFiles > 0
-                ? "\(inventory.matchingProfileCompletedWorkoutFiles) тренировок готово"
+                ? "\(inventory.matchingProfileCompletedWorkoutFiles) завершённых тренировок"
                 : "Нет завершённых тренировок",
             canExportSessionSummary: inventory.matchingProfileCompletedWorkoutFiles > 0,
+            testRunSubtitle: manager.canStartTreadmillTestRun
+                ? "3 минуты · до 8.0 км/ч · лог + 30с после STOP"
+                : manager.treadmillTestRunStartBlockReason,
+            testRunStatus: manager.isTreadmillTestRunActive
+                ? "\(manager.treadmillTestRunStatusText) · осталось \(compactDuration(manager.treadmillTestRunRemainingSeconds))"
+                : manager.treadmillTestRunStatusText,
+            testRunProgress: manager.treadmillTestRunProgress,
+            isTestRunActive: manager.isTreadmillTestRunActive,
+            canStartTestRun: manager.canStartTreadmillTestRun,
             clearSubtitle: inventory.clearableSessionFiles > 0
                 ? "\(inventory.clearableSessionFiles) файлов · \(formattedByteCount(inventory.clearableBytes))"
                 : "Сейчас очищать нечего",
@@ -2819,7 +2902,7 @@ private struct DebugView: View {
             clearConfirmationMessage: "Будут удалены только raw JSONL training logs активного профиля: \(inventory.clearableSessionFiles) файлов, \(formattedByteCount(inventory.clearableBytes)). История тренировок в статистике останется.",
             detailLines: detailLines,
             footer: inventory.matchingProfileCompletedWorkoutFiles < 3
-                ? "Для анализа лучше накопить хотя бы 3 завершённые тренировки."
+                ? "Для completed session summary лучше накопить хотя бы 3 завершённые тренировки."
                 : nil
         )
     }
@@ -2839,7 +2922,7 @@ private struct DebugView: View {
         }
 
         return DebugHrFailuresCard.Presentation(
-            subtitle: "Сохранённые инциденты потери или сбоя пульса",
+            subtitle: "Инциденты остановки HR‑контроля, восстановленные из retained raw логов",
             metrics: [
                 .init(id: "reports_total", title: "Отчётов", value: "\(reports.count)", tint: .orange),
                 .init(id: "reports_visible", title: "Показано", value: "\(reportPreviews.count)", tint: .blue),
@@ -2852,14 +2935,14 @@ private struct DebugView: View {
             ],
             exportSubtitle: reports.isEmpty ? "Нет данных" : "\(reports.count) отчётов",
             canExport: !reports.isEmpty,
-            clearSubtitle: reports.isEmpty ? "Список уже пуст" : "Удалить \(reports.count) отчётов",
+            clearSubtitle: reports.isEmpty ? "Список уже пуст" : "Очистить текущий список",
             canClear: !reports.isEmpty,
-            clearConfirmationMessage: "Будут удалены все сохранённые HR failure reports в Debug. Structured training logs и история тренировок не изменятся.",
+            clearConfirmationMessage: "Будет очищен только текущий список HR Failures в Debug. Если raw JSONL-логи ещё сохранены, инциденты снова появятся после refresh или перезапуска.",
             reports: Array(reportPreviews),
-            emptyState: reports.isEmpty ? "Ошибок пульса пока нет." : nil,
+            emptyState: reports.isEmpty ? "Ошибок HR‑контроля в retained raw логах пока нет." : nil,
             footer: reports.count > reportPreviews.count
                 ? "Показаны последние \(reportPreviews.count) отчёта из \(reports.count). Полный набор уйдёт в export."
-                : "HR failure export сохраняет полный набор инцидентов."
+                : "`HR Failures` восстанавливается из raw JSONL и зависит от того, какие raw логи ещё не очищены."
         )
     }
 
@@ -3002,10 +3085,11 @@ private struct DebugView: View {
                                     .foregroundColor(.secondary)
                             }
 
-                            let actualStr = String(format: "%.1f", manager.speedKmh)
+                            let actualStr = String(format: "%.1f", manager.treadmillActualSpeedKmh)
+                            let modelStr = String(format: "%.1f", manager.speedKmh)
                             let targetStr = String(format: "%.1f", manager.desiredSpeedKmh)
                             let deviceStr = String(format: "%.1f", manager.deviceTargetSpeedKmh)
-                            Text("Speed \(actualStr)  Target \(targetStr)  AppSet \(deviceStr)  HR \(manager.heartRateBPM) (last \(manager.lastKnownHeartRateBPM))")
+                            Text("Speed \(actualStr)  Model \(modelStr)  Target \(targetStr)  AppSet \(deviceStr)  HR \(manager.heartRateBPM) (last \(manager.lastKnownHeartRateBPM))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             Text("Reported speed: \(String(format: "%.1f", manager.deviceReportedSpeedKmh))  AppSpeed: \(String(format: "%.1f", manager.deviceReportedAppSpeedKmh))")
@@ -3055,6 +3139,12 @@ private struct DebugView: View {
                         onExportSessionSummary: { scope in
                             exportTrainingSessionSummaryCsv(manager: manager, scope: scope)
                         },
+                        onStartTestRun: {
+                            manager.startTreadmillTestRun()
+                        },
+                        onStopTestRun: {
+                            manager.stopTreadmillTestRun()
+                        },
                         onClear: {
                             manager.clearTrainingLogsForActiveProfile()
                         }
@@ -3096,7 +3186,7 @@ private func copyLogs(lastCmd: String, hrStatus: String, log: String) {
 
 private func exportTrainingHistoryCsv(
     manager: BluetoothManager,
-    scope: TrainingLogCsvExportScope
+    scope: TrainingRawLogExportScope
 ) {
     let present: (UIActivityViewController) -> Void = { vc in
         if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
@@ -3121,7 +3211,7 @@ private func exportTrainingHistoryCsv(
 
 private func exportTrainingSessionSummaryCsv(
     manager: BluetoothManager,
-    scope: TrainingLogCsvExportScope
+    scope: TrainingSessionSummaryExportScope
 ) {
     let present: (UIActivityViewController) -> Void = { vc in
         if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
@@ -3131,7 +3221,7 @@ private func exportTrainingSessionSummaryCsv(
     }
 
     guard let export = manager.prepareTrainingSessionSummaryCsvExport(scope: scope) else {
-        let message = "Completed training logs not found yet. Start and save an HR workout first."
+        let message = scope.missingLogsMessage
         let vc = UIActivityViewController(activityItems: [message], applicationActivities: nil)
         present(vc)
         return

@@ -57,7 +57,7 @@ final class HRDomainServiceTests: XCTestCase {
         )
     }
 
-    func testCooldownSpeedSnapshotPrefersFactualSpeedOverStaleControllerTarget() {
+    func testCooldownSpeedSnapshotPrefersRawDeviceSpeedOverAppReportedSpeed() {
         let snapshot = HRDomainService.cooldownSpeedSnapshot(
             desiredSpeedKmh: 3.5,
             deviceTargetSpeedKmh: 4.7,
@@ -66,9 +66,9 @@ final class HRDomainServiceTests: XCTestCase {
             currentActualSpeedKmh: 3.5
         )
 
-        XCTAssertEqual(snapshot.observedSpeedKmh, 3.5, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.observedSpeedKmh, 3.9, accuracy: 0.0001)
         XCTAssertEqual(snapshot.controllerSpeedKmh, 4.7, accuracy: 0.0001)
-        XCTAssertEqual(snapshot.factualSpeedKmh ?? 0, 3.5, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.factualSpeedKmh ?? 0, 3.9, accuracy: 0.0001)
     }
 
     func testCooldownSpeedSnapshotFallsBackToControllerWhenNoFactualSpeedExists() {

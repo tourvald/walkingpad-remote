@@ -16,7 +16,7 @@ enum HRDomainService {
         let totalSeconds: Int
     }
 
-    struct AdaptiveThresholdPercents {
+    struct AdaptiveThresholdPercents: Equatable {
         let deadband: Double
         let downLevel2Start: Double
         let downLevel3Start: Double
@@ -113,12 +113,12 @@ enum HRDomainService {
         let controllerSpeedKmh = max(0, max(desiredSpeedKmh, deviceTargetSpeedKmh))
 
         let factualSpeedKmh: Double?
-        if appReportedSpeedKmh > 0.05 {
-            factualSpeedKmh = appReportedSpeedKmh
-        } else if rawReportedSpeedKmh > 0.05 {
+        if rawReportedSpeedKmh > 0.05 {
             factualSpeedKmh = rawReportedSpeedKmh
         } else if currentActualSpeedKmh > 0.05 {
             factualSpeedKmh = currentActualSpeedKmh
+        } else if appReportedSpeedKmh > 0.05 {
+            factualSpeedKmh = appReportedSpeedKmh
         } else {
             factualSpeedKmh = nil
         }
@@ -172,5 +172,47 @@ enum HRDomainService {
         let rawTarget = currentSentSpeedKmh - reductionStepKmh
         let target = max(minSpeedKmh, rawTarget)
         return abs(target - currentSentSpeedKmh) >= 0.01 ? target : nil
+    }
+
+    // MARK: - HR trend estimation
+
+    /// One exponential-moving-average smoothing step for a raw HR sample.
+    /// First sample (no previous EMA) returns the raw value unchanged.
+    static func emaSmooth(previousEma: Double?, raw: Double, alpha: Double) -> Double {
+        guard let ema = previousEma else { return raw }
+        return ema + alpha * (raw - ema)
+    }
+
+    /// Least-squares HR slope (bpm/second) over recent smoothed samples, clamped to ±clampMax.
+    /// Returns nil when there are too few samples or the observed window is too short to trust.
+    /// `time` may use any consistent base (e.g. seconds since 1970); only differences matter.
+    static func trendSlopeBpmPerSecond(
+        samples: [(time: TimeInterval, value: Double)],
+        minSamples: Int,
+        minWindowSeconds: Double,
+        clampMaxBpmPerSecond: Double
+    ) -> Double? {
+        guard samples.count >= minSamples,
+              let first = samples.first,
+              let last = samples.last else { return nil }
+        let span = last.time - first.time
+        guard span >= minWindowSeconds else { return nil }
+        let t0 = first.time
+        var sumT = 0.0
+        var sumY = 0.0
+        var sumTT = 0.0
+        var sumTY = 0.0
+        for sample in samples {
+            let t = sample.time - t0
+            sumT += t
+            sumY += sample.value
+            sumTT += t * t
+            sumTY += t * sample.value
+        }
+        let n = Double(samples.count)
+        let denom = (n * sumTT) - (sumT * sumT)
+        guard denom > 0.0001 else { return nil }
+        let slope = (n * sumTY - sumT * sumY) / denom
+        return max(-clampMaxBpmPerSecond, min(clampMaxBpmPerSecond, slope))
     }
 }

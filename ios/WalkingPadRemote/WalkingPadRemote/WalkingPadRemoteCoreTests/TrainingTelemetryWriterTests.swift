@@ -82,10 +82,31 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "cooldown_stable_ok": false,
             "cooldown_stability_blocker": "hr_above_target",
             "speed_actual_kmh": 3.5,
+            "speed_model_kmh": 4.1,
             "speed_target_kmh": 3.5,
             "speed_device_target_kmh": 3.5,
             "speed_reported_kmh": 3.9,
             "speed_reported_app_kmh": 3.5,
+            "speed_source": "device_reported",
+            "speed_has_fresh_report": true,
+            "speed_report_age_s": 1,
+            "stop_confirmed": false,
+            "stop_assist_command": "MODE STANDBY",
+            "stop_assist_sent": true,
+            "stop_source": "device_reported_stale",
+            "stop_report_age_s": 12,
+            "stop_reported_speed_kmh": 0.3,
+            "stop_reported_app_speed_kmh": 0.8,
+            "stop_reported_state": 1,
+            "stop_has_fresh_report": false,
+            "test_run_active": true,
+            "test_phase": "ramp_up",
+            "test_elapsed_s": 45,
+            "test_remaining_s": 135,
+            "test_progress": 0.25,
+            "test_target_speed_kmh": 5.0,
+            "test_duration_s": 180,
+            "test_peak_speed_kmh": 8.0,
             "raw_note": "kept in raw json"
         ]
 
@@ -106,36 +127,67 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "cooldown_hr_ok")!], "false")
         XCTAssertEqual(row[headers.firstIndex(of: "cooldown_min_speed_ok")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "cooldown_stability_blocker")!], "hr_above_target")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_actual_kmh")!], "3.5")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_model_kmh")!], "4.1")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_source")!], "device_reported")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_has_fresh_report")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_report_age_s")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_confirmed")!], "false")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_assist_command")!], "MODE STANDBY")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_assist_sent")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_source")!], "device_reported_stale")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_report_age_s")!], "12")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_reported_speed_kmh")!], "0.3")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_reported_app_speed_kmh")!], "0.8")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_reported_state")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_has_fresh_report")!], "false")
+        XCTAssertEqual(row[headers.firstIndex(of: "test_run_active")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "test_phase")!], "ramp_up")
+        XCTAssertEqual(row[headers.firstIndex(of: "test_elapsed_s")!], "45")
+        XCTAssertEqual(row[headers.firstIndex(of: "test_remaining_s")!], "135")
+        XCTAssertEqual(row[headers.firstIndex(of: "test_progress")!], "0.25")
+        XCTAssertEqual(row[headers.firstIndex(of: "test_target_speed_kmh")!], "5")
+        XCTAssertEqual(row[headers.firstIndex(of: "test_duration_s")!], "180")
+        XCTAssertEqual(row[headers.firstIndex(of: "test_peak_speed_kmh")!], "8")
         XCTAssertEqual(row[headers.firstIndex(of: "zone1_s")!], "10")
         XCTAssertTrue(row.last?.contains("\"cooldown_finish_reason\":\"timeout\"") == true)
     }
 
-    func testSelectJsonlFilesForExportKeepsOnlyLatestCompletedWorkouts() throws {
+    func testSelectJsonlFilesForExportKeepsLatestSessionsIncludingFailedAndIncomplete() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        func makeFile(name: String, start: String, hasWorkoutSaved: Bool) throws -> URL {
+        func makeFile(name: String, start: String, events: [[String: Any]]) throws -> URL {
             let url = tempDir.appendingPathComponent(name)
-            var lines: [String] = [
-                #"{"ts":"\#(start)","event":"session_start","session_id":"\#(name)"}"#
-            ]
-            if hasWorkoutSaved {
-                lines.append(#"{"ts":"\#(start)","event":"workout_saved","session_id":"\#(name)"}"#)
+            var lines: [String] = [TrainingTelemetryWriter.jsonString([
+                "ts": start,
+                "event": "session_start",
+                "session_id": name
+            ])]
+            for event in events {
+                lines.append(TrainingTelemetryWriter.jsonString(event))
             }
             try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
             return url
         }
 
-        let file1 = try makeFile(name: "session1.jsonl", start: "2026-03-15T10:00:00.000Z", hasWorkoutSaved: true)
-        let file2 = try makeFile(name: "session2.jsonl", start: "2026-03-16T10:00:00.000Z", hasWorkoutSaved: false)
-        let file3 = try makeFile(name: "session3.jsonl", start: "2026-03-17T10:00:00.000Z", hasWorkoutSaved: true)
-        let file4 = try makeFile(name: "session4.jsonl", start: "2026-03-18T10:00:00.000Z", hasWorkoutSaved: true)
-        let file5 = try makeFile(name: "session5.jsonl", start: "2026-03-19T10:00:00.000Z", hasWorkoutSaved: true)
+        let file1 = try makeFile(name: "session1.jsonl", start: "2026-03-15T10:00:00.000Z", events: [
+            ["ts": "2026-03-15T10:30:00.000Z", "event": "workout_saved"]
+        ])
+        let file2 = try makeFile(name: "session2.jsonl", start: "2026-03-16T10:00:00.000Z", events: [])
+        let file3 = try makeFile(name: "session3.jsonl", start: "2026-03-17T10:00:00.000Z", events: [
+            ["ts": "2026-03-17T10:10:00.000Z", "event": "hr_control_failed", "reason": "no_hr_signal"],
+            ["ts": "2026-03-17T10:10:01.000Z", "event": "session_end", "reason": "hr_no_signal"]
+        ])
+        let file4 = try makeFile(name: "session4.jsonl", start: "2026-03-18T10:00:00.000Z", events: [
+            ["ts": "2026-03-18T10:25:00.000Z", "event": "workout_saved"]
+        ])
+        let file5 = try makeFile(name: "session5.jsonl", start: "2026-03-19T10:00:00.000Z", events: [])
 
         let selected = TrainingTelemetryWriter.selectJsonlFilesForExport(
             [file3, file2, file5, file1, file4],
-            scope: .lastCompletedWorkouts(3)
+            scope: .lastSessions(3)
         )
 
         XCTAssertEqual(selected, [file3, file4, file5])
@@ -336,10 +388,115 @@ final class TrainingTelemetryWriterTests: XCTestCase {
 
         let selected = TrainingTelemetryWriter.selectCompletedJsonlFilesForExport(
             [incomplete, complete2, complete1],
-            scope: .all
+            scope: .allCompleted
         )
 
         XCTAssertEqual(selected, [complete1, complete2])
+    }
+
+    func testSummarizeJsonlFileMarksFailedOutcomeAndHrReason() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let url = tempDir.appendingPathComponent("failed-session.jsonl")
+        let lines = [
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:00:00.000Z",
+                "event": "session_start",
+                "session_id": "session-failed",
+                "profile_id": "profile-1",
+                "profile_label": "Dima"
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:10:00.000Z",
+                "event": "hr_control_failed",
+                "reason": "no_hr_signal"
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:10:01.000Z",
+                "event": "session_end",
+                "reason": "hr_no_signal"
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:10:02.000Z",
+                "event": "workout_not_saved",
+                "reason": "failed"
+            ])
+        ]
+        try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+
+        let summary = TrainingTelemetryWriter.summarizeJsonlFile(url)
+
+        XCTAssertNotNil(summary)
+        XCTAssertEqual(summary?.sessionID, "session-failed")
+        XCTAssertEqual(summary?.outcome, .failed)
+        XCTAssertEqual(summary?.sessionEndReason, "hr_no_signal")
+        XCTAssertEqual(summary?.hrFailureReason, "no_hr_signal")
+        XCTAssertEqual(summary?.containsSavedWorkout, false)
+        XCTAssertEqual(summary?.containsFailedWorkout, true)
+        XCTAssertEqual(summary?.profileID, "profile-1")
+    }
+
+    func testHrFailureLogReportsExtractDiagnosticWindowFromRawJsonl() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let url = tempDir.appendingPathComponent("failed-session.jsonl")
+        let lines = [
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:00:00.000Z",
+                "event": "session_start",
+                "session_id": "session-failed"
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:08:00.000Z",
+                "event": "hr_sample",
+                "session_state": "main",
+                "hr_bpm": 169
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:08:05.000Z",
+                "event": "command_write",
+                "label": "CMD hold speed"
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:08:10.000Z",
+                "event": "hr_stream_state",
+                "active": false,
+                "last_age_s": 8
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:08:15.000Z",
+                "event": "speed_target_changed",
+                "speed_target_kmh": 4.2,
+                "reason": "hold_no_hr"
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:09:00.000Z",
+                "event": "hr_control_failed",
+                "reason": "no_hr_signal",
+                "missing_s": 60
+            ]),
+            TrainingTelemetryWriter.jsonString([
+                "ts": "2026-04-21T07:09:01.000Z",
+                "event": "session_end",
+                "reason": "hr_no_signal"
+            ])
+        ]
+        try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+
+        let reports = TrainingTelemetryWriter.hrFailureLogReports(from: [url])
+
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertEqual(reports.first?.sessionID, "session-failed")
+        XCTAssertEqual(reports.first?.reason, "Нет данных пульса")
+        XCTAssertEqual(reports.first?.start, TrainingTelemetryWriter.iso8601Date("2026-04-21T07:08:10.000Z"))
+        XCTAssertEqual(reports.first?.end, TrainingTelemetryWriter.iso8601Date("2026-04-21T07:09:01.000Z"))
+        XCTAssertTrue(reports.first?.lines.contains(where: { $0.contains("hr_control_failed") }) == true)
+        XCTAssertTrue(reports.first?.lines.contains(where: { $0.contains("session_end") }) == true)
+        XCTAssertTrue(reports.first?.lines.contains(where: { $0.contains("command_write") }) == true)
     }
 
     func testSessionSummaryRowIncludesDerivedCooldownAndMainMetrics() {
@@ -434,9 +591,16 @@ final class TrainingTelemetryWriterTests: XCTestCase {
                 "event": "workout_saved"
             ],
             [
-                "ts": "2026-03-19T10:25:02.000Z",
+                "ts": "2026-03-19T10:25:00.750Z",
+                "event": "session_finished",
+                "reason": "cooldown_timeout",
+                "post_session_observation_s": 30
+            ],
+            [
+                "ts": "2026-03-19T10:25:32.000Z",
                 "event": "session_end",
-                "reason": "cooldown_timeout"
+                "reason": "cooldown_timeout",
+                "post_session_observation_s": 30
             ]
         ]
 
@@ -448,6 +612,7 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row?[headers.firstIndex(of: "profile_id")!], "profile-1")
         XCTAssertEqual(row?[headers.firstIndex(of: "profile_label")!], "Dima")
         XCTAssertEqual(row?[headers.firstIndex(of: "session_id")!], "session-42")
+        XCTAssertEqual(row?[headers.firstIndex(of: "session_duration_s")!], "1500")
         XCTAssertEqual(row?[headers.firstIndex(of: "main_target_bpm")!], "140")
         XCTAssertEqual(row?[headers.firstIndex(of: "cooldown_target_bpm")!], "110")
         XCTAssertEqual(row?[headers.firstIndex(of: "main_samples")!], "3")

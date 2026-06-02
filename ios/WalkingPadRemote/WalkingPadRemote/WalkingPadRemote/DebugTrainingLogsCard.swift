@@ -9,21 +9,32 @@ struct DebugTrainingLogsCard: View {
             let tint: Color
         }
 
-        struct ExportOption: Identifiable {
+        struct RawExportOption: Identifiable {
             let id: String
             let title: String
-            let scope: TrainingLogCsvExportScope
+            let scope: TrainingRawLogExportScope
+        }
+
+        struct SessionSummaryExportOption: Identifiable {
+            let id: String
+            let title: String
+            let scope: TrainingSessionSummaryExportScope
         }
 
         let subtitle: String
         let profileMetrics: [Metric]
         let deviceMetrics: [Metric]
-        let rawExportOptions: [ExportOption]
+        let rawExportOptions: [RawExportOption]
         let rawExportSubtitle: String
         let canExportRaw: Bool
-        let sessionSummaryOptions: [ExportOption]
+        let sessionSummaryOptions: [SessionSummaryExportOption]
         let sessionSummarySubtitle: String
         let canExportSessionSummary: Bool
+        let testRunSubtitle: String
+        let testRunStatus: String
+        let testRunProgress: Double
+        let isTestRunActive: Bool
+        let canStartTestRun: Bool
         let clearSubtitle: String
         let canClear: Bool
         let clearConfirmationMessage: String
@@ -32,8 +43,10 @@ struct DebugTrainingLogsCard: View {
     }
 
     let presentation: Presentation
-    let onExportRaw: (TrainingLogCsvExportScope) -> Void
-    let onExportSessionSummary: (TrainingLogCsvExportScope) -> Void
+    let onExportRaw: (TrainingRawLogExportScope) -> Void
+    let onExportSessionSummary: (TrainingSessionSummaryExportScope) -> Void
+    let onStartTestRun: () -> Void
+    let onStopTestRun: () -> Void
     let onClear: () -> Void
 
     @State private var showClearConfirmation = false
@@ -57,6 +70,7 @@ struct DebugTrainingLogsCard: View {
             VStack(alignment: .leading, spacing: 14) {
                 metricsSection(title: "Активный профиль", items: presentation.profileMetrics)
                 metricsSection(title: "Всё устройство", items: presentation.deviceMetrics)
+                testRunSection()
 
                 LazyVGrid(columns: actionColumns, spacing: 10) {
                     Menu {
@@ -146,6 +160,50 @@ struct DebugTrainingLogsCard: View {
                     )
                 }
             }
+        }
+    }
+
+    private func testRunSection() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Тест дорожки")
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+
+            if presentation.isTestRunActive {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(presentation.testRunStatus)
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Text("\(Int((presentation.testRunProgress * 100).rounded()))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(.secondary)
+                    }
+
+                    ProgressView(value: max(0, min(1, presentation.testRunProgress)))
+                        .tint(.orange)
+                }
+            }
+
+            Button {
+                if presentation.isTestRunActive {
+                    onStopTestRun()
+                } else {
+                    onStartTestRun()
+                }
+            } label: {
+                DebugActionTileLabel(
+                    title: presentation.isTestRunActive ? "Stop Test Run" : "Start Test Run",
+                    subtitle: presentation.isTestRunActive
+                        ? "Остановить тест и отправить STOP"
+                        : presentation.testRunSubtitle,
+                    tint: presentation.isTestRunActive ? .red : .orange,
+                    enabled: presentation.isTestRunActive || presentation.canStartTestRun
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(!presentation.isTestRunActive && !presentation.canStartTestRun)
         }
     }
 }

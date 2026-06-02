@@ -23,7 +23,7 @@ struct CommonInfoCard: View {
     }
 
     private var speedValue: String {
-        String(format: "%.1f", manager.speedKmh)
+        String(format: "%.1f", manager.treadmillActualSpeedKmh)
     }
 
     private var timeText: String {
@@ -41,7 +41,7 @@ struct CommonInfoCard: View {
                 if diff < -3 { return .orange }
                 return .green
             }()
-            let speedActive = manager.speedKmh > 0.05
+            let speedActive = manager.treadmillActualSpeedKmh > 0.05
             let columns = [
                 GridItem(.flexible(), spacing: 12, alignment: .leading),
                 GridItem(.flexible(), spacing: 12, alignment: .leading),
@@ -297,4 +297,3 @@ struct CommonInfoCard: View {
         .frame(maxWidth: .infinity, alignment: .center)
     }
 }
-

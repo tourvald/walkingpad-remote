@@ -43,6 +43,12 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - local Xcode `26.4.1` uses `iphonesimulator SDK 23E252`; simulator builds need the matching `iOS 26.4.1 Simulator (23E254a)` runtime, otherwise `Assets.xcassets` can fail with `No simulator runtime version from ["23C54", "23E244"] available`
   - the main iOS app scheme must keep project-level `SDKROOT = iphoneos`; removing it makes `WalkingPadRemote` appear as `My Mac`-only in `xcodebuild -showdestinations`
   - UI helper/previews that are shared with non-iOS destinations should prefer pure SwiftUI colors/modifiers when possible; direct UIKit-only references in those files can surface misleading compile failures while the scheme is mis-targeted
+- HR failure capture note (2026-04-21):
+  - Debug `Training Logs` now separates raw-session export from completed-workout summary: raw menu labels are `Последние 3/5 сессии`, while summary keeps `Последние 3/5 тренировки`
+  - raw export includes retained failed/incomplete HR sessions; session summary remains limited to logs containing `workout_saved`
+  - `HR Failures` in Debug is restored from retained raw JSONL logs for the active profile, using `hr_control_failed` plus the nearest `session_end` and a compact diagnostic tail from nearby runtime events
+  - clearing `HR Failures` only empties the current UI list; if raw logs remain on disk, the incidents will repopulate after refresh/relaunch
+  - after successful share/export, exported raw JSONL files are still deleted, so related `HR Failures` entries may disappear on the next refresh
 - Detailed cooldown export patch (2026-03-10):
   - `BluetoothManager` now accumulates cooldown-analysis snapshots during cooldown and writes a dedicated one-shot `cooldown_analysis` event before `cooldown_complete`
   - normalized cooldown export fields now include finish reason/blocker, first-hit times, total time below target, total time at min speed, total time satisfying both conditions, and max consecutive stable streak
@@ -65,6 +71,11 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - Debug UI now includes destructive `Clear Training Logs`, which removes only raw JSONL telemetry logs for the active profile
   - clear action does not touch `workoutHistory`/stats, and the currently active session log stays protected
   - `lastTrainingLogPath` is refreshed from the remaining active-profile files after cleanup, so the label does not point to a stale deleted file
+- Debug treadmill test run (2026-05-19):
+  - `DebugTrainingLogsCard` now exposes `Start Test Run` / `Stop Test Run` for a treadmill-only diagnostic run that does not require HR data
+  - the plan is 3 minutes: base running speed, ramp toward 8.0 km/h, ramp back to base, then the normal stop sequence with the existing 30-second structured-log observation window
+  - `TreadmillTestRunPlanService.swift` owns the pure schedule/target-speed calculation and is covered by Swift package tests; `BluetoothManager` executes the plan and emits `treadmill_test_start`, `treadmill_test_state`, `treadmill_test_speed_command`, and `treadmill_test_finished`
+  - `TrainingTelemetryWriter.trainingCsvHeaders` includes normalized `test_*` columns so raw CSV exports can be filtered/analyzed without opening `raw_json`
 - Debug card extraction / standardized layout (2026-03-21):
   - `Training Logs` and `HR Failures` were extracted from `ContentView.swift` into `DebugTrainingLogsCard.swift` and `DebugHrFailuresCard.swift`
   - `DebugView` now builds explicit presentation props for both cards; card views themselves do not talk to `BluetoothManager`
@@ -77,6 +88,14 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - `HRParametersFormView` now exposes profile management directly in `Параметры`; new profile creation clones the current settings but starts with empty workout history, and profile edits are locked during an active HR workout
   - telemetry/export now carries `installation_id`, `profile_id`, and `profile_label`; both raw export and session-summary export filter JSONL files to the active profile
   - legacy JSONL files without a `profile_id` are treated as belonging only to the first/default profile, so old mixed exports do not bleed into newly created profiles
+- iPhone HealthKit HR source mode (2026-05-06):
+  - `HRParametersFormView` has an `Источник пульса` segmented picker with two modes: legacy Apple Watch app and iPhone HealthKit
+  - `IPhoneHealthKitHeartRateManager.swift` starts/stops a local iPhone `HKWorkoutSession` + `HKLiveWorkoutBuilder` and forwards live heart-rate samples to `BluetoothManager`
+  - iPhone HealthKit mode does not send `start_hr`/`stop_hr` to the watch app; this avoids creating a parallel watch HR session from our app and lets HealthKit provide the system-selected live HR stream
+  - `BluetoothManager` uses a single `ingestHeartRateSample(...)` path for accepted HR samples, rejects stale/out-of-order samples when timestamps are available, and ignores legacy watch HR/workout UUID payloads while iPhone HealthKit mode is selected
+  - HR-control start readiness is source-aware: Apple Watch mode still requires reachable watch + live watch HR, while iPhone HealthKit mode only requires HealthKit availability before start and waits up to `hrNoDataMaxSeconds` for the first HR sample
+  - the treadmill is not auto-started in iPhone HealthKit mode until the first live HR sample arrives; source startup failures stop HR control and log `hr_source_failed` / `no_initial_hr_signal`
+  - raw training telemetry and normalized CSV export include `hr_source_mode`
 
 ## File Decomposition (2026-02-26)
 - `ContentView.swift` was split so root navigation/composition stays in one file, and reusable UI blocks are isolated:
@@ -343,6 +362,16 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
 - Temporary rollback note (2026-02-16):
   - attempted reliability patch (`idleTimerDisabled` in `ContentView` + BLE restoration + `UIBackgroundModes bluetooth-central`) was reverted after user-reported white-screen launch issue on device
   - current code is intentionally restored to pre-patch behavior until root cause is reproduced and fixed safely
+- Treadmill speed diagnostics update (2026-05-17):
+  - user-facing speed must be treated as device-reported treadmill speed when a fresh BLE notify exists
+  - the old model-driven speed is still useful for command/target diagnostics only and is exported as `speed_model_kmh`
+  - raw training CSV now separates `speed_actual_kmh`, `speed_model_kmh`, `speed_reported_kmh`, `speed_reported_app_kmh`, `speed_source`, `speed_has_fresh_report`, and `speed_report_age_s`
+  - normal HR-session terminal paths keep the JSONL file open for a 30-second post-session observation window; `session_finished` marks logical workout end, while delayed `session_end` marks file closure
+  - training-log inventory and HR-failure rebuild must stay off the main thread; `BluetoothManager.trainingLogAnalysis` owns JSONL parsing so launch/UI rendering is not blocked by retained raw logs
+- WalkingPad stop hardening (2026-05-18):
+  - do not use the `0x04/0x01` start/stop toggle as a stop fallback after `speed=0`; latest device logs showed it can keep the belt at the minimum app speed instead of confirming stop
+  - `BluetoothManager` now sends bounded stop assists during the post-session window: initial `speed=0`, WalkingPad `MODE STANDBY`, then conditional stop/standby retries
+  - CSV/debug analysis should use `stop_verification` fields to decide whether stop was confirmed; stale `model_fallback` speed alone is not evidence that the belt stopped
 
 ## Rules for Next Changes
 - Keep static top area out of swipe pages.
