@@ -162,6 +162,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var lastRuntimeTickAt: Date? = nil
     private var sceneBackgroundedAt: Date? = nil
     private let runtimeGapMinReportableSeconds: Double = 3.0
+    // Sticky within a stop's post-observation window: true once any FRESH device report confirmed
+    // the belt stopped. Logged at session_end to disambiguate a stale final stop_confirmed=false.
+    private var stopConfirmedEverInWindow: Bool = false
     private var hrTrendMinWindowSeconds: TimeInterval {
         max(6, hrTrendWindowSeconds * 0.4)
     }
@@ -1687,6 +1690,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard trainingLogFileHandle != nil else { return }
             let cooldownState = self.cooldownRuntimeState
             let stopSnapshot = self.currentTreadmillStopVerificationSnapshot()
+            if stopSnapshot.confirmedStopped { stopConfirmedEverInWindow = true }
             writeTrainingLogLocked(event: "session_end", fields: [
                 "reason": reason,
                 "remaining_s": hrRemainingSeconds,
@@ -1708,6 +1712,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "distance_km": distKm,
                 "duration_s": timeSec,
                 "stop_confirmed": stopSnapshot.confirmedStopped,
+                "stop_confirmed_ever": stopConfirmedEverInWindow,
                 "stop_assist_command": "",
                 "stop_assist_sent": false,
                 "stop_source": stopSnapshot.source,
@@ -2853,6 +2858,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func stopBeltSafely(reason: String) {
+        stopConfirmedEverInWindow = false
         let wasRunning = (deviceTargetSpeedKmh > 0.3) || (currentTreadmillSpeedSnapshot().actualSpeedKmh > 0.3)
         appendLog("STOP sequence (\(reason))")
         stopBeltOnce()
@@ -2887,6 +2893,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             let snapshot = self.currentTreadmillStopVerificationSnapshot()
+            if snapshot.confirmedStopped { self.stopConfirmedEverInWindow = true }
             let commandLabel: String = {
                 switch command {
                 case .stopRetry:
@@ -2903,6 +2910,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "action": action,
                 "delay_s": delay,
                 "stop_confirmed": snapshot.confirmedStopped,
+                "stop_confirmed_ever": self.stopConfirmedEverInWindow,
                 "stop_assist_command": commandLabel,
                 "stop_assist_sent": command != nil && snapshot.shouldSendAssistCommand && self.isConnected,
                 "stop_source": snapshot.source,
@@ -3099,6 +3107,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrPredictorStatusLine = ""
             lastRuntimeTickAt = nil
             sceneBackgroundedAt = nil
+            stopConfirmedEverInWindow = false
             hrWorkoutRecorded = false
             hrTrendSamples.removeAll()
             hrTrendEmaBpm = nil

@@ -91,6 +91,7 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "speed_has_fresh_report": true,
             "speed_report_age_s": 1,
             "stop_confirmed": false,
+            "stop_confirmed_ever": true,
             "stop_assist_command": "MODE STANDBY",
             "stop_assist_sent": true,
             "stop_source": "device_reported_stale",
@@ -133,6 +134,7 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "speed_has_fresh_report")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_report_age_s")!], "1")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_confirmed")!], "false")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_confirmed_ever")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_assist_command")!], "MODE STANDBY")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_assist_sent")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_source")!], "device_reported_stale")
