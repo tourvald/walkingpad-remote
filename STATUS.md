@@ -1,11 +1,11 @@
 # Project Status — WalkingPad Remote
 
 *Source of truth for project management. Keep this short and current.*
-*Last updated: 2026-06-02*
+*Last updated: 2026-06-03*
 
 ## Where development is
 - **Branch:** `ios/hr-decision-engine-and-background`
-- **Last code commit:** `d2ec861` (runtime_gap logging)
+- **Last code commit:** `a87fb6a` (Test Run diagnostics unification)
 - **Push status:** local only — not pushed to remote
 - **Repo:** `github.com/tourvald/walkingpad-remote` (canonical)
 
@@ -37,8 +37,13 @@
 | Screen-on during session | ✅ Done (device-confirmed) |
 | Decision-engine refactor (tested core logic) | ✅ Done |
 | `bluetooth-central` background mode | ✅ Done (field-confirmed) |
-| runtime_gap logging | 🟡 QA — awaiting owner device test |
-| C — recovery after kill | 📋 Planned (post-v1) |
+| `stop_confirmed_ever` logging | ✅ Done (field-confirmed) |
+| runtime_gap logging | 🟡 QA pending |
+| scene_phase telemetry | 🟡 QA pending |
+| post-observation background-task (safety) | 🟡 QA pending |
+| post-observation telemetry (events / outcome) | 🟡 QA pending |
+| Test Run diagnostics unification (session_kind) | 🟡 QA pending |
+| C — recovery after kill | 📋 Planned (post-v1 — do not start) |
 
 ## Safety decisions (fixed)
 - Background HR runtime is anchored on the **iPhone HealthKit** workout session.
@@ -67,14 +72,29 @@ No hard blockers. What remains is **validation, not development**:
 
 > **C (recovery after kill) is NOT a v1 blocker** — deferred to post-v1.
 
-## QA procedure — runtime_gap
-**Goal:** confirm a backgrounded session is logged and the belt is unaffected.
-1. HR source = iPhone HealthKit; start a 3-min session at a safe speed (stay nearby).
-2. After ~30 s switch to another app (e.g. Telegram) for 20–30 s, then return.
-3. Let it finish → Debug → **Export Training CSV** (last 3 sessions) → send to engineering.
+## Pending QA — blocks acceptance of the items above
+Two device runs needed. Log analysis is **paused** until both CSVs arrive.
 
-**Report (filled from the log):** device / iOS · `runtime_gap` present? · example `gap_s` · effect on speed/stop (expected: none) · unexpected side effects.
-**Definition of Done:** report confirms `runtime_gap` present **and** belt unaffected.
+**QA-1 — Debug Test Run + lock** (this is what actually exercises the gap detector —
+a test run has no workout session, so it really suspends when locked):
+1. Debug → Start Test Run (3 min); after ~30–40 s lock the iPhone ~30 s; unlock.
+2. Let it finish → Export Training CSV (last session).
+3. Check: `session_kind=test_run` · `scene_phase` present · **`runtime_gap` present** ·
+   `post_observation_*` timing sane (~30 s, not minutes) · `stop_confirmed_ever`.
+
+**QA-2 — Real HR workout + lock** (expected to stay alive → NO-STALL):
+1. HR-контроль · iPhone HealthKit · start (3 min, safe speed, stay nearby);
+   after ~30–40 s lock ~30 s; unlock; let it finish.
+2. Export Training CSV (last session).
+3. Check: `session_kind=hr_control` · `scene_phase` present · **NO-STALL or PASS** ·
+   no effect on speed / commands / stop.
+
+**After both CSVs:** run `tools/analyze_training_log.py` and fill the QA report.
+
+**Acceptance gate:** until QA passes, **runtime_gap and the post-observation
+changes (commits `5d22296` / `4eb6293` / `a87fb6a`) stay QA pending.**
+
+**Push / merge:** do **not** push or merge without final owner confirmation.
 
 ## QA devices
 Real iPhone (iOS 26-class) + WalkingPad-class treadmill (KS-F0 referenced) + Apple Watch/AirPods for HR.
