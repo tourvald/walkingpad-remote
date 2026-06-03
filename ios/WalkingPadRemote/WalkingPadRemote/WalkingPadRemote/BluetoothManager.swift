@@ -1643,6 +1643,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
             logTrainingEvent("session_start", fields: [
                 "trigger": trigger,
+                "session_kind": trigger == "treadmill_test_run" ? "test_run" : "hr_control",
                 "target_bpm": hrTargetBPM,
                 "duration_min": hrDurationMinutes,
                 "decision_interval_s": hrDecisionIntervalSeconds,
@@ -2666,6 +2667,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillTestRunStartedAt = Date()
         treadmillTestRunLastCommandedSpeedKmh = nil
         isTreadmillTestRunActive = true
+        lastRuntimeTickAt = nil
+        sceneBackgroundedAt = nil
         treadmillTestRunRemainingSeconds = treadmillTestRunConfiguration.durationSeconds
         treadmillTestRunProgress = 0
         treadmillTestRunStatusText = "Тест дорожки: старт"
@@ -2709,6 +2712,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             )
             return
         }
+        recordRuntimeTickAndDetectGap()
         let elapsedSeconds = max(0, Int(Date().timeIntervalSince(startedAt)))
         let snapshot = TreadmillTestRunPlanService.snapshot(
             elapsedSeconds: elapsedSeconds,
@@ -3389,16 +3393,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
 
         if isHrControlRunning {
-            let runtimeTickNow = Date()
-            if let gap = RuntimeGapMonitor.evaluate(
-                lastTickAt: lastRuntimeTickAt,
-                now: runtimeTickNow,
-                expectedIntervalSeconds: 1.0,
-                minReportableSeconds: runtimeGapMinReportableSeconds
-            ) {
-                logRuntimeGap(gap, now: runtimeTickNow)
-            }
-            lastRuntimeTickAt = runtimeTickNow
+            recordRuntimeTickAndDetectGap()
             if hrAwaitingInitialHeartRateSample {
                 let waitSeconds = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
                 if waitSeconds >= hrNoDataMaxSeconds {
@@ -4309,13 +4304,39 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     /// belt or control. It (1) writes a `scene_phase` telemetry event so backgrounding is visible
     /// in the log even when no stall occurs, and (2) remembers when the app left the foreground so
     /// a later runtime gap can be attributed to backgrounding. Called from the SwiftUI observer.
+    /// True while any session that should carry device/background diagnostics is running —
+    /// an HR-control workout or a Debug treadmill test run.
+    private var isInstrumentedSessionActive: Bool { isHrControlRunning || isTreadmillTestRunActive }
+
+    /// Tags telemetry so HR workouts and Debug test runs can be told apart in analysis.
+    private var currentSessionKind: String {
+        if isHrControlRunning { return "hr_control" }
+        if isTreadmillTestRunActive { return "test_run" }
+        return "none"
+    }
+
+    /// Shared per-tick runtime-gap detection, used by both the HR loop and the test-run loop.
+    private func recordRuntimeTickAndDetectGap() {
+        let now = Date()
+        if let gap = RuntimeGapMonitor.evaluate(
+            lastTickAt: lastRuntimeTickAt,
+            now: now,
+            expectedIntervalSeconds: 1.0,
+            minReportableSeconds: runtimeGapMinReportableSeconds
+        ) {
+            logRuntimeGap(gap, now: now)
+        }
+        lastRuntimeTickAt = now
+    }
+
     func noteScenePhase(_ phase: String) {
-        guard isHrControlRunning else { return }
+        guard isInstrumentedSessionActive else { return }
         if phase != "active" {
             sceneBackgroundedAt = Date()
         }
         logTrainingEvent("scene_phase", fields: [
             "phase": phase,
+            "session_kind": currentSessionKind,
             "session_state": currentSessionState(),
             "is_cooldown": cooldownRuntimeState != nil
         ])
@@ -4339,6 +4360,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         logTrainingEvent("runtime_gap", fields: [
             "gap_s": gap.seconds,
             "expected_interval_s": gap.expectedIntervalSeconds,
+            "session_kind": currentSessionKind,
             "was_backgrounded": wasBackgrounded,
             "background_s": backgroundSeconds,
             "session_state": currentSessionState(),
