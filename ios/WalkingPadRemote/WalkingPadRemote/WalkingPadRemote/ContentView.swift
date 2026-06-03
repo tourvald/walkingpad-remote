@@ -982,7 +982,6 @@ private struct HRControlPanel: View {
         let canExtendHrSession = debugPreview?.canExtendHrSession ?? manager.canExtendHrSession
         let hrSessionMaxMinutes = debugPreview?.hrSessionMaxMinutes ?? manager.hrSessionMaxMinutes
         let canStartHrControl = manager.isHrControlStartAllowed
-        let headerTint: Color = isHrControlRunning ? .accentColor : (hrStreamingActive ? .green : .orange)
         let hrStartSubtitle: String = {
             if isPreviewMode {
                 return "Preview mode: команды на дорожку отключены"
@@ -1020,21 +1019,6 @@ private struct HRControlPanel: View {
                             dismissButton: .cancel(Text("OK"))
                         )
                     }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [headerTint.opacity(0.2), Color(.secondarySystemGroupedBackground)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(headerTint.opacity(0.25), lineWidth: 1)
-                    )
                 }
 
                 if isHrControlRunning {
@@ -1063,6 +1047,8 @@ private struct HRControlPanel: View {
                 }
 
                 if !isHrControlRunning {
+                    Divider()
+
                     VStack(alignment: .leading, spacing: 10) {
                         let ranges = hrZoneRanges(for: manager)
                         let selectedZone = hrZoneIndex(for: manager.hrTargetBPM, manager: manager) + 1
@@ -1133,15 +1119,8 @@ private struct HRControlPanel: View {
                         }
 
                     }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(.secondarySystemGroupedBackground))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color(.tertiarySystemFill), lineWidth: 1)
-                    )
+
+                    Divider()
 
                     VStack(alignment: .leading, spacing: 4) {
                         NavigationLink {
@@ -1161,15 +1140,6 @@ private struct HRControlPanel: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(.secondarySystemGroupedBackground))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color(.tertiarySystemFill), lineWidth: 1)
-                    )
                 }
 
                 if isHrControlRunning && !hrStreamingActive {
