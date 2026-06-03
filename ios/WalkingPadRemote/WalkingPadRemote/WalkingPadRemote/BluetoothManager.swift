@@ -3,6 +3,9 @@ import SwiftUI
 import Combine
 import CoreBluetooth
 import HealthKit
+#if canImport(UIKit)
+import UIKit
+#endif
 #if canImport(WatchConnectivity)
 import WatchConnectivity
 #endif
@@ -274,6 +277,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var trainingLogFileHandle: FileHandle? = nil
     private var pendingTrainingLogCloseWorkItem: DispatchWorkItem?
     private var pendingTrainingLogCloseToken: UUID?
+    private var postObservationStartedAt: Date?
+    #if canImport(UIKit)
+    private var postObservationBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    #endif
 
     private struct TreadmillSpeedSnapshot {
         let actualSpeedKmh: Double
@@ -1652,10 +1659,37 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
+    /// Holds a UIKit background-task assertion so the post-stop observation (stop verification,
+    /// stop retries, and the log close) can finish even if the user locks the phone or switches
+    /// apps. No-op if already held. The expiration handler force-closes the log before the system
+    /// suspends us, then releases the assertion (required by UIKit).
+    private func beginPostObservationBackgroundTaskIfNeeded() {
+        #if canImport(UIKit)
+        guard postObservationBackgroundTaskID == .invalid else { return }
+        postObservationBackgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "post-stop-observation") { [weak self] in
+            guard let self else { return }
+            self.pendingTrainingLogCloseWorkItem?.cancel()
+            self.pendingTrainingLogCloseWorkItem = nil
+            self.pendingTrainingLogCloseToken = nil
+            let elapsed = self.postObservationStartedAt.map { max(0, Int(Date().timeIntervalSince($0).rounded())) } ?? 0
+            self.closeTrainingStructuredLogNow(reason: "background_expiration", postSessionObservationSeconds: elapsed)
+        }
+        #endif
+    }
+
+    private func endPostObservationBackgroundTask() {
+        #if canImport(UIKit)
+        guard postObservationBackgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(postObservationBackgroundTaskID)
+        postObservationBackgroundTaskID = .invalid
+        #endif
+    }
+
     private func cancelPendingTrainingLogClose() {
         pendingTrainingLogCloseWorkItem?.cancel()
         pendingTrainingLogCloseWorkItem = nil
         pendingTrainingLogCloseToken = nil
+        endPostObservationBackgroundTask()
     }
 
     private func scheduleTrainingStructuredLogClose(reason: String) {
@@ -1667,6 +1701,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "post_session_observation_s": Int(delay.rounded())
         ])
         appendLog("Training log close scheduled in \(Int(delay.rounded()))s: \(reason)")
+        postObservationStartedAt = Date()
+        beginPostObservationBackgroundTaskIfNeeded()
 
         let token = UUID()
         pendingTrainingLogCloseToken = token
@@ -1730,6 +1766,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             trainingLogSessionId = nil
         }
         appendLog("Training log closed: \(reason)")
+        endPostObservationBackgroundTask()
+        postObservationStartedAt = nil
         DispatchQueue.main.async {
             self.refreshTrainingLogsInventory()
         }
