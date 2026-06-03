@@ -4226,12 +4226,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
-    /// Records leaving the foreground during a session so a later runtime gap can be attributed
-    /// to backgrounding. Returning to the foreground needs no action here — the next telemetry
-    /// tick measures any stall directly. Called from the SwiftUI scene-phase observer.
-    func noteSceneActive(_ isActive: Bool) {
-        guard !isActive, isHrControlRunning else { return }
-        sceneBackgroundedAt = Date()
+    /// Records the app's scene phase during a session. Observational only — it never touches the
+    /// belt or control. It (1) writes a `scene_phase` telemetry event so backgrounding is visible
+    /// in the log even when no stall occurs, and (2) remembers when the app left the foreground so
+    /// a later runtime gap can be attributed to backgrounding. Called from the SwiftUI observer.
+    func noteScenePhase(_ phase: String) {
+        guard isHrControlRunning else { return }
+        if phase != "active" {
+            sceneBackgroundedAt = Date()
+        }
+        logTrainingEvent("scene_phase", fields: [
+            "phase": phase,
+            "session_state": currentSessionState(),
+            "is_cooldown": cooldownRuntimeState != nil
+        ])
     }
 
     /// Writes an observational `runtime_gap` telemetry event. Does not affect treadmill control.

@@ -219,12 +219,27 @@ def build_reports(rows: list[Row], near_seconds: float) -> list[GapReport]:
     return reports
 
 
+def collect_scene_events(rows: list[Row]) -> list[tuple[str, str, str]]:
+    """(session, ts, phase) for every `scene_phase` event (foreground/background transitions)."""
+    events = []
+    for row in rows:
+        if row.event == "scene_phase":
+            phase = row.raw.get("phase") or row.data.get("phase") or "?"
+            events.append((row.session, row.ts_raw, str(phase)))
+    return events
+
+
+def count_backgroundings(scene: list[tuple[str, str, str]]) -> int:
+    return sum(1 for _, _, phase in scene if phase == "background")
+
+
 def _fmt(value: float | None, suffix: str = "") -> str:
     return "—" if value is None else f"{value:.1f}{suffix}"
 
 
-def print_text(path: str, rows: list[Row], reports: list[GapReport], near_seconds: float) -> None:
+def print_text(path: str, rows: list[Row], reports: list[GapReport], scene: list, near_seconds: float) -> None:
     sessions = sorted({r.session for r in rows if r.session})
+    backgroundings = count_backgroundings(scene)
     print("WalkingPad runtime_gap analyzer")
     print(f"File: {path}")
     print(f"Rows: {len(rows)} · Sessions: {len(sessions)} · near-window: ±{near_seconds:g}s")
@@ -249,25 +264,46 @@ def print_text(path: str, rows: list[Row], reports: list[GapReport], near_second
         print(f"  → {g.verdict}" + ("" if g.verdict == "OK" else "  (belt/control affected!)"))
         print()
 
-    print(verdict_line(reports))
+    if scene:
+        print(f"scene transitions: {len(scene)}  (backgroundings: {backgroundings})")
+        for _, ts_raw, phase in scene[:12]:
+            print(f"  {ts_raw}  {phase}")
+        if len(scene) > 12:
+            print(f"  … {len(scene) - 12} more")
+        print()
+
+    print(verdict_line(reports, backgroundings))
 
 
-def verdict_line(reports: list[GapReport]) -> str:
-    if not reports:
-        return "QA VERDICT: NO-GAP — no runtime_gap found; re-run the test (or session never backgrounded)."
+def verdict_line(reports: list[GapReport], backgroundings: int) -> str:
+    if reports:
+        impacted = [g for g in reports if g.belt_impacted]
+        if impacted:
+            return f"QA VERDICT: FAIL — {len(impacted)}/{len(reports)} gap(s) show belt/control impact."
+        return f"QA VERDICT: PASS — {len(reports)} runtime_gap logged, belt unaffected."
+    if backgroundings > 0:
+        return (
+            f"QA VERDICT: NO-STALL — app backgrounded {backgroundings}x but stayed alive "
+            "(no runtime_gap). Good for reliability; the detector was not exercised."
+        )
+    return "QA VERDICT: NO-GAP — no runtime_gap and no backgrounding seen; re-run with an app switch."
+
+
+def to_json(path: str, rows: list[Row], reports: list[GapReport], scene: list) -> dict:
     impacted = [g for g in reports if g.belt_impacted]
-    if impacted:
-        return f"QA VERDICT: FAIL — {len(impacted)}/{len(reports)} gap(s) show belt/control impact."
-    return f"QA VERDICT: PASS — {len(reports)} runtime_gap logged, belt unaffected."
-
-
-def to_json(path: str, rows: list[Row], reports: list[GapReport]) -> dict:
-    impacted = [g for g in reports if g.belt_impacted]
-    status = "NO-GAP" if not reports else ("FAIL" if impacted else "PASS")
+    backgroundings = count_backgroundings(scene)
+    if reports:
+        status = "FAIL" if impacted else "PASS"
+    elif backgroundings > 0:
+        status = "NO-STALL"
+    else:
+        status = "NO-GAP"
     return {
         "file": path,
         "rows": len(rows),
         "runtime_gaps": len(reports),
+        "scene_transitions": len(scene),
+        "backgroundings": backgroundings,
         "backgrounded": sum(1 for g in reports if g.was_backgrounded),
         "total_gap_s": round(sum(g.gap_s for g in reports), 1),
         "max_gap_s": round(max((g.gap_s for g in reports), default=0.0), 1),
@@ -307,16 +343,17 @@ def main() -> int:
         return 2
 
     reports = build_reports(rows, args.near_seconds)
+    scene = collect_scene_events(rows)
 
     if args.json:
-        print(json.dumps(to_json(args.csv_path, rows, reports), indent=2))
+        print(json.dumps(to_json(args.csv_path, rows, reports, scene), indent=2))
     else:
-        print_text(args.csv_path, rows, reports, args.near_seconds)
+        print_text(args.csv_path, rows, reports, scene, args.near_seconds)
 
-    # Exit code: 0 = PASS, 1 = FAIL (belt impact), 3 = NO-GAP. Handy for CI/automation.
-    if not reports:
-        return 3
-    return 1 if any(g.belt_impacted for g in reports) else 0
+    # Exit code: 0 = PASS / NO-STALL, 1 = FAIL (belt impact), 3 = NO-GAP. Handy for CI/automation.
+    if reports:
+        return 1 if any(g.belt_impacted for g in reports) else 0
+    return 0 if count_backgroundings(scene) > 0 else 3
 
 
 if __name__ == "__main__":
