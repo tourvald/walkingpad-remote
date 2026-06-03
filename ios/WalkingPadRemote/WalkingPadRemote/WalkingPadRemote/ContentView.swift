@@ -135,11 +135,21 @@ private struct ControlSwipeView: View {
     }
 
     private var connectionStatusColor: Color {
-        manager.isConnected ? .green : .secondary
+        manager.isConnected ? .green : .orange
     }
 
     private var watchStatusColor: Color {
-        manager.hrStreamingActive ? .green : (manager.watchReachable ? .orange : .secondary)
+        manager.hrStreamingActive ? .green : .orange
+    }
+
+    private var connectionIcon: String {
+        manager.isConnected
+            ? "antenna.radiowaves.left.and.right"
+            : "antenna.radiowaves.left.and.right.slash"
+    }
+
+    private var watchIcon: String {
+        (manager.hrStreamingActive || manager.watchReachable) ? "applewatch" : "applewatch.slash"
     }
 
     var body: some View {
@@ -170,7 +180,7 @@ private struct ControlSwipeView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 10) {
                             controlHeroMetric(
-                                icon: "antenna.radiowaves.left.and.right",
+                                icon: connectionIcon,
                                 title: "Дорожка",
                                 value: connectionStatusLabel,
                                 tint: connectionStatusColor,
@@ -179,7 +189,7 @@ private struct ControlSwipeView: View {
                                 }
                             )
                             controlHeroMetric(
-                                icon: "applewatch",
+                                icon: watchIcon,
                                 title: "Часы",
                                 value: watchStatusLabel,
                                 tint: watchStatusColor,
@@ -282,7 +292,7 @@ private struct ControlSwipeView: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.caption2)
+                    .font(.caption2.weight(.medium))
                     .foregroundColor(.secondary)
                 Text(value)
                     .font(.subheadline.weight(.semibold))
