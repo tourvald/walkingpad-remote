@@ -1701,8 +1701,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "post_session_observation_s": Int(delay.rounded())
         ])
         appendLog("Training log close scheduled in \(Int(delay.rounded()))s: \(reason)")
-        postObservationStartedAt = Date()
+        let workoutEndedAt = Date()
+        postObservationStartedAt = workoutEndedAt
         beginPostObservationBackgroundTaskIfNeeded()
+        logTrainingEvent("post_observation_started", fields: [
+            "reason": reason,
+            "workout_end_at": trainingLogIsoFormatter.string(from: workoutEndedAt),
+            "planned_observation_s": Int(delay.rounded())
+        ])
 
         let token = UUID()
         pendingTrainingLogCloseToken = token
@@ -1727,6 +1733,28 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             let cooldownState = self.cooldownRuntimeState
             let stopSnapshot = self.currentTreadmillStopVerificationSnapshot()
             if stopSnapshot.confirmedStopped { stopConfirmedEverInWindow = true }
+            let logClosedAt = Date()
+            let observedSeconds = postObservationStartedAt.map { max(0, Int(logClosedAt.timeIntervalSince($0).rounded())) } ?? postSessionObservationSeconds
+            let plannedObservationSeconds = Int(trainingLogPostSessionObservationSeconds.rounded())
+            let observationDelayedByBackground = observedSeconds > plannedObservationSeconds + 5
+            // Outcome priority: an unconfirmed stop is the safety-relevant case and wins.
+            // `confirmed_early` is reserved for a future opt-in early-close (behavior change).
+            let observationOutcome: String = {
+                if !stopConfirmedEverInWindow { return "timed_out_unconfirmed" }
+                if observationDelayedByBackground { return "resumed_after_background" }
+                return "completed_full_window"
+            }()
+            writeTrainingLogLocked(event: "post_observation_finished", fields: [
+                "reason": reason,
+                "workout_end_at": postObservationStartedAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
+                "log_closed_at": trainingLogIsoFormatter.string(from: logClosedAt),
+                "post_observation_duration_s": observedSeconds,
+                "post_observation_planned_s": plannedObservationSeconds,
+                "post_observation_delayed_by_background": observationDelayedByBackground,
+                "outcome": observationOutcome,
+                "stop_confirmed": stopSnapshot.confirmedStopped,
+                "stop_confirmed_ever": stopConfirmedEverInWindow
+            ])
             writeTrainingLogLocked(event: "session_end", fields: [
                 "reason": reason,
                 "remaining_s": hrRemainingSeconds,
@@ -1757,7 +1785,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "stop_reported_app_speed_kmh": stopSnapshot.appReportedSpeedKmh,
                 "stop_reported_state": stopSnapshot.reportedState,
                 "stop_has_fresh_report": stopSnapshot.hasFreshReport,
-                "post_session_observation_s": postSessionObservationSeconds
+                "post_session_observation_s": postSessionObservationSeconds,
+                "post_observation_duration_s": observedSeconds,
+                "post_observation_delayed_by_background": observationDelayedByBackground,
+                "post_observation_outcome": observationOutcome,
+                "log_closed_at": trainingLogIsoFormatter.string(from: logClosedAt)
             ])
             trainingLogFileHandle?.synchronizeFile()
             trainingLogFileHandle?.closeFile()
