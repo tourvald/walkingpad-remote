@@ -89,7 +89,7 @@ a test run has no workout session, so it really suspends when locked):
 3. Check: `session_kind=hr_control` · `scene_phase` present · **NO-STALL or PASS** ·
    no effect on speed / commands / stop.
 
-**After both CSVs:** run `tools/analyze_training_log.py` and fill the QA report.
+**After both CSVs:** run `tools/treadmill_analyzer/analyze_training_log.py` and fill the QA report.
 
 **Acceptance gate:** until QA passes, **runtime_gap and the post-observation
 changes (commits `5d22296` / `4eb6293` / `a87fb6a`) stay QA pending.**

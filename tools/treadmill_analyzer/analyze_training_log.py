@@ -24,7 +24,7 @@ Session rows are ~1 Hz, so ±5s ≈ ±5 neighbouring rows. We compare the pre/po
 belt state and scan the post window for any stop/abort signal.
 
 Usage:
-    python3 tools/analyze_training_log.py <export.csv> [--near-seconds 5] [--json]
+    python3 tools/treadmill_analyzer/analyze_training_log.py <export.csv> [--near-seconds 5] [--json]
 """
 
 from __future__ import annotations

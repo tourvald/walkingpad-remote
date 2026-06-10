@@ -14,3 +14,10 @@ xcuserdata/
 
 # Local reference clone of the upstream Python reverse-engineering repo.
 ph4-walkingpad/
+
+# Local treadmill log exports — personal biometric data (installation_id,
+# profile, heart rate, full history). Keep local, never commit. The folder
+# skeleton is kept via .gitkeep so the analyzer has a home; the exports inside
+# are ignored.
+tools/treadmill_analyzer/logs/*
+!tools/treadmill_analyzer/logs/.gitkeep
