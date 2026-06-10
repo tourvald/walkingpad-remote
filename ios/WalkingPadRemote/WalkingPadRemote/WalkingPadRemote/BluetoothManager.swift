@@ -1585,6 +1585,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "speed_source": speedSnapshot.source,
             "speed_has_fresh_report": speedSnapshot.hasFreshReport,
             "speed_report_age_s": speedSnapshot.reportAgeSeconds ?? -1,
+            "controller_state": deviceReportedState,
+            "controller_manual_mode": deviceReportedManualMode,
             "speed_delta_kmh": lastSpeedDeltaKmh,
             "distance_km": distKm,
             "duration_s": timeSec,
@@ -3833,6 +3835,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         appendLog("WRITE \(label): \(hex(data)) via \(ch.uuid.uuidString) type=\(type == .withoutResponse ? "withoutResponse" : "withResponse")")
         logTrainingEvent("command_write", fields: [
             "label": label,
+            "command_source": TreadmillCommandClassifier.source(forLabel: label).rawValue,
             "hex": hex(data),
             "char_uuid": ch.uuid.uuidString,
             "write_type": type == .withoutResponse ? "without_response" : "with_response",

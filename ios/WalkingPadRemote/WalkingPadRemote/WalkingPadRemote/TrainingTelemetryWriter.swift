@@ -252,6 +252,9 @@ enum TrainingTelemetryWriter {
         "test_target_speed_kmh",
         "test_duration_s",
         "test_peak_speed_kmh",
+        "controller_state",
+        "controller_manual_mode",
+        "command_source",
         "raw_json"
     ]
 
@@ -1216,6 +1219,9 @@ enum TrainingTelemetryWriter {
             csvString(payload["test_target_speed_kmh"]),
             csvString(payload["test_duration_s"]),
             csvString(payload["test_peak_speed_kmh"]),
+            csvString(payload["controller_state"]),
+            csvString(payload["controller_manual_mode"]),
+            csvString(payload["command_source"]),
             jsonString(payload)
         ]
     }

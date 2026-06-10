@@ -43,6 +43,7 @@ let package = Package(
                 "RuntimeGapMonitor.swift",
                 "TrainingTelemetryWriter.swift",
                 "CommandQueueService.swift",
+                "TreadmillCommandClassifier.swift",
                 "TreadmillSpeedBoundsService.swift",
                 "TreadmillTestRunPlanService.swift"
             ]

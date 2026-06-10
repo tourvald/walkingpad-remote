@@ -48,6 +48,27 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: archived.path))
     }
 
+    func testCsvRowIncludesDiagnosticControllerAndCommandSourceColumns() {
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        XCTAssertTrue(headers.contains("controller_state"))
+        XCTAssertTrue(headers.contains("controller_manual_mode"))
+        XCTAssertTrue(headers.contains("command_source"))
+
+        let payload: [String: Any] = [
+            "event": "command_write",
+            "label": "STOP",
+            "command_source": "stop",
+            "controller_state": 1,
+            "controller_manual_mode": 0
+        ]
+        let row = TrainingTelemetryWriter.csvRow(sourceFile: "diag.jsonl", payload: payload)
+
+        XCTAssertEqual(row.count, headers.count)
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_state")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_manual_mode")!], "0")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_source")!], "stop")
+    }
+
     func testCsvRowIncludesDetailedCooldownAnalysisColumns() {
         let headers = TrainingTelemetryWriter.trainingCsvHeaders
         let payload: [String: Any] = [
