@@ -2941,11 +2941,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard wasRunning else { return }
         switch treadmillProtocol {
         case .walkingPad:
+            // Stop-hardening experiment (owner-approved 2026-06-11): STOP-only.
+            // Field log 2026-06-11 showed the KS-F0 wedging at 0.3 km/h / state=1
+            // after MODE STANDBY was sent mid-deceleration. We no longer send
+            // STANDBY while the belt is moving; instead we resend speed-0 (STOP)
+            // and let the controller report stopped on its own. If the belt now
+            // reaches 0, STANDBY-while-moving was implicated; if not, it points to
+            // a controller-side defect. manualModeSet is reset so the next start
+            // re-asserts MODE MANUAL (previously done as a side effect of STANDBY).
+            manualModeSet = false
             scheduleStopVerification(reason: reason, delay: 0.7, action: "check_after_stop")
-            scheduleStopVerification(reason: reason, delay: 1.6, action: "standby_after_stop", command: .walkingPadStandby)
-            scheduleStopVerification(reason: reason, delay: 4.5, action: "stop_retry_after_standby", command: .stopRetry)
-            scheduleStopVerification(reason: reason, delay: 8.0, action: "standby_retry", command: .walkingPadStandby)
-            scheduleStopVerification(reason: reason, delay: 15.0, action: "stop_retry_late", command: .stopRetry)
+            scheduleStopVerification(reason: reason, delay: 2.0, action: "stop_retry", command: .stopRetry)
+            scheduleStopVerification(reason: reason, delay: 4.5, action: "stop_retry", command: .stopRetry)
+            scheduleStopVerification(reason: reason, delay: 8.0, action: "stop_retry", command: .stopRetry)
+            scheduleStopVerification(reason: reason, delay: 15.0, action: "stop_retry", command: .stopRetry)
             scheduleStopVerification(reason: reason, delay: 28.0, action: "final_check")
 
         case .ftms, .fitShow, .unknown:
