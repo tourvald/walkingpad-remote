@@ -63,10 +63,14 @@ no public report of this symptom. Two follow-ups recorded:
   All `set_pref_*` / 0xA6 **writes** remain forbidden until a separate owner decision.
 
 **Research v2 + first params read (2026-06-11 evening):**
-- queryParams from the test pad: **`unit=1` (imperial!)**, `maxSpeed=7.5` (explains our 8.0→7.5
-  clamp), `startSpeed=0.5` (≈ creep floor 0.3–0.8), cali=0, lock=0 → controller **NVRAM was
-  modified outside our app**; units/mph thread is open and important (wire scale still looks
-  km/h: QZ sends km/h×10 with no unit conversion; physical measurement pending).
+- queryParams from the test pad: **`unit=1` (imperial!)**, `maxSpeed` raw 75, `startSpeed` raw 5,
+  cali=0, lock=0 → controller **NVRAM was modified outside our app**.
+- **Units-scale mismatch is the PRIMARY hypothesis for the speed discrepancy (2026-06-12):**
+  owner felt ~12 km/h at commanded "8.0" (clamped to 7.5 — and 7.5 mph = 12.07 km/h); both test
+  logs confirm the clamp at raw 75 = queryParams.maxSpeed byte-for-byte. Working model: app
+  thinks km/h → controller in imperial executes wire values as mph (×1.609). Does NOT explain
+  stop/state=1. **SAFETY: no human-on-belt / HR runs on this pad until units→metric** — the
+  app's "12.0" ceiling would physically be ~19.3 km/h.
 - QZ (qdomyos-zwift) explicitly supports KS-F0 → `kingsmithr1protreadmill`; **QZ's stop is the
   `F7 A2 04 01` toggle** (no speed-0, no standby) → on F0, speed-0 may be floor-not-stop.
 - Toggle will likely NOT rescue an already-wedged controller (KSFIT over BLE already fails on
