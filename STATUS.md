@@ -5,7 +5,7 @@
 
 ## Where development is
 - **Branch:** `ios/hr-decision-engine-and-background`
-- **Last code commit:** `d419b2a` (STOP-only stop-hardening experiment; diagnostic build on device)
+- **Last code commit:** `1bb0f09` (read-only controller params query in Debug menu; on device)
 - **Push status:** local only — not pushed to remote
 - **Repo:** `github.com/tourvald/walkingpad-remote` (canonical)
 
@@ -48,6 +48,19 @@ calibration, no prefs, nothing written on connect (bar a FitShow status query).
 (KingSmith). No app-side change stops a controller that won't honor speed-0. Diagnostic
 logging shipped: `controller_state` / `controller_manual_mode` / `command_source`
 (`03db316`); stop-forensics analyzer (`06ae3fe`).
+
+**External research (2026-06-11):** independent RE sources (ph4-walkingpad, QWalkingPad
+Protocol.cpp, CodeJawn, huserben) confirm our runtime bytes; no BLE factory-reset exists;
+no public report of this symptom. Two follow-ups recorded:
+- **Toggle-stop fallback (deferred, owner decision):** `F7 A2 04 01` is a start/stop
+  *toggle* (QWalkingPad uses it as its Stop; "start_belt is actually toggle_belt").
+  Not adopted now — the native remote is also a toggle and fails on affected pads.
+  Side effect: explains why START must never be re-sent mid-run (our guards already prevent it).
+- **Read-only params query shipped (`1bb0f09`):** Debug → "Read Controller Params" sends
+  documented query `F7 A6 00 00 00 00 00 A6 FD` (write-free), parses unit / regulate /
+  maxSpeed / startSpeed / sensitivity / display / lock; UI + `controller_params` log event.
+  Plan: read params on healthy vs stuck pad and diff (incl. `unit` for the miles thread).
+  All `set_pref_*` / 0xA6 **writes** remain forbidden until a separate owner decision.
 
 ## Roadmap
 **v1 — in scope**
