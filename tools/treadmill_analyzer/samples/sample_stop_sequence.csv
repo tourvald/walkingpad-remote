@@ -1,0 +1,17 @@
+ts,event,session_id,session_state,label,command_source,controller_state,controller_manual_mode,speed_reported_kmh,speed_device_target_kmh,speed_target_kmh,action,delay_s,stop_confirmed,stop_confirmed_ever,stop_assist_command,stop_assist_sent,stop_reported_state,stop_reported_speed_kmh
+2026-06-11T08:00:00.000Z,command_write,SAFE-1,running,SPEED 3.0 km/h (HR),hr_algorithm,1,1,3.0,3.0,3.0,,,,,,,,
+2026-06-11T08:00:10.000Z,command_write,SAFE-1,running,SPEED 3.2 km/h (HR),hr_algorithm,1,1,3.2,3.2,3.2,,,,,,,,
+2026-06-11T08:00:30.000Z,command_write,SAFE-1,running,STOP,stop,1,1,3.2,0.0,0.0,,,,,,,,
+2026-06-11T08:00:30.700Z,stop_verification,SAFE-1,stopping,,,1,1,1.8,0.0,0.0,check_after_stop,0.7,false,false,,,1,1.8
+2026-06-11T08:00:31.600Z,stop_verification,SAFE-1,stopping,,,1,1,0.6,0.0,0.0,standby_after_stop,1.6,false,false,MODE STANDBY,true,1,0.6
+2026-06-11T08:00:31.620Z,command_write,SAFE-1,stopping,MODE STANDBY,stop_assist,1,1,0.6,0.0,0.0,,,,,,,,
+2026-06-11T08:00:34.500Z,stop_verification,SAFE-1,stopped,,,0,0,0.0,0.0,0.0,stop_retry_after_standby,4.5,true,true,,,0,0.0
+2026-06-11T08:00:58.000Z,stop_verification,SAFE-1,stopped,,,0,0,0.0,0.0,0.0,final_check,28.0,true,true,,,0,0.0
+2026-06-11T08:00:58.100Z,session_end,SAFE-1,stopped,,,0,0,0.0,0.0,0.0,,,,,,,,
+2026-06-11T09:00:00.000Z,command_write,RACE-2,running,SPEED 3.0 km/h (HR),hr_algorithm,1,1,3.0,3.0,3.0,,,,,,,,
+2026-06-11T09:00:30.000Z,command_write,RACE-2,running,STOP,stop,1,1,3.0,0.0,0.0,,,,,,,,
+2026-06-11T09:00:30.700Z,stop_verification,RACE-2,stopping,,,1,1,2.8,0.0,0.0,check_after_stop,0.7,false,false,,,1,2.8
+2026-06-11T09:00:33.000Z,command_write,RACE-2,stopping,SPEED 2.0 km/h (HR),hr_algorithm,1,1,2.8,2.0,2.0,,,,,,,,
+2026-06-11T09:00:34.500Z,stop_verification,RACE-2,stopping,,,1,1,2.0,2.0,2.0,stop_retry_after_standby,4.5,false,false,,,1,2.0
+2026-06-11T09:00:58.000Z,stop_verification,RACE-2,stopping,,,1,1,2.0,2.0,2.0,final_check,28.0,false,false,,,1,2.0
+2026-06-11T09:00:58.100Z,session_end,RACE-2,stopping,,,1,1,2.0,2.0,2.0,,,,,,,,
