@@ -967,6 +967,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var deviceReportedChecksumOk: Bool = true
     @Published var deviceReportedRawHex: String = ""
 
+    struct ControllerParamsReading {
+        let params: BLETransportCodec.WalkingPadParams
+        let readAt: Date
+    }
+    @Published var lastControllerParams: ControllerParamsReading?
+
     // HR control
     @Published var isHrControlRunning: Bool = false
     @Published var isHrControlStartAllowed: Bool = false
@@ -2915,6 +2921,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopBeltSafely(reason: "direct")
     }
 
+    /// Read-only query of the controller's persistent params (unit, max/start speed,
+    /// sensitivity, lock, regulate…). Sends only the documented query frame
+    /// `F7 A6 00 00 00 00 00 A6 FD` (key 0 = query); never a `set_pref_*` write.
+    func readControllerParams() {
+        guard isConnected else {
+            infoToastMessage = "Не подключено к дорожке"
+            return
+        }
+        guard treadmillProtocol == .walkingPad else {
+            infoToastMessage = "Чтение параметров доступно только для протокола WalkingPad"
+            return
+        }
+        appendLog("QUERY PARAMS requested (read-only)")
+        logTrainingEvent("controller_params_query", fields: ["trigger": "debug_button"])
+        writeCommand(BLETransportCodec.buildWalkingPadQueryParamsPacket(), label: "QUERY PARAMS")
+    }
+
     private func stopBeltOnce() {
         guard isConnected else { return }
         let old = deviceTargetSpeedKmh
@@ -4792,6 +4815,33 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     "checksum_ok": status.checksumOk
                 ])
                 validateExpectedSpeed(with: status)
+            } else if let params = BLETransportCodec.parseWalkingPadParams(data) {
+                DispatchQueue.main.async {
+                    self.lastControllerParams = ControllerParamsReading(params: params, readAt: Date())
+                }
+                appendLog("Controller params: unit=\(params.unit)(\(params.unit == 1 ? "miles" : "km")) regulate=\(params.regulate) maxSpeed=\(String(format: "%.1f", params.maxSpeedKmh)) startSpeed=\(String(format: "%.1f", params.startSpeedKmh)) startMode=\(params.startMode) sens=\(params.sensitivity) display=\(params.displayBits) lock=\(params.childLock) checksum=\(params.checksumOk ? "ok" : "bad")")
+                logTrainingEvent("controller_params", fields: [
+                    "parse_ok": true,
+                    "unit": params.unit,
+                    "unit_label": params.unit == 1 ? "imperial_miles" : "metric_km",
+                    "regulate": params.regulate,
+                    "max_speed_kmh": params.maxSpeedKmh,
+                    "start_speed_kmh": params.startSpeedKmh,
+                    "start_mode": params.startMode,
+                    "sensitivity": params.sensitivity,
+                    "display_bits": params.displayBits,
+                    "child_lock": params.childLock,
+                    "goal_type": params.goalType,
+                    "goal": params.goal,
+                    "checksum_ok": params.checksumOk,
+                    "raw_hex": params.rawHex
+                ])
+            } else if data.count >= 2, data[0] == 0xF8, data[1] == 0xA6 {
+                appendLog("Controller params parse FAILED: \(hex(data))")
+                logTrainingEvent("controller_params", fields: [
+                    "parse_ok": false,
+                    "raw_hex": hex(data)
+                ])
             } else {
                 appendLog("Notify \(characteristic.uuid.uuidString): \(hex(data))")
             }

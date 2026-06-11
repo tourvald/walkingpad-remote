@@ -36,6 +36,7 @@ final class TreadmillCommandClassifierTests: XCTestCase {
     func testProtocolControlAndStatusQuery() {
         XCTAssertEqual(source("FTMS REQUEST CONTROL"), .protocolControl)
         XCTAssertEqual(source("FitShow STATUS"), .statusQuery)
+        XCTAssertEqual(source("QUERY PARAMS"), .statusQuery)
     }
 
     func testUnknownIsOther() {

@@ -43,7 +43,7 @@ enum TreadmillCommandClassifier {
 
         // Protocol housekeeping / read-only queries.
         if l.contains("request control") { return .protocolControl }
-        if l.contains("status") { return .statusQuery }
+        if l.contains("status") || l.contains("query") { return .statusQuery }
 
         // Plain stop (user button or session end).
         if l.hasPrefix("stop") { return .stop }

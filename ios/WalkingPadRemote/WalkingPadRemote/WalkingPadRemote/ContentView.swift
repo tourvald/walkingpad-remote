@@ -3121,6 +3121,50 @@ private struct DebugView: View {
                         }
                     }
 
+                    Card {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Параметры контроллера", systemImage: "slider.horizontal.3")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Read-only запрос queryParams (0xA6, key 0). Ничего не записывает в контроллер.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+
+                            Button {
+                                manager.readControllerParams()
+                            } label: {
+                                Label("Read Controller Params", systemImage: "doc.text.magnifyingglass")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(!manager.isConnected)
+
+                            if let reading = manager.lastControllerParams {
+                                let p = reading.params
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("unit: \(p.unit) — \(p.unit == 1 ? "MILES (imperial)" : "km/h (metric)")")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(p.unit == 1 ? .orange : .green)
+                                    Text("regulate/cali: \(p.regulate)")
+                                    Text(String(format: "maxSpeed: %.1f км/ч · startSpeed: %.1f км/ч", p.maxSpeedKmh, p.startSpeedKmh))
+                                    Text("startMode: \(p.startMode) · sensitivity: \(p.sensitivity) (1=high 2=med 3=low)")
+                                    Text("display: \(p.displayBits) · childLock: \(p.childLock)")
+                                    Text("goalType: \(p.goalType) · goal: \(p.goal)")
+                                    Text("checksum: \(p.checksumOk ? "ok" : "BAD") · \(reading.readAt.formatted(date: .omitted, time: .standard))")
+                                        .foregroundColor(p.checksumOk ? .secondary : .red)
+                                    Text("raw: \(p.rawHex)")
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                }
+                                .font(.caption)
+                                .textSelection(.enabled)
+                            } else {
+                                Text("Параметры ещё не читались")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+
                     DebugTrainingLogsCard(
                         presentation: trainingLogsCardPresentation,
                         onExportRaw: { scope in

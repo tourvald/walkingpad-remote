@@ -25,6 +25,61 @@ enum BLETransportCodec {
         let rawHex: String
     }
 
+    /// Persistent parameters reported by a WalkingPad controller in a `0xF8 0xA6` frame
+    /// (response to the read-only params query). Field layout follows QWalkingPad's
+    /// independently reverse-engineered Protocol.cpp (`parseMessage`, type 0xa6).
+    struct WalkingPadParams {
+        let goalType: Int
+        let goal: Int
+        let regulate: Int
+        let maxSpeedKmh: Double
+        let startSpeedKmh: Double
+        let startMode: Int
+        let sensitivity: Int
+        let displayBits: Int
+        let childLock: Int
+        let unit: Int // 0 = metric (km/h), 1 = imperial (miles)
+        let checksumOk: Bool
+        let rawHex: String
+    }
+
+    /// Read-only query of the controller's persistent params: `F7 A6 00 00 00 00 00 A6 FD`.
+    /// Key 0 is the query form (settable prefs use keys 1–9); this frame writes nothing.
+    static func buildWalkingPadQueryParamsPacket() -> Data {
+        var bytes: [UInt8] = [0xF7, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFD]
+        var crc: UInt16 = 0
+        for i in 1...6 { crc = (crc + UInt16(bytes[i])) & 0xFF }
+        bytes[7] = UInt8(crc)
+        return Data(bytes)
+    }
+
+    static func parseWalkingPadParams(_ data: Data) -> WalkingPadParams? {
+        guard data.count >= 14, data[0] == 0xF8, data[1] == 0xA6 else { return nil }
+
+        var checksumOk = true
+        if data.last == 0xFD, data.count >= 4 {
+            var sum: UInt16 = 0
+            for i in 1..<(data.count - 2) { sum = (sum + UInt16(data[i])) & 0xFF }
+            checksumOk = UInt8(sum) == data[data.count - 2]
+        }
+
+        let goal = (Int(data[3]) << 16) | (Int(data[4]) << 8) | Int(data[5])
+        return WalkingPadParams(
+            goalType: Int(data[2]),
+            goal: goal,
+            regulate: Int(data[6]),
+            maxSpeedKmh: Double(data[7]) / 10.0,
+            startSpeedKmh: Double(data[8]) / 10.0,
+            startMode: Int(data[9]),
+            sensitivity: Int(data[10]),
+            displayBits: Int(data[11]),
+            childLock: Int(data[12]),
+            unit: Int(data[13]),
+            checksumOk: checksumOk,
+            rawHex: hexString(data)
+        )
+    }
+
     static func buildFtmsRequestControlPacket() -> Data {
         Data([0x00])
     }
