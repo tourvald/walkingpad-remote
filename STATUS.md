@@ -1,13 +1,53 @@
 # Project Status — WalkingPad Remote
 
 *Source of truth for project management. Keep this short and current.*
-*Last updated: 2026-06-03*
+*Last updated: 2026-06-11*
 
 ## Where development is
 - **Branch:** `ios/hr-decision-engine-and-background`
-- **Last code commit:** `a87fb6a` (Test Run diagnostics unification)
+- **Last code commit:** `d419b2a` (STOP-only stop-hardening experiment; diagnostic build on device)
 - **Push status:** local only — not pushed to remote
 - **Repo:** `github.com/tourvald/walkingpad-remote` (canonical)
+
+## Incident: KS-F0 stuck-belt (P0, active)
+Owner's KS-F0 treadmills won't fully stop — belt creeps at 0.2–0.3 km/h, KSFIT hangs
+on "Device Stopping", the native remote can't stop them either, persists across
+multi-day power-off. Investigating whether our BLE could have changed persistent
+controller state.
+
+**BLE write audit (done):** the app emits only **runtime** commands. The single
+WalkingPad packet builder hardcodes type `0xA2` (runtime) and is structurally
+incapable of `0xA6` (`set_pref_*` / NVRAM). Surface: stop / set-speed / mode-manual /
+mode-standby / start (WalkingPad) + standard FTMS/FitShow runtime opcodes. No
+calibration, no prefs, nothing written on connect (bar a FitShow status query).
+→ The app **cannot** have written a persistent setting via the documented protocol.
+
+**Field reproduction (2026-06-11, diagnostic builds):**
+- Log 1 (baseline stop = STOP + STANDBY): belt wedged at **0.3 km/h, state=1**; no race;
+  `stop_confirmed_ever=false`.
+- Log 2 (STOP-only build `d419b2a`, no STANDBY): belt wedged at **0.8 km/h, state=1**;
+  `stop_confirmed_ever=false`.
+- → **`CONTROLLER_STUCK_ON_STOP_ONLY`**: even pure repeated speed-0 does not bring the
+  belt to 0. STANDBY-while-moving hypothesis **refuted** (STANDBY actually lowered the
+  residual 0.8→0.3). Race hypothesis **refuted** (app never re-accelerates after Stop).
+  Root cause is **controller-side**: KS-F0 won't honor BLE speed-0 to fully stop from a
+  moving state.
+
+**Units / miles thread (separate, open):**
+- A persistent units pref **exists**: WalkingPad `0xA6`, key 8 (`set_pref_units_miles`).
+- **Our app never sends it** (cannot emit `0xA6`).
+- Units **may** explain a speed **display** mismatch (km/h vs mph).
+- Units does **not** explain `Device Stopping` / `state=1` / `speed 0.2–0.3` (controller
+  state; wire values are self-consistent km/h).
+- **Open:** corrupted / externally-changed persistent controller state stays a live
+  hypothesis (a units flip signals something persistent changed — but not via our app).
+  Owner to check physically: belt-screen units, KSFIT toggle, rough scale test.
+- **Rule:** no `set_pref_units` / `0xA6` / persistent-write until the protocol is fully understood.
+
+**P0 fix path:** controller-side → manufacturer factory / service / calibration reset
+(KingSmith). No app-side change stops a controller that won't honor speed-0. Diagnostic
+logging shipped: `controller_state` / `controller_manual_mode` / `command_source`
+(`03db316`); stop-forensics analyzer (`06ae3fe`).
 
 ## Roadmap
 **v1 — in scope**
