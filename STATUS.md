@@ -62,6 +62,18 @@ no public report of this symptom. Two follow-ups recorded:
   Plan: read params on healthy vs stuck pad and diff (incl. `unit` for the miles thread).
   All `set_pref_*` / 0xA6 **writes** remain forbidden until a separate owner decision.
 
+**Research v2 + first params read (2026-06-11 evening):**
+- queryParams from the test pad: **`unit=1` (imperial!)**, `maxSpeed=7.5` (explains our 8.0→7.5
+  clamp), `startSpeed=0.5` (≈ creep floor 0.3–0.8), cali=0, lock=0 → controller **NVRAM was
+  modified outside our app**; units/mph thread is open and important (wire scale still looks
+  km/h: QZ sends km/h×10 with no unit conversion; physical measurement pending).
+- QZ (qdomyos-zwift) explicitly supports KS-F0 → `kingsmithr1protreadmill`; **QZ's stop is the
+  `F7 A2 04 01` toggle** (no speed-0, no standby) → on F0, speed-0 may be floor-not-stop.
+- Toggle will likely NOT rescue an already-wedged controller (KSFIT over BLE already fails on
+  those pads) — it's a full-matrix item + future stop-path candidate, not a proven fix.
+- **Full incident record: `docs/ks-f0-incident.md`** (protocol map, params table, safety rules,
+  open actions).
+
 ## Roadmap
 **v1 — in scope**
 - Treadmill control (WalkingPad / FTMS / FitShow) + safe stop
