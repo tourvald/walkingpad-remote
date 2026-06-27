@@ -86,7 +86,23 @@ enum TreadmillUnitsSafetyPolicy {
     }
 
     static func allowsDebugTestRun(_ state: TreadmillUnitsState) -> Bool {
-        blockReason(for: state) == nil
+        allowsDebugTestRun(state, confirmedNoLoadDiagnostic: false)
+    }
+
+    static func allowsDebugTestRun(
+        _ state: TreadmillUnitsState,
+        confirmedNoLoadDiagnostic: Bool
+    ) -> Bool {
+        if requiresNoLoadDiagnosticConfirmation(for: state) {
+            return confirmedNoLoadDiagnostic
+        }
+        return blockReason(for: state) == nil
+    }
+
+    static func requiresNoLoadDiagnosticConfirmation(for state: TreadmillUnitsState) -> Bool {
+        state.source == .queryParams
+            && state.parseStatus.isValidQueryParamsRead
+            && state.nativeUnits == .imperial
     }
 
     static func blockReason(for state: TreadmillUnitsState) -> TreadmillUnitsBlockReason? {

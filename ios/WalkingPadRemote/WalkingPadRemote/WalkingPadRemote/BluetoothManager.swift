@@ -1064,7 +1064,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var treadmillTestRunTimer: Timer?
     private var treadmillTestRunStartedAt: Date?
     private var treadmillTestRunLastCommandedSpeedKmh: Double?
-    private let treadmillTestRunConfiguration = TreadmillTestRunPlanService.defaultConfiguration
+    private var treadmillTestRunActiveConfiguration = TreadmillTestRunPlanService.defaultConfiguration
     private let hrStaleThresholdSeconds: Int = 7
     private let mainQueue = DispatchQueue.main
 
@@ -2653,10 +2653,30 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     // Treadmill control
     var canStartTreadmillTestRun: Bool {
+        canOfferTreadmillTestRunStart
+    }
+
+    private var canOfferTreadmillTestRunStart: Bool {
+        let allowsMetricTestRun = TreadmillUnitsSafetyPolicy.allowsDebugTestRun(treadmillUnitsState)
+        let allowsImperialDiagnosticOffer = TreadmillUnitsSafetyPolicy.requiresNoLoadDiagnosticConfirmation(for: treadmillUnitsState)
+        return isConnected
+            && !isHrControlRunning
+            && !isTreadmillTestRunActive
+            && (allowsMetricTestRun || allowsImperialDiagnosticOffer)
+    }
+
+    private func canStartTreadmillTestRun(confirmedNoLoadDiagnostic: Bool) -> Bool {
         isConnected
             && !isHrControlRunning
             && !isTreadmillTestRunActive
-            && TreadmillUnitsSafetyPolicy.allowsDebugTestRun(treadmillUnitsState)
+            && TreadmillUnitsSafetyPolicy.allowsDebugTestRun(
+                treadmillUnitsState,
+                confirmedNoLoadDiagnostic: confirmedNoLoadDiagnostic
+            )
+    }
+
+    var requiresNoLoadDiagnosticConfirmationForTreadmillTestRun: Bool {
+        TreadmillUnitsSafetyPolicy.requiresNoLoadDiagnosticConfirmation(for: treadmillUnitsState)
     }
 
     var treadmillTestRunStartBlockReason: String {
@@ -2669,14 +2689,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if isHrControlRunning {
             return "Недоступно во время HR‑контроля"
         }
+        if requiresNoLoadDiagnosticConfirmationForTreadmillTestRun {
+            return "60с · native 3.0 / controller imperial · только no-load diagnostic"
+        }
         if let unitsBlock = treadmillUnitsAutomationBlockReasonText() {
             return unitsBlock
         }
         return "3 минуты · разгон до 8.0 км/ч · снижение · STOP"
     }
 
-    func startTreadmillTestRun() {
-        guard canStartTreadmillTestRun else {
+    func startTreadmillTestRun(confirmedNoLoadDiagnostic: Bool = false) {
+        guard canStartTreadmillTestRun(confirmedNoLoadDiagnostic: confirmedNoLoadDiagnostic) else {
             infoToastMessage = treadmillTestRunStartBlockReason
             return
         }
@@ -2684,10 +2707,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         resetSessionStats()
         treadmillTestRunStartedAt = Date()
         treadmillTestRunLastCommandedSpeedKmh = nil
+        treadmillTestRunActiveConfiguration = confirmedNoLoadDiagnostic
+            ? TreadmillTestRunPlanService.imperialNoLoadDiagnosticConfiguration
+            : TreadmillTestRunPlanService.defaultConfiguration
         isTreadmillTestRunActive = true
         lastRuntimeTickAt = nil
         sceneBackgroundedAt = nil
-        treadmillTestRunRemainingSeconds = treadmillTestRunConfiguration.durationSeconds
+        treadmillTestRunRemainingSeconds = treadmillTestRunActiveConfiguration.durationSeconds
         treadmillTestRunProgress = 0
         treadmillTestRunStatusText = "Тест дорожки: старт"
 
@@ -2696,10 +2722,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             snapshot: TreadmillTestRunPlanService.snapshot(
                 elapsedSeconds: 0,
                 bounds: treadmillSpeedBoundsSnapshot(),
-                configuration: treadmillTestRunConfiguration
+                configuration: treadmillTestRunActiveConfiguration
             )
         ))
-        appendLog("Treadmill test run started: 3m peak=\(String(format: "%.1f", treadmillTestRunConfiguration.peakSpeedKmh)) km/h")
+        appendLog("Treadmill test run started: profile=\(treadmillTestRunActiveConfiguration.profileID)")
         startTelemetry()
         applyTreadmillTestRunTick(forceCommand: true)
 
@@ -2735,7 +2761,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let snapshot = TreadmillTestRunPlanService.snapshot(
             elapsedSeconds: elapsedSeconds,
             bounds: treadmillSpeedBoundsSnapshot(),
-            configuration: treadmillTestRunConfiguration
+            configuration: treadmillTestRunActiveConfiguration
         )
 
         if snapshot.phase == .finished {
@@ -2782,12 +2808,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func finishTreadmillTestRun(reason: String, stopReason: String, stopBelt: Bool) {
         guard isTreadmillTestRunActive else { return }
         let elapsedSeconds = treadmillTestRunStartedAt.map {
-            min(treadmillTestRunConfiguration.durationSeconds, max(0, Int(Date().timeIntervalSince($0))))
+            min(treadmillTestRunActiveConfiguration.durationSeconds, max(0, Int(Date().timeIntervalSince($0))))
         } ?? 0
         let snapshot = TreadmillTestRunPlanService.snapshot(
             elapsedSeconds: elapsedSeconds,
             bounds: treadmillSpeedBoundsSnapshot(),
-            configuration: treadmillTestRunConfiguration
+            configuration: treadmillTestRunActiveConfiguration
         )
 
         treadmillTestRunTimer?.invalidate()
@@ -2811,6 +2837,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             stopBeltSafely(reason: stopReason)
         }
         stopTelemetry()
+        treadmillTestRunActiveConfiguration = TreadmillTestRunPlanService.defaultConfiguration
     }
 
     private func treadmillTestRunStatusText(for snapshot: TreadmillTestRunPlanService.Snapshot) -> String {
@@ -2839,9 +2866,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "test_remaining_s": snapshot.remainingSeconds,
             "test_progress": snapshot.progress,
             "test_target_speed_kmh": snapshot.targetSpeedKmh,
-            "test_duration_s": treadmillTestRunConfiguration.durationSeconds,
+            "test_duration_s": treadmillTestRunActiveConfiguration.durationSeconds,
             "test_peak_speed_kmh": TreadmillSpeedBoundsService.clampRunningSpeed(
-                treadmillTestRunConfiguration.peakSpeedKmh,
+                treadmillTestRunActiveConfiguration.peakSpeedKmh,
                 bounds: treadmillSpeedBoundsSnapshot()
             )
         ]

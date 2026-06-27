@@ -2922,7 +2922,7 @@ private struct DebugView: View {
                 : "Нет завершённых тренировок",
             canExportSessionSummary: inventory.matchingProfileCompletedWorkoutFiles > 0,
             testRunSubtitle: manager.canStartTreadmillTestRun
-                ? "3 минуты · до 8.0 км/ч · лог + 30с после STOP"
+                ? manager.treadmillTestRunStartBlockReason
                 : manager.treadmillTestRunStartBlockReason,
             testRunStatus: manager.isTreadmillTestRunActive
                 ? "\(manager.treadmillTestRunStatusText) · осталось \(compactDuration(manager.treadmillTestRunRemainingSeconds))"
@@ -2930,6 +2930,8 @@ private struct DebugView: View {
             testRunProgress: manager.treadmillTestRunProgress,
             isTestRunActive: manager.isTreadmillTestRunActive,
             canStartTestRun: manager.canStartTreadmillTestRun,
+            requiresNoLoadConfirmation: manager.requiresNoLoadDiagnosticConfirmationForTreadmillTestRun,
+            noLoadConfirmationMessage: "Полотно может двигаться. Никого на дорожке. Рука рядом с аварийным выключением. Тест отправит native 3.0 / controller imperial на 60 секунд и затем STOP.",
             clearSubtitle: inventory.clearableSessionFiles > 0
                 ? "\(inventory.clearableSessionFiles) файлов · \(formattedByteCount(inventory.clearableBytes))"
                 : "Сейчас очищать нечего",
@@ -3174,8 +3176,10 @@ private struct DebugView: View {
                         onExportSessionSummary: { scope in
                             exportTrainingSessionSummaryCsv(manager: manager, scope: scope)
                         },
-                        onStartTestRun: {
-                            manager.startTreadmillTestRun()
+                        onStartTestRun: { confirmedNoLoadDiagnostic in
+                            manager.startTreadmillTestRun(
+                                confirmedNoLoadDiagnostic: confirmedNoLoadDiagnostic
+                            )
                         },
                         onStopTestRun: {
                             manager.stopTreadmillTestRun()

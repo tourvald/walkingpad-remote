@@ -31,6 +31,21 @@ final class TreadmillUnitsSafetyPolicyTests: XCTestCase {
         XCTAssertEqual(TreadmillUnitsSafetyPolicy.blockReason(for: state), .imperialUnits)
     }
 
+    func testImperialQueryParamsAllowsOnlyConfirmedNoLoadDiagnosticTestRun() {
+        let state = TreadmillUnitsState(
+            nativeUnits: .imperial,
+            source: .queryParams,
+            parseStatus: .validChecksum,
+            readAt: Date(timeIntervalSince1970: 10),
+            rawParamsHex: "F8 A6"
+        )
+
+        XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state))
+        XCTAssertTrue(TreadmillUnitsSafetyPolicy.requiresNoLoadDiagnosticConfirmation(for: state))
+        XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsDebugTestRun(state))
+        XCTAssertTrue(TreadmillUnitsSafetyPolicy.allowsDebugTestRun(state, confirmedNoLoadDiagnostic: true))
+    }
+
     func testUnknownOrFailedParamsBlockAutomation() {
         let notRead = TreadmillUnitsState.notRead
         let failed = TreadmillUnitsState(

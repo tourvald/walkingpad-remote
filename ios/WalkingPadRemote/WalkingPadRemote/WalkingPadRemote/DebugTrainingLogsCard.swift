@@ -35,6 +35,8 @@ struct DebugTrainingLogsCard: View {
         let testRunProgress: Double
         let isTestRunActive: Bool
         let canStartTestRun: Bool
+        let requiresNoLoadConfirmation: Bool
+        let noLoadConfirmationMessage: String
         let clearSubtitle: String
         let canClear: Bool
         let clearConfirmationMessage: String
@@ -45,11 +47,12 @@ struct DebugTrainingLogsCard: View {
     let presentation: Presentation
     let onExportRaw: (TrainingRawLogExportScope) -> Void
     let onExportSessionSummary: (TrainingSessionSummaryExportScope) -> Void
-    let onStartTestRun: () -> Void
+    let onStartTestRun: (_ confirmedNoLoadDiagnostic: Bool) -> Void
     let onStopTestRun: () -> Void
     let onClear: () -> Void
 
     @State private var showClearConfirmation = false
+    @State private var showNoLoadConfirmation = false
 
     private let metricColumns = [
         GridItem(.flexible(), spacing: 10),
@@ -142,6 +145,14 @@ struct DebugTrainingLogsCard: View {
         } message: {
             Text(presentation.clearConfirmationMessage)
         }
+        .alert("No-load diagnostic?", isPresented: $showNoLoadConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Start Diagnostic", role: .destructive) {
+                onStartTestRun(true)
+            }
+        } message: {
+            Text(presentation.noLoadConfirmationMessage)
+        }
     }
 
     @ViewBuilder
@@ -189,8 +200,10 @@ struct DebugTrainingLogsCard: View {
             Button {
                 if presentation.isTestRunActive {
                     onStopTestRun()
+                } else if presentation.requiresNoLoadConfirmation {
+                    showNoLoadConfirmation = true
                 } else {
-                    onStartTestRun()
+                    onStartTestRun(false)
                 }
             } label: {
                 DebugActionTileLabel(
