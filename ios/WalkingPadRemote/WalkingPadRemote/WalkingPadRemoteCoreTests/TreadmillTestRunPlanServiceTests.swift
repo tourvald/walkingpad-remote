@@ -51,4 +51,48 @@ final class TreadmillTestRunPlanServiceTests: XCTestCase {
         XCTAssertTrue(commandTick.shouldSendSpeedCommand)
         XCTAssertFalse(nonCommandTick.shouldSendSpeedCommand)
     }
+
+    func testImperialDiagnosticPlanIsFixedNoLoadProfile() {
+        let configuration = TreadmillTestRunPlanService.imperialNoLoadDiagnosticConfiguration
+        let start = TreadmillTestRunPlanService.snapshot(
+            elapsedSeconds: 0,
+            bounds: bounds,
+            configuration: configuration
+        )
+        let mid = TreadmillTestRunPlanService.snapshot(
+            elapsedSeconds: 30,
+            bounds: bounds,
+            configuration: configuration
+        )
+        let finished = TreadmillTestRunPlanService.snapshot(
+            elapsedSeconds: 60,
+            bounds: bounds,
+            configuration: configuration
+        )
+
+        XCTAssertEqual(configuration.durationSeconds, 60)
+        XCTAssertEqual(configuration.profileID, "imperial_units_discriminator_60s")
+        XCTAssertTrue(configuration.requiresNoLoadConfirmation)
+        XCTAssertEqual(configuration.nativeUnits, .imperial)
+        XCTAssertEqual(start.targetSpeedRawTenths, 30)
+        XCTAssertEqual(mid.targetSpeedRawTenths, 30)
+        XCTAssertEqual(finished.targetSpeedRawTenths, 0)
+        XCTAssertEqual(start.targetNativeSpeed.displayText, "3.0 mph")
+        XCTAssertEqual(start.targetNativeSpeed.diagnosticText, "native 3.0 / controller imperial")
+    }
+
+    func testDefaultMetricPlanKeepsLegacyKmhProfile() {
+        let configuration = TreadmillTestRunPlanService.defaultConfiguration
+        let start = TreadmillTestRunPlanService.snapshot(
+            elapsedSeconds: 0,
+            bounds: bounds,
+            configuration: configuration
+        )
+
+        XCTAssertEqual(configuration.profileID, "metric_ramp_3m")
+        XCTAssertFalse(configuration.requiresNoLoadConfirmation)
+        XCTAssertEqual(configuration.nativeUnits, .metric)
+        XCTAssertEqual(start.targetSpeedRawTenths, 30)
+        XCTAssertEqual(start.targetNativeSpeed.displayText, "3.0 km/h")
+    }
 }

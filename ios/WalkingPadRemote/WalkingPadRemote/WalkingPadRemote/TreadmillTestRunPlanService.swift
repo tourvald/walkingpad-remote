@@ -10,6 +10,7 @@ enum TreadmillTestRunPlanService {
     }
 
     struct Configuration: Equatable {
+        let profileID: String
         let durationSeconds: Int
         let warmupSeconds: Int
         let rampUpSeconds: Int
@@ -18,6 +19,8 @@ enum TreadmillTestRunPlanService {
         let baseSpeedKmh: Double
         let peakSpeedKmh: Double
         let commandIntervalSeconds: Int
+        let nativeUnits: TreadmillNativeUnits
+        let requiresNoLoadConfirmation: Bool
     }
 
     struct Snapshot: Equatable {
@@ -26,10 +29,13 @@ enum TreadmillTestRunPlanService {
         let progress: Double
         let phase: Phase
         let targetSpeedKmh: Double
+        let targetSpeedRawTenths: Int
+        let targetNativeSpeed: NativeSpeedValue
         let shouldSendSpeedCommand: Bool
     }
 
     static let defaultConfiguration = Configuration(
+        profileID: "metric_ramp_3m",
         durationSeconds: 180,
         warmupSeconds: 15,
         rampUpSeconds: 75,
@@ -37,7 +43,23 @@ enum TreadmillTestRunPlanService {
         settleSeconds: 15,
         baseSpeedKmh: 3.0,
         peakSpeedKmh: 8.0,
-        commandIntervalSeconds: 10
+        commandIntervalSeconds: 10,
+        nativeUnits: .metric,
+        requiresNoLoadConfirmation: false
+    )
+
+    static let imperialNoLoadDiagnosticConfiguration = Configuration(
+        profileID: "imperial_units_discriminator_60s",
+        durationSeconds: 60,
+        warmupSeconds: 60,
+        rampUpSeconds: 0,
+        rampDownSeconds: 0,
+        settleSeconds: 0,
+        baseSpeedKmh: 3.0,
+        peakSpeedKmh: 3.0,
+        commandIntervalSeconds: 10,
+        nativeUnits: .imperial,
+        requiresNoLoadConfirmation: true
     )
 
     static func snapshot(
@@ -57,6 +79,11 @@ enum TreadmillTestRunPlanService {
             bounds: bounds,
             configuration: configuration
         )
+        let targetSpeedRawTenths = Int((targetSpeedKmh * 10.0).rounded())
+        let targetNativeSpeed = NativeSpeedValue(
+            rawTenths: targetSpeedRawTenths,
+            units: configuration.nativeUnits
+        )
         let shouldSendSpeedCommand = elapsedSeconds == 0
             || elapsedSeconds >= configuration.durationSeconds
             || elapsedSeconds % max(1, configuration.commandIntervalSeconds) == 0
@@ -67,6 +94,8 @@ enum TreadmillTestRunPlanService {
             progress: progress,
             phase: phase,
             targetSpeedKmh: targetSpeedKmh,
+            targetSpeedRawTenths: targetSpeedRawTenths,
+            targetNativeSpeed: targetNativeSpeed,
             shouldSendSpeedCommand: shouldSendSpeedCommand
         )
     }
