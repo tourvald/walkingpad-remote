@@ -4949,6 +4949,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     "mode": status.manualMode,
                     "time_s": status.timeSeconds,
                     "distance_m": status.distance10m * 10,
+                    "distance_raw": status.distance10m,
+                    "distance_raw_units_unknown": self.treadmillUnitsState.nativeUnits != .metric,
+                    "distance_unit_pref": self.treadmillUnitsState.nativeUnits.rawValue,
+                    "distance_native_interpreted_optional": self.treadmillUnitsState.nativeUnits == .metric ? status.distance10m * 10 : "",
                     "steps": status.steps,
                     "button": status.lastButton,
                     "checksum_ok": status.checksumOk

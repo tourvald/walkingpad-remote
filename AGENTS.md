@@ -16,6 +16,8 @@
   - HR-control remains blocked for imperial/unknown units until physical speed semantics are proven
   - Debug Test Run may run on imperial only after explicit no-load confirmation
   - imperial diagnostic profile is fixed at `rawTenths=30` for 60s, with STOP and telemetry/analyzer evidence
+  - device-reported distance in imperial diagnostic is raw evidence only; analyzer must not infer physical mph/kmh without external measured distance
+  - stop verification failures remain in stop-forensics scope and must not be mixed into units MVP
   - do not add unit-switch writes, HR-control mph/kmh conversion, or silent imperial Test Run
 - Public repo preparation (2026-03-10):
   - root project is published from the repository root

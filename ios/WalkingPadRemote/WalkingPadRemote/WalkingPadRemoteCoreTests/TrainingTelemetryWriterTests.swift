@@ -102,8 +102,14 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "command_native_speed": 3.0,
             "reported_native_units": "imperial",
             "reported_native_speed": 3.9,
+            "distance_raw": 30,
+            "distance_raw_units_unknown": true,
+            "distance_unit_pref": "imperial",
+            "distance_native_interpreted_optional": "",
             "diagnostic_no_load_confirmed": true,
             "diagnostic_profile": "imperial_units_discriminator_60s",
+            "external_distance_m": "",
+            "physical_measured_distance_m": "",
             "physical_discriminator_expected_kmh_distance_m": 50,
             "physical_discriminator_expected_mph_distance_m": 80.5,
             "speed_has_fresh_report": true,
@@ -163,8 +169,14 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "command_native_speed")!], "3")
         XCTAssertEqual(row[headers.firstIndex(of: "reported_native_units")!], "imperial")
         XCTAssertEqual(row[headers.firstIndex(of: "reported_native_speed")!], "3.9")
+        XCTAssertEqual(row[headers.firstIndex(of: "distance_raw")!], "30")
+        XCTAssertEqual(row[headers.firstIndex(of: "distance_raw_units_unknown")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "distance_unit_pref")!], "imperial")
+        XCTAssertEqual(row[headers.firstIndex(of: "distance_native_interpreted_optional")!], "")
         XCTAssertEqual(row[headers.firstIndex(of: "diagnostic_no_load_confirmed")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "diagnostic_profile")!], "imperial_units_discriminator_60s")
+        XCTAssertEqual(row[headers.firstIndex(of: "external_distance_m")!], "")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_measured_distance_m")!], "")
         XCTAssertEqual(row[headers.firstIndex(of: "physical_discriminator_expected_kmh_distance_m")!], "50")
         XCTAssertEqual(row[headers.firstIndex(of: "physical_discriminator_expected_mph_distance_m")!], "80.5")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_has_fresh_report")!], "true")

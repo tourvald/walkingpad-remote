@@ -96,9 +96,14 @@ No hard blockers. What remains is **validation, not development**:
 3. Confirm only when nobody is on the treadmill and hand is near emergency stop.
 4. Expected diagnostic profile: `imperial_units_discriminator_60s`, `command_raw_tenths=30`,
    `command_native_units=imperial`, `diagnostic_no_load_confirmed=true`.
-5. Export raw CSV and run `tools/analyze_training_log.py`; expected analyzer verdict is
-   `physical_likely_mph`, `physical_likely_kmh`, or `inconclusive`.
-6. HR-control remains blocked on imperial until this physical proof is reviewed.
+5. Export raw CSV and run `tools/analyze_training_log.py`. Device-reported distance is
+   raw evidence only, not factual meters; without an external measurement the verdict must be
+   `inconclusive_without_external_measurement`.
+6. If an external measured distance is added (`external_distance_m` or
+   `physical_measured_distance_m`), analyzer may return `physical_likely_mph`,
+   `physical_likely_kmh`, or `inconclusive`.
+7. HR-control remains blocked on imperial until external physical proof is reviewed.
+8. If `stop_confirmed_ever=false`, keep that in the separate stop-forensics scope.
 
 Runtime-gap QA remains useful, but is paused until the imperial diagnostic path is validated.
 

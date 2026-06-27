@@ -131,6 +131,8 @@ class DiagnosticObservation:
     command_native_speed: str
     expected_kmh_distance_m: float | None
     expected_mph_distance_m: float | None
+    device_distance_raw_delta: float | None
+    external_distance_m: float | None
     distance_delta_m: float | None
     elapsed_s: float | None
     verdict: str
@@ -311,11 +313,22 @@ def collect_diagnostic_observations(rows: list[Row]) -> list[DiagnosticObservati
         ordered = sorted(profile_rows, key=lambda row: (row.t if row.t is not None else float("inf"), row.index))
         first = ordered[0]
         last = ordered[-1]
-        first_distance = first._num("distance_km")
-        last_distance = last._num("distance_km")
-        distance_delta_m = None
-        if first_distance is not None and last_distance is not None:
-            distance_delta_m = max(0.0, (last_distance - first_distance) * 1000.0)
+        command_row = _diagnostic_command_row(ordered)
+        device_distance_raw_values = [
+            value
+            for value in (row._num("distance_raw") for row in ordered)
+            if value is not None
+        ]
+        device_distance_raw_delta = None
+        if len(device_distance_raw_values) >= 2:
+            device_distance_raw_delta = max(0.0, device_distance_raw_values[-1] - device_distance_raw_values[0])
+        elif device_distance_raw_values:
+            device_distance_raw_delta = device_distance_raw_values[-1]
+
+        external_distance_m = last._num("external_distance_m")
+        if external_distance_m is None:
+            external_distance_m = last._num("physical_measured_distance_m")
+        distance_delta_m = external_distance_m
 
         elapsed_s = None
         if first.t is not None and last.t is not None:
@@ -328,11 +341,13 @@ def collect_diagnostic_observations(rows: list[Row]) -> list[DiagnosticObservati
         observations.append(
             DiagnosticObservation(
                 profile=profile,
-                command_raw_tenths=str(last.get("command_raw_tenths") or "?"),
-                command_native_units=str(last.get("command_native_units") or "?"),
-                command_native_speed=str(last.get("command_native_speed") or "?"),
+                command_raw_tenths=str(command_row.get("command_raw_tenths") or "?"),
+                command_native_units=str(command_row.get("command_native_units") or "?"),
+                command_native_speed=str(command_row.get("command_native_speed") or "?"),
                 expected_kmh_distance_m=expected_kmh,
                 expected_mph_distance_m=expected_mph,
+                device_distance_raw_delta=device_distance_raw_delta,
+                external_distance_m=external_distance_m,
                 distance_delta_m=distance_delta_m,
                 elapsed_s=elapsed_s,
                 verdict=verdict,
@@ -341,12 +356,25 @@ def collect_diagnostic_observations(rows: list[Row]) -> list[DiagnosticObservati
     return observations
 
 
+def _diagnostic_command_row(rows: list[Row]) -> Row:
+    nonzero_command_rows = [
+        row
+        for row in rows
+        if (row._num("command_raw_tenths") or 0) > 0
+    ]
+    if nonzero_command_rows:
+        return nonzero_command_rows[-1]
+    return rows[-1]
+
+
 def _physical_discriminator_verdict(
     distance_delta_m: float | None,
     expected_kmh_distance_m: float | None,
     expected_mph_distance_m: float | None,
 ) -> str:
-    if distance_delta_m is None or expected_kmh_distance_m is None or expected_mph_distance_m is None:
+    if distance_delta_m is None:
+        return "inconclusive_without_external_measurement"
+    if expected_kmh_distance_m is None or expected_mph_distance_m is None:
         return "inconclusive"
     kmh_error = abs(distance_delta_m - expected_kmh_distance_m)
     mph_error = abs(distance_delta_m - expected_mph_distance_m)
@@ -410,7 +438,9 @@ def print_text(
                 "  "
                 f"profile={obs.profile} command_raw={obs.command_raw_tenths} "
                 f"native={obs.command_native_speed} {obs.command_native_units} "
-                f"distance={_fmt(obs.distance_delta_m, 'm')} elapsed={_fmt(obs.elapsed_s, 's')} "
+                f"external_distance={_fmt(obs.external_distance_m, 'm')} "
+                f"device_distance_raw_delta={_fmt(obs.device_distance_raw_delta)} "
+                f"elapsed={_fmt(obs.elapsed_s, 's')} "
                 f"expected_kmh={_fmt(obs.expected_kmh_distance_m, 'm')} "
                 f"expected_mph={_fmt(obs.expected_mph_distance_m, 'm')} "
                 f"verdict={obs.verdict}"
@@ -500,6 +530,8 @@ def to_json(
                 "command_native_speed": item.command_native_speed,
                 "expected_kmh_distance_m": item.expected_kmh_distance_m,
                 "expected_mph_distance_m": item.expected_mph_distance_m,
+                "device_distance_raw_delta": item.device_distance_raw_delta,
+                "external_distance_m": item.external_distance_m,
                 "distance_delta_m": item.distance_delta_m,
                 "elapsed_s": item.elapsed_s,
                 "verdict": item.verdict,
