@@ -53,6 +53,15 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertTrue(headers.contains("controller_state"))
         XCTAssertTrue(headers.contains("controller_manual_mode"))
         XCTAssertTrue(headers.contains("command_source"))
+        XCTAssertTrue(headers.contains("speed_raw_tenths"))
+        XCTAssertTrue(headers.contains("app_speed_raw_tenths"))
+        XCTAssertTrue(headers.contains("speed_unit_pref"))
+        XCTAssertTrue(headers.contains("command_units"))
+        XCTAssertTrue(headers.contains("display_units"))
+        XCTAssertTrue(headers.contains("physical_speed_confidence"))
+        XCTAssertTrue(headers.contains("units_source"))
+        XCTAssertTrue(headers.contains("controller_params_raw_hex"))
+        XCTAssertTrue(headers.contains("controller_params_checksum_ok"))
 
         let payload: [String: Any] = [
             "event": "command_write",

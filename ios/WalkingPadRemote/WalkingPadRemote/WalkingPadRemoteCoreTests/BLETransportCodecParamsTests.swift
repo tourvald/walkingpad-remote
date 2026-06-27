@@ -31,13 +31,31 @@ final class BLETransportCodecParamsTests: XCTestCase {
         XCTAssertEqual(params?.goal, 0)
         XCTAssertEqual(params?.regulate, 0)
         XCTAssertEqual(params?.maxSpeedKmh, 6.0)
+        XCTAssertEqual(params?.maxSpeedRawTenths, 0x3C)
         XCTAssertEqual(params?.startSpeedKmh, 2.0)
+        XCTAssertEqual(params?.startSpeedRawTenths, 0x14)
         XCTAssertEqual(params?.startMode, 1)
         XCTAssertEqual(params?.sensitivity, 3)
         XCTAssertEqual(params?.displayBits, 0x7F)
         XCTAssertEqual(params?.childLock, 0)
         XCTAssertEqual(params?.unit, 1)
+        XCTAssertEqual(params?.nativeUnits, .imperial)
         XCTAssertEqual(params?.checksumOk, true)
+    }
+
+    func testParseParamsNormalizesMetricAndUnknownUnits() {
+        var metricBytes: [UInt8] = [
+            0xF8, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x78, 0x1E, 0x01, 0x02, 0x00, 0x00, 0x00,
+            0x39, 0xFD
+        ]
+        XCTAssertEqual(BLETransportCodec.parseWalkingPadParams(Data(metricBytes))?.nativeUnits, .metric)
+
+        metricBytes[13] = 0x02
+        metricBytes[14] = 0x3B
+        let unknownParams = BLETransportCodec.parseWalkingPadParams(Data(metricBytes))
+        XCTAssertEqual(unknownParams?.unit, 2)
+        XCTAssertEqual(unknownParams?.nativeUnits, .unknown)
     }
 
     func testParseParamsDetectsBadChecksum() {

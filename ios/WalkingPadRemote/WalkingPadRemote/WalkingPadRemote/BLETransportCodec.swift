@@ -32,13 +32,16 @@ enum BLETransportCodec {
         let goalType: Int
         let goal: Int
         let regulate: Int
+        let maxSpeedRawTenths: Int
         let maxSpeedKmh: Double
+        let startSpeedRawTenths: Int
         let startSpeedKmh: Double
         let startMode: Int
         let sensitivity: Int
         let displayBits: Int
         let childLock: Int
         let unit: Int // 0 = metric (km/h), 1 = imperial (miles)
+        let nativeUnits: TreadmillNativeUnits
         let checksumOk: Bool
         let rawHex: String
     }
@@ -68,13 +71,16 @@ enum BLETransportCodec {
             goalType: Int(data[2]),
             goal: goal,
             regulate: Int(data[6]),
+            maxSpeedRawTenths: Int(data[7]),
             maxSpeedKmh: Double(data[7]) / 10.0,
+            startSpeedRawTenths: Int(data[8]),
             startSpeedKmh: Double(data[8]) / 10.0,
             startMode: Int(data[9]),
             sensitivity: Int(data[10]),
             displayBits: Int(data[11]),
             childLock: Int(data[12]),
             unit: Int(data[13]),
+            nativeUnits: TreadmillNativeUnits(rawControllerUnit: Int(data[13])),
             checksumOk: checksumOk,
             rawHex: hexString(data)
         )

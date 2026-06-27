@@ -45,7 +45,8 @@ let package = Package(
                 "CommandQueueService.swift",
                 "TreadmillCommandClassifier.swift",
                 "TreadmillSpeedBoundsService.swift",
-                "TreadmillTestRunPlanService.swift"
+                "TreadmillTestRunPlanService.swift",
+                "TreadmillUnitsSafetyPolicy.swift"
             ]
         ),
         .testTarget(
