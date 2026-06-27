@@ -90,6 +90,12 @@ class Row:
     raw: dict
     data: dict
 
+    def get(self, key: str):
+        value = self.data.get(key)
+        if value is None or value == "":
+            value = self.raw.get(key)
+        return value
+
     def commanded_speed(self) -> float | None:
         device = self._num("speed_device_target_kmh")
         target = self._num("speed_target_kmh")
@@ -101,8 +107,20 @@ class Row:
         return self._num("speed_reported_kmh")
 
     def _num(self, key: str) -> float | None:
-        value = _to_float(self.data.get(key))
-        return value if value is not None else _to_float(self.raw.get(key))
+        return _to_float(self.get(key))
+
+
+@dataclass
+class UnitsObservation:
+    unit_pref: str
+    source: str
+    checksum_ok: str
+    command_units: str
+    display_units: str
+    physical_confidence: str
+    raw_params_hex: str
+    count: int = 0
+    latest_ts: str = ""
 
 
 @dataclass
@@ -229,6 +247,45 @@ def collect_scene_events(rows: list[Row]) -> list[tuple[str, str, str]]:
     return events
 
 
+def collect_units_observations(rows: list[Row]) -> list[UnitsObservation]:
+    observations: dict[tuple[str, str, str, str, str, str, str], UnitsObservation] = {}
+    for row in rows:
+        unit_pref = str(row.get("speed_unit_pref") or "").strip()
+        source = str(row.get("units_source") or "").strip()
+        command_units = str(row.get("command_units") or "").strip()
+        display_units = str(row.get("display_units") or "").strip()
+        physical_confidence = str(row.get("physical_speed_confidence") or "").strip()
+        raw_params_hex = str(row.get("controller_params_raw_hex") or "").strip()
+        checksum_ok = str(row.get("controller_params_checksum_ok") or "").strip().lower()
+
+        if not any((unit_pref, source, command_units, display_units, physical_confidence, raw_params_hex, checksum_ok)):
+            continue
+
+        key = (
+            unit_pref or "?",
+            source or "?",
+            checksum_ok or "?",
+            command_units or "?",
+            display_units or "?",
+            physical_confidence or "?",
+            raw_params_hex or "?",
+        )
+        if key not in observations:
+            observations[key] = UnitsObservation(
+                unit_pref=key[0],
+                source=key[1],
+                checksum_ok=key[2],
+                command_units=key[3],
+                display_units=key[4],
+                physical_confidence=key[5],
+                raw_params_hex=key[6],
+            )
+        observations[key].count += 1
+        observations[key].latest_ts = row.ts_raw or observations[key].latest_ts
+
+    return sorted(observations.values(), key=lambda item: (-item.count, item.unit_pref, item.source))
+
+
 def count_backgroundings(scene: list[tuple[str, str, str]]) -> int:
     return sum(1 for _, _, phase in scene if phase == "background")
 
@@ -237,7 +294,14 @@ def _fmt(value: float | None, suffix: str = "") -> str:
     return "—" if value is None else f"{value:.1f}{suffix}"
 
 
-def print_text(path: str, rows: list[Row], reports: list[GapReport], scene: list, near_seconds: float) -> None:
+def print_text(
+    path: str,
+    rows: list[Row],
+    reports: list[GapReport],
+    scene: list,
+    units: list[UnitsObservation],
+    near_seconds: float,
+) -> None:
     sessions = sorted({r.session for r in rows if r.session})
     backgroundings = count_backgroundings(scene)
     print("WalkingPad runtime_gap analyzer")
@@ -250,6 +314,23 @@ def print_text(path: str, rows: list[Row], reports: list[GapReport], scene: list
     print(f"runtime_gap events: {len(reports)}")
     if reports:
         print(f"  total gap: {total_gap:.1f}s · max: {max_gap:.1f}s · backgrounded: {backgrounded}/{len(reports)}")
+    print()
+
+    print("units observations:")
+    if units:
+        for obs in units[:8]:
+            raw = "" if obs.raw_params_hex in {"", "?"} else f" raw={obs.raw_params_hex}"
+            print(
+                "  "
+                f"unit={obs.unit_pref} source={obs.source} checksum={obs.checksum_ok} "
+                f"command={obs.command_units} display={obs.display_units} "
+                f"physical={obs.physical_confidence} rows={obs.count} latest={obs.latest_ts or '—'}"
+                f"{raw}"
+            )
+        if len(units) > 8:
+            print(f"  … {len(units) - 8} more")
+    else:
+        print("  none (export predates units telemetry)")
     print()
 
     for n, g in enumerate(reports, 1):
@@ -289,7 +370,7 @@ def verdict_line(reports: list[GapReport], backgroundings: int) -> str:
     return "QA VERDICT: NO-GAP — no runtime_gap and no backgrounding seen; re-run with an app switch."
 
 
-def to_json(path: str, rows: list[Row], reports: list[GapReport], scene: list) -> dict:
+def to_json(path: str, rows: list[Row], reports: list[GapReport], scene: list, units: list[UnitsObservation]) -> dict:
     impacted = [g for g in reports if g.belt_impacted]
     backgroundings = count_backgroundings(scene)
     if reports:
@@ -304,6 +385,20 @@ def to_json(path: str, rows: list[Row], reports: list[GapReport], scene: list) -
         "runtime_gaps": len(reports),
         "scene_transitions": len(scene),
         "backgroundings": backgroundings,
+        "units_observations": [
+            {
+                "speed_unit_pref": item.unit_pref,
+                "units_source": item.source,
+                "controller_params_checksum_ok": item.checksum_ok,
+                "command_units": item.command_units,
+                "display_units": item.display_units,
+                "physical_speed_confidence": item.physical_confidence,
+                "controller_params_raw_hex": item.raw_params_hex,
+                "rows": item.count,
+                "latest_ts": item.latest_ts,
+            }
+            for item in units
+        ],
         "backgrounded": sum(1 for g in reports if g.was_backgrounded),
         "total_gap_s": round(sum(g.gap_s for g in reports), 1),
         "max_gap_s": round(max((g.gap_s for g in reports), default=0.0), 1),
@@ -344,11 +439,12 @@ def main() -> int:
 
     reports = build_reports(rows, args.near_seconds)
     scene = collect_scene_events(rows)
+    units = collect_units_observations(rows)
 
     if args.json:
-        print(json.dumps(to_json(args.csv_path, rows, reports, scene), indent=2))
+        print(json.dumps(to_json(args.csv_path, rows, reports, scene, units), indent=2))
     else:
-        print_text(args.csv_path, rows, reports, scene, args.near_seconds)
+        print_text(args.csv_path, rows, reports, scene, units, args.near_seconds)
 
     # Exit code: 0 = PASS / NO-STALL, 1 = FAIL (belt impact), 3 = NO-GAP. Handy for CI/automation.
     if reports:

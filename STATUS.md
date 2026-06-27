@@ -1,7 +1,7 @@
 # Project Status — WalkingPad Remote
 
 *Source of truth for project management. Keep this short and current.*
-*Last updated: 2026-06-03*
+*Last updated: 2026-06-27*
 
 ## Where development is
 - **Branch:** `ios/hr-decision-engine-and-background`
@@ -43,6 +43,7 @@
 | post-observation background-task (safety) | 🟡 QA pending |
 | post-observation telemetry (events / outcome) | 🟡 QA pending |
 | Test Run diagnostics unification (session_kind) | 🟡 QA pending |
+| Units safety gate (`queryParams.unit`) | ✅ Done |
 | C — recovery after kill | 📋 Planned (post-v1 — do not start) |
 
 ## Safety decisions (fixed)
@@ -50,6 +51,10 @@
 - v1 background = **safety-first** (guarantee cooldown + stop).
 - **runtime_gap logs only — it never stops the belt.**
 - Stop = speed 0 + standby, with confirmation of the actual stop.
+- HR-control and Debug Test Run require WalkingPad `queryParams.unit == metric`
+  with a valid parse/checksum. `imperial`, unknown, or invalid params block
+  automation and show a warning. No unit switching, command conversion, or
+  operator bypass is implemented in this MVP.
 - Recovery after kill (C): reconnect + **safe stop** + log (resume is a later refinement).
 - Local-first: no cloud, no accounts.
 
@@ -66,14 +71,24 @@
 
 ## What blocks v1
 No hard blockers. What remains is **validation, not development**:
-1. runtime_gap device QA (in progress)
-2. one clean uninterrupted locked run + one long session (30+ min)
-3. loss-of-HR-while-locked → safe-stop test
+1. units safety on-device smoke: affected `unit=1` pad must warn + block HR/Test Run
+2. runtime_gap device QA (paused until P0 units safety is validated)
+3. one clean uninterrupted locked run + one long session (30+ min)
+4. loss-of-HR-while-locked → safe-stop test
 
 > **C (recovery after kill) is NOT a v1 blocker** — deferred to post-v1.
 
 ## Pending QA — blocks acceptance of the items above
-Two device runs needed. Log analysis is **paused** until both CSVs arrive.
+**P0 Units Safety smoke — do first**
+1. Connect to affected KS-F0 where `queryParams.unit=1`.
+2. Expected: UI warning appears; HR-control Start is disabled with units block reason;
+   Debug Test Run is disabled with units block reason.
+3. Export raw training CSV after connect; expected columns include `speed_unit_pref=imperial`,
+   `units_source=queryParams`, `controller_params_checksum_ok=true`, raw speed tenths, command/display units.
+4. Connect to known metric pad (`unit=0`, checksum OK); expected: no units warning and HR/Test Run gates
+   fall back to normal connection/HR-source readiness.
+
+Runtime-gap QA remains useful, but is paused until the units smoke above passes.
 
 **QA-1 — Debug Test Run + lock** (this is what actually exercises the gap detector —
 a test run has no workout session, so it really suspends when locked):

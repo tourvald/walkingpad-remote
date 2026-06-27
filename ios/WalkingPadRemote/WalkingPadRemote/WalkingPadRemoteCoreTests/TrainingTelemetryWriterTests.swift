@@ -88,6 +88,15 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "speed_reported_kmh": 3.9,
             "speed_reported_app_kmh": 3.5,
             "speed_source": "device_reported",
+            "speed_raw_tenths": 39,
+            "app_speed_raw_tenths": 35,
+            "speed_unit_pref": "imperial",
+            "command_units": "imperial",
+            "display_units": "metric_legacy",
+            "physical_speed_confidence": "unknown",
+            "units_source": "queryParams",
+            "controller_params_raw_hex": "F8 A6 ... FD",
+            "controller_params_checksum_ok": true,
             "speed_has_fresh_report": true,
             "speed_report_age_s": 1,
             "stop_confirmed": false,
@@ -131,6 +140,15 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "speed_actual_kmh")!], "3.5")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_model_kmh")!], "4.1")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_source")!], "device_reported")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_raw_tenths")!], "39")
+        XCTAssertEqual(row[headers.firstIndex(of: "app_speed_raw_tenths")!], "35")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_unit_pref")!], "imperial")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_units")!], "imperial")
+        XCTAssertEqual(row[headers.firstIndex(of: "display_units")!], "metric_legacy")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_speed_confidence")!], "unknown")
+        XCTAssertEqual(row[headers.firstIndex(of: "units_source")!], "queryParams")
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_params_raw_hex")!], "F8 A6 ... FD")
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_params_checksum_ok")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_has_fresh_report")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_report_age_s")!], "1")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_confirmed")!], "false")

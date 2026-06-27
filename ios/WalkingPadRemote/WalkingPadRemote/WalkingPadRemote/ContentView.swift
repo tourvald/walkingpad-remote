@@ -967,6 +967,46 @@ private struct HRControlPanel: View {
         self.debugPreview = debugPreview
     }
 
+    private func treadmillUnitsWarningMessage(for state: TreadmillUnitsState) -> String? {
+        guard let reason = TreadmillUnitsSafetyPolicy.blockReason(for: state) else { return nil }
+        switch reason {
+        case .imperialUnits:
+            return "Дорожка сообщает imperial units. HR‑контроль и тест дорожки заблокированы."
+        case .unitsUnknown:
+            return "Единицы скорости дорожки ещё не подтверждены через queryParams."
+        case .paramsInvalid:
+            return "Параметры единиц скорости не прошли проверку. Автоуправление заблокировано."
+        }
+    }
+
+    private func treadmillUnitsWarningBanner(message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.orange)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Проверьте единицы скорости")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.orange.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        )
+    }
+
     var body: some View {
         let isPreviewMode = (debugPreview != nil)
         let isHrControlRunning = debugPreview?.isHrControlRunning ?? manager.isHrControlRunning
@@ -982,6 +1022,7 @@ private struct HRControlPanel: View {
         let canExtendHrSession = debugPreview?.canExtendHrSession ?? manager.canExtendHrSession
         let hrSessionMaxMinutes = debugPreview?.hrSessionMaxMinutes ?? manager.hrSessionMaxMinutes
         let canStartHrControl = manager.isHrControlStartAllowed
+        let unitsWarningMessage = isPreviewMode ? nil : treadmillUnitsWarningMessage(for: manager.treadmillUnitsState)
         let hrStartSubtitle: String = {
             if isPreviewMode {
                 return "Preview mode: команды на дорожку отключены"
@@ -1019,6 +1060,10 @@ private struct HRControlPanel: View {
                             dismissButton: .cancel(Text("OK"))
                         )
                     }
+                }
+
+                if let unitsWarningMessage {
+                    treadmillUnitsWarningBanner(message: unitsWarningMessage)
                 }
 
                 if isHrControlRunning {
