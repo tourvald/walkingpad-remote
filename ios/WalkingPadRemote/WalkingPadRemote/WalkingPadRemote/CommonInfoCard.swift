@@ -23,7 +23,7 @@ struct CommonInfoCard: View {
     }
 
     private var speedValue: String {
-        String(format: "%.1f", manager.treadmillActualSpeedKmh)
+        String(format: "%.1f", manager.treadmillDisplaySpeedValue)
     }
 
     private var timeText: String {
@@ -56,7 +56,7 @@ struct CommonInfoCard: View {
                 LazyVGrid(columns: columns, spacing: 12) {
                     primaryMetric(systemImage: "heart.fill", title: "Пульс", value: hrValue, unit: "", color: hrColor, valueSize: 40, badgeText: nil, badgeColor: .secondary, iconColor: .red, pulseIcon: hasHR, iconSize: 16)
                         .frame(maxWidth: .infinity, alignment: .center)
-                    primaryMetric(systemImage: "speedometer", title: "km/h", value: speedValue, unit: "", color: speedActive ? .primary : .secondary, valueSize: 40)
+                    primaryMetric(systemImage: "speedometer", title: manager.treadmillDisplaySpeedUnitLabel, value: speedValue, unit: "", color: speedActive ? .primary : .secondary, valueSize: 40)
                         .frame(maxWidth: .infinity, alignment: .center)
                     speedDeltaMetric(symbol: deltaSymbol, value: deltaText, color: deltaColor)
                         .frame(maxWidth: .infinity, alignment: .center)

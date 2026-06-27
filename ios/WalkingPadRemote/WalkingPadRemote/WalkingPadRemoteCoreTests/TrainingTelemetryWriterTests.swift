@@ -97,6 +97,15 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "units_source": "queryParams",
             "controller_params_raw_hex": "F8 A6 ... FD",
             "controller_params_checksum_ok": true,
+            "command_raw_tenths": 30,
+            "command_native_units": "imperial",
+            "command_native_speed": 3.0,
+            "reported_native_units": "imperial",
+            "reported_native_speed": 3.9,
+            "diagnostic_no_load_confirmed": true,
+            "diagnostic_profile": "imperial_units_discriminator_60s",
+            "physical_discriminator_expected_kmh_distance_m": 50,
+            "physical_discriminator_expected_mph_distance_m": 80.5,
             "speed_has_fresh_report": true,
             "speed_report_age_s": 1,
             "stop_confirmed": false,
@@ -149,6 +158,15 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "units_source")!], "queryParams")
         XCTAssertEqual(row[headers.firstIndex(of: "controller_params_raw_hex")!], "F8 A6 ... FD")
         XCTAssertEqual(row[headers.firstIndex(of: "controller_params_checksum_ok")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_raw_tenths")!], "30")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_native_units")!], "imperial")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_native_speed")!], "3")
+        XCTAssertEqual(row[headers.firstIndex(of: "reported_native_units")!], "imperial")
+        XCTAssertEqual(row[headers.firstIndex(of: "reported_native_speed")!], "3.9")
+        XCTAssertEqual(row[headers.firstIndex(of: "diagnostic_no_load_confirmed")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "diagnostic_profile")!], "imperial_units_discriminator_60s")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_discriminator_expected_kmh_distance_m")!], "50")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_discriminator_expected_mph_distance_m")!], "80.5")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_has_fresh_report")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_report_age_s")!], "1")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_confirmed")!], "false")

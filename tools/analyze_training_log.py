@@ -124,6 +124,19 @@ class UnitsObservation:
 
 
 @dataclass
+class DiagnosticObservation:
+    profile: str
+    command_raw_tenths: str
+    command_native_units: str
+    command_native_speed: str
+    expected_kmh_distance_m: float | None
+    expected_mph_distance_m: float | None
+    distance_delta_m: float | None
+    elapsed_s: float | None
+    verdict: str
+
+
+@dataclass
 class GapReport:
     session: str
     ts_raw: str
@@ -286,6 +299,62 @@ def collect_units_observations(rows: list[Row]) -> list[UnitsObservation]:
     return sorted(observations.values(), key=lambda item: (-item.count, item.unit_pref, item.source))
 
 
+def collect_diagnostic_observations(rows: list[Row]) -> list[DiagnosticObservation]:
+    by_profile: dict[str, list[Row]] = {}
+    for row in rows:
+        profile = str(row.get("diagnostic_profile") or "").strip()
+        if profile:
+            by_profile.setdefault(profile, []).append(row)
+
+    observations: list[DiagnosticObservation] = []
+    for profile, profile_rows in sorted(by_profile.items()):
+        ordered = sorted(profile_rows, key=lambda row: (row.t if row.t is not None else float("inf"), row.index))
+        first = ordered[0]
+        last = ordered[-1]
+        first_distance = first._num("distance_km")
+        last_distance = last._num("distance_km")
+        distance_delta_m = None
+        if first_distance is not None and last_distance is not None:
+            distance_delta_m = max(0.0, (last_distance - first_distance) * 1000.0)
+
+        elapsed_s = None
+        if first.t is not None and last.t is not None:
+            elapsed_s = max(0.0, last.t - first.t)
+
+        expected_kmh = last._num("physical_discriminator_expected_kmh_distance_m")
+        expected_mph = last._num("physical_discriminator_expected_mph_distance_m")
+        verdict = _physical_discriminator_verdict(distance_delta_m, expected_kmh, expected_mph)
+
+        observations.append(
+            DiagnosticObservation(
+                profile=profile,
+                command_raw_tenths=str(last.get("command_raw_tenths") or "?"),
+                command_native_units=str(last.get("command_native_units") or "?"),
+                command_native_speed=str(last.get("command_native_speed") or "?"),
+                expected_kmh_distance_m=expected_kmh,
+                expected_mph_distance_m=expected_mph,
+                distance_delta_m=distance_delta_m,
+                elapsed_s=elapsed_s,
+                verdict=verdict,
+            )
+        )
+    return observations
+
+
+def _physical_discriminator_verdict(
+    distance_delta_m: float | None,
+    expected_kmh_distance_m: float | None,
+    expected_mph_distance_m: float | None,
+) -> str:
+    if distance_delta_m is None or expected_kmh_distance_m is None or expected_mph_distance_m is None:
+        return "inconclusive"
+    kmh_error = abs(distance_delta_m - expected_kmh_distance_m)
+    mph_error = abs(distance_delta_m - expected_mph_distance_m)
+    if min(kmh_error, mph_error) > 20:
+        return "inconclusive"
+    return "physical_likely_kmh" if kmh_error < mph_error else "physical_likely_mph"
+
+
 def count_backgroundings(scene: list[tuple[str, str, str]]) -> int:
     return sum(1 for _, _, phase in scene if phase == "background")
 
@@ -300,6 +369,7 @@ def print_text(
     reports: list[GapReport],
     scene: list,
     units: list[UnitsObservation],
+    diagnostics: list[DiagnosticObservation],
     near_seconds: float,
 ) -> None:
     sessions = sorted({r.session for r in rows if r.session})
@@ -331,6 +401,22 @@ def print_text(
             print(f"  … {len(units) - 8} more")
     else:
         print("  none (export predates units telemetry)")
+    print()
+
+    print("diagnostic observations:")
+    if diagnostics:
+        for obs in diagnostics:
+            print(
+                "  "
+                f"profile={obs.profile} command_raw={obs.command_raw_tenths} "
+                f"native={obs.command_native_speed} {obs.command_native_units} "
+                f"distance={_fmt(obs.distance_delta_m, 'm')} elapsed={_fmt(obs.elapsed_s, 's')} "
+                f"expected_kmh={_fmt(obs.expected_kmh_distance_m, 'm')} "
+                f"expected_mph={_fmt(obs.expected_mph_distance_m, 'm')} "
+                f"verdict={obs.verdict}"
+            )
+    else:
+        print("  none")
     print()
 
     for n, g in enumerate(reports, 1):
@@ -370,7 +456,14 @@ def verdict_line(reports: list[GapReport], backgroundings: int) -> str:
     return "QA VERDICT: NO-GAP — no runtime_gap and no backgrounding seen; re-run with an app switch."
 
 
-def to_json(path: str, rows: list[Row], reports: list[GapReport], scene: list, units: list[UnitsObservation]) -> dict:
+def to_json(
+    path: str,
+    rows: list[Row],
+    reports: list[GapReport],
+    scene: list,
+    units: list[UnitsObservation],
+    diagnostics: list[DiagnosticObservation],
+) -> dict:
     impacted = [g for g in reports if g.belt_impacted]
     backgroundings = count_backgroundings(scene)
     if reports:
@@ -398,6 +491,20 @@ def to_json(path: str, rows: list[Row], reports: list[GapReport], scene: list, u
                 "latest_ts": item.latest_ts,
             }
             for item in units
+        ],
+        "diagnostic_observations": [
+            {
+                "profile": item.profile,
+                "command_raw_tenths": item.command_raw_tenths,
+                "command_native_units": item.command_native_units,
+                "command_native_speed": item.command_native_speed,
+                "expected_kmh_distance_m": item.expected_kmh_distance_m,
+                "expected_mph_distance_m": item.expected_mph_distance_m,
+                "distance_delta_m": item.distance_delta_m,
+                "elapsed_s": item.elapsed_s,
+                "verdict": item.verdict,
+            }
+            for item in diagnostics
         ],
         "backgrounded": sum(1 for g in reports if g.was_backgrounded),
         "total_gap_s": round(sum(g.gap_s for g in reports), 1),
@@ -440,11 +547,12 @@ def main() -> int:
     reports = build_reports(rows, args.near_seconds)
     scene = collect_scene_events(rows)
     units = collect_units_observations(rows)
+    diagnostics = collect_diagnostic_observations(rows)
 
     if args.json:
-        print(json.dumps(to_json(args.csv_path, rows, reports, scene, units), indent=2))
+        print(json.dumps(to_json(args.csv_path, rows, reports, scene, units, diagnostics), indent=2))
     else:
-        print_text(args.csv_path, rows, reports, scene, units, args.near_seconds)
+        print_text(args.csv_path, rows, reports, scene, units, diagnostics, args.near_seconds)
 
     # Exit code: 0 = PASS / NO-STALL, 1 = FAIL (belt impact), 3 = NO-GAP. Handy for CI/automation.
     if reports:

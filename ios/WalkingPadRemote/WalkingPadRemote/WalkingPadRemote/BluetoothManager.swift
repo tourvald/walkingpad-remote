@@ -1034,6 +1034,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         currentTreadmillSpeedSnapshot().actualSpeedKmh
     }
 
+    var treadmillDisplaySpeedUnitLabel: String {
+        treadmillUnitsState.nativeUnits == .imperial ? "mph" : "km/h"
+    }
+
+    var treadmillDisplaySpeedValue: Double {
+        if treadmillUnitsState.nativeUnits == .imperial {
+            return NativeSpeedValue(
+                rawTenths: deviceReportedSpeedRawTenths,
+                units: .imperial
+            ).nativeSpeed
+        }
+        return treadmillActualSpeedKmh
+    }
+
     // Session stats
     @Published var timeSec: Int = 0
     @Published var distKm: Double = 0
@@ -1541,6 +1555,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let zone = currentTargetZoneSnapshot()
         let cooldownState = cooldownRuntimeState
         let speedSnapshot = currentTreadmillSpeedSnapshot()
+        let nativeUnits = treadmillUnitsState.nativeUnits
+        let reportedNativeSpeed = NativeSpeedValue(
+            rawTenths: deviceReportedSpeedRawTenths,
+            units: nativeUnits
+        )
         var payload: [String: Any] = [
             "ts": trainingLogIsoFormatter.string(from: Date()),
             "event": event,
@@ -1592,11 +1611,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "app_speed_raw_tenths": deviceReportedAppSpeedRawTenths,
             "speed_unit_pref": treadmillUnitsState.nativeUnits.rawValue,
             "command_units": treadmillUnitsState.nativeUnits.rawValue,
-            "display_units": "metric_legacy",
+            "display_units": nativeUnits == .imperial ? "imperial" : "metric_legacy",
             "physical_speed_confidence": treadmillUnitsState.physicalSpeedConfidence.rawValue,
             "units_source": treadmillUnitsState.source.rawValue,
             "controller_params_raw_hex": treadmillUnitsState.rawParamsHex ?? "",
             "controller_params_checksum_ok": treadmillUnitsState.parseStatus == .validChecksum,
+            "reported_native_units": nativeUnits.rawValue,
+            "reported_native_speed": reportedNativeSpeed.nativeSpeed,
             "speed_delta_kmh": lastSpeedDeltaKmh,
             "distance_km": distKm,
             "duration_s": timeSec,
@@ -2805,7 +2826,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 lastCommandLine = "CMD test native raw=\(snapshot.targetSpeedRawTenths)"
                 sendWalkingPadSetSpeed(
                     rawTenths: snapshot.targetSpeedRawTenths,
-                    label: "SPEED native \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)"
+                    label: "SPEED \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)"
                 )
             } else {
                 lastCommandLine = "CMD test speed=\(String(format: "%.1f", snapshot.targetSpeedKmh))"
@@ -2836,13 +2857,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             scheduleWrite(buildCmdPacket(cmd: 0x04, value: 0x01), label: "START", after: 0.2)
             scheduleWrite(
                 BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: snapshot.targetSpeedRawTenths),
-                label: "SPEED native \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)",
+                label: "SPEED \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)",
                 after: 0.45
             )
         } else {
             scheduleWrite(
                 BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: snapshot.targetSpeedRawTenths),
-                label: "SPEED native \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)",
+                label: "SPEED \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)",
                 after: 0.2
             )
         }
@@ -2884,16 +2905,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func treadmillTestRunStatusText(for snapshot: TreadmillTestRunPlanService.Snapshot) -> String {
-        let speed = String(format: "%.1f", snapshot.targetSpeedKmh)
+        let speed = treadmillTestRunActiveConfiguration.requiresNoLoadConfirmation
+            ? snapshot.targetNativeSpeed.diagnosticText
+            : String(format: "%.1f км/ч", snapshot.targetSpeedKmh)
         switch snapshot.phase {
         case .warmup:
-            return "Тест дорожки: прогрев \(speed) км/ч"
+            return "Тест дорожки: прогрев \(speed)"
         case .rampUp:
-            return "Тест дорожки: разгон \(speed) км/ч"
+            return "Тест дорожки: разгон \(speed)"
         case .rampDown:
-            return "Тест дорожки: снижение \(speed) км/ч"
+            return "Тест дорожки: снижение \(speed)"
         case .settle:
-            return "Тест дорожки: стабилизация \(speed) км/ч"
+            return "Тест дорожки: стабилизация \(speed)"
         case .finished:
             return "Тест дорожки: завершение"
         }
@@ -2909,6 +2932,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "test_remaining_s": snapshot.remainingSeconds,
             "test_progress": snapshot.progress,
             "test_target_speed_kmh": snapshot.targetSpeedKmh,
+            "test_profile_id": treadmillTestRunActiveConfiguration.profileID,
+            "test_requires_no_load_confirmation": treadmillTestRunActiveConfiguration.requiresNoLoadConfirmation,
+            "diagnostic_no_load_confirmed": treadmillTestRunActiveConfiguration.requiresNoLoadConfirmation,
+            "diagnostic_profile": treadmillTestRunActiveConfiguration.profileID,
+            "command_raw_tenths": snapshot.targetSpeedRawTenths,
+            "command_native_units": snapshot.targetNativeSpeed.units.rawValue,
+            "command_native_speed": snapshot.targetNativeSpeed.nativeSpeed,
+            "physical_discriminator_expected_kmh_distance_m": 50.0,
+            "physical_discriminator_expected_mph_distance_m": 80.5,
             "test_duration_s": treadmillTestRunActiveConfiguration.durationSeconds,
             "test_peak_speed_kmh": TreadmillSpeedBoundsService.clampRunningSpeed(
                 treadmillTestRunActiveConfiguration.peakSpeedKmh,

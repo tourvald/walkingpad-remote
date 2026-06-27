@@ -11,6 +11,12 @@
 - Why there can be multiple `python ... mcp_xcode_server.py` processes: MCP transport is typically stdio-per-client; each Codex session/thread may spawn its own server process.
 
 ## Recent Decisions
+- Imperial units diagnostic MVP (2026-06-28):
+  - affected WalkingPad controllers can report `queryParams.unit=1` (`imperial`)
+  - HR-control remains blocked for imperial/unknown units until physical speed semantics are proven
+  - Debug Test Run may run on imperial only after explicit no-load confirmation
+  - imperial diagnostic profile is fixed at `rawTenths=30` for 60s, with STOP and telemetry/analyzer evidence
+  - do not add unit-switch writes, HR-control mph/kmh conversion, or silent imperial Test Run
 - Public repo preparation (2026-03-10):
   - root project is published from the repository root
   - nested `ph4-walkingpad/.git` remains a separate upstream reference clone and is not part of the public root repo
