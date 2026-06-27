@@ -9,6 +9,12 @@ final class BLETransportCodecParamsTests: XCTestCase {
         XCTAssertEqual([UInt8](packet), [0xF7, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA6, 0xFD])
     }
 
+    func testWalkingPadSetSpeedPacketUsesRawTenths() {
+        let packet = BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: 30)
+
+        XCTAssertEqual([UInt8](packet), [0xF7, 0xA2, 0x01, 0x1E, 0xC1, 0xFD])
+    }
+
     func testParseParamsResponseKeepsRawValuesAndNormalizesUnits() {
         // F8 A6 goalType goal[3] regulate maxSpeed startSpeed startMode sensitivity display lock unit crc FD
         let bytes: [UInt8] = [

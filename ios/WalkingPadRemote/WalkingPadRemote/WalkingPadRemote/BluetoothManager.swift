@@ -2785,24 +2785,67 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard forceCommand || (snapshot.shouldSendSpeedCommand && targetChanged) else { return }
 
         if treadmillTestRunLastCommandedSpeedKmh == nil {
-            startWithSpeed(
-                snapshot.targetSpeedKmh,
-                speedChangeReason: "treadmill_test_run",
-                speedLabelSuffix: "(test)"
-            )
+            if treadmillTestRunActiveConfiguration.requiresNoLoadConfirmation,
+               treadmillProtocol == .walkingPad {
+                startWalkingPadNativeDiagnosticSpeed(snapshot)
+            } else {
+                startWithSpeed(
+                    snapshot.targetSpeedKmh,
+                    speedChangeReason: "treadmill_test_run",
+                    speedLabelSuffix: "(test)"
+                )
+            }
         } else {
             let old = deviceTargetSpeedKmh
             desiredSpeedKmh = snapshot.targetSpeedKmh
             deviceTargetSpeedKmh = snapshot.targetSpeedKmh
             recordSpeedChange(from: old, to: snapshot.targetSpeedKmh, reason: "treadmill_test_run")
-            lastCommandLine = "CMD test speed=\(String(format: "%.1f", snapshot.targetSpeedKmh))"
-            sendTreadmillSetSpeed(
-                snapshot.targetSpeedKmh,
-                label: String(format: "SPEED %.1f km/h (test)", snapshot.targetSpeedKmh)
-            )
+            if treadmillTestRunActiveConfiguration.requiresNoLoadConfirmation,
+               treadmillProtocol == .walkingPad {
+                lastCommandLine = "CMD test native raw=\(snapshot.targetSpeedRawTenths)"
+                sendWalkingPadSetSpeed(
+                    rawTenths: snapshot.targetSpeedRawTenths,
+                    label: "SPEED native \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)"
+                )
+            } else {
+                lastCommandLine = "CMD test speed=\(String(format: "%.1f", snapshot.targetSpeedKmh))"
+                sendTreadmillSetSpeed(
+                    snapshot.targetSpeedKmh,
+                    label: String(format: "SPEED %.1f km/h (test)", snapshot.targetSpeedKmh)
+                )
+            }
         }
         treadmillTestRunLastCommandedSpeedKmh = snapshot.targetSpeedKmh
         logTrainingEvent("treadmill_test_speed_command", fields: treadmillTestRunTelemetryFields(snapshot: snapshot))
+    }
+
+    private func startWalkingPadNativeDiagnosticSpeed(_ snapshot: TreadmillTestRunPlanService.Snapshot) {
+        resetCommandQueue(reason: "startWalkingPadNativeDiagnostic")
+        let old = deviceTargetSpeedKmh
+        desiredSpeedKmh = snapshot.targetSpeedKmh
+        deviceTargetSpeedKmh = snapshot.targetSpeedKmh
+        recordSpeedChange(from: old, to: snapshot.targetSpeedKmh, reason: "treadmill_test_run")
+        lastCommandLine = "CMD test native raw=\(snapshot.targetSpeedRawTenths)"
+        let shouldSendStart = treadmillActualSpeedKmh <= 0.2 && old <= 0.1
+
+        if !manualModeSet {
+            writeCommand(buildCmdPacket(cmd: 0x02, value: 0x01), label: "MODE MANUAL")
+            manualModeSet = true
+        }
+        if shouldSendStart {
+            scheduleWrite(buildCmdPacket(cmd: 0x04, value: 0x01), label: "START", after: 0.2)
+            scheduleWrite(
+                BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: snapshot.targetSpeedRawTenths),
+                label: "SPEED native \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)",
+                after: 0.45
+            )
+        } else {
+            scheduleWrite(
+                BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: snapshot.targetSpeedRawTenths),
+                label: "SPEED native \(snapshot.targetNativeSpeed.diagnosticText) raw=\(snapshot.targetSpeedRawTenths) (test)",
+                after: 0.2
+            )
+        }
     }
 
     private func finishTreadmillTestRun(reason: String, stopReason: String, stopBelt: Bool) {
@@ -4076,6 +4119,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
+    private func sendWalkingPadSetSpeed(rawTenths: Int, label: String) {
+        guard treadmillProtocol == .walkingPad else {
+            sendTreadmillSetSpeed(Double(rawTenths) / 10.0, label: label)
+            return
+        }
+        writeCommand(BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: rawTenths), label: label)
+    }
+
     private func buildTreadmillStopPacket() -> Data? {
         switch treadmillProtocol {
         case .walkingPad:
@@ -4090,7 +4141,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func buildWalkingPadSetSpeedPacket(kmh: Double) -> Data {
-        buildCmdPacket(cmd: 0x01, value: UInt8(clampSpeedTenths(kmh)))
+        BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: clampSpeedTenths(kmh))
     }
 
     private func buildWalkingPadStandbyPacket() -> Data {
