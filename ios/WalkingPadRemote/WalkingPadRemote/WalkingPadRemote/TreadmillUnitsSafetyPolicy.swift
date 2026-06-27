@@ -34,13 +34,20 @@ enum TreadmillUnitsParseStatus: String, Equatable {
     }
 }
 
+enum PhysicalSpeedConfidence: String, Equatable {
+    case confirmedMetric
+    case confirmedImperial
+    case unknown
+}
+
 struct TreadmillUnitsState: Equatable {
     static let notRead = TreadmillUnitsState(
         nativeUnits: .unknown,
         source: .notRead,
         parseStatus: .notRead,
         readAt: nil,
-        rawParamsHex: nil
+        rawParamsHex: nil,
+        physicalSpeedConfidence: .unknown
     )
 
     let nativeUnits: TreadmillNativeUnits
@@ -48,6 +55,23 @@ struct TreadmillUnitsState: Equatable {
     let parseStatus: TreadmillUnitsParseStatus
     let readAt: Date?
     let rawParamsHex: String?
+    let physicalSpeedConfidence: PhysicalSpeedConfidence
+
+    init(
+        nativeUnits: TreadmillNativeUnits,
+        source: TreadmillUnitsSource,
+        parseStatus: TreadmillUnitsParseStatus,
+        readAt: Date?,
+        rawParamsHex: String?,
+        physicalSpeedConfidence: PhysicalSpeedConfidence = .unknown
+    ) {
+        self.nativeUnits = nativeUnits
+        self.source = source
+        self.parseStatus = parseStatus
+        self.readAt = readAt
+        self.rawParamsHex = rawParamsHex
+        self.physicalSpeedConfidence = physicalSpeedConfidence
+    }
 }
 
 enum TreadmillUnitsBlockReason: String, Equatable {
