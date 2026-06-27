@@ -957,7 +957,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var lastCommandAckStatusText: String = ""
     @Published var lastCommandTimeoutsCount: Int = 0
     @Published var deviceReportedSpeedKmh: Double = 0
+    @Published var deviceReportedSpeedRawTenths: Int = 0
     @Published var deviceReportedAppSpeedKmh: Double = 0
+    @Published var deviceReportedAppSpeedRawTenths: Int = 0
     @Published var deviceReportedState: Int = 0
     @Published var deviceReportedManualMode: Int = 0
     @Published var deviceReportedTimeSeconds: Int = 0
@@ -966,6 +968,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var deviceReportedButton: Int = 0
     @Published var deviceReportedChecksumOk: Bool = true
     @Published var deviceReportedRawHex: String = ""
+    @Published private(set) var treadmillUnitsState: TreadmillUnitsState = .notRead
 
     // HR control
     @Published var isHrControlRunning: Bool = false
@@ -1585,6 +1588,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "speed_source": speedSnapshot.source,
             "speed_has_fresh_report": speedSnapshot.hasFreshReport,
             "speed_report_age_s": speedSnapshot.reportAgeSeconds ?? -1,
+            "speed_raw_tenths": deviceReportedSpeedRawTenths,
+            "app_speed_raw_tenths": deviceReportedAppSpeedRawTenths,
+            "speed_unit_pref": treadmillUnitsState.nativeUnits.rawValue,
+            "command_units": treadmillUnitsState.nativeUnits.rawValue,
+            "display_units": "metric_legacy",
+            "physical_speed_confidence": treadmillUnitsState.physicalSpeedConfidence.rawValue,
+            "units_source": treadmillUnitsState.source.rawValue,
+            "controller_params_raw_hex": treadmillUnitsState.rawParamsHex ?? "",
+            "controller_params_checksum_ok": treadmillUnitsState.parseStatus == .validChecksum,
             "speed_delta_kmh": lastSpeedDeltaKmh,
             "distance_km": distKm,
             "duration_s": timeSec,
@@ -2641,7 +2653,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     // Treadmill control
     var canStartTreadmillTestRun: Bool {
-        isConnected && !isHrControlRunning && !isTreadmillTestRunActive
+        isConnected
+            && !isHrControlRunning
+            && !isTreadmillTestRunActive
+            && TreadmillUnitsSafetyPolicy.allowsDebugTestRun(treadmillUnitsState)
     }
 
     var treadmillTestRunStartBlockReason: String {
@@ -2653,6 +2668,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         if isHrControlRunning {
             return "Недоступно во время HR‑контроля"
+        }
+        if let unitsBlock = treadmillUnitsAutomationBlockReasonText() {
+            return unitsBlock
         }
         return "3 минуты · разгон до 8.0 км/ч · снижение · STOP"
     }
@@ -3160,6 +3178,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrControlStartBlockReasonText = "Недоступно во время теста дорожки"
             return
         }
+        guard isConnected else {
+            isHrControlRunning = false
+            hrControlStartBlockReasonText = "Нет подключения к дорожке"
+            return
+        }
+        guard TreadmillUnitsSafetyPolicy.allowsHrControl(treadmillUnitsState) else {
+            isHrControlRunning = false
+            let reason = treadmillUnitsAutomationBlockReasonText() ?? "Единицы скорости дорожки не подтверждены"
+            hrControlStartBlockReasonText = reason
+            infoToastMessage = reason
+            return
+        }
         if isConnected && isSelectedHeartRateSourceReadyForStart() {
             let adaptiveStepDescription = hrAdaptiveStepEnabled
                 ? "adaptive_levels=0.1/0.2/0.3/0.4"
@@ -3276,9 +3306,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
+    private func treadmillUnitsAutomationBlockReasonText() -> String? {
+        guard let reason = TreadmillUnitsSafetyPolicy.blockReason(for: treadmillUnitsState) else { return nil }
+        switch reason {
+        case .imperialUnits:
+            return "Дорожка сообщает imperial units — HR‑контроль и тест дорожки заблокированы."
+        case .unitsUnknown:
+            return "Единицы скорости дорожки не подтверждены — дождитесь чтения параметров контроллера."
+        case .paramsInvalid:
+            return "Параметры единиц скорости не прошли проверку — автоуправление заблокировано."
+        }
+    }
+
     private func recomputeHrStartAllowed() {
         let sourceReady = isSelectedHeartRateSourceReadyForStart()
-        let allowed = isConnected && sourceReady
+        let unitsReady = TreadmillUnitsSafetyPolicy.allowsHrControl(treadmillUnitsState)
+        let allowed = isConnected && unitsReady && sourceReady
         isHrControlStartAllowed = allowed
         if !allowed {
             let withinGrace: Bool = {
@@ -3287,6 +3330,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }()
             if !isConnected {
                 hrControlStartBlockReasonText = "Нет подключения к дорожке"
+            } else if let unitsBlock = treadmillUnitsAutomationBlockReasonText() {
+                hrControlStartBlockReasonText = unitsBlock
             } else if hrSourceMode == .appleWatchLegacy && !watchReachable {
                 hrControlStartBlockReasonText = "Часы недоступны — откройте приложение на Apple Watch и дождитесь соединения."
             } else if hrSourceMode == .appleWatchLegacy && !hrStreamingActive {
@@ -3911,6 +3956,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillMinSpeedKmh = 0.5
         treadmillMaxSpeedKmh = 12.0
         treadmillSpeedIncrementKmh = 0.1
+        treadmillUnitsState = .notRead
     }
 
     private func selectTreadmillProtocol(from discoveredUuids: Set<CBUUID>) -> TreadmillProtocol {
@@ -3953,6 +3999,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         ftmsControlRequestInFlight = true
         writeCommand(buildFtmsRequestControlPacket(), label: "FTMS REQUEST CONTROL")
+    }
+
+    private func queryControllerParamsAfterConnect() {
+        guard treadmillProtocol == .walkingPad else { return }
+        appendLog("QUERY PARAMS scheduled after WalkingPad connect (read-only)")
+        logTrainingEvent("controller_params_query", fields: ["trigger": "auto_connect"])
+        scheduleWrite(BLETransportCodec.buildWalkingPadQueryParamsPacket(), label: "QUERY PARAMS (auto)", after: 0.5)
     }
 
     private func commandMinIntervalSecondsForCurrentProtocol() -> TimeInterval {
@@ -4500,11 +4553,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private struct Fe01Status {
         let beltState: Int
+        let speedRawTenths: Int
         let speedKmh: Double
         let manualMode: Int
         let timeSeconds: Int
         let distance10m: Int
         let steps: Int
+        let appSpeedRawTenths: Int
         let appSpeedKmh: Double
         let lastButton: Int
         let checksumOk: Bool
@@ -4514,21 +4569,25 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard data.count >= 19, data.first == 0xF8, data[1] == 0xA2 else { return nil }
         guard data.count >= 20 else { return nil }
         let beltState = Int(data[2])
-        let speedKmh = Double(Int(data[3])) / 10.0
+        let speedRawTenths = Int(data[3])
+        let speedKmh = Double(speedRawTenths) / 10.0
         let manualMode = Int(data[4])
         let timeSeconds = decode3ByteBE(data, start: 5)
         let distance10m = decode3ByteBE(data, start: 8)
         let steps = decode3ByteBE(data, start: 11)
-        let appSpeedKmh = Double(Int(data[14])) / 10.0
+        let appSpeedRawTenths = Int(data[14])
+        let appSpeedKmh = Double(appSpeedRawTenths) / 10.0
         let lastButton = Int(data[16])
         let checksumOk = verifyChecksum(data)
         return Fe01Status(
             beltState: beltState,
+            speedRawTenths: speedRawTenths,
             speedKmh: speedKmh,
             manualMode: manualMode,
             timeSeconds: timeSeconds,
             distance10m: distance10m,
             steps: steps,
+            appSpeedRawTenths: appSpeedRawTenths,
             appSpeedKmh: appSpeedKmh,
             lastButton: lastButton,
             checksumOk: checksumOk
@@ -4671,6 +4730,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             if let w = write {
                 commandCharacteristic = w
                 appendLog("WalkingPad: command characteristic set to \(w.uuid.uuidString)")
+                queryControllerParamsAfterConnect()
             } else {
                 appendLog("WalkingPad: FE02 write not found on FE00")
             }
@@ -4756,7 +4816,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 let hexStr = hex(data)
                 DispatchQueue.main.async {
                     self.deviceReportedSpeedKmh = status.speedKmh
+                    self.deviceReportedSpeedRawTenths = status.speedRawTenths
                     self.deviceReportedAppSpeedKmh = status.appSpeedKmh
+                    self.deviceReportedAppSpeedRawTenths = status.appSpeedRawTenths
                     self.deviceReportedState = status.beltState
                     self.deviceReportedManualMode = status.manualMode
                     self.deviceReportedTimeSeconds = status.timeSeconds
@@ -4770,7 +4832,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 logActualSpeedChangeIfNeeded(status.speedKmh, source: "fe01_notify")
                 logTrainingEvent("notify_fe01", fields: [
                     "state": status.beltState,
+                    "speed_raw_tenths": status.speedRawTenths,
                     "speed_kmh": status.speedKmh,
+                    "app_speed_raw_tenths": status.appSpeedRawTenths,
                     "app_speed_kmh": status.appSpeedKmh,
                     "mode": status.manualMode,
                     "time_s": status.timeSeconds,
@@ -4780,6 +4844,46 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     "checksum_ok": status.checksumOk
                 ])
                 validateExpectedSpeed(with: status)
+            } else if let params = BLETransportCodec.parseWalkingPadParams(data) {
+                let readAt = Date()
+                DispatchQueue.main.async {
+                    self.treadmillUnitsState = TreadmillUnitsState(
+                        nativeUnits: TreadmillNativeUnits(rawControllerUnit: params.unit),
+                        source: .queryParams,
+                        parseStatus: params.checksumOk ? .validChecksum : .failedChecksum,
+                        readAt: readAt,
+                        rawParamsHex: params.rawHex
+                    )
+                    self.recomputeHrStartAllowed()
+                }
+                appendLog("Controller params: unit=\(params.unit)(\(params.nativeUnitsLabel)) maxSpeedRaw=\(params.maxSpeedRawTenths) startSpeedRaw=\(params.startSpeedRawTenths) checksum=\(params.checksumOk ? "ok" : "bad")")
+                logTrainingEvent("controller_params", fields: [
+                    "unit": params.unit,
+                    "speed_unit_pref": params.nativeUnitsLabel,
+                    "units_source": TreadmillUnitsSource.queryParams.rawValue,
+                    "max_speed_raw_tenths": params.maxSpeedRawTenths,
+                    "start_speed_raw_tenths": params.startSpeedRawTenths,
+                    "raw_hex": params.rawHex,
+                    "checksum_ok": params.checksumOk
+                ])
+            } else if data.count >= 2, data[0] == 0xF8, data[1] == 0xA6 {
+                let rawHex = hex(data)
+                DispatchQueue.main.async {
+                    self.treadmillUnitsState = TreadmillUnitsState(
+                        nativeUnits: .unknown,
+                        source: .parseFailed,
+                        parseStatus: .parseFailed,
+                        readAt: Date(),
+                        rawParamsHex: rawHex
+                    )
+                    self.recomputeHrStartAllowed()
+                }
+                appendLog("Controller params parse failed: \(rawHex)")
+                logTrainingEvent("controller_params_parse_failed", fields: [
+                    "speed_unit_pref": TreadmillNativeUnits.unknown.rawValue,
+                    "units_source": TreadmillUnitsSource.parseFailed.rawValue,
+                    "raw_hex": rawHex
+                ])
             } else {
                 appendLog("Notify \(characteristic.uuid.uuidString): \(hex(data))")
             }
