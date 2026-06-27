@@ -1,7 +1,7 @@
 # Project Status — WalkingPad Remote
 
 *Source of truth for project management. Keep this short and current.*
-*Last updated: 2026-06-11*
+*Last updated: 2026-06-27*
 
 ## Where development is
 - **Branch:** `ios/hr-decision-engine-and-background`
@@ -43,6 +43,11 @@ calibration, no prefs, nothing written on connect (bar a FitShow status query).
   hypothesis (a units flip signals something persistent changed — but not via our app).
   Owner to check physically: belt-screen units, KSFIT toggle, rough scale test.
 - **Rule:** no `set_pref_units` / `0xA6` / persistent-write until the protocol is fully understood.
+- **P0 Units Safety MVP (2026-06-27):** app auto-queries WalkingPad `queryParams` after connect
+  and treats `unit=0 + checksum OK` as the only safe automation state. `unit=1`, unknown,
+  parse failure, or checksum failure blocks HR-control and Debug Test Run and shows a UI warning.
+  MVP intentionally does **not** switch units, auto-convert commands, or add manual override.
+  Telemetry now records raw/source-of-truth units fields alongside legacy `*_kmh` columns.
 
 **P0 fix path:** controller-side → manufacturer factory / service / calibration reset
 (KingSmith). No app-side change stops a controller that won't honor speed-0. Diagnostic
@@ -112,6 +117,7 @@ no public report of this symptom. Two follow-ups recorded:
 | post-observation background-task (safety) | 🟡 QA pending |
 | post-observation telemetry (events / outcome) | 🟡 QA pending |
 | Test Run diagnostics unification (session_kind) | 🟡 QA pending |
+| Units safety gate (`queryParams.unit`) | ✅ Done |
 | C — recovery after kill | 📋 Planned (post-v1 — do not start) |
 
 ## Safety decisions (fixed)
@@ -135,14 +141,24 @@ no public report of this symptom. Two follow-ups recorded:
 
 ## What blocks v1
 No hard blockers. What remains is **validation, not development**:
-1. runtime_gap device QA (in progress)
-2. one clean uninterrupted locked run + one long session (30+ min)
-3. loss-of-HR-while-locked → safe-stop test
+1. units safety on-device smoke: affected `unit=1` pad must warn + block HR/Test Run
+2. runtime_gap device QA (paused until P0 units safety is validated)
+3. one clean uninterrupted locked run + one long session (30+ min)
+4. loss-of-HR-while-locked → safe-stop test
 
 > **C (recovery after kill) is NOT a v1 blocker** — deferred to post-v1.
 
 ## Pending QA — blocks acceptance of the items above
-Two device runs needed. Log analysis is **paused** until both CSVs arrive.
+**P0 Units Safety smoke — do first**
+1. Connect to affected KS-F0 where `queryParams.unit=1`.
+2. Expected: UI warning appears; HR-control Start is disabled with units block reason;
+   Debug Test Run is disabled with units block reason.
+3. Export raw training CSV after connect; expected columns include `speed_unit_pref=imperial`,
+   `units_source=queryParams`, `controller_params_checksum_ok=true`, raw speed tenths, command/display units.
+4. Connect to known metric pad (`unit=0`, checksum OK); expected: no units warning and HR/Test Run gates
+   fall back to normal connection/HR-source readiness.
+
+Runtime-gap QA remains useful, but is paused until the units smoke above passes.
 
 **QA-1 — Debug Test Run + lock** (this is what actually exercises the gap detector —
 a test run has no workout session, so it really suspends when locked):

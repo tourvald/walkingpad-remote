@@ -250,6 +250,18 @@ F1=075 (изменяемо) · F2=22 (изменяемо) · F3=160 (измен�
 - **В factory test mode не нажимать `plus` + `start/stop`** (запуск no-load — лента поедет), если прогон не планируется.
 - Перед любым изменением — приоритетно **спросить поддержку: какой экран = units на KS-F0** и получить **reference video** (эталонные значения).
 
+### App safety MVP (2026-06-27)
+- App automation now trusts only read-only WalkingPad `queryParams`: `unit=0` + parse/checksum OK
+  is the only state that allows HR-control and Debug Test Run.
+- `unit=1`, unknown, parse failure, or checksum failure blocks HR-control and Debug Test Run and
+  shows a UI warning. This intentionally prevents the affected KS-F0 from silently executing
+  user-visible km/h commands as mph.
+- No `0xA6 key 8` unit switching, mph↔km/h command conversion, or manual override is implemented in
+  this MVP.
+- Raw/session telemetry writes units fields (`speed_unit_pref`, `units_source`,
+  `controller_params_checksum_ok`, raw speed tenths, command/display units) alongside legacy
+  `*_kmh` columns for forensic analysis.
+
 ## 12. Открытые вопросы / следующие шаги
 
 - [x] Фото экранов сервис-меню — получены частично (F1/F2/F3/F5/G01, §11).
@@ -263,5 +275,6 @@ F1=075 (изменяемо) · F2=22 (изменяемо) · F3=160 (измен�
 - [ ] Решение: поднять лимит через KSFIT «Maximum speed» до 12 km/h / 7.5 mi/h (официальный канал убрать кламп) — после физзамера.
 - [ ] Units→metric через сервис-меню по плану §10 → повторное чтение → стоп-тест.
 - [ ] Решение по toggle-stop эксперименту (после units-линии).
-- [ ] Фикс экспорта: `controller_params` вне активной сессии не попадает в JSONL/CSV (только UI/debug-лог) — нужна отмашка на маленький коммит.
+- [ ] Отдельный глобальный forensic-log для `controller_params` вне активной сессии всё ещё не сделан;
+  текущий MVP пишет source-of-truth units поля в session telemetry/CSV, когда есть активный session log.
 - [ ] Эскалация в KingSmith: техотчёт (две дорожки, timeline, hex, реакции контроллера) — могу собрать EN-страницу.

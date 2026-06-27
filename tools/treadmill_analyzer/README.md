@@ -29,6 +29,21 @@ It reads the **`Training_History_*.csv`** export (per-event rows, ~1 Hz, with a
 different shape (one rolled-up row per session) and is archived for reference but
 not parsed by this tool.
 
+Newer exports also include units-safety fields. Treat these as the source of
+truth for unit forensics:
+
+- `speed_unit_pref` — controller preference from WalkingPad `queryParams`
+  (`metric`, `imperial`, `unknown`).
+- `units_source` — where the unit state came from; MVP automation requires
+  `queryParams`.
+- `controller_params_checksum_ok` and `controller_params_raw_hex` — parse/checksum
+  evidence for the controller params packet.
+- `speed_raw_tenths` / `app_speed_raw_tenths` — raw FE01 speed bytes before any
+  legacy km/h presentation.
+- `command_units`, `display_units`, `physical_speed_confidence` — command/UI
+  interpretation metadata. The current safety MVP does not auto-convert commands
+  and does not switch treadmill units.
+
 ## Usage
 
 ```bash
@@ -74,6 +89,9 @@ all `command_write` ±60 s around Stop; any non-zero speed write after Stop;
 `command_source` attribution; `controller_state` / `controller_manual_mode` /
 `speed_reported_kmh` before→after; `stop_confirmed[_ever]`; race-condition
 suspicion) and one explicit verdict per Stop:
+
+For newer exports, each command row also prints `units=<pref>/cmd:<command>/ui:<display>`
+when available, so Stop reports can be read together with the units-safety state.
 
 | Verdict | Meaning | Exit |
 |---|---|---|

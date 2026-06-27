@@ -271,6 +271,10 @@ def _analyze_stop(stop: Row, srows: list[Row], window: float) -> StopReport:
                 "dt": round(dt, 1), "label": r.label, "source": r.source,
                 "commanded_kmh": cs, "controller_state": r.num("controller_state"),
                 "speed_reported_kmh": r.num("speed_reported_kmh"),
+                "speed_unit_pref": (r.get("speed_unit_pref") or "").strip(),
+                "command_units": (r.get("command_units") or "").strip(),
+                "display_units": (r.get("display_units") or "").strip(),
+                "physical_speed_confidence": (r.get("physical_speed_confidence") or "").strip(),
             }
             rep.window_writes.append(entry)
             rep.source_tally[r.source] = rep.source_tally.get(r.source, 0) + 1
@@ -338,8 +342,15 @@ def print_text(path: str, reports: list[StopReport], window: float) -> None:
 
         print("\n2) ALL command_write IN WINDOW [-{w:g}s .. +{w:g}s]".format(w=window))
         for e in r.window_writes:
+            units = ""
+            if e["speed_unit_pref"] or e["command_units"] or e["display_units"]:
+                units = (
+                    f"  units={e['speed_unit_pref'] or '?'}"
+                    f"/cmd:{e['command_units'] or '?'}"
+                    f"/ui:{e['display_units'] or '?'}"
+                )
             print(f"  {e['dt']:>+6.1f}s  {e['source']:<14} {e['label']:<26} "
-                  f"cmd={_fmt(e['commanded_kmh'],' km/h')}  ctrl_state={_fmt(e['controller_state'])}")
+                  f"cmd={_fmt(e['commanded_kmh'],' km/h')}  ctrl_state={_fmt(e['controller_state'])}{units}")
 
         print("\n3) NON-ZERO SPEED WRITE AFTER STOP?")
         if r.nonzero_speed_after:
