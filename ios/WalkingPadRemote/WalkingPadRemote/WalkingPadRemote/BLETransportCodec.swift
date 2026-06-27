@@ -25,6 +25,77 @@ enum BLETransportCodec {
         let rawHex: String
     }
 
+    struct WalkingPadParams {
+        let goalType: Int
+        let goal: Int
+        let regulate: Int
+        let maxSpeedRawTenths: Int
+        let maxSpeedKmh: Double
+        let startSpeedRawTenths: Int
+        let startSpeedKmh: Double
+        let startMode: Int
+        let sensitivity: Int
+        let displayBits: Int
+        let childLock: Int
+        let unit: Int
+        let nativeUnitsLabel: String
+        let checksumOk: Bool
+        let rawHex: String
+    }
+
+    static func buildWalkingPadQueryParamsPacket() -> Data {
+        var bytes: [UInt8] = [0xF7, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFD]
+        var crc: UInt16 = 0
+        for index in 1...6 {
+            crc = (crc + UInt16(bytes[index])) & 0xFF
+        }
+        bytes[7] = UInt8(crc)
+        return Data(bytes)
+    }
+
+    static func parseWalkingPadParams(_ data: Data) -> WalkingPadParams? {
+        guard data.count >= 14, data[0] == 0xF8, data[1] == 0xA6 else { return nil }
+
+        var checksumOk = true
+        if data.last == 0xFD, data.count >= 4 {
+            var sum: UInt16 = 0
+            for index in 1..<(data.count - 2) {
+                sum = (sum + UInt16(data[index])) & 0xFF
+            }
+            checksumOk = UInt8(sum) == data[data.count - 2]
+        }
+
+        let unit = Int(data[13])
+        return WalkingPadParams(
+            goalType: Int(data[2]),
+            goal: (Int(data[3]) << 16) | (Int(data[4]) << 8) | Int(data[5]),
+            regulate: Int(data[6]),
+            maxSpeedRawTenths: Int(data[7]),
+            maxSpeedKmh: Double(data[7]) / 10.0,
+            startSpeedRawTenths: Int(data[8]),
+            startSpeedKmh: Double(data[8]) / 10.0,
+            startMode: Int(data[9]),
+            sensitivity: Int(data[10]),
+            displayBits: Int(data[11]),
+            childLock: Int(data[12]),
+            unit: unit,
+            nativeUnitsLabel: normalizedWalkingPadUnitsLabel(rawUnit: unit),
+            checksumOk: checksumOk,
+            rawHex: hexString(data)
+        )
+    }
+
+    private static func normalizedWalkingPadUnitsLabel(rawUnit: Int) -> String {
+        switch rawUnit {
+        case 0:
+            return "metric"
+        case 1:
+            return "imperial"
+        default:
+            return "unknown"
+        }
+    }
+
     static func buildFtmsRequestControlPacket() -> Data {
         Data([0x00])
     }
