@@ -76,6 +76,11 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - the plan is 3 minutes: base running speed, ramp toward 8.0 km/h, ramp back to base, then the normal stop sequence with the existing 30-second structured-log observation window
   - `TreadmillTestRunPlanService.swift` owns the pure schedule/target-speed calculation and is covered by Swift package tests; `BluetoothManager` executes the plan and emits `treadmill_test_start`, `treadmill_test_state`, `treadmill_test_speed_command`, and `treadmill_test_finished`
   - `TrainingTelemetryWriter.trainingCsvHeaders` includes normalized `test_*` columns so raw CSV exports can be filtered/analyzed without opening `raw_json`
+- Imperial diagnostic operator confirmation (2026-06-28):
+  - after the imperial no-load diagnostic, Debug UI can record operator visual confirmation: `confirmedImperial`, `confirmedMetric`, or `unknown`
+  - confirmation is persisted per treadmill fingerprint, including `peripheralId`, name, WalkingPad protocol, raw controller params, unit pref, and checksum status
+  - stored confirmation applies only when a fresh valid imperial `queryParams` fingerprint matches; changed params show mismatch instead of auto-applying stale proof
+  - confirmation updates `physicalSpeedConfidence` and telemetry fields (`physical_semantics*`), but HR-control remains blocked on imperial
 - Debug card extraction / standardized layout (2026-03-21):
   - `Training Logs` and `HR Failures` were extracted from `ContentView.swift` into `DebugTrainingLogsCard.swift` and `DebugHrFailuresCard.swift`
   - `DebugView` now builds explicit presentation props for both cards; card views themselves do not talk to `BluetoothManager`

@@ -37,6 +37,10 @@ struct DebugTrainingLogsCard: View {
         let canStartTestRun: Bool
         let requiresNoLoadConfirmation: Bool
         let noLoadConfirmationMessage: String
+        let physicalConfirmationSummary: String
+        let physicalConfirmationStatus: String
+        let canConfirmPhysicalSemantics: Bool
+        let canClearPhysicalSemantics: Bool
         let clearSubtitle: String
         let canClear: Bool
         let clearConfirmationMessage: String
@@ -49,6 +53,8 @@ struct DebugTrainingLogsCard: View {
     let onExportSessionSummary: (TrainingSessionSummaryExportScope) -> Void
     let onStartTestRun: (_ confirmedNoLoadDiagnostic: Bool) -> Void
     let onStopTestRun: () -> Void
+    let onConfirmPhysicalSemantics: (TreadmillPhysicalSemantics) -> Void
+    let onClearPhysicalSemantics: () -> Void
     let onClear: () -> Void
 
     @State private var showClearConfirmation = false
@@ -74,6 +80,7 @@ struct DebugTrainingLogsCard: View {
                 metricsSection(title: "Активный профиль", items: presentation.profileMetrics)
                 metricsSection(title: "Всё устройство", items: presentation.deviceMetrics)
                 testRunSection()
+                physicalSemanticsSection()
 
                 LazyVGrid(columns: actionColumns, spacing: 10) {
                     Menu {
@@ -217,6 +224,91 @@ struct DebugTrainingLogsCard: View {
             }
             .buttonStyle(.plain)
             .disabled(!presentation.isTestRunActive && !presentation.canStartTestRun)
+        }
+    }
+
+    @ViewBuilder
+    private func physicalSemanticsSection() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Physical semantics")
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+
+            Text(presentation.physicalConfirmationStatus)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if !presentation.physicalConfirmationSummary.isEmpty {
+                Text(presentation.physicalConfirmationSummary)
+                    .font(.caption.monospacedDigit())
+                    .foregroundColor(.secondary)
+            }
+
+            if presentation.canConfirmPhysicalSemantics {
+                LazyVGrid(columns: actionColumns, spacing: 10) {
+                    Button {
+                        onConfirmPhysicalSemantics(.confirmedImperial)
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Looks like 3.0 mph",
+                            subtitle: "operator visual confirmation",
+                            tint: .orange,
+                            enabled: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        onConfirmPhysicalSemantics(.confirmedMetric)
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Looks like 3.0 km/h",
+                            subtitle: "operator visual confirmation",
+                            tint: .blue,
+                            enabled: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        onConfirmPhysicalSemantics(.unknown)
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Unsure",
+                            subtitle: "keep physical semantics unknown",
+                            tint: .secondary,
+                            enabled: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    if presentation.canClearPhysicalSemantics {
+                        Button {
+                            onClearPhysicalSemantics()
+                        } label: {
+                            DebugActionTileLabel(
+                                title: "Clear physical confirmation",
+                                subtitle: "for this treadmill",
+                                tint: .red,
+                                enabled: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } else if presentation.canClearPhysicalSemantics {
+                Button {
+                    onClearPhysicalSemantics()
+                } label: {
+                    DebugActionTileLabel(
+                        title: "Clear physical confirmation",
+                        subtitle: "for this treadmill",
+                        tint: .red,
+                        enabled: true
+                    )
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }

@@ -139,6 +139,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let workoutHistoryStoreKey = "workout_history_v1"
     private var isLoadingHrSettings: Bool = false
     private var autoConnectSuppressed: Bool = false
+    private let physicalSemanticsConfirmationStore = TreadmillPhysicalSemanticsConfirmationStore()
     private var hrSessionTotalSeconds: Int = 0
     private var hrControlStartedBelt: Bool = false
     private var cooldownRuntimeState: CooldownRuntimeEngine.State? = nil
@@ -969,6 +970,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var deviceReportedChecksumOk: Bool = true
     @Published var deviceReportedRawHex: String = ""
     @Published private(set) var treadmillUnitsState: TreadmillUnitsState = .notRead
+    @Published private(set) var physicalSemanticsConfirmation: TreadmillPhysicalSemanticsConfirmation? = nil
+    @Published private(set) var physicalSemanticsConfirmationMismatchText: String? = nil
+    @Published private(set) var imperialDiagnosticConfirmationAvailable: Bool = false
+    @Published private(set) var imperialDiagnosticConfirmationSummary: String = ""
+    @Published private(set) var canClearPhysicalSemanticsConfirmation: Bool = false
+    private var lastImperialDiagnosticSessionId: String = ""
 
     // HR control
     @Published var isHrControlRunning: Bool = false
@@ -1046,6 +1053,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ).nativeSpeed
         }
         return treadmillActualSpeedKmh
+    }
+
+    var physicalSemanticsStatusText: String {
+        if let confirmation = physicalSemanticsConfirmation {
+            switch confirmation.semantics {
+            case .confirmedImperial:
+                return "Physical semantics: confirmed imperial by operator"
+            case .confirmedMetric:
+                return "Physical semantics: confirmed metric by operator"
+            case .unknown:
+                return "Physical semantics: operator was unsure"
+            }
+        }
+        if let mismatch = physicalSemanticsConfirmationMismatchText {
+            return mismatch
+        }
+        return "Physical semantics: not confirmed"
     }
 
     // Session stats
@@ -1618,6 +1642,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "controller_params_checksum_ok": treadmillUnitsState.parseStatus == .validChecksum,
             "reported_native_units": nativeUnits.rawValue,
             "reported_native_speed": reportedNativeSpeed.nativeSpeed,
+            "physical_semantics": physicalSemanticsConfirmation?.semantics.rawValue ?? treadmillUnitsState.physicalSpeedConfidence.rawValue,
+            "physical_semantics_source": physicalSemanticsConfirmation?.source.rawValue ?? "",
+            "physical_semantics_confirmed_at": physicalSemanticsConfirmation.map { trainingLogIsoFormatter.string(from: $0.confirmedAt) } ?? "",
+            "physical_semantics_diagnostic_session_id": physicalSemanticsConfirmation?.diagnosticSessionId ?? "",
+            "physical_semantics_raw_tenths": physicalSemanticsConfirmation?.rawTenths ?? "",
             "speed_delta_kmh": lastSpeedDeltaKmh,
             "distance_km": distKm,
             "duration_s": timeSec,
@@ -1649,6 +1678,30 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         trainingLogQueue.async { [weak self] in
             self?.writeTrainingLogLocked(event: event, fields: fields)
         }
+    }
+
+    private func currentTrainingLogSessionId() -> String {
+        trainingLogQueue.sync { trainingLogSessionId ?? "" }
+    }
+
+    private func physicalSemanticsTelemetryFields(
+        confirmation: TreadmillPhysicalSemanticsConfirmation
+    ) -> [String: Any] {
+        [
+            "physical_semantics": confirmation.semantics.rawValue,
+            "physical_semantics_source": confirmation.source.rawValue,
+            "physical_semantics_confirmed_at": trainingLogIsoFormatter.string(from: confirmation.confirmedAt),
+            "physical_semantics_diagnostic_session_id": confirmation.diagnosticSessionId,
+            "physical_semantics_raw_tenths": confirmation.rawTenths,
+            "physical_semantics_native_command": confirmation.nativeCommand,
+            "peripheral_id": confirmation.fingerprint.peripheralId.uuidString,
+            "peripheral_name": confirmation.fingerprint.peripheralName,
+            "protocol": confirmation.fingerprint.protocolName,
+            "controller_params_raw_hex": confirmation.fingerprint.controllerParamsRawHex,
+            "speed_unit_pref": confirmation.fingerprint.controllerUnitPref.rawValue,
+            "controller_params_checksum_ok": confirmation.fingerprint.controllerParamsChecksumOk,
+            "diagnostic_profile": confirmation.diagnosticProfile
+        ]
     }
 
     private func startTrainingStructuredLog(trigger: String) {
@@ -2650,6 +2703,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.async {
             self.autoConnectSuppressed = true
             self.knownPeripherals.removeAll { $0.id == id }
+            self.physicalSemanticsConfirmationStore.clear(peripheralId: id)
+            if self.connectedPeripheralId == id {
+                self.physicalSemanticsConfirmation = nil
+                self.physicalSemanticsConfirmationMismatchText = nil
+                self.canClearPhysicalSemanticsConfirmation = false
+                self.treadmillUnitsState = self.treadmillUnitsState.withPhysicalSpeedConfidence(.unknown)
+            }
             if self.connectedPeripheralId == id {
                 self.disconnect(userInitiated: true)
             }
@@ -2670,6 +2730,103 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.saveKnownPeripherals()
             }
         }
+    }
+
+    private func currentPhysicalSemanticsFingerprint(
+        for state: TreadmillUnitsState
+    ) -> TreadmillPhysicalSemanticsFingerprint? {
+        guard let peripheralId = connectedPeripheralId,
+              treadmillProtocol == .walkingPad,
+              let rawParamsHex = state.rawParamsHex,
+              state.source == .queryParams else {
+            return nil
+        }
+        return TreadmillPhysicalSemanticsFingerprint(
+            peripheralId: peripheralId,
+            peripheralName: deviceName,
+            protocolName: TreadmillProtocol.walkingPad.rawValue,
+            controllerParamsRawHex: rawParamsHex,
+            controllerUnitPref: state.nativeUnits,
+            controllerParamsChecksumOk: state.parseStatus.isValidQueryParamsRead
+        )
+    }
+
+    private func resolvePhysicalSemantics(for state: TreadmillUnitsState) -> TreadmillUnitsState {
+        guard let fingerprint = currentPhysicalSemanticsFingerprint(for: state) else {
+            physicalSemanticsConfirmation = nil
+            physicalSemanticsConfirmationMismatchText = nil
+            canClearPhysicalSemanticsConfirmation = false
+            return state.withPhysicalSpeedConfidence(.unknown)
+        }
+
+        let stored = physicalSemanticsConfirmationStore.confirmation(for: fingerprint.peripheralId)
+        canClearPhysicalSemanticsConfirmation = stored != nil
+        let resolved = TreadmillPhysicalSemanticsConfirmationResolver.resolvedUnitsState(
+            state,
+            confirmation: stored,
+            currentFingerprint: fingerprint
+        )
+
+        if let stored, stored.fingerprint.isCompatible(with: fingerprint) {
+            physicalSemanticsConfirmation = stored
+            physicalSemanticsConfirmationMismatchText = nil
+        } else {
+            physicalSemanticsConfirmation = nil
+            physicalSemanticsConfirmationMismatchText = stored == nil
+                ? nil
+                : "Physical semantics: saved confirmation does not match current controller params"
+        }
+
+        return resolved
+    }
+
+    func confirmImperialDiagnosticPhysicalSemantics(_ semantics: TreadmillPhysicalSemantics) {
+        guard imperialDiagnosticConfirmationAvailable,
+              let fingerprint = currentPhysicalSemanticsFingerprint(for: treadmillUnitsState),
+              fingerprint.controllerParamsChecksumOk,
+              fingerprint.controllerUnitPref == .imperial else {
+            infoToastMessage = "Нет подходящего imperial diagnostic результата для подтверждения."
+            return
+        }
+
+        let diagnosticConfiguration = TreadmillTestRunPlanService.imperialNoLoadDiagnosticConfiguration
+        let confirmation = TreadmillPhysicalSemanticsConfirmation(
+            fingerprint: fingerprint,
+            semantics: semantics,
+            source: .operatorVisualConfirmation,
+            confirmedAt: Date(),
+            diagnosticSessionId: lastImperialDiagnosticSessionId,
+            diagnosticProfile: diagnosticConfiguration.profileID,
+            rawTenths: Int((diagnosticConfiguration.baseSpeedKmh * 10.0).rounded()),
+            nativeCommand: diagnosticConfiguration.baseSpeedKmh
+        )
+        physicalSemanticsConfirmationStore.save(confirmation)
+        treadmillUnitsState = resolvePhysicalSemantics(for: treadmillUnitsState)
+        logTrainingEvent("physical_semantics_confirmed", fields: physicalSemanticsTelemetryFields(confirmation: confirmation))
+        recomputeHrStartAllowed()
+
+        switch semantics {
+        case .confirmedImperial:
+            infoToastMessage = "Зафиксировано: эта дорожка визуально подтверждена как 3.0 mph."
+        case .confirmedMetric:
+            infoToastMessage = "Зафиксировано: эта дорожка визуально подтверждена как 3.0 km/h."
+        case .unknown:
+            infoToastMessage = "Зафиксировано: физика скорости пока не подтверждена."
+        }
+    }
+
+    func clearPhysicalSemanticsConfirmationForCurrentTreadmill() {
+        guard let peripheralId = connectedPeripheralId else { return }
+        physicalSemanticsConfirmationStore.clear(peripheralId: peripheralId)
+        physicalSemanticsConfirmation = nil
+        physicalSemanticsConfirmationMismatchText = nil
+        canClearPhysicalSemanticsConfirmation = false
+        treadmillUnitsState = treadmillUnitsState.withPhysicalSpeedConfidence(.unknown)
+        logTrainingEvent("physical_semantics_cleared", fields: [
+            "peripheral_id": peripheralId.uuidString
+        ])
+        recomputeHrStartAllowed()
+        infoToastMessage = "Physical confirmation cleared for this treadmill."
     }
 
     // Treadmill control
@@ -2895,6 +3052,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "reason": reason,
             "stop_requested": stopBelt
         ]) { _, new in new })
+        if treadmillTestRunActiveConfiguration.requiresNoLoadConfirmation {
+            lastImperialDiagnosticSessionId = currentTrainingLogSessionId()
+            imperialDiagnosticConfirmationAvailable = true
+            imperialDiagnosticConfirmationSummary = "command raw: \(snapshot.targetSpeedRawTenths) · native command: \(String(format: "%.1f", snapshot.targetNativeSpeed.nativeSpeed)) \(snapshot.targetNativeSpeed.units.rawValue) · controller pref: \(treadmillUnitsState.nativeUnits.rawValue)"
+        }
         appendLog("Treadmill test run finished: \(reason)")
         scheduleTrainingStructuredLogClose(reason: reason)
         if stopBelt {
@@ -4059,6 +4221,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillMaxSpeedKmh = 12.0
         treadmillSpeedIncrementKmh = 0.1
         treadmillUnitsState = .notRead
+        physicalSemanticsConfirmation = nil
+        physicalSemanticsConfirmationMismatchText = nil
+        imperialDiagnosticConfirmationAvailable = false
+        imperialDiagnosticConfirmationSummary = ""
+        lastImperialDiagnosticSessionId = ""
+        canClearPhysicalSemanticsConfirmation = false
     }
 
     private func selectTreadmillProtocol(from discoveredUuids: Set<CBUUID>) -> TreadmillProtocol {
@@ -4961,13 +5129,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             } else if let params = BLETransportCodec.parseWalkingPadParams(data) {
                 let readAt = Date()
                 DispatchQueue.main.async {
-                    self.treadmillUnitsState = TreadmillUnitsState(
+                    let baseState = TreadmillUnitsState(
                         nativeUnits: TreadmillNativeUnits(rawControllerUnit: params.unit),
                         source: .queryParams,
                         parseStatus: params.checksumOk ? .validChecksum : .failedChecksum,
                         readAt: readAt,
                         rawParamsHex: params.rawHex
                     )
+                    self.treadmillUnitsState = self.resolvePhysicalSemantics(for: baseState)
                     self.recomputeHrStartAllowed()
                 }
                 appendLog("Controller params: unit=\(params.unit)(\(params.nativeUnitsLabel)) maxSpeedRaw=\(params.maxSpeedRawTenths) startSpeedRaw=\(params.startSpeedRawTenths) checksum=\(params.checksumOk ? "ok" : "bad")")

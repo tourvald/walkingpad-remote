@@ -94,6 +94,11 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "command_units": "imperial",
             "display_units": "metric_legacy",
             "physical_speed_confidence": "unknown",
+            "physical_semantics": "confirmedImperial",
+            "physical_semantics_source": "operator_visual_confirmation",
+            "physical_semantics_confirmed_at": "2026-06-28T01:00:00Z",
+            "physical_semantics_diagnostic_session_id": "session-physical",
+            "physical_semantics_raw_tenths": 30,
             "units_source": "queryParams",
             "controller_params_raw_hex": "F8 A6 ... FD",
             "controller_params_checksum_ok": true,
@@ -161,6 +166,11 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "command_units")!], "imperial")
         XCTAssertEqual(row[headers.firstIndex(of: "display_units")!], "metric_legacy")
         XCTAssertEqual(row[headers.firstIndex(of: "physical_speed_confidence")!], "unknown")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_semantics")!], "confirmedImperial")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_semantics_source")!], "operator_visual_confirmation")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_semantics_confirmed_at")!], "2026-06-28T01:00:00Z")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_semantics_diagnostic_session_id")!], "session-physical")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_semantics_raw_tenths")!], "30")
         XCTAssertEqual(row[headers.firstIndex(of: "units_source")!], "queryParams")
         XCTAssertEqual(row[headers.firstIndex(of: "controller_params_raw_hex")!], "F8 A6 ... FD")
         XCTAssertEqual(row[headers.firstIndex(of: "controller_params_checksum_ok")!], "true")

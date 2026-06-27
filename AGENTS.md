@@ -17,6 +17,9 @@
   - Debug Test Run may run on imperial only after explicit no-load confirmation
   - imperial diagnostic profile is fixed at `rawTenths=30` for 60s, with STOP and telemetry/analyzer evidence
   - device-reported distance in imperial diagnostic is raw evidence only; analyzer must not infer physical mph/kmh without external measured distance
+  - operator visual confirmation can persist physical semantics per treadmill fingerprint (`peripheralId`, name, WalkingPad protocol, raw controller params, unit pref, checksum)
+  - persisted confirmation applies only when current valid imperial `queryParams` match the stored fingerprint; mismatches must not auto-apply
+  - operator confirmation updates physical-speed confidence/telemetry only and must not unlock HR-control on imperial
   - stop verification failures remain in stop-forensics scope and must not be mixed into units MVP
   - do not add unit-switch writes, HR-control mph/kmh conversion, or silent imperial Test Run
 - Public repo preparation (2026-03-10):

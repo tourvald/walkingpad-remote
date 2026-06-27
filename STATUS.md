@@ -45,6 +45,7 @@
 | Test Run diagnostics unification (session_kind) | 🟡 QA pending |
 | Units safety gate (`queryParams.unit`) | ✅ Done |
 | Imperial no-load diagnostic Test Run | 🟡 Implementation / QA pending |
+| Operator physical semantics confirmation | 🟡 Implementation / QA pending |
 | C — recovery after kill | 📋 Planned (post-v1 — do not start) |
 
 ## Safety decisions (fixed)
@@ -58,6 +59,10 @@
   fixed `rawTenths=30`, 60s duration, STOP, and telemetry/analyzer evidence for
   physical speed. No unit switching, HR-control conversion, or operator bypass is
   implemented.
+- Operator-confirmed physical semantics may be stored only for a specific
+  WalkingPad fingerprint (`peripheralId`, name, protocol, raw controller params,
+  unit pref, checksum). This can set `physicalSpeedConfidence`, but **does not**
+  unlock HR-control on imperial.
 - Recovery after kill (C): reconnect + **safe stop** + log (resume is a later refinement).
 - Local-first: no cloud, no accounts.
 
@@ -102,8 +107,12 @@ No hard blockers. What remains is **validation, not development**:
 6. If an external measured distance is added (`external_distance_m` or
    `physical_measured_distance_m`), analyzer may return `physical_likely_mph`,
    `physical_likely_kmh`, or `inconclusive`.
-7. HR-control remains blocked on imperial until external physical proof is reviewed.
-8. If `stop_confirmed_ever=false`, keep that in the separate stop-forensics scope.
+7. After the test, the owner can record operator visual confirmation:
+   `confirmedImperial`, `confirmedMetric`, or `unknown`. Confirmation applies
+   only when the same peripheral and controller params fingerprint match.
+8. HR-control remains blocked on imperial even after operator confirmation; a
+   separate product decision is required before any imperial automation.
+9. If `stop_confirmed_ever=false`, keep that in the separate stop-forensics scope.
 
 Runtime-gap QA remains useful, but is paused until the imperial diagnostic path is validated.
 

@@ -2932,6 +2932,10 @@ private struct DebugView: View {
             canStartTestRun: manager.canStartTreadmillTestRun,
             requiresNoLoadConfirmation: manager.requiresNoLoadDiagnosticConfirmationForTreadmillTestRun,
             noLoadConfirmationMessage: "Полотно может двигаться. Никого на дорожке. Рука рядом с аварийным выключением. Тест отправит native 3.0 / controller imperial на 60 секунд и затем STOP.",
+            physicalConfirmationSummary: manager.imperialDiagnosticConfirmationSummary,
+            physicalConfirmationStatus: manager.physicalSemanticsStatusText,
+            canConfirmPhysicalSemantics: manager.imperialDiagnosticConfirmationAvailable,
+            canClearPhysicalSemantics: manager.canClearPhysicalSemanticsConfirmation,
             clearSubtitle: inventory.clearableSessionFiles > 0
                 ? "\(inventory.clearableSessionFiles) файлов · \(formattedByteCount(inventory.clearableBytes))"
                 : "Сейчас очищать нечего",
@@ -3183,6 +3187,12 @@ private struct DebugView: View {
                         },
                         onStopTestRun: {
                             manager.stopTreadmillTestRun()
+                        },
+                        onConfirmPhysicalSemantics: { semantics in
+                            manager.confirmImperialDiagnosticPhysicalSemantics(semantics)
+                        },
+                        onClearPhysicalSemantics: {
+                            manager.clearPhysicalSemanticsConfirmationForCurrentTreadmill()
                         },
                         onClear: {
                             manager.clearTrainingLogsForActiveProfile()

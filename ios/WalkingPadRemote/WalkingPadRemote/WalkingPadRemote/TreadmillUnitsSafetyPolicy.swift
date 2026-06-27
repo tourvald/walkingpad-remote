@@ -1,6 +1,6 @@
 import Foundation
 
-enum TreadmillNativeUnits: String, Equatable {
+enum TreadmillNativeUnits: String, Codable, Equatable {
     case metric
     case imperial
     case unknown
@@ -71,6 +71,17 @@ struct TreadmillUnitsState: Equatable {
         self.readAt = readAt
         self.rawParamsHex = rawParamsHex
         self.physicalSpeedConfidence = physicalSpeedConfidence
+    }
+
+    func withPhysicalSpeedConfidence(_ confidence: PhysicalSpeedConfidence) -> TreadmillUnitsState {
+        TreadmillUnitsState(
+            nativeUnits: nativeUnits,
+            source: source,
+            parseStatus: parseStatus,
+            readAt: readAt,
+            rawParamsHex: rawParamsHex,
+            physicalSpeedConfidence: confidence
+        )
     }
 }
 

@@ -46,6 +46,7 @@ let package = Package(
                 "CommandQueueService.swift",
                 "TreadmillSpeedBoundsService.swift",
                 "TreadmillUnitsSafetyPolicy.swift",
+                "TreadmillPhysicalSemanticsConfirmation.swift",
                 "TreadmillTestRunPlanService.swift"
             ]
         ),
