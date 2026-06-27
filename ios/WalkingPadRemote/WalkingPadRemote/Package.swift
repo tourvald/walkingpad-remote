@@ -40,6 +40,7 @@ let package = Package(
                 "HRControlDecisionEngine.swift",
                 "HRDomainService.swift",
                 "HRSettingsDefaults.swift",
+                "NativeSpeedValue.swift",
                 "RuntimeGapMonitor.swift",
                 "TrainingTelemetryWriter.swift",
                 "CommandQueueService.swift",
