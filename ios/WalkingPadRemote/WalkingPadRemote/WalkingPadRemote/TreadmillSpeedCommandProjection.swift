@@ -60,6 +60,19 @@ enum TreadmillSpeedCommandProjection {
         nativeMph * mphToKmh
     }
 
+    static func cappedPhysicalTargetKmh(
+        requestedPhysicalSpeedKmh: Double,
+        nativeUnits: TreadmillNativeUnits,
+        confirmedImperialPhysicalCapKmh: Double = initialConfirmedImperialPhysicalCapKmh
+    ) -> Double {
+        let sanitizedPhysicalSpeed = max(0.0, requestedPhysicalSpeedKmh.isFinite ? requestedPhysicalSpeedKmh : 0.0)
+        return cappedPhysicalSpeedKmh(
+            sanitizedPhysicalSpeed,
+            nativeUnits: nativeUnits,
+            confirmedImperialPhysicalCapKmh: confirmedImperialPhysicalCapKmh
+        )
+    }
+
     private static func cappedPhysicalSpeedKmh(
         _ physicalKmh: Double,
         nativeUnits: TreadmillNativeUnits,

@@ -142,6 +142,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let physicalSemanticsConfirmationStore = TreadmillPhysicalSemanticsConfirmationStore()
     private var hrSessionTotalSeconds: Int = 0
     private var hrControlStartedBelt: Bool = false
+    private var hrControlStartedEventLogged: Bool = false
     private var cooldownRuntimeState: CooldownRuntimeEngine.State? = nil
     @Published var hrCooldownMinSpeed: Double = 3.5 { didSet { saveHrSettingsIfNeeded() } }
     @Published var hrCooldownTargetBpm: Int = HRSettingsDefaults.defaultCooldownTargetBpm { didSet { saveHrSettingsIfNeeded() } }
@@ -169,6 +170,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     // Sticky within a stop's post-observation window: true once any FRESH device report confirmed
     // the belt stopped. Logged at session_end to disambiguate a stale final stop_confirmed=false.
     private var stopConfirmedEverInWindow: Bool = false
+    private var currentStopAttemptId: String? = nil
+    private var currentStopAttemptStartedAt: Date? = nil
+    private var stopCommandSequence: Int = 0
     private var hrTrendMinWindowSeconds: TimeInterval {
         max(6, hrTrendWindowSeconds * 0.4)
     }
@@ -302,6 +306,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let appReportedSpeedKmh: Double
         let reportedState: Int
         let hasFreshReport: Bool
+    }
+
+    private struct StopForensicsSnapshot {
+        let responseAgeSeconds: Double
+        let rawFe01Hex: String
+        let parsedState: Int
+        let speedRawTenths: Int
+        let appSpeedRawTenths: Int
+        let nativeUnits: TreadmillNativeUnits
+        let nativeSpeed: Double
+        let physicalSpeedKmhEstimate: Double
+        let mode: Int
+        let button: Int
+        let freshness: String
     }
 
     private enum StopAssistCommand {
@@ -1198,6 +1216,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func currentSessionState() -> String {
         guard isHrControlRunning else { return "idle" }
+        if hrAwaitingInitialHeartRateSample { return "waiting_for_hr_signal" }
         if hrCooldownRemainingSeconds > 0 { return "cooldown" }
         if hrRemainingSeconds > 0 {
             if let started = hrControlStartedAt,
@@ -1323,6 +1342,82 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
+    private func currentStopForensicsSnapshot(now: Date = Date()) -> StopForensicsSnapshot {
+        let speedSnapshot = currentTreadmillSpeedSnapshot(now: now)
+        let responseAgeSeconds = lastNotifyAt.map { max(0, now.timeIntervalSince($0)) } ?? -1
+        let nativeUnits = treadmillUnitsState.nativeUnits
+        let nativeSpeed = Double(deviceReportedSpeedRawTenths) / 10.0
+        let physicalSpeedEstimate: Double = {
+            guard nativeUnits == .imperial else { return deviceReportedSpeedKmh }
+            return TreadmillSpeedCommandProjection.physicalKmhEstimate(forNativeMph: nativeSpeed)
+        }()
+        let freshness: String = {
+            guard lastNotifyAt != nil else { return "missing" }
+            return speedSnapshot.hasFreshReport ? "fresh" : "stale"
+        }()
+
+        return StopForensicsSnapshot(
+            responseAgeSeconds: responseAgeSeconds,
+            rawFe01Hex: deviceReportedRawHex,
+            parsedState: deviceReportedState,
+            speedRawTenths: deviceReportedSpeedRawTenths,
+            appSpeedRawTenths: deviceReportedAppSpeedRawTenths,
+            nativeUnits: nativeUnits,
+            nativeSpeed: nativeSpeed,
+            physicalSpeedKmhEstimate: physicalSpeedEstimate,
+            mode: deviceReportedManualMode,
+            button: deviceReportedButton,
+            freshness: freshness
+        )
+    }
+
+    private func stopAttemptContextFields(now: Date = Date()) -> [String: Any] {
+        [
+            "stop_attempt_id": currentStopAttemptId ?? "",
+            "stop_attempt_started_at": currentStopAttemptStartedAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
+            "stop_elapsed_s": currentStopAttemptStartedAt.map { now.timeIntervalSince($0) } ?? ""
+        ]
+    }
+
+    private func stopForensicsFields(
+        phase: String,
+        snapshot: StopForensicsSnapshot? = nil,
+        now: Date = Date()
+    ) -> [String: Any] {
+        let currentSnapshot = snapshot ?? currentStopForensicsSnapshot(now: now)
+        var fields = stopAttemptContextFields(now: now)
+        fields.merge([
+            "stop_snapshot_phase": phase,
+            "stop_response_age_s": currentSnapshot.responseAgeSeconds,
+            "stop_raw_fe01_hex": currentSnapshot.rawFe01Hex,
+            "stop_parsed_state": currentSnapshot.parsedState,
+            "stop_speed_raw_tenths": currentSnapshot.speedRawTenths,
+            "stop_app_speed_raw_tenths": currentSnapshot.appSpeedRawTenths,
+            "stop_native_units": currentSnapshot.nativeUnits.rawValue,
+            "stop_native_speed": currentSnapshot.nativeSpeed,
+            "stop_physical_speed_kmh_estimate": currentSnapshot.physicalSpeedKmhEstimate,
+            "stop_mode": currentSnapshot.mode,
+            "stop_button": currentSnapshot.button,
+            "stop_freshness": currentSnapshot.freshness
+        ]) { _, new in new }
+        return fields
+    }
+
+    private func stopFe01SnapshotFields(
+        prefix: String,
+        snapshot: StopForensicsSnapshot? = nil,
+        now: Date = Date()
+    ) -> [String: Any] {
+        let currentSnapshot = snapshot ?? currentStopForensicsSnapshot(now: now)
+        return [
+            "\(prefix)_state": currentSnapshot.parsedState,
+            "\(prefix)_speed_raw_tenths": currentSnapshot.speedRawTenths,
+            "\(prefix)_app_speed_raw_tenths": currentSnapshot.appSpeedRawTenths,
+            "\(prefix)_raw_hex": currentSnapshot.rawFe01Hex,
+            "\(prefix)_age_s": currentSnapshot.responseAgeSeconds
+        ]
+    }
+
     private func currentCooldownSpeedSnapshot() -> HRDomainService.CooldownSpeedSnapshot {
         HRDomainService.cooldownSpeedSnapshot(
             desiredSpeedKmh: desiredSpeedKmh,
@@ -1358,13 +1453,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         case .setSpeed(let speedEffect):
             let old = deviceTargetSpeedKmh
-            desiredSpeedKmh = speedEffect.targetKmh
-            deviceTargetSpeedKmh = speedEffect.targetKmh
-            recordSpeedChange(from: old, to: speedEffect.targetKmh, reason: "cooldown_set")
-            lastCommandLine = String(format: "CMD cooldown adjust -> %.1f", speedEffect.targetKmh)
-            sendTreadmillSetSpeed(speedEffect.targetKmh, label: String(format: "SPEED %.1f km/h (cooldown)", speedEffect.targetKmh))
+            let target = effectivePhysicalTargetSpeedKmh(speedEffect.targetKmh)
+            desiredSpeedKmh = target
+            deviceTargetSpeedKmh = target
+            recordSpeedChange(from: old, to: target, reason: "cooldown_set")
+            lastCommandLine = String(format: "CMD cooldown adjust -> %.1f", target)
+            sendTreadmillSetSpeed(target, label: String(format: "SPEED %.1f km/h (cooldown)", target))
             appendLog(
-                "HR cooldown speed: \(String(format: "%.1f", speedEffect.targetKmh)) " +
+                "HR cooldown speed: \(String(format: "%.1f", target)) " +
                 "HR=\(speedEffect.hrBpm) step=\(String(format: "%.1f", speedEffect.stepKmh)) " +
                 "trigger=\(speedEffect.trigger)"
             )
@@ -3164,7 +3260,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         // Cancel any pending delayed writes (e.g. stop retries) before starting a new run.
         resetCommandQueue(reason: "startWithSpeed")
-        let v = clampRunningSpeedKmh(kmh)
+        let v = effectivePhysicalTargetSpeedKmh(clampRunningSpeedKmh(kmh))
         let old = deviceTargetSpeedKmh
         desiredSpeedKmh = v
         deviceTargetSpeedKmh = v
@@ -3238,17 +3334,25 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("STOP skipped: unknown treadmill protocol")
             return
         }
-        writeCommand(packet, label: "STOP", highPriority: true)
+        writeStopCommand(packet, label: "STOP", source: "initial_stop", highPriority: true)
     }
 
     private func stopBeltSafely(reason: String) {
         stopConfirmedEverInWindow = false
+        currentStopAttemptId = UUID().uuidString
+        currentStopAttemptStartedAt = Date()
+        stopCommandSequence = 0
         let wasRunning = (deviceTargetSpeedKmh > 0.3) || (currentTreadmillSpeedSnapshot().actualSpeedKmh > 0.3)
         appendLog("STOP sequence (\(reason))")
+        var startFields = stopForensicsFields(phase: "attempt_started")
+        startFields["reason"] = reason
+        startFields["was_running"] = wasRunning
+        logTrainingEvent("stop_attempt_started", fields: startFields)
         stopBeltOnce()
         guard wasRunning else { return }
         switch treadmillProtocol {
         case .walkingPad:
+            scheduleStopForensicSnapshots(reason: reason)
             scheduleStopVerification(reason: reason, delay: 0.7, action: "check_after_stop")
             scheduleStopVerification(reason: reason, delay: 1.6, action: "standby_after_stop", command: .walkingPadStandby)
             scheduleStopVerification(reason: reason, delay: 4.5, action: "stop_retry_after_standby", command: .stopRetry)
@@ -3264,6 +3368,30 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 scheduleWrite(stopPacket, label: "STOP retry", after: 2.0)
                 scheduleWrite(stopPacket, label: "STOP retry", after: 4.0)
                 scheduleStopVerification(reason: reason, delay: 5.5, action: "final_check")
+            }
+        }
+    }
+
+    private func scheduleStopForensicSnapshots(reason: String) {
+        [0.5, 1.5, 3.0, 5.0, 8.0, 15.0, 30.0].forEach { delay in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                let verification = self.currentTreadmillStopVerificationSnapshot()
+                if verification.confirmedStopped { self.stopConfirmedEverInWindow = true }
+                var fields = self.stopForensicsFields(phase: "scheduled_snapshot")
+                fields.merge([
+                    "reason": reason,
+                    "delay_s": delay,
+                    "stop_confirmed": verification.confirmedStopped,
+                    "stop_confirmed_ever": self.stopConfirmedEverInWindow,
+                    "stop_source": verification.source,
+                    "stop_report_age_s": verification.reportAgeSeconds,
+                    "stop_reported_speed_kmh": verification.reportedSpeedKmh,
+                    "stop_reported_app_speed_kmh": verification.appReportedSpeedKmh,
+                    "stop_reported_state": verification.reportedState,
+                    "stop_has_fresh_report": verification.hasFreshReport
+                ]) { _, new in new }
+                self.logTrainingEvent("stop_forensic_snapshot", fields: fields)
             }
         }
     }
@@ -3289,7 +3417,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 }
             }()
 
-            self.logTrainingEvent("stop_verification", fields: [
+            var fields = self.stopForensicsFields(phase: "verification")
+            fields.merge([
                 "reason": reason,
                 "action": action,
                 "delay_s": delay,
@@ -3303,7 +3432,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "stop_reported_app_speed_kmh": snapshot.appReportedSpeedKmh,
                 "stop_reported_state": snapshot.reportedState,
                 "stop_has_fresh_report": snapshot.hasFreshReport
-            ])
+            ]) { _, new in new }
+            self.logTrainingEvent("stop_verification", fields: fields)
 
             guard self.isConnected, snapshot.shouldSendAssistCommand, let command else { return }
             self.executeStopAssistCommand(command)
@@ -3317,17 +3447,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             if treadmillProtocol == .walkingPad {
                 lastWalkingPadCommandRawTenths = 0
             }
-            writeCommand(stopPacket, label: "STOP retry")
+            writeStopCommand(stopPacket, label: "STOP retry", source: "verification_assist")
 
         case .walkingPadStandby:
             guard treadmillProtocol == .walkingPad else { return }
             manualModeSet = false
-            writeCommand(buildWalkingPadStandbyPacket(), label: "MODE STANDBY")
+            writeStopCommand(buildWalkingPadStandbyPacket(), label: "MODE STANDBY", source: "verification_assist")
         }
     }
 
     func setTargetSpeedFromSlider(_ kmh: Double) {
-        let v = clampRunningSpeedKmh(kmh)
+        let v = effectivePhysicalTargetSpeedKmh(clampRunningSpeedKmh(kmh))
         desiredSpeedKmh = v
         guard isConnected else { return }
         let isRunning = deviceTargetSpeedKmh > 0.1 || currentTreadmillSpeedSnapshot().actualSpeedKmh > 0.2
@@ -3343,7 +3473,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard isConnected else { return }
         let actualSpeedKmh = currentTreadmillSpeedSnapshot().actualSpeedKmh
         let base = (deviceTargetSpeedKmh > 0.1) ? deviceTargetSpeedKmh : (actualSpeedKmh > 0.1 ? actualSpeedKmh : desiredSpeedKmh)
-        let v = clampAnySpeedKmh(base + delta)
+        let v = effectivePhysicalTargetSpeedKmh(clampAnySpeedKmh(base + delta))
         guard abs(v - base) >= 0.01 else { return }
         let old = deviceTargetSpeedKmh
         desiredSpeedKmh = v
@@ -3395,11 +3525,31 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func startBeltForHrControlIfNeeded() {
         if deviceTargetSpeedKmh <= 0.1 && currentTreadmillSpeedSnapshot().actualSpeedKmh <= 0.2 {
             hrControlStartedBelt = true
+            logHrControlStartedEvent(trigger: "belt_start")
             startWithSpeed(3.0)
         } else if deviceTargetSpeedKmh <= 0.1 {
             hrControlStartedBelt = true
+            logHrControlStartedEvent(trigger: "belt_resume")
             startWithSpeed(desiredSpeedKmh)
         }
+    }
+
+    private func logHrControlStartedEvent(trigger: String) {
+        guard !hrControlStartedEventLogged else { return }
+        hrControlStartedEventLogged = true
+        let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
+        logTrainingEvent("hr_control_started", fields: [
+            "trigger": trigger,
+            "target_bpm": hrTargetBPM,
+            "duration_s": hrSessionTotalSeconds,
+            "decision_interval_s": hrDecisionIntervalSeconds,
+            "adaptive_step_enabled": hrAdaptiveStepEnabled,
+            "max_step_kmh": hrSpeedStepKmh,
+            "adaptive_levels_kmh": adaptiveLevels,
+            "start_speed_kmh": treadmillActualSpeedKmh,
+            "device_target_kmh": deviceTargetSpeedKmh,
+            "hr_source_mode": hrSourceMode.rawValue
+        ])
     }
 
     private func handleHeartRateSourceFailure(reason: String, details: String) {
@@ -3450,6 +3600,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
         hrControlStartedAt = nil
         hrControlStartedBelt = false
+        hrControlStartedEventLogged = false
         stopBeltSafely(reason: reason)
         recomputeHrStartAllowed()
     }
@@ -3519,20 +3670,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             clearCooldownRuntimeState()
             // Ensure treadmill is running when HR control starts
             hrControlStartedBelt = false
+            hrControlStartedEventLogged = false
             startSelectedHeartRateSourceForSession()
-            let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
-            logTrainingEvent("hr_control_started", fields: [
-                "target_bpm": hrTargetBPM,
-                "duration_s": hrSessionTotalSeconds,
-                "decision_interval_s": hrDecisionIntervalSeconds,
-                "adaptive_step_enabled": hrAdaptiveStepEnabled,
-                "max_step_kmh": hrSpeedStepKmh,
-                "adaptive_levels_kmh": adaptiveLevels,
-                "start_speed_kmh": treadmillActualSpeedKmh,
-                "device_target_kmh": deviceTargetSpeedKmh,
-                "hr_source_mode": hrSourceMode.rawValue
-            ])
-            if !hrAwaitingInitialHeartRateSample {
+            if hrAwaitingInitialHeartRateSample {
+                hrStatusLine = "Ждём пульс от \(hrSourceMode.title)"
+                hrDecisionDetails = "Дорожка стартует после первого live HR-сэмпла."
+                hrPredictorStatusLine = "Ожидание первого значения пульса"
+                logTrainingEvent("hr_control_waiting_for_hr", fields: [
+                    "target_bpm": hrTargetBPM,
+                    "duration_s": hrSessionTotalSeconds,
+                    "decision_interval_s": hrDecisionIntervalSeconds,
+                    "hr_source_mode": hrSourceMode.rawValue,
+                    "reason": "waiting_for_initial_hr_signal"
+                ])
+            } else {
+                logHrControlStartedEvent(trigger: "start")
                 startBeltForHrControlIfNeeded()
             }
         } else {
@@ -3571,9 +3723,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         clearCooldownRuntimeState()
         hrNoDataSeconds = 0
         hrControlStartBlockReasonText = nil
-        recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: false)
+        let stoppedBeforeInitialHr = hrAwaitingInitialHeartRateSample && !hrControlStartedBelt
+        recordHrWorkoutIfNeeded(
+            durationOverride: elapsed,
+            failed: false,
+            notSavedReasonOverride: stoppedBeforeInitialHr ? "no_hr_signal" : nil
+        )
         hrControlStartedAt = nil
         hrControlStartedBelt = false
+        hrControlStartedEventLogged = false
         stopBeltSafely(reason: "hr")
         stopSelectedHeartRateSourceForSession()
     }
@@ -3852,6 +4010,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
                         hrControlStartedAt = nil
                         hrControlStartedBelt = false
+                        hrControlStartedEventLogged = false
                         stopSelectedHeartRateSourceForSession()
                         stopBeltSafely(reason: "hr_no_connection")
                         return
@@ -3911,6 +4070,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
                         hrControlStartedAt = nil
                         hrControlStartedBelt = false
+                        hrControlStartedEventLogged = false
                         stopSelectedHeartRateSourceForSession()
                         stopBeltSafely(reason: "hr_no_signal")
                         return
@@ -3988,7 +4148,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         return
                     }
                     if decision.kind == .set {
-                        let nextSpeed = decision.nextSpeedKmh
+                        let requestedNextSpeed = decision.nextSpeedKmh
+                        let nextSpeed = effectivePhysicalTargetSpeedKmh(requestedNextSpeed)
                         let old = deviceTargetSpeedKmh
                         desiredSpeedKmh = nextSpeed
                         deviceTargetSpeedKmh = nextSpeed
@@ -4008,7 +4169,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             "step_kmh": step,
                             "step_tag": stepDebugLabel,
                             "speed_before_kmh": currentTarget,
-                            "speed_after_kmh": nextSpeed
+                            "speed_after_kmh": nextSpeed,
+                            "requested_speed_after_kmh": requestedNextSpeed,
+                            "capped_speed_after_kmh": nextSpeed
                         ])
                     } else {
                         hrStatusLine = "HR‑контроль: предел скорости"
@@ -4114,6 +4277,39 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     // MARK: - BLE write helpers
     private func writeCommand(_ data: Data, label: String, highPriority: Bool = false) {
         enqueueCommand(data, label: label, highPriority: highPriority)
+    }
+
+    private func writeStopCommand(
+        _ data: Data,
+        label: String,
+        source: String,
+        highPriority: Bool = false
+    ) {
+        let now = Date()
+        let beforeSnapshot = currentStopForensicsSnapshot(now: now)
+        let queueSizeBefore = commandQueue.count
+        stopCommandSequence += 1
+        let sequence = stopCommandSequence
+        writeCommand(data, label: label, highPriority: highPriority)
+        let queueSizeAfter = commandQueue.count
+
+        var fields = stopForensicsFields(phase: "before_command", snapshot: beforeSnapshot, now: now)
+        fields.merge(stopFe01SnapshotFields(prefix: "stop_fe01_before", snapshot: beforeSnapshot, now: now)) { _, new in new }
+        fields.merge([
+            "stop_command_sequence": sequence,
+            "stop_command_label": label,
+            "stop_command_packet_hex": hex(data),
+            "stop_command_source": source,
+            "stop_write_type": currentCommandWriteTypeLabel(),
+            "stop_queue_size_before": queueSizeBefore,
+            "stop_queue_size_after": queueSizeAfter
+        ]) { _, new in new }
+        logTrainingEvent("stop_command_attempt", fields: fields)
+    }
+
+    private func currentCommandWriteTypeLabel() -> String {
+        guard let ch = commandCharacteristic else { return "unknown" }
+        return ch.properties.contains(.writeWithoutResponse) ? "without_response" : "with_response"
     }
 
     private func isSpeedCommandLabel(_ label: String) -> Bool {
@@ -4422,6 +4618,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillProtocol == .walkingPad
             && treadmillUnitsState.nativeUnits == .imperial
             && treadmillUnitsState.physicalSpeedConfidence == .confirmedImperial
+    }
+
+    private func effectivePhysicalTargetSpeedKmh(_ requestedKmh: Double) -> Double {
+        guard shouldUseConfirmedImperialCommandProjection else { return requestedKmh }
+        return TreadmillSpeedCommandProjection.cappedPhysicalTargetKmh(
+            requestedPhysicalSpeedKmh: requestedKmh,
+            nativeUnits: .imperial
+        )
     }
 
     private func makeWalkingPadSetSpeedCommand(
@@ -4780,6 +4984,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrStatusLine = "HR‑контроль запущен"
             hrDecisionDetails = "Первый HR-сэмпл получен, дорожка стартует."
             hrNextDecisionSeconds = hrDecisionIntervalSeconds
+            logHrControlStartedEvent(trigger: "initial_hr_sample")
             startBeltForHrControlIfNeeded()
         }
         recomputeHrStartAllowed()
@@ -4866,10 +5071,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func recordHrWorkoutIfNeeded() {
-        recordHrWorkoutIfNeeded(durationOverride: nil, failed: nil)
+        recordHrWorkoutIfNeeded(durationOverride: nil, failed: nil, notSavedReasonOverride: nil)
     }
 
-    private func recordHrWorkoutIfNeeded(durationOverride: Int?, failed: Bool?) {
+    private func recordHrWorkoutIfNeeded(
+        durationOverride: Int?,
+        failed: Bool?,
+        notSavedReasonOverride: String? = nil
+    ) {
         guard !hrWorkoutRecorded else { return }
         let actualDuration: Int = {
             if let override = durationOverride { return max(0, override) }
@@ -4883,6 +5092,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("Workout not saved: failed (duration \(actualDuration)s)")
             logTrainingEvent("workout_not_saved", fields: [
                 "reason": "failed",
+                "duration_s": actualDuration
+            ])
+            return
+        }
+        if let notSavedReasonOverride {
+            appendLog("Workout not saved: \(notSavedReasonOverride) (duration \(actualDuration)s)")
+            logTrainingEvent("workout_not_saved", fields: [
+                "reason": notSavedReasonOverride,
                 "duration_s": actualDuration
             ])
             return

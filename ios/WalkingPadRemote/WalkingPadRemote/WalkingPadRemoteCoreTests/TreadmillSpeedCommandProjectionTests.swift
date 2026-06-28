@@ -66,4 +66,32 @@ final class TreadmillSpeedCommandProjectionTests: XCTestCase {
         XCTAssertEqual(projection.commandPhysicalSpeedKmhEstimate, 3.7 * 1.609344, accuracy: 0.0001)
         XCTAssertTrue(projection.shouldSendCommand)
     }
+
+    func testConfirmedImperialEffectiveTargetIsCappedBeforeStateStorage() {
+        XCTAssertEqual(
+            TreadmillSpeedCommandProjection.cappedPhysicalTargetKmh(
+                requestedPhysicalSpeedKmh: 6.1,
+                nativeUnits: .imperial
+            ),
+            6.0,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            TreadmillSpeedCommandProjection.cappedPhysicalTargetKmh(
+                requestedPhysicalSpeedKmh: 6.2,
+                nativeUnits: .imperial
+            ),
+            6.0,
+            accuracy: 0.0001
+        )
+
+        let projection = TreadmillSpeedCommandProjection.project(
+            requestedPhysicalSpeedKmh: 6.2,
+            nativeUnits: .imperial,
+            previousRawTenths: 37
+        )
+        XCTAssertEqual(projection.cappedPhysicalSpeedKmh, 6.0, accuracy: 0.0001)
+        XCTAssertEqual(projection.commandRawTenths, 37)
+        XCTAssertFalse(projection.shouldSendCommand)
+    }
 }
