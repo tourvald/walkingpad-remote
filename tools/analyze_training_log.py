@@ -139,6 +139,21 @@ class DiagnosticObservation:
 
 
 @dataclass
+class ImperialTrainingProjectionObservation:
+    ts_raw: str
+    event: str
+    label: str
+    requested_physical_speed_kmh: float | None
+    physical_speed_kmh_estimate: float | None
+    command_native_speed_mph: float | None
+    command_raw_tenths: str
+    requested_physical_delta_kmh: float | None
+    command_physical_delta_kmh_estimate: float | None
+    projection_noop: bool
+    manual_stop_acknowledged: bool
+
+
+@dataclass
 class GapReport:
     session: str
     ts_raw: str
@@ -356,6 +371,33 @@ def collect_diagnostic_observations(rows: list[Row]) -> list[DiagnosticObservati
     return observations
 
 
+def collect_imperial_training_projection_observations(rows: list[Row]) -> list[ImperialTrainingProjectionObservation]:
+    observations: list[ImperialTrainingProjectionObservation] = []
+    for row in rows:
+        command_mph = row._num("command_native_speed_mph")
+        command_units = str(row.get("command_native_units") or "").strip()
+        event = str(row.event or "").strip()
+        if command_mph is None and not (event == "speed_command_projection" and command_units == "imperial"):
+            continue
+
+        observations.append(
+            ImperialTrainingProjectionObservation(
+                ts_raw=row.ts_raw,
+                event=event,
+                label=str(row.get("label") or ""),
+                requested_physical_speed_kmh=row._num("requested_physical_speed_kmh"),
+                physical_speed_kmh_estimate=row._num("physical_speed_kmh_estimate"),
+                command_native_speed_mph=command_mph,
+                command_raw_tenths=str(row.get("command_raw_tenths") or "?"),
+                requested_physical_delta_kmh=row._num("requested_physical_delta_kmh"),
+                command_physical_delta_kmh_estimate=row._num("command_physical_delta_kmh_estimate"),
+                projection_noop=_to_bool(row.get("projection_noop")),
+                manual_stop_acknowledged=_to_bool(row.get("manual_stop_acknowledged")),
+            )
+        )
+    return observations
+
+
 def _diagnostic_command_row(rows: list[Row]) -> Row:
     nonzero_command_rows = [
         row
@@ -398,6 +440,7 @@ def print_text(
     scene: list,
     units: list[UnitsObservation],
     diagnostics: list[DiagnosticObservation],
+    imperial_training: list[ImperialTrainingProjectionObservation],
     near_seconds: float,
 ) -> None:
     sessions = sorted({r.session for r in rows if r.session})
@@ -449,6 +492,25 @@ def print_text(
         print("  none")
     print()
 
+    print("imperial training projections:")
+    if imperial_training:
+        for obs in imperial_training[-12:]:
+            print(
+                "  "
+                f"{obs.ts_raw or '—'} raw={obs.command_raw_tenths} "
+                f"native={_fmt(obs.command_native_speed_mph, ' mph')} "
+                f"requested={_fmt(obs.requested_physical_speed_kmh, ' km/h')} "
+                f"estimate={_fmt(obs.physical_speed_kmh_estimate, ' km/h')} "
+                f"requested_delta={_fmt(obs.requested_physical_delta_kmh, ' km/h')} "
+                f"command_delta={_fmt(obs.command_physical_delta_kmh_estimate, ' km/h')} "
+                f"noop={obs.projection_noop} manual_stop_ack={obs.manual_stop_acknowledged}"
+            )
+        if len(imperial_training) > 12:
+            print(f"  … {len(imperial_training) - 12} earlier projection rows")
+    else:
+        print("  none")
+    print()
+
     for n, g in enumerate(reports, 1):
         print(f"[gap {n}] session={g.session or '—'}  at {g.ts_raw or '—'}")
         bg = f"true (bg {_fmt(g.background_s, 's')})" if g.was_backgrounded else "false"
@@ -493,6 +555,7 @@ def to_json(
     scene: list,
     units: list[UnitsObservation],
     diagnostics: list[DiagnosticObservation],
+    imperial_training: list[ImperialTrainingProjectionObservation],
 ) -> dict:
     impacted = [g for g in reports if g.belt_impacted]
     backgroundings = count_backgroundings(scene)
@@ -538,6 +601,22 @@ def to_json(
             }
             for item in diagnostics
         ],
+        "imperial_training_projections": [
+            {
+                "ts": item.ts_raw,
+                "event": item.event,
+                "label": item.label,
+                "requested_physical_speed_kmh": item.requested_physical_speed_kmh,
+                "physical_speed_kmh_estimate": item.physical_speed_kmh_estimate,
+                "command_native_speed_mph": item.command_native_speed_mph,
+                "command_raw_tenths": item.command_raw_tenths,
+                "requested_physical_delta_kmh": item.requested_physical_delta_kmh,
+                "command_physical_delta_kmh_estimate": item.command_physical_delta_kmh_estimate,
+                "projection_noop": item.projection_noop,
+                "manual_stop_acknowledged": item.manual_stop_acknowledged,
+            }
+            for item in imperial_training
+        ],
         "backgrounded": sum(1 for g in reports if g.was_backgrounded),
         "total_gap_s": round(sum(g.gap_s for g in reports), 1),
         "max_gap_s": round(max((g.gap_s for g in reports), default=0.0), 1),
@@ -580,11 +659,12 @@ def main() -> int:
     scene = collect_scene_events(rows)
     units = collect_units_observations(rows)
     diagnostics = collect_diagnostic_observations(rows)
+    imperial_training = collect_imperial_training_projection_observations(rows)
 
     if args.json:
-        print(json.dumps(to_json(args.csv_path, rows, reports, scene, units, diagnostics), indent=2))
+        print(json.dumps(to_json(args.csv_path, rows, reports, scene, units, diagnostics, imperial_training), indent=2))
     else:
-        print_text(args.csv_path, rows, reports, scene, units, diagnostics, args.near_seconds)
+        print_text(args.csv_path, rows, reports, scene, units, diagnostics, imperial_training, args.near_seconds)
 
     # Exit code: 0 = PASS / NO-STALL, 1 = FAIL (belt impact), 3 = NO-GAP. Handy for CI/automation.
     if reports:

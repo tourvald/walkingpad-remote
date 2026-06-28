@@ -1587,6 +1587,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             rawTenths: deviceReportedSpeedRawTenths,
             units: nativeUnits
         )
+        let physicalSpeedKmhEstimate: Any = {
+            guard nativeUnits == .imperial, reportedNativeSpeed.nativeSpeed > 0 else { return "" }
+            return TreadmillSpeedCommandProjection.physicalKmhEstimate(
+                forNativeMph: reportedNativeSpeed.nativeSpeed
+            )
+        }()
+        let nativeSpeedMph: Any = {
+            guard nativeUnits == .imperial, reportedNativeSpeed.nativeSpeed > 0 else { return "" }
+            return reportedNativeSpeed.nativeSpeed
+        }()
         var payload: [String: Any] = [
             "ts": trainingLogIsoFormatter.string(from: Date()),
             "event": event,
@@ -1643,6 +1653,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "units_source": treadmillUnitsState.source.rawValue,
             "controller_params_raw_hex": treadmillUnitsState.rawParamsHex ?? "",
             "controller_params_checksum_ok": treadmillUnitsState.parseStatus == .validChecksum,
+            "physical_speed_kmh_estimate": physicalSpeedKmhEstimate,
+            "native_speed_mph": nativeSpeedMph,
+            "imperial_hr_control_enabled": shouldUseConfirmedImperialCommandProjection && imperialHrControlManualStopAcknowledged,
+            "manual_stop_acknowledged": imperialHrControlManualStopAcknowledged,
             "reported_native_units": nativeUnits.rawValue,
             "reported_native_speed": reportedNativeSpeed.nativeSpeed,
             "physical_semantics": physicalSemanticsConfirmation?.semantics.rawValue ?? treadmillUnitsState.physicalSpeedConfidence.rawValue,
@@ -3170,10 +3184,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             if shouldSendStart {
                 scheduleWrite(startPacket, label: "START", after: 0.2)
                 if let speedCommand = makeWalkingPadSetSpeedCommand(kmh: v, label: speedLabel, force: true) {
+                    logTrainingEvent("speed_command_projection", fields: speedCommand.telemetryFields)
                     scheduleWrite(speedCommand.packet, label: speedCommand.label, after: 0.45)
                 }
             } else {
                 if let speedCommand = makeWalkingPadSetSpeedCommand(kmh: v, label: speedLabel, force: true) {
+                    logTrainingEvent("speed_command_projection", fields: speedCommand.telemetryFields)
                     scheduleWrite(speedCommand.packet, label: speedCommand.label, after: 0.2)
                 }
             }
@@ -4352,6 +4368,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard let speedCommand = makeWalkingPadSetSpeedCommand(kmh: kmh, label: label, force: false) else {
                 return
             }
+            logTrainingEvent("speed_command_projection", fields: speedCommand.telemetryFields)
             writeCommand(speedCommand.packet, label: speedCommand.label)
         case .ftms:
             enqueueFtmsRequestControlIfNeeded()
@@ -4398,6 +4415,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private struct WalkingPadSpeedCommand {
         let packet: Data
         let label: String
+        let telemetryFields: [String: Any]
     }
 
     private var shouldUseConfirmedImperialCommandProjection: Bool {
@@ -4416,7 +4434,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             lastWalkingPadCommandRawTenths = rawTenths
             return WalkingPadSpeedCommand(
                 packet: BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: rawTenths),
-                label: label
+                label: label,
+                telemetryFields: [
+                    "command_raw_tenths": rawTenths,
+                    "command_native_units": TreadmillNativeUnits.metric.rawValue,
+                    "command_native_speed": Double(rawTenths) / 10.0
+                ]
             )
         }
 
@@ -4429,6 +4452,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog(
                 "SPEED no-op: requested \(String(format: "%.2f", projection.requestedPhysicalSpeedKmh)) km/h -> raw \(projection.commandRawTenths) unchanged"
             )
+            logTrainingEvent("speed_command_projection", fields: walkingPadProjectionTelemetryFields(
+                projection: projection,
+                label: label,
+                force: force,
+                willSend: false
+            ))
             return nil
         }
 
@@ -4442,8 +4471,40 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         return WalkingPadSpeedCommand(
             packet: BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: projection.commandRawTenths),
-            label: projectedLabel
+            label: projectedLabel,
+            telemetryFields: walkingPadProjectionTelemetryFields(
+                projection: projection,
+                label: label,
+                force: force,
+                willSend: true
+            )
         )
+    }
+
+    private func walkingPadProjectionTelemetryFields(
+        projection: TreadmillSpeedCommandProjection.Projection,
+        label: String,
+        force: Bool,
+        willSend: Bool
+    ) -> [String: Any] {
+        [
+            "label": label,
+            "projection_force": force,
+            "projection_will_send": willSend,
+            "projection_noop": !willSend,
+            "requested_physical_speed_kmh": projection.requestedPhysicalSpeedKmh,
+            "capped_physical_speed_kmh": projection.cappedPhysicalSpeedKmh,
+            "physical_speed_kmh_estimate": projection.commandPhysicalSpeedKmhEstimate,
+            "command_native_units": projection.nativeUnits.rawValue,
+            "command_native_speed": projection.commandNativeSpeed,
+            "command_native_speed_mph": projection.nativeUnits == .imperial ? projection.commandNativeSpeed : "",
+            "command_raw_tenths": projection.commandRawTenths,
+            "previous_command_raw_tenths": projection.previousRawTenths ?? "",
+            "requested_physical_delta_kmh": projection.requestedPhysicalDeltaKmh ?? "",
+            "command_physical_delta_kmh_estimate": projection.commandPhysicalDeltaKmhEstimate ?? "",
+            "imperial_hr_control_enabled": shouldUseConfirmedImperialCommandProjection && imperialHrControlManualStopAcknowledged,
+            "manual_stop_acknowledged": imperialHrControlManualStopAcknowledged
+        ]
     }
 
     private func buildWalkingPadStandbyPacket() -> Data {

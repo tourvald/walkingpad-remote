@@ -105,6 +105,13 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "command_raw_tenths": 30,
             "command_native_units": "imperial",
             "command_native_speed": 3.0,
+            "physical_speed_kmh_estimate": 4.828,
+            "native_speed_mph": 3.0,
+            "command_native_speed_mph": 3.0,
+            "requested_physical_delta_kmh": 0.1,
+            "command_physical_delta_kmh_estimate": 0.161,
+            "imperial_hr_control_enabled": true,
+            "manual_stop_acknowledged": true,
             "reported_native_units": "imperial",
             "reported_native_speed": 3.9,
             "distance_raw": 30,
@@ -177,6 +184,13 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "command_raw_tenths")!], "30")
         XCTAssertEqual(row[headers.firstIndex(of: "command_native_units")!], "imperial")
         XCTAssertEqual(row[headers.firstIndex(of: "command_native_speed")!], "3")
+        XCTAssertEqual(row[headers.firstIndex(of: "physical_speed_kmh_estimate")!], "4.828")
+        XCTAssertEqual(row[headers.firstIndex(of: "native_speed_mph")!], "3")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_native_speed_mph")!], "3")
+        XCTAssertEqual(row[headers.firstIndex(of: "requested_physical_delta_kmh")!], "0.1")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_physical_delta_kmh_estimate")!], "0.161")
+        XCTAssertEqual(row[headers.firstIndex(of: "imperial_hr_control_enabled")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "manual_stop_acknowledged")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "reported_native_units")!], "imperial")
         XCTAssertEqual(row[headers.firstIndex(of: "reported_native_speed")!], "3.9")
         XCTAssertEqual(row[headers.firstIndex(of: "distance_raw")!], "30")
