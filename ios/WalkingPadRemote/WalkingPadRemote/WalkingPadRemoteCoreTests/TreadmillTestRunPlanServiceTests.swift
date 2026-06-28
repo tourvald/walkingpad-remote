@@ -95,4 +95,24 @@ final class TreadmillTestRunPlanServiceTests: XCTestCase {
         XCTAssertEqual(start.targetSpeedRawTenths, 30)
         XCTAssertEqual(start.targetNativeSpeed.displayText, "3.0 km/h")
     }
+
+    func testDiagnosticStartSendsStartWhenFreshReportIsMissingDespiteStalePreviousTarget() {
+        let decision = TreadmillTestRunPlanService.shouldSendWalkingPadDiagnosticStart(
+            hasFreshReport: false,
+            reportedState: 1,
+            reportedSpeedRawTenths: 30
+        )
+
+        XCTAssertTrue(decision)
+    }
+
+    func testDiagnosticStartSkipsStartWhenFreshReportShowsMovingBelt() {
+        let decision = TreadmillTestRunPlanService.shouldSendWalkingPadDiagnosticStart(
+            hasFreshReport: true,
+            reportedState: 1,
+            reportedSpeedRawTenths: 8
+        )
+
+        XCTAssertFalse(decision)
+    }
 }

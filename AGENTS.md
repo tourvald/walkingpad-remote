@@ -30,6 +30,7 @@
   - because macOS/CoreBluetooth can connect to KS-F0 but may receive zero FE01 notifications, the iPhone app Debug `Training Logs` card can run the same controlled stop experiments using the already-working iOS FE01 stream
   - variants remain fixed whitelist only: `speed-zero-only` sends exactly `F7 A2 01 00 A3 FD`; `toggle-only` sends exactly `F7 A2 04 01 A7 FD`
   - UI must require explicit no-load/operator/power-switch confirmation, fresh low moving FE01 baseline, and must log `observer_mode=stop_experiment` rows for `tools/analyze_training_log.py`
+  - imperial no-load Debug Test Run start should decide `START` from fresh FE01 only: fresh moving FE01 skips `START`, but missing/stale FE01 must not let stale `deviceTargetSpeedKmh` suppress `START`
   - this is still diagnostic-only: no arbitrary raw packet, no `F7 A2 03 07 AC FD`, no unit writes, no service-menu writes, no firmware/OTA, and no loaded experiments
 - iOS raw TrainingLogs pull helper (2026-06-29):
   - `scripts/pull_ios_training_logs.sh --device <device-id> [--out-dir /tmp/path]` copies `Library/Application Support/TrainingLogs` from the `sw.WalkingPadRemote` app data container using `devicectl`

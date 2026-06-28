@@ -100,6 +100,19 @@ enum TreadmillTestRunPlanService {
         )
     }
 
+    static func shouldSendWalkingPadDiagnosticStart(
+        hasFreshReport: Bool,
+        reportedState: Int,
+        reportedSpeedRawTenths: Int
+    ) -> Bool {
+        guard hasFreshReport else {
+            return true
+        }
+
+        let reportShowsMoving = reportedState == 1 || reportedSpeedRawTenths > 0
+        return !reportShowsMoving
+    }
+
     private static func phase(
         elapsedSeconds: Int,
         configuration: Configuration

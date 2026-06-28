@@ -3356,7 +3356,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         deviceTargetSpeedKmh = snapshot.targetSpeedKmh
         recordSpeedChange(from: old, to: snapshot.targetSpeedKmh, reason: "treadmill_test_run")
         lastCommandLine = "CMD test native raw=\(snapshot.targetSpeedRawTenths)"
-        let shouldSendStart = treadmillActualSpeedKmh <= 0.2 && old <= 0.1
+        let speedSnapshot = currentTreadmillSpeedSnapshot()
+        let shouldSendStart = TreadmillTestRunPlanService.shouldSendWalkingPadDiagnosticStart(
+            hasFreshReport: speedSnapshot.hasFreshReport,
+            reportedState: deviceReportedState,
+            reportedSpeedRawTenths: deviceReportedSpeedRawTenths
+        )
+        appendLog(
+            "Diagnostic start decision: start=\(shouldSendStart) fresh=\(speedSnapshot.hasFreshReport) state=\(deviceReportedState) speedRaw=\(deviceReportedSpeedRawTenths) previousTarget=\(String(format: "%.1f", old))"
+        )
 
         if !manualModeSet {
             writeCommand(buildCmdPacket(cmd: 0x02, value: 0x01), label: "MODE MANUAL")
