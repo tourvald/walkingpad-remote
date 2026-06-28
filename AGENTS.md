@@ -11,6 +11,11 @@
 - Why there can be multiple `python ... mcp_xcode_server.py` processes: MCP transport is typically stdio-per-client; each Codex session/thread may spawn its own server process.
 
 ## Recent Decisions
+- WalkingPad protocol knowledge base (2026-06-28):
+  - normalized protocol research lives in `docs/walkingpad_protocol/` and should be treated as the working source of truth
+  - raw reports under `docs/research/` remain historical research dumps, not the primary decision surface
+  - risky protocol actions must carry an explicit status (`allowed`, `diagnostic-only`, `forbidden`, or `unknown`)
+  - keep units, stop-forensics, firmware/OTA, FTMS, and KS-F0 local observations separated by topic
 - Imperial units diagnostic MVP (2026-06-28):
   - affected WalkingPad controllers can report `queryParams.unit=1` (`imperial`)
   - HR-control remains blocked for imperial/unknown units until physical speed semantics are proven
