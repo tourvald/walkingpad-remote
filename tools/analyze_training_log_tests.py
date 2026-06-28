@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import unittest
 
-from analyze_training_log import Row, collect_diagnostic_observations
+from analyze_training_log import Row, collect_diagnostic_observations, collect_stop_experiment_reports
 
 
 class DiagnosticObservationTests(unittest.TestCase):
@@ -112,6 +112,64 @@ class DiagnosticObservationTests(unittest.TestCase):
 
         self.assertEqual(observations[0].verdict, "physical_likely_mph")
         self.assertEqual(observations[0].external_distance_m, 81.0)
+
+
+class StopExperimentReportTests(unittest.TestCase):
+    def test_collect_stop_experiment_report_from_cli_csv_rows(self):
+        rows = [
+            Row(
+                index=0,
+                ts_raw="2026-06-28T10:00:00Z",
+                t=0.0,
+                session="",
+                event="notify_fe01",
+                raw={},
+                data={
+                    "observer_mode": "stop_experiment",
+                    "experiment_id": "exp-1",
+                    "variant": "speed-zero-only",
+                    "command_packet_hex": "F7 A2 01 00 A3 FD",
+                    "writes_count": "0",
+                    "blocked_writes_count": "0",
+                    "speed_raw_tenths": "30",
+                    "baseline_speed_raw_tenths": "30",
+                    "confirmed_stop": "false",
+                    "outcome": "",
+                },
+            ),
+            Row(
+                index=1,
+                ts_raw="2026-06-28T10:01:00Z",
+                t=60.0,
+                session="",
+                event="summary",
+                raw={},
+                data={
+                    "observer_mode": "stop_experiment",
+                    "experiment_id": "exp-1",
+                    "variant": "speed-zero-only",
+                    "command_packet_hex": "F7 A2 01 00 A3 FD",
+                    "writes_count": "1",
+                    "blocked_writes_count": "0",
+                    "speed_raw_tenths": "8",
+                    "baseline_speed_raw_tenths": "30",
+                    "confirmed_stop": "false",
+                    "outcome": "DECELERATED_BUT_NOT_ZERO",
+                },
+            ),
+        ]
+
+        reports = collect_stop_experiment_reports(rows)
+
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].experiment_id, "exp-1")
+        self.assertEqual(reports[0].variant, "speed-zero-only")
+        self.assertEqual(reports[0].command_packet_hex, "F7 A2 01 00 A3 FD")
+        self.assertEqual(reports[0].writes_count, 1)
+        self.assertEqual(reports[0].blocked_writes_count, 0)
+        self.assertEqual(reports[0].baseline_speed_raw_tenths, 30.0)
+        self.assertEqual(reports[0].final_speed_raw_tenths, 8.0)
+        self.assertEqual(reports[0].outcome, "DECELERATED_BUT_NOT_ZERO")
 
 
 if __name__ == "__main__":

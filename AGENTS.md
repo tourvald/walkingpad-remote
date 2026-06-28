@@ -21,6 +21,11 @@
   - this mode subscribes to FE01, writes parsed/raw notification rows to CSV, prints `writes_count` / `blocked_writes_count`, and installs a write guard that raises on accidental BLE writes
   - use it before any stop recovery write experiment to determine whether the controller sees physical remote Start/Stop via the FE01 `button` field
   - do not use `scan_ble.py raw`, `scan_ble.py seq`, `F7 A2 03 07 AC FD`, `setUnit`, service-menu writes, or firmware/OTA for this observation
+- Stop experiment runner CLI (2026-06-28):
+  - `python3 scan_ble.py stop-experiment --variant speed-zero-only --name KS-F0 --duration 60 --csv /tmp/stop_experiment_A.csv --confirm-no-load --confirm-power-switch-ready --confirm-operator-present` is the approved first no-load controlled write test
+  - variants are fixed whitelist only: `speed-zero-only` sends exactly `F7 A2 01 00 A3 FD`; `toggle-only` sends exactly `F7 A2 04 01 A7 FD`
+  - runner must refuse without all three confirmations, require fresh low moving FE01 baseline, and log a CSV Stop Experiment Report readable by `tools/analyze_training_log.py`
+  - no arbitrary hex, `raw`, `seq`, `F7 A2 03 07 AC FD`, `setUnit`, service-menu writes, firmware/OTA, or loaded treadmill experiments in this mode
 - Imperial units diagnostic MVP (2026-06-28):
   - affected WalkingPad controllers can report `queryParams.unit=1` (`imperial`)
   - HR-control remains blocked for imperial/unknown units until physical speed semantics are proven

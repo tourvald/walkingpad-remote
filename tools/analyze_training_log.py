@@ -178,6 +178,21 @@ class StopTimelineReport:
 
 
 @dataclass
+class StopExperimentReport:
+    experiment_id: str
+    variant: str
+    command_packet_hex: str
+    outcome: str
+    writes_count: int
+    blocked_writes_count: int
+    notifications_count: int
+    confirmed_stop: bool
+    baseline_speed_raw_tenths: float | None
+    final_speed_raw_tenths: float | None
+    latest_ts: str
+
+
+@dataclass
 class GapReport:
     session: str
     ts_raw: str
@@ -442,6 +457,38 @@ def collect_stop_timeline_reports(rows: list[Row]) -> list[StopTimelineReport]:
     return reports
 
 
+def collect_stop_experiment_reports(rows: list[Row]) -> list[StopExperimentReport]:
+    grouped: dict[str, list[Row]] = {}
+    for row in rows:
+        if str(row.get("observer_mode") or "").strip() != "stop_experiment":
+            continue
+        experiment_id = str(row.get("experiment_id") or "").strip() or "unknown"
+        grouped.setdefault(experiment_id, []).append(row)
+
+    reports: list[StopExperimentReport] = []
+    for experiment_id, experiment_rows in grouped.items():
+        ordered = sorted(experiment_rows, key=lambda row: (row.t if row.t is not None else float("inf"), row.index))
+        summary = next((row for row in reversed(ordered) if str(row.get("event") or "") == "summary"), ordered[-1])
+        writes_count = int(_to_float(summary.get("writes_count")) or 0)
+        blocked_writes_count = int(_to_float(summary.get("blocked_writes_count")) or 0)
+        reports.append(
+            StopExperimentReport(
+                experiment_id=experiment_id,
+                variant=str(summary.get("variant") or ""),
+                command_packet_hex=str(summary.get("command_packet_hex") or ""),
+                outcome=str(summary.get("outcome") or ""),
+                writes_count=writes_count,
+                blocked_writes_count=blocked_writes_count,
+                notifications_count=sum(1 for row in ordered if str(row.get("event") or "") == "notify_fe01"),
+                confirmed_stop=_to_bool(summary.get("confirmed_stop")),
+                baseline_speed_raw_tenths=summary._num("baseline_speed_raw_tenths"),
+                final_speed_raw_tenths=summary._num("speed_raw_tenths"),
+                latest_ts=summary.ts_raw,
+            )
+        )
+    return reports
+
+
 def _is_stop_timeline_row(row: Row) -> bool:
     event = row.event
     if event in {"stop_attempt_started", "stop_command_attempt", "stop_verification", "stop_forensic_snapshot"}:
@@ -558,6 +605,7 @@ def print_text(
     diagnostics: list[DiagnosticObservation],
     imperial_training: list[ImperialTrainingProjectionObservation],
     stop_reports: list[StopTimelineReport],
+    stop_experiments: list[StopExperimentReport],
     near_seconds: float,
 ) -> None:
     sessions = sorted({r.session for r in rows if r.session})
@@ -648,6 +696,23 @@ def print_text(
         print("  none")
     print()
 
+    print("stop experiment reports:")
+    if stop_experiments:
+        for report in stop_experiments:
+            print(
+                "  "
+                f"id={report.experiment_id} variant={report.variant} "
+                f"packet={report.command_packet_hex or '—'} "
+                f"writes={report.writes_count} blocked={report.blocked_writes_count} "
+                f"notifications={report.notifications_count} "
+                f"baseline_raw={_fmt(report.baseline_speed_raw_tenths)} "
+                f"final_raw={_fmt(report.final_speed_raw_tenths)} "
+                f"confirmed_stop={report.confirmed_stop} outcome={report.outcome or '—'}"
+            )
+    else:
+        print("  none")
+    print()
+
     for n, g in enumerate(reports, 1):
         print(f"[gap {n}] session={g.session or '—'}  at {g.ts_raw or '—'}")
         bg = f"true (bg {_fmt(g.background_s, 's')})" if g.was_backgrounded else "false"
@@ -668,7 +733,10 @@ def print_text(
             print(f"  … {len(scene) - 12} more")
         print()
 
-    print(verdict_line(reports, backgroundings))
+    if stop_experiments and not reports:
+        print("QA VERDICT: STOP-EXPERIMENT — runtime_gap analysis not applicable.")
+    else:
+        print(verdict_line(reports, backgroundings))
 
 
 def verdict_line(reports: list[GapReport], backgroundings: int) -> str:
@@ -694,11 +762,14 @@ def to_json(
     diagnostics: list[DiagnosticObservation],
     imperial_training: list[ImperialTrainingProjectionObservation],
     stop_reports: list[StopTimelineReport],
+    stop_experiments: list[StopExperimentReport],
 ) -> dict:
     impacted = [g for g in reports if g.belt_impacted]
     backgroundings = count_backgroundings(scene)
     if reports:
         status = "FAIL" if impacted else "PASS"
+    elif stop_experiments:
+        status = "STOP-EXPERIMENT"
     elif backgroundings > 0:
         status = "NO-STALL"
     else:
@@ -779,6 +850,22 @@ def to_json(
             }
             for report in stop_reports
         ],
+        "stop_experiment_reports": [
+            {
+                "experiment_id": report.experiment_id,
+                "variant": report.variant,
+                "command_packet_hex": report.command_packet_hex,
+                "outcome": report.outcome,
+                "writes_count": report.writes_count,
+                "blocked_writes_count": report.blocked_writes_count,
+                "notifications_count": report.notifications_count,
+                "confirmed_stop": report.confirmed_stop,
+                "baseline_speed_raw_tenths": report.baseline_speed_raw_tenths,
+                "final_speed_raw_tenths": report.final_speed_raw_tenths,
+                "latest_ts": report.latest_ts,
+            }
+            for report in stop_experiments
+        ],
         "backgrounded": sum(1 for g in reports if g.was_backgrounded),
         "total_gap_s": round(sum(g.gap_s for g in reports), 1),
         "max_gap_s": round(max((g.gap_s for g in reports), default=0.0), 1),
@@ -823,15 +910,44 @@ def main() -> int:
     diagnostics = collect_diagnostic_observations(rows)
     imperial_training = collect_imperial_training_projection_observations(rows)
     stop_reports = collect_stop_timeline_reports(rows)
+    stop_experiments = collect_stop_experiment_reports(rows)
 
     if args.json:
-        print(json.dumps(to_json(args.csv_path, rows, reports, scene, units, diagnostics, imperial_training, stop_reports), indent=2))
+        print(
+            json.dumps(
+                to_json(
+                    args.csv_path,
+                    rows,
+                    reports,
+                    scene,
+                    units,
+                    diagnostics,
+                    imperial_training,
+                    stop_reports,
+                    stop_experiments,
+                ),
+                indent=2,
+            )
+        )
     else:
-        print_text(args.csv_path, rows, reports, scene, units, diagnostics, imperial_training, stop_reports, args.near_seconds)
+        print_text(
+            args.csv_path,
+            rows,
+            reports,
+            scene,
+            units,
+            diagnostics,
+            imperial_training,
+            stop_reports,
+            stop_experiments,
+            args.near_seconds,
+        )
 
     # Exit code: 0 = PASS / NO-STALL, 1 = FAIL (belt impact), 3 = NO-GAP. Handy for CI/automation.
     if reports:
         return 1 if any(g.belt_impacted for g in reports) else 0
+    if stop_experiments:
+        return 0
     return 0 if count_backgroundings(scene) > 0 else 3
 
 

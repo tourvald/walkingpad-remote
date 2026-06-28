@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import csv
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import time
 import uuid
@@ -29,6 +30,21 @@ SVC_FFC0 = "f000ffc0-0451-4000-b000-000000000000"
 CHAR_FFC1 = "f000ffc1-0451-4000-b000-000000000000"
 CHAR_FFC2 = "f000ffc2-0451-4000-b000-000000000000"
 PASSIVE_OBSERVER_MODE = "passive_fe01_observer"
+STOP_EXPERIMENT_MODE = "stop_experiment"
+STOP_EXPERIMENT_BASELINE_FRESHNESS_SECONDS = 2.0
+STOP_EXPERIMENT_MAX_BASELINE_SPEED_RAW_TENTHS = 40
+STOP_EXPERIMENT_ACCELERATION_MARGIN_RAW_TENTHS = 2
+STOP_EXPERIMENT_STOPPED_STATES = {0, 2, 5, 7, 9}
+STOP_EXPERIMENT_VARIANTS = {
+    "speed-zero-only": {
+        "label": "SPEED ZERO ONLY",
+        "packet": bytes.fromhex("F7 A2 01 00 A3 FD"),
+    },
+    "toggle-only": {
+        "label": "START/STOP TOGGLE ONLY",
+        "packet": bytes.fromhex("F7 A2 04 01 A7 FD"),
+    },
+}
 OBSERVE_FE01_CSV_FIELDS = [
     "ts",
     "elapsed_s",
@@ -51,6 +67,26 @@ OBSERVE_FE01_CSV_FIELDS = [
     "observer_mode",
     "writes_count",
 ]
+STOP_EXPERIMENT_CSV_FIELDS = OBSERVE_FE01_CSV_FIELDS + [
+    "experiment_id",
+    "variant",
+    "event",
+    "command_label",
+    "command_packet_hex",
+    "baseline_speed_raw_tenths",
+    "baseline_state",
+    "freshness_s",
+    "confirmed_stop",
+    "outcome",
+    "blocked_writes_count",
+]
+
+
+@dataclass(frozen=True)
+class StopExperimentPlan:
+    variant: str
+    label: str
+    packets: tuple[bytes, ...]
 
 
 def _hex(data: bytes) -> str:
@@ -183,6 +219,163 @@ class PassiveWriteGuard:
             raise RuntimeError("Passive FE01 observer forbids BLE writes")
 
         client.write_gatt_char = blocked_write_gatt_char
+
+
+class WhitelistedWriteGuard:
+    def __init__(self, allowed_packets: set[bytes]) -> None:
+        self.allowed_packets = {bytes(packet) for packet in allowed_packets}
+        self.writes_count = 0
+        self.blocked_writes_count = 0
+
+    def install(self, client) -> None:
+        original_write = client.write_gatt_char
+
+        async def guarded_write_gatt_char(char_uuid, data, *args, **kwargs):
+            packet = bytes(data)
+            if char_uuid != CHAR_WRITE_FE02 or packet not in self.allowed_packets:
+                self.blocked_writes_count += 1
+                print(f"[STOP EXPERIMENT GUARD] blocked unexpected write {char_uuid} <= {_hex(packet)}")
+                raise RuntimeError("Stop experiment runner allows only its whitelisted packet")
+            self.writes_count += 1
+            return await original_write(char_uuid, packet, *args, **kwargs)
+
+        client.write_gatt_char = guarded_write_gatt_char
+
+
+def _stop_experiment_variant_plan(variant: str) -> StopExperimentPlan:
+    config = STOP_EXPERIMENT_VARIANTS.get(variant)
+    if not config:
+        raise ValueError(f"Unknown stop experiment variant: {variant}")
+    return StopExperimentPlan(
+        variant=variant,
+        label=str(config["label"]),
+        packets=(bytes(config["packet"]),),
+    )
+
+
+def _missing_stop_experiment_confirmations(
+    confirm_no_load: bool,
+    confirm_power_switch_ready: bool,
+    confirm_operator_present: bool,
+) -> list[str]:
+    missing = []
+    if not confirm_no_load:
+        missing.append("--confirm-no-load")
+    if not confirm_power_switch_ready:
+        missing.append("--confirm-power-switch-ready")
+    if not confirm_operator_present:
+        missing.append("--confirm-operator-present")
+    return missing
+
+
+def _int_or_none(value) -> Optional[int]:
+    if value == "" or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stop_experiment_baseline_error(parsed: dict, freshness_s: float) -> Optional[str]:
+    if not parsed.get("parse_ok") or not parsed.get("checksum_ok"):
+        return "invalid_fe01"
+    if freshness_s > STOP_EXPERIMENT_BASELINE_FRESHNESS_SECONDS:
+        return "stale_baseline"
+    speed = _int_or_none(parsed.get("speed_raw_tenths"))
+    if speed is None:
+        return "invalid_speed"
+    if speed <= 0:
+        return "stopped_baseline"
+    if speed > STOP_EXPERIMENT_MAX_BASELINE_SPEED_RAW_TENTHS:
+        return "high_speed_baseline"
+    return None
+
+
+def _is_stop_confirmed(parsed: dict) -> bool:
+    speed = _int_or_none(parsed.get("speed_raw_tenths"))
+    state = _int_or_none(parsed.get("state"))
+    return (
+        bool(parsed.get("parse_ok"))
+        and bool(parsed.get("checksum_ok"))
+        and speed == 0
+        and state in STOP_EXPERIMENT_STOPPED_STATES
+    )
+
+
+def _classify_stop_experiment_outcome(
+    baseline_speed_raw_tenths: int,
+    latest_after_command: Optional[dict],
+    latest_freshness_s: float,
+    max_after_command_speed_raw_tenths: Optional[int],
+) -> str:
+    if latest_after_command is None or latest_freshness_s > STOP_EXPERIMENT_BASELINE_FRESHNESS_SECONDS:
+        return "NO_FRESH_FE01"
+
+    if (
+        max_after_command_speed_raw_tenths is not None
+        and max_after_command_speed_raw_tenths
+        > baseline_speed_raw_tenths + STOP_EXPERIMENT_ACCELERATION_MARGIN_RAW_TENTHS
+    ):
+        return "COMMAND_CAUSED_ACCELERATION"
+
+    if _is_stop_confirmed(latest_after_command):
+        return "STOP_CONFIRMED"
+
+    latest_speed = _int_or_none(latest_after_command.get("speed_raw_tenths"))
+    if latest_speed is not None and 0 < latest_speed < baseline_speed_raw_tenths:
+        return "DECELERATED_BUT_NOT_ZERO"
+
+    return "STATE_STILL_RUNNING"
+
+
+def _make_stop_experiment_row(
+    data: bytes,
+    ts: str,
+    elapsed_s: float,
+    experiment_id: str,
+    device_name: str,
+    device_address: str,
+    notification_index: int,
+    gap_since_previous_s: Optional[float],
+    writes_count: int,
+    blocked_writes_count: int,
+    plan: StopExperimentPlan,
+    event: str,
+    baseline_speed_raw_tenths: Optional[int],
+    baseline_state: Optional[int],
+    freshness_s: Optional[float],
+    confirmed_stop: bool,
+    outcome: str,
+) -> dict:
+    row = _make_fe01_observation_row(
+        data=data,
+        ts=ts,
+        elapsed_s=elapsed_s,
+        observation_id=experiment_id,
+        device_name=device_name,
+        device_address=device_address,
+        notification_index=notification_index,
+        gap_since_previous_s=gap_since_previous_s,
+        writes_count=writes_count,
+    )
+    row["observer_mode"] = STOP_EXPERIMENT_MODE
+    row.update(
+        {
+            "experiment_id": experiment_id,
+            "variant": plan.variant,
+            "event": event,
+            "command_label": plan.label,
+            "command_packet_hex": _hex(plan.packets[0]),
+            "baseline_speed_raw_tenths": "" if baseline_speed_raw_tenths is None else baseline_speed_raw_tenths,
+            "baseline_state": "" if baseline_state is None else baseline_state,
+            "freshness_s": "" if freshness_s is None else round(freshness_s, 3),
+            "confirmed_stop": confirmed_stop,
+            "outcome": outcome,
+            "blocked_writes_count": blocked_writes_count,
+        }
+    )
+    return row
 
 
 def _parse_status(data: bytes) -> Optional[dict]:
@@ -413,6 +606,321 @@ async def observe_fe01(
     print(f"observation_id={observation_id}")
 
 
+async def stop_experiment(
+    address: Optional[str],
+    variant: str,
+    duration: float,
+    name_filter: Optional[str],
+    csv_path: str,
+    confirm_no_load: bool,
+    confirm_power_switch_ready: bool,
+    confirm_operator_present: bool,
+    dry_run_sample: bool,
+    baseline_timeout: float,
+) -> None:
+    missing = _missing_stop_experiment_confirmations(
+        confirm_no_load=confirm_no_load,
+        confirm_power_switch_ready=confirm_power_switch_ready,
+        confirm_operator_present=confirm_operator_present,
+    )
+    if missing:
+        raise RuntimeError(f"Stop experiment refused: missing safety confirmations: {', '.join(missing)}")
+
+    plan = _stop_experiment_variant_plan(variant)
+    experiment_id = str(uuid.uuid4())
+
+    if dry_run_sample:
+        baseline = _build_sample_fe01_frame(state=1, speed_raw_tenths=30, mode=1, app_speed_raw_tenths=30)
+        after = _build_sample_fe01_frame(state=1, speed_raw_tenths=8, mode=1, app_speed_raw_tenths=0)
+        latest_after = _parse_fe01_observation(after)
+        outcome = _classify_stop_experiment_outcome(
+            baseline_speed_raw_tenths=30,
+            latest_after_command=latest_after,
+            latest_freshness_s=0.1,
+            max_after_command_speed_raw_tenths=30,
+        )
+        with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=STOP_EXPERIMENT_CSV_FIELDS)
+            writer.writeheader()
+            writer.writerow(
+                _make_stop_experiment_row(
+                    data=baseline,
+                    ts=_utc_now_iso(),
+                    elapsed_s=0.0,
+                    experiment_id=experiment_id,
+                    device_name=name_filter or "dry-run",
+                    device_address=address or "dry-run",
+                    notification_index=1,
+                    gap_since_previous_s=None,
+                    writes_count=0,
+                    blocked_writes_count=0,
+                    plan=plan,
+                    event="notify_fe01",
+                    baseline_speed_raw_tenths=30,
+                    baseline_state=1,
+                    freshness_s=0.0,
+                    confirmed_stop=False,
+                    outcome="",
+                )
+            )
+            writer.writerow(
+                _make_stop_experiment_row(
+                    data=baseline,
+                    ts=_utc_now_iso(),
+                    elapsed_s=0.05,
+                    experiment_id=experiment_id,
+                    device_name=name_filter or "dry-run",
+                    device_address=address or "dry-run",
+                    notification_index=1,
+                    gap_since_previous_s=None,
+                    writes_count=1,
+                    blocked_writes_count=0,
+                    plan=plan,
+                    event="command_sent",
+                    baseline_speed_raw_tenths=30,
+                    baseline_state=1,
+                    freshness_s=0.0,
+                    confirmed_stop=False,
+                    outcome="",
+                )
+            )
+            writer.writerow(
+                _make_stop_experiment_row(
+                    data=after,
+                    ts=_utc_now_iso(),
+                    elapsed_s=0.1,
+                    experiment_id=experiment_id,
+                    device_name=name_filter or "dry-run",
+                    device_address=address or "dry-run",
+                    notification_index=2,
+                    gap_since_previous_s=0.1,
+                    writes_count=1,
+                    blocked_writes_count=0,
+                    plan=plan,
+                    event="notify_fe01",
+                    baseline_speed_raw_tenths=30,
+                    baseline_state=1,
+                    freshness_s=0.0,
+                    confirmed_stop=False,
+                    outcome="",
+                )
+            )
+            writer.writerow(
+                _make_stop_experiment_row(
+                    data=after,
+                    ts=_utc_now_iso(),
+                    elapsed_s=duration,
+                    experiment_id=experiment_id,
+                    device_name=name_filter or "dry-run",
+                    device_address=address or "dry-run",
+                    notification_index=2,
+                    gap_since_previous_s=None,
+                    writes_count=1,
+                    blocked_writes_count=0,
+                    plan=plan,
+                    event="summary",
+                    baseline_speed_raw_tenths=30,
+                    baseline_state=1,
+                    freshness_s=0.1,
+                    confirmed_stop=_is_stop_confirmed(latest_after),
+                    outcome=outcome,
+                )
+            )
+        print(f"mode={STOP_EXPERIMENT_MODE}")
+        print(f"dry_run_sample=true")
+        print(f"variant={plan.variant}")
+        print(f"command_packet={_hex(plan.packets[0])}")
+        print(f"csv_path={csv_path}")
+        print("writes_count=1")
+        print("blocked_writes_count=0")
+        print("notifications_count=2")
+        print(f"outcome={outcome}")
+        print(f"experiment_id={experiment_id}")
+        return
+
+    resolved, resolved_name = await _resolve_device(address, name_filter)
+    device_name = resolved_name or name_filter or ""
+    guard = WhitelistedWriteGuard(set(plan.packets))
+    notifications_count = 0
+    previous_monotonic: Optional[float] = None
+    latest_data: Optional[bytes] = None
+    latest_parsed: Optional[dict] = None
+    latest_monotonic: Optional[float] = None
+    latest_after_command: Optional[dict] = None
+    latest_after_command_monotonic: Optional[float] = None
+    max_after_command_speed: Optional[int] = None
+    baseline_data: Optional[bytes] = None
+    baseline_parsed: Optional[dict] = None
+    command_sent = False
+    started_monotonic = time.monotonic()
+
+    print("Using address:", resolved)
+    print(f"Stop experiment id: {experiment_id}")
+    print(f"Variant: {plan.variant}")
+    print("Safety: no-load confirmed, power switch ready, operator present.")
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=STOP_EXPERIMENT_CSV_FIELDS)
+        writer.writeheader()
+
+        def write_row(data: bytes, event: str, outcome: str = "") -> None:
+            nonlocal notifications_count
+            now = time.monotonic()
+            parsed = _parse_fe01_observation(data)
+            baseline_speed = _int_or_none(baseline_parsed.get("speed_raw_tenths")) if baseline_parsed else None
+            baseline_state = _int_or_none(baseline_parsed.get("state")) if baseline_parsed else None
+            freshness = None if latest_monotonic is None else now - latest_monotonic
+            row = _make_stop_experiment_row(
+                data=data,
+                ts=_utc_now_iso(),
+                elapsed_s=now - started_monotonic,
+                experiment_id=experiment_id,
+                device_name=device_name,
+                device_address=resolved,
+                notification_index=notifications_count,
+                gap_since_previous_s=None if previous_monotonic is None else now - previous_monotonic,
+                writes_count=guard.writes_count,
+                blocked_writes_count=guard.blocked_writes_count,
+                plan=plan,
+                event=event,
+                baseline_speed_raw_tenths=baseline_speed,
+                baseline_state=baseline_state,
+                freshness_s=freshness,
+                confirmed_stop=_is_stop_confirmed(parsed),
+                outcome=outcome,
+            )
+            writer.writerow(row)
+            handle.flush()
+
+        def on_notify(sender: int, data: bytearray) -> None:
+            nonlocal notifications_count, previous_monotonic, latest_data, latest_parsed, latest_monotonic
+            nonlocal latest_after_command, latest_after_command_monotonic, max_after_command_speed
+            now = time.monotonic()
+            notifications_count += 1
+            latest_data = bytes(data)
+            latest_parsed = _parse_fe01_observation(latest_data)
+            latest_monotonic = now
+            if command_sent:
+                latest_after_command = latest_parsed
+                latest_after_command_monotonic = now
+                speed = _int_or_none(latest_parsed.get("speed_raw_tenths"))
+                if speed is not None:
+                    max_after_command_speed = speed if max_after_command_speed is None else max(max_after_command_speed, speed)
+
+            gap = None if previous_monotonic is None else now - previous_monotonic
+            previous_monotonic = now
+            baseline_speed = _int_or_none(baseline_parsed.get("speed_raw_tenths")) if baseline_parsed else None
+            baseline_state = _int_or_none(baseline_parsed.get("state")) if baseline_parsed else None
+            freshness = 0.0
+            row = _make_stop_experiment_row(
+                data=latest_data,
+                ts=_utc_now_iso(),
+                elapsed_s=now - started_monotonic,
+                experiment_id=experiment_id,
+                device_name=device_name,
+                device_address=resolved,
+                notification_index=notifications_count,
+                gap_since_previous_s=gap,
+                writes_count=guard.writes_count,
+                blocked_writes_count=guard.blocked_writes_count,
+                plan=plan,
+                event="notify_fe01",
+                baseline_speed_raw_tenths=baseline_speed,
+                baseline_state=baseline_state,
+                freshness_s=freshness,
+                confirmed_stop=_is_stop_confirmed(latest_parsed),
+                outcome="",
+            )
+            writer.writerow(row)
+            handle.flush()
+            print(
+                "[STOP EXPERIMENT] "
+                f"#{notifications_count} state={row['state']} "
+                f"speed_raw={row['speed_raw_tenths']} "
+                f"app_raw={row['app_speed_raw_tenths']} "
+                f"mode={row['mode']} button={row['button']} "
+                f"writes={guard.writes_count} checksum={row['checksum_ok']}"
+            )
+
+        async with BleakClient(resolved) as client:
+            print("Connected:", client.is_connected)
+            guard.install(client)
+            await client.start_notify(CHAR_NOTIFY_FE01, on_notify)
+
+            baseline_deadline = time.monotonic() + baseline_timeout
+            baseline_error = "NO_FRESH_FE01"
+            while time.monotonic() < baseline_deadline:
+                if latest_parsed is not None and latest_monotonic is not None:
+                    freshness = time.monotonic() - latest_monotonic
+                    baseline_error = _stop_experiment_baseline_error(latest_parsed, freshness)
+                    if baseline_error is None:
+                        baseline_data = latest_data
+                        baseline_parsed = dict(latest_parsed)
+                        write_row(baseline_data or latest_data or _build_sample_fe01_frame(), "baseline_ready")
+                        break
+                await asyncio.sleep(0.1)
+
+            if baseline_parsed is None:
+                fallback = latest_data or _build_sample_fe01_frame()
+                write_row(fallback, "summary", "NO_FRESH_FE01")
+                await client.stop_notify(CHAR_NOTIFY_FE01)
+                print(f"mode={STOP_EXPERIMENT_MODE}")
+                print(f"variant={plan.variant}")
+                print(f"command_packet={_hex(plan.packets[0])}")
+                print(f"csv_path={csv_path}")
+                print(f"writes_count={guard.writes_count}")
+                print(f"blocked_writes_count={guard.blocked_writes_count}")
+                print(f"notifications_count={notifications_count}")
+                print("outcome=NO_FRESH_FE01")
+                print(f"baseline_error={baseline_error}")
+                print(f"experiment_id={experiment_id}")
+                return
+
+            await client.write_gatt_char(CHAR_WRITE_FE02, plan.packets[0], response=False)
+            command_sent = True
+            write_row(baseline_data or latest_data or _build_sample_fe01_frame(), "command_sent")
+            print(f"[STOP EXPERIMENT WRITE] FE02 <= {_hex(plan.packets[0])}")
+
+            observe_deadline = time.monotonic() + duration
+            baseline_speed = _int_or_none(baseline_parsed.get("speed_raw_tenths")) or 0
+            while time.monotonic() < observe_deadline:
+                if (
+                    plan.variant == "toggle-only"
+                    and max_after_command_speed is not None
+                    and max_after_command_speed > baseline_speed + STOP_EXPERIMENT_ACCELERATION_MARGIN_RAW_TENTHS
+                ):
+                    print("[STOP EXPERIMENT] aborting observation: command caused acceleration")
+                    break
+                await asyncio.sleep(0.2)
+
+            latest_freshness = (
+                STOP_EXPERIMENT_BASELINE_FRESHNESS_SECONDS + 1.0
+                if latest_after_command_monotonic is None
+                else time.monotonic() - latest_after_command_monotonic
+            )
+            outcome = _classify_stop_experiment_outcome(
+                baseline_speed_raw_tenths=baseline_speed,
+                latest_after_command=latest_after_command,
+                latest_freshness_s=latest_freshness,
+                max_after_command_speed_raw_tenths=max_after_command_speed,
+            )
+            summary_data = latest_data or baseline_data or _build_sample_fe01_frame()
+            write_row(summary_data, "summary", outcome)
+            await client.stop_notify(CHAR_NOTIFY_FE01)
+
+    print(f"mode={STOP_EXPERIMENT_MODE}")
+    print(f"variant={plan.variant}")
+    print(f"command_packet={_hex(plan.packets[0])}")
+    print(f"csv_path={csv_path}")
+    print(f"device_name={device_name}")
+    print(f"device_address={resolved}")
+    print(f"writes_count={guard.writes_count}")
+    print(f"blocked_writes_count={guard.blocked_writes_count}")
+    print(f"notifications_count={notifications_count}")
+    print(f"outcome={outcome}")
+    print(f"experiment_id={experiment_id}")
+
+
 async def write_hex(address: Optional[str], hex_payload: str, name_filter: Optional[str]) -> None:
     payload = bytes.fromhex(hex_payload)
     resolved = await _resolve_address(address, name_filter)
@@ -587,6 +1095,21 @@ def main() -> None:
     p_observe.add_argument("--csv", required=True, dest="csv_path")
     p_observe.add_argument("--dry-run-sample", action="store_true")
 
+    p_stop_exp = sub.add_parser(
+        "stop-experiment",
+        help="Run a whitelisted no-load stop experiment with FE01 CSV timeline",
+    )
+    p_stop_exp.add_argument("address", type=str, nargs="?")
+    p_stop_exp.add_argument("--variant", choices=sorted(STOP_EXPERIMENT_VARIANTS), required=True)
+    p_stop_exp.add_argument("--duration", type=float, default=60.0)
+    p_stop_exp.add_argument("--baseline-timeout", type=float, default=20.0)
+    p_stop_exp.add_argument("--name", type=str, default=None)
+    p_stop_exp.add_argument("--csv", required=True, dest="csv_path")
+    p_stop_exp.add_argument("--confirm-no-load", action="store_true")
+    p_stop_exp.add_argument("--confirm-power-switch-ready", action="store_true")
+    p_stop_exp.add_argument("--confirm-operator-present", action="store_true")
+    p_stop_exp.add_argument("--dry-run-sample", action="store_true")
+
     p_write = sub.add_parser("write", help="Write hex payload to FE02")
     p_write.add_argument("address", type=str, nargs="?")
     p_write.add_argument("hex_payload", type=str)
@@ -633,6 +1156,28 @@ def main() -> None:
         asyncio.run(listen(args.address, args.duration, args.name))
     elif args.cmd == "observe-fe01":
         asyncio.run(observe_fe01(args.address, args.duration, args.name, args.csv_path, args.dry_run_sample))
+    elif args.cmd == "stop-experiment":
+        missing = _missing_stop_experiment_confirmations(
+            args.confirm_no_load,
+            args.confirm_power_switch_ready,
+            args.confirm_operator_present,
+        )
+        if missing:
+            parser.error(f"stop-experiment refused: missing safety confirmations: {', '.join(missing)}")
+        asyncio.run(
+            stop_experiment(
+                args.address,
+                args.variant,
+                args.duration,
+                args.name,
+                args.csv_path,
+                args.confirm_no_load,
+                args.confirm_power_switch_ready,
+                args.confirm_operator_present,
+                args.dry_run_sample,
+                args.baseline_timeout,
+            )
+        )
     elif args.cmd == "write":
         asyncio.run(write_hex(args.address, args.hex_payload, args.name))
     elif args.cmd == "dump":
