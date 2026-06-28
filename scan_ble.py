@@ -9,7 +9,13 @@ from typing import Optional
 
 try:
     from bleak import BleakClient, BleakScanner
-    from bleak.exc import BleakBluetoothNotAvailableError, BleakError
+    from bleak.exc import BleakError
+
+    try:
+        from bleak.exc import BleakBluetoothNotAvailableError
+    except ImportError:
+        class BleakBluetoothNotAvailableError(BleakError):
+            pass
 except ModuleNotFoundError:
     BleakClient = None
     BleakScanner = None
