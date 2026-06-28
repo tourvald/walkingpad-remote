@@ -5,7 +5,7 @@
 
 ## Where development is
 - **Branch:** `safety/units-gate-with-queryparams`
-- **Current local scope:** Imperial HR-control MVP on top of units safety / operator confirmation
+- **Current local scope:** P0/P1 Stop Forensics v2 + HR no-signal cleanup after imperial HR-control speed smoke
 - **Push status:** local only — not pushed to remote
 - **Repo:** `github.com/tourvald/walkingpad-remote` (canonical)
 
@@ -30,7 +30,7 @@
 ## Feature status
 | Feature | Status |
 |---|---|
-| Treadmill control + safe stop | ✅ Done |
+| Treadmill control + safe stop | 🟡 Stop forensics active on affected KS-F0 |
 | HR control + adaptive step / cooldown | ✅ Done |
 | HR sources (Watch / iPhone HealthKit) | ✅ Done |
 | Telemetry + export · Stats · Plank · profiles | ✅ Done |
@@ -46,7 +46,7 @@
 | Units safety gate (`queryParams.unit`) | ✅ Done |
 | Imperial no-load diagnostic Test Run | ✅ Done (operator-confirmed on affected pad) |
 | Operator physical semantics confirmation | ✅ Done |
-| Imperial HR-control MVP | 🟡 Implementation local / device QA pending |
+| Imperial HR-control MVP | 🟡 Speed smoke passed / stop risk unresolved |
 | C — recovery after kill | 📋 Planned (post-v1 — do not start) |
 
 ## Safety decisions (fixed)
@@ -72,6 +72,9 @@
 - App stop remains best-effort on the affected imperial treadmill. UI must keep
   the physical-stop warning visible; stop-forensics is a separate unresolved
   scope.
+- Stop Forensics v2 is observability-first: add stop-attempt timeline telemetry
+  and analyzer reports before changing stop command behavior. No new stop
+  command experiments are allowed without separate design approval.
 - Recovery after kill (C): reconnect + **safe stop** + log (resume is a later refinement).
 - Local-first: no cloud, no accounts.
 
@@ -88,7 +91,7 @@
 
 ## What blocks v1
 No hard blockers. What remains is **validation, not development**:
-1. imperial diagnostic Test Run on affected `unit=1` pad must confirm physical speed semantics
+1. stop-forensics round2 telemetry/analyzer must capture why affected KS-F0 does not confirm stop
 2. runtime_gap device QA (paused until units/imperial diagnostic path is validated)
 3. one clean uninterrupted locked run + one long session (30+ min)
 4. loss-of-HR-while-locked → safe-stop test
@@ -119,10 +122,13 @@ No hard blockers. What remains is **validation, not development**:
 7. After the test, the owner can record operator visual confirmation:
    `confirmedImperial`, `confirmedMetric`, or `unknown`. Confirmation applies
    only when the same peripheral and controller params fingerprint match.
-8. Imperial HR-control MVP QA must verify that the matching `confirmedImperial`
+8. Imperial HR-control speed smoke verified that the matching `confirmedImperial`
    treadmill requires session-only manual-stop acknowledgement, uses native mph
-   commands, and keeps physical-stop warning visible.
-9. If `stop_confirmed_ever=false`, keep that in the separate stop-forensics scope.
+   commands, caps physical target near `6.0 km/h`, and does not spam no-op BLE
+   commands.
+9. `stop_confirmed_ever=false` reproduced on the affected treadmill, so
+   stop-forensics round2 is now the active safety scope. See
+   `docs/ks-f0-stop-forensics-round2.md`.
 
 Runtime-gap QA remains useful, but is paused until the imperial diagnostic path is validated.
 

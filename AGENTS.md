@@ -34,6 +34,11 @@
   - raw resolution is `0.1 mph` (`~0.161 km/h`); projection must skip no-op speed writes when raw tenths do not change
   - telemetry/analyzer must keep both physical estimate and native command fields visible
   - app STOP remains best-effort on the affected treadmill; keep physical-stop warning visible and leave stop-forensics separate
+- Stop forensics round2 (2026-06-28):
+  - affected KS-F0 reproduced unconfirmed app stop after imperial HR-control smoke; speed control worked, but STOP/MODE STANDBY/STOP retry did not produce a fresh confirmed stopped state
+  - current scope is observability-first: stop-attempt id, command sequence, packet hex, queue before/after, FE01 before/after snapshots, scheduled 0.5/1.5/3/5/8/15/30s snapshots, raw FE01, raw speed/app speed, freshness, and analyzer Stop Timeline Report
+  - do not change stop command behavior, service-menu writes, firmware/OTA, unit switching, or replay unknown official-app writes without separate design approval
+  - no-HR start should be represented as `waiting_for_hr_signal` / `hr_control_waiting_for_hr`; cancel before first HR should log `workout_not_saved reason=no_hr_signal`
 - Public repo preparation (2026-03-10):
   - root project is published from the repository root
   - nested `ph4-walkingpad/.git` remains a separate upstream reference clone and is not part of the public root repo
