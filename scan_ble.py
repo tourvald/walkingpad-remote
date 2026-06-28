@@ -40,6 +40,7 @@ SVC_FFC0 = "f000ffc0-0451-4000-b000-000000000000"
 CHAR_FFC1 = "f000ffc1-0451-4000-b000-000000000000"
 CHAR_FFC2 = "f000ffc2-0451-4000-b000-000000000000"
 PASSIVE_OBSERVER_MODE = "passive_fe01_observer"
+PASSIVE_ALL_NOTIFY_MODE = "passive_all_notify_observer"
 STOP_EXPERIMENT_MODE = "stop_experiment"
 STOP_EXPERIMENT_BASELINE_FRESHNESS_SECONDS = 2.0
 STOP_EXPERIMENT_MAX_BASELINE_SPEED_RAW_TENTHS = 40
@@ -62,6 +63,30 @@ OBSERVE_FE01_CSV_FIELDS = [
     "device_name",
     "device_address",
     "raw_fe01_hex",
+    "parse_ok",
+    "checksum_ok",
+    "state",
+    "speed_raw_tenths",
+    "app_speed_raw_tenths",
+    "mode",
+    "button",
+    "time_s",
+    "distance_raw",
+    "steps",
+    "notification_index",
+    "gap_since_previous_s",
+    "observer_mode",
+    "writes_count",
+]
+OBSERVE_ALL_NOTIFY_CSV_FIELDS = [
+    "ts",
+    "elapsed_s",
+    "observation_id",
+    "device_name",
+    "device_address",
+    "char_uuid",
+    "char_label",
+    "raw_hex",
     "parse_ok",
     "checksum_ok",
     "state",
@@ -302,6 +327,64 @@ def _format_observe_fe01_summary(
         f"device_name={device_name}",
         f"device_address={device_address}",
         f"notify_started={_bool_text(notify_started)}",
+        f"notification_handler_invoked={_bool_text(notifications_count > 0)}",
+        f"attempted_duration_s={attempted_duration_s:g}",
+        f"writes_count={writes_count}",
+        f"blocked_writes_count={blocked_writes_count}",
+        f"notifications_count={notifications_count}",
+        f"observation_id={observation_id}",
+    ]
+    if notifications_count == 0:
+        lines.extend(_no_fe01_notification_possible_causes())
+    return lines
+
+
+def _char_label(uuid_text: str) -> str:
+    normalized = _normalize_uuid(uuid_text)
+    if normalized == CHAR_NOTIFY_FE01:
+        return "FE01"
+    if normalized == CHAR_FFC1:
+        return "FFC1"
+    if normalized == CHAR_FFC2:
+        return "FFC2"
+    return normalized
+
+
+def _notify_characteristics(services) -> list[dict]:
+    targets: list[dict] = []
+    for service in services or []:
+        for characteristic in getattr(service, "characteristics", []) or []:
+            props = _normalize_properties(getattr(characteristic, "properties", []))
+            if "notify" not in props and "indicate" not in props:
+                continue
+            uuid_text = str(getattr(characteristic, "uuid", ""))
+            targets.append(
+                {
+                    "uuid": uuid_text,
+                    "label": _char_label(uuid_text),
+                    "properties": ",".join(str(prop) for prop in getattr(characteristic, "properties", []) or []),
+                }
+            )
+    return targets
+
+
+def _format_observe_all_notify_summary(
+    csv_path: str,
+    device_name: str,
+    device_address: str,
+    subscribed_count: int,
+    writes_count: int,
+    blocked_writes_count: int,
+    notifications_count: int,
+    observation_id: str,
+    attempted_duration_s: float,
+) -> list[str]:
+    lines = [
+        f"mode={PASSIVE_ALL_NOTIFY_MODE}",
+        f"csv_path={csv_path}",
+        f"device_name={device_name}",
+        f"device_address={device_address}",
+        f"subscribed_count={subscribed_count}",
         f"notification_handler_invoked={_bool_text(notifications_count > 0)}",
         f"attempted_duration_s={attempted_duration_s:g}",
         f"writes_count={writes_count}",
@@ -920,6 +1003,156 @@ async def observe_fe01(
         print(line)
 
 
+async def observe_all_notify(
+    address: Optional[str],
+    duration: float,
+    name_filter: Optional[str],
+    csv_path: str,
+    dry_run_sample: bool,
+) -> None:
+    observation_id = str(uuid.uuid4())
+    if dry_run_sample:
+        guard = PassiveWriteGuard()
+        sample = _build_sample_fe01_frame(state=1, speed_raw_tenths=0, mode=1)
+        parsed = _parse_fe01_observation(sample)
+        with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=OBSERVE_ALL_NOTIFY_CSV_FIELDS)
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "ts": _utc_now_iso(),
+                    "elapsed_s": 0,
+                    "observation_id": observation_id,
+                    "device_name": name_filter or "dry-run",
+                    "device_address": address or "dry-run",
+                    "char_uuid": CHAR_NOTIFY_FE01,
+                    "char_label": "FE01",
+                    "raw_hex": parsed["raw_fe01_hex"],
+                    "parse_ok": parsed["parse_ok"],
+                    "checksum_ok": parsed["checksum_ok"],
+                    "state": parsed["state"],
+                    "speed_raw_tenths": parsed["speed_raw_tenths"],
+                    "app_speed_raw_tenths": parsed["app_speed_raw_tenths"],
+                    "mode": parsed["mode"],
+                    "button": parsed["button"],
+                    "time_s": parsed["time_s"],
+                    "distance_raw": parsed["distance_raw"],
+                    "steps": parsed["steps"],
+                    "notification_index": 1,
+                    "gap_since_previous_s": "",
+                    "observer_mode": PASSIVE_ALL_NOTIFY_MODE,
+                    "writes_count": guard.writes_count,
+                }
+            )
+        for line in _format_observe_all_notify_summary(
+            csv_path=csv_path,
+            device_name=name_filter or "dry-run",
+            device_address=address or "dry-run",
+            subscribed_count=3,
+            writes_count=guard.writes_count,
+            blocked_writes_count=guard.blocked_writes_count,
+            notifications_count=1,
+            observation_id=observation_id,
+            attempted_duration_s=duration,
+        ):
+            print(line)
+        return
+
+    resolved, resolved_name = await _resolve_device(address, name_filter)
+    device_name = resolved_name or name_filter or ""
+    guard = PassiveWriteGuard()
+    notifications_count = 0
+    previous_monotonic: Optional[float] = None
+    started_monotonic = time.monotonic()
+
+    print("Using address:", resolved)
+    print(f"Observation id: {observation_id}")
+    print("Passive all-notify observer: writes are guarded and forbidden.")
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=OBSERVE_ALL_NOTIFY_CSV_FIELDS)
+        writer.writeheader()
+
+        async with BleakClient(resolved) as client:
+            print("Connected:", client.is_connected)
+            guard.install(client)
+            services = await _get_client_services(client)
+            targets = _notify_characteristics(services)
+            subscribed: list[str] = []
+
+            def make_callback(target: dict):
+                def on_notify(sender: int, data: bytearray) -> None:
+                    nonlocal notifications_count, previous_monotonic
+                    now = time.monotonic()
+                    notifications_count += 1
+                    gap = None if previous_monotonic is None else now - previous_monotonic
+                    previous_monotonic = now
+                    payload = bytes(data)
+                    parsed = _parse_fe01_observation(payload) if _normalize_uuid(target["uuid"]) == CHAR_NOTIFY_FE01 else {}
+                    row = {
+                        "ts": _utc_now_iso(),
+                        "elapsed_s": round(now - started_monotonic, 3),
+                        "observation_id": observation_id,
+                        "device_name": device_name,
+                        "device_address": resolved,
+                        "char_uuid": target["uuid"],
+                        "char_label": target["label"],
+                        "raw_hex": _hex(payload),
+                        "parse_ok": parsed.get("parse_ok", ""),
+                        "checksum_ok": parsed.get("checksum_ok", ""),
+                        "state": parsed.get("state", ""),
+                        "speed_raw_tenths": parsed.get("speed_raw_tenths", ""),
+                        "app_speed_raw_tenths": parsed.get("app_speed_raw_tenths", ""),
+                        "mode": parsed.get("mode", ""),
+                        "button": parsed.get("button", ""),
+                        "time_s": parsed.get("time_s", ""),
+                        "distance_raw": parsed.get("distance_raw", ""),
+                        "steps": parsed.get("steps", ""),
+                        "notification_index": notifications_count,
+                        "gap_since_previous_s": "" if gap is None else round(gap, 3),
+                        "observer_mode": PASSIVE_ALL_NOTIFY_MODE,
+                        "writes_count": guard.writes_count,
+                    }
+                    writer.writerow(row)
+                    handle.flush()
+                    print(
+                        "[OBSERVE ALL] "
+                        f"#{notifications_count} char={target['label']} "
+                        f"checksum={row['checksum_ok']} raw={row['raw_hex']}"
+                    )
+
+                return on_notify
+
+            for target in targets:
+                try:
+                    await client.start_notify(target["uuid"], make_callback(target))
+                    subscribed.append(target["uuid"])
+                    print(f"Subscribed: {target['label']} {target['uuid']} props={target['properties']}")
+                except Exception as exc:
+                    print(f"Subscribe failed: {target['label']} {target['uuid']} error={exc}")
+
+            await asyncio.sleep(duration)
+
+            for uuid_text in subscribed:
+                try:
+                    await client.stop_notify(uuid_text)
+                except Exception as exc:
+                    print(f"Stop notify error for {uuid_text}: {exc}")
+
+    for line in _format_observe_all_notify_summary(
+        csv_path=csv_path,
+        device_name=device_name,
+        device_address=resolved,
+        subscribed_count=len(subscribed),
+        writes_count=guard.writes_count,
+        blocked_writes_count=guard.blocked_writes_count,
+        notifications_count=notifications_count,
+        observation_id=observation_id,
+        attempted_duration_s=duration,
+    ):
+        print(line)
+
+
 async def stop_experiment(
     address: Optional[str],
     variant: str,
@@ -1406,6 +1639,13 @@ def main() -> None:
     p_observe.add_argument("--csv", required=True, dest="csv_path")
     p_observe.add_argument("--dry-run-sample", action="store_true")
 
+    p_observe_all = sub.add_parser("observe-all-notify", help="Passive observer for every notify/indicate characteristic")
+    p_observe_all.add_argument("address", type=str, nargs="?")
+    p_observe_all.add_argument("--duration", type=float, default=60.0)
+    p_observe_all.add_argument("--name", type=str, default=None)
+    p_observe_all.add_argument("--csv", required=True, dest="csv_path")
+    p_observe_all.add_argument("--dry-run-sample", action="store_true")
+
     p_doctor = sub.add_parser("doctor", help="Read-only BLE environment and WalkingPad service preflight")
     p_doctor.add_argument("address", type=str, nargs="?")
     p_doctor.add_argument("--name", type=str, default=None)
@@ -1477,6 +1717,8 @@ def main() -> None:
         asyncio.run(listen(args.address, args.duration, args.name))
     elif args.cmd == "observe-fe01":
         asyncio.run(observe_fe01(args.address, args.duration, args.name, args.csv_path, args.dry_run_sample))
+    elif args.cmd == "observe-all-notify":
+        asyncio.run(observe_all_notify(args.address, args.duration, args.name, args.csv_path, args.dry_run_sample))
     elif args.cmd == "doctor":
         asyncio.run(ble_doctor(args.address, args.name, args.dry_run_sample))
     elif args.cmd == "dump-services":

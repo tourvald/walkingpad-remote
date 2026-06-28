@@ -110,6 +110,61 @@ class BleDoctorTests(unittest.TestCase):
         self.assertIn("notification_handler_invoked=false", text)
         self.assertIn("possible_cause=device_not_moving_or_not_sending_status", text)
 
+    def test_observe_all_notify_targets_notify_characteristics(self):
+        class Characteristic:
+            def __init__(self, uuid, properties):
+                self.uuid = uuid
+                self.properties = properties
+
+        class Service:
+            def __init__(self, uuid, characteristics):
+                self.uuid = uuid
+                self.characteristics = characteristics
+
+        services = [
+            Service(
+                scan_ble.SERVICE_FE00,
+                [
+                    Characteristic(scan_ble.CHAR_NOTIFY_FE01, ["notify", "read"]),
+                    Characteristic(scan_ble.CHAR_WRITE_FE02, ["write-without-response"]),
+                ],
+            ),
+            Service(
+                scan_ble.SVC_FFC0,
+                [
+                    Characteristic(scan_ble.CHAR_FFC1, ["notify", "write"]),
+                    Characteristic(scan_ble.CHAR_FFC2, ["notify", "write"]),
+                ],
+            ),
+        ]
+
+        targets = scan_ble._notify_characteristics(services)
+
+        self.assertEqual(
+            [target["uuid"] for target in targets],
+            [scan_ble.CHAR_NOTIFY_FE01, scan_ble.CHAR_FFC1, scan_ble.CHAR_FFC2],
+        )
+
+    def test_observe_all_notify_summary_marks_zero_write(self):
+        lines = scan_ble._format_observe_all_notify_summary(
+            csv_path="/tmp/all_notify.csv",
+            device_name="KS-F0",
+            device_address="dry-run",
+            subscribed_count=3,
+            writes_count=0,
+            blocked_writes_count=0,
+            notifications_count=0,
+            observation_id="obs-1",
+            attempted_duration_s=30.0,
+        )
+        text = "\n".join(lines)
+
+        self.assertIn("mode=passive_all_notify_observer", text)
+        self.assertIn("subscribed_count=3", text)
+        self.assertIn("writes_count=0", text)
+        self.assertIn("blocked_writes_count=0", text)
+        self.assertIn("notifications_count=0", text)
+
 
 if __name__ == "__main__":
     unittest.main()
