@@ -136,6 +136,37 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "stop_reported_app_speed_kmh": 0.8,
             "stop_reported_state": 1,
             "stop_has_fresh_report": false,
+            "stop_attempt_id": "stop-attempt-1",
+            "stop_attempt_started_at": "2026-06-28T09:36:57Z",
+            "stop_command_sequence": 2,
+            "stop_command_label": "MODE STANDBY",
+            "stop_command_packet_hex": "F7 A2 02 02 A6 FD",
+            "stop_command_source": "verification_assist",
+            "stop_write_type": "without_response",
+            "stop_queue_size_before": 0,
+            "stop_queue_size_after": 1,
+            "stop_snapshot_phase": "after_command",
+            "stop_response_age_s": 1.5,
+            "stop_raw_fe01_hex": "F8 A2 00 01 03 08",
+            "stop_parsed_state": 1,
+            "stop_speed_raw_tenths": 3,
+            "stop_app_speed_raw_tenths": 8,
+            "stop_native_units": "imperial",
+            "stop_native_speed": 0.3,
+            "stop_physical_speed_kmh_estimate": 0.4828032,
+            "stop_mode": 1,
+            "stop_button": 0,
+            "stop_freshness": "fresh",
+            "stop_fe01_before_state": 1,
+            "stop_fe01_before_speed_raw_tenths": 30,
+            "stop_fe01_before_app_speed_raw_tenths": 8,
+            "stop_fe01_before_raw_hex": "before-hex",
+            "stop_fe01_before_age_s": 0.4,
+            "stop_fe01_after_state": 1,
+            "stop_fe01_after_speed_raw_tenths": 3,
+            "stop_fe01_after_app_speed_raw_tenths": 8,
+            "stop_fe01_after_raw_hex": "after-hex",
+            "stop_fe01_after_age_s": 1.5,
             "test_run_active": true,
             "test_phase": "ramp_up",
             "test_elapsed_s": 45,
@@ -215,6 +246,37 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "stop_reported_app_speed_kmh")!], "0.8")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_reported_state")!], "1")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_has_fresh_report")!], "false")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_attempt_id")!], "stop-attempt-1")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_attempt_started_at")!], "2026-06-28T09:36:57Z")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_command_sequence")!], "2")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_command_label")!], "MODE STANDBY")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_command_packet_hex")!], "F7 A2 02 02 A6 FD")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_command_source")!], "verification_assist")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_write_type")!], "without_response")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_queue_size_before")!], "0")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_queue_size_after")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_snapshot_phase")!], "after_command")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_response_age_s")!], "1.5")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_raw_fe01_hex")!], "F8 A2 00 01 03 08")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_parsed_state")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_speed_raw_tenths")!], "3")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_app_speed_raw_tenths")!], "8")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_native_units")!], "imperial")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_native_speed")!], "0.3")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_physical_speed_kmh_estimate")!], "0.4828032")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_mode")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_button")!], "0")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_freshness")!], "fresh")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_before_state")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_before_speed_raw_tenths")!], "30")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_before_app_speed_raw_tenths")!], "8")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_before_raw_hex")!], "before-hex")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_before_age_s")!], "0.4")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_after_state")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_after_speed_raw_tenths")!], "3")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_after_app_speed_raw_tenths")!], "8")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_after_raw_hex")!], "after-hex")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_fe01_after_age_s")!], "1.5")
         XCTAssertEqual(row[headers.firstIndex(of: "test_run_active")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "test_phase")!], "ramp_up")
         XCTAssertEqual(row[headers.firstIndex(of: "test_elapsed_s")!], "45")
@@ -225,6 +287,36 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "test_peak_speed_kmh")!], "8")
         XCTAssertEqual(row[headers.firstIndex(of: "zone1_s")!], "10")
         XCTAssertTrue(row.last?.contains("\"cooldown_finish_reason\":\"timeout\"") == true)
+    }
+
+    func testCsvRowRepresentsNoHeartRateWaitingAndCancelReason() {
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        let waitingPayload: [String: Any] = [
+            "ts": "2026-06-28T10:00:00Z",
+            "session_id": "session-waiting",
+            "event": "hr_control_waiting_for_hr",
+            "session_state": "waiting_for_hr_signal",
+            "hr_source_mode": "iphone_healthkit",
+            "reason": "waiting_for_initial_hr_signal"
+        ]
+        let cancelPayload: [String: Any] = [
+            "ts": "2026-06-28T10:00:09Z",
+            "session_id": "session-waiting",
+            "event": "workout_not_saved",
+            "session_state": "idle",
+            "reason": "no_hr_signal",
+            "duration_s": 9
+        ]
+
+        let waitingRow = TrainingTelemetryWriter.csvRow(sourceFile: "waiting.jsonl", payload: waitingPayload)
+        let cancelRow = TrainingTelemetryWriter.csvRow(sourceFile: "waiting.jsonl", payload: cancelPayload)
+
+        XCTAssertEqual(waitingRow[headers.firstIndex(of: "event")!], "hr_control_waiting_for_hr")
+        XCTAssertEqual(waitingRow[headers.firstIndex(of: "session_state")!], "waiting_for_hr_signal")
+        XCTAssertEqual(waitingRow[headers.firstIndex(of: "reason")!], "waiting_for_initial_hr_signal")
+        XCTAssertEqual(cancelRow[headers.firstIndex(of: "event")!], "workout_not_saved")
+        XCTAssertEqual(cancelRow[headers.firstIndex(of: "reason")!], "no_hr_signal")
+        XCTAssertTrue(cancelRow.last?.contains("\"duration_s\":9") == true)
     }
 
     func testSelectJsonlFilesForExportKeepsLatestSessionsIncludingFailedAndIncomplete() throws {

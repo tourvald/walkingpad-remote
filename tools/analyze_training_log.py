@@ -154,6 +154,30 @@ class ImperialTrainingProjectionObservation:
 
 
 @dataclass
+class StopTimelineEntry:
+    session: str
+    ts_raw: str
+    event: str
+    elapsed_s: float | None
+    command: str
+    packet: str
+    fe01_before: str
+    fe01_after: str
+    state: str
+    speed_raw: str
+    app_speed_raw: str
+    confirmed: bool
+    freshness: str
+
+
+@dataclass
+class StopTimelineReport:
+    session: str
+    entries: list[StopTimelineEntry]
+    classification: str
+
+
+@dataclass
 class GapReport:
     session: str
     ts_raw: str
@@ -398,6 +422,98 @@ def collect_imperial_training_projection_observations(rows: list[Row]) -> list[I
     return observations
 
 
+def collect_stop_timeline_reports(rows: list[Row]) -> list[StopTimelineReport]:
+    grouped: dict[str, list[StopTimelineEntry]] = {}
+    for row in rows:
+        if not _is_stop_timeline_row(row):
+            continue
+        session = row.session or "unknown"
+        grouped.setdefault(session, []).append(_stop_timeline_entry(row))
+
+    reports: list[StopTimelineReport] = []
+    for session, entries in grouped.items():
+        reports.append(
+            StopTimelineReport(
+                session=session,
+                entries=entries,
+                classification=_classify_stop_timeline(entries),
+            )
+        )
+    return reports
+
+
+def _is_stop_timeline_row(row: Row) -> bool:
+    event = row.event
+    if event in {"stop_attempt_started", "stop_command_attempt", "stop_verification", "stop_forensic_snapshot"}:
+        return True
+    if event == "command_write":
+        label = str(row.get("label") or "").lower()
+        return "stop" in label or "standby" in label
+    return False
+
+
+def _stop_timeline_entry(row: Row) -> StopTimelineEntry:
+    command = str(row.get("stop_command_label") or row.get("stop_assist_command") or "")
+    if not command and row.event == "command_write":
+        command = str(row.get("label") or "")
+    packet = str(row.get("stop_command_packet_hex") or row.get("hex") or "")
+    before_state = str(row.get("stop_fe01_before_state") or "")
+    before_speed = str(row.get("stop_fe01_before_speed_raw_tenths") or "")
+    before_app = str(row.get("stop_fe01_before_app_speed_raw_tenths") or "")
+    after_state = str(row.get("stop_fe01_after_state") or row.get("stop_parsed_state") or row.get("stop_reported_state") or "")
+    after_speed = str(row.get("stop_fe01_after_speed_raw_tenths") or row.get("stop_speed_raw_tenths") or row.get("speed_raw_tenths") or "")
+    after_app = str(row.get("stop_fe01_after_app_speed_raw_tenths") or row.get("stop_app_speed_raw_tenths") or row.get("app_speed_raw_tenths") or "")
+
+    return StopTimelineEntry(
+        session=row.session,
+        ts_raw=row.ts_raw,
+        event=row.event,
+        elapsed_s=row._num("stop_elapsed_s") or row._num("delay_s"),
+        command=command,
+        packet=packet,
+        fe01_before=_format_fe01(before_state, before_speed, before_app),
+        fe01_after=_format_fe01(after_state, after_speed, after_app),
+        state=after_state or str(row.get("state") or ""),
+        speed_raw=after_speed,
+        app_speed_raw=after_app,
+        confirmed=_to_bool(row.get("stop_confirmed")),
+        freshness=str(row.get("stop_freshness") or ("fresh" if _to_bool(row.get("stop_has_fresh_report")) else "")),
+    )
+
+
+def _format_fe01(state: str, speed_raw: str, app_speed_raw: str) -> str:
+    if not any([state, speed_raw, app_speed_raw]):
+        return "—"
+    return f"s={state or '?'} speed={speed_raw or '?'} app={app_speed_raw or '?'}"
+
+
+def _classify_stop_timeline(entries: list[StopTimelineEntry]) -> str:
+    if any(entry.confirmed for entry in entries):
+        return "STOP_CONFIRMED"
+    freshness_values = [entry.freshness for entry in entries if entry.freshness]
+    if freshness_values and all(value == "stale" for value in freshness_values):
+        return "STOP_STALE"
+
+    numeric_speeds = [_to_float(entry.speed_raw) for entry in entries]
+    numeric_speeds = [value for value in numeric_speeds if value is not None]
+    if numeric_speeds:
+        final_speed = numeric_speeds[-1]
+        max_speed = max(numeric_speeds)
+        if final_speed > 0 and final_speed < max_speed:
+            return "STOP_DECELERATED_BUT_NOT_ZERO"
+
+    final = entries[-1] if entries else None
+    if final and final.state == "1":
+        return "STOP_STATE_STILL_RUNNING"
+
+    app_speeds = [_to_float(entry.app_speed_raw) for entry in entries]
+    app_speeds = [value for value in app_speeds if value is not None]
+    if numeric_speeds and app_speeds and app_speeds[-1] < app_speeds[0] and numeric_speeds[-1] > 0:
+        return "APP_TARGET_CHANGED_BUT_BELT_NOT_STOPPED"
+
+    return "STOP_NOT_CONFIRMED"
+
+
 def _diagnostic_command_row(rows: list[Row]) -> Row:
     nonzero_command_rows = [
         row
@@ -441,6 +557,7 @@ def print_text(
     units: list[UnitsObservation],
     diagnostics: list[DiagnosticObservation],
     imperial_training: list[ImperialTrainingProjectionObservation],
+    stop_reports: list[StopTimelineReport],
     near_seconds: float,
 ) -> None:
     sessions = sorted({r.session for r in rows if r.session})
@@ -511,6 +628,26 @@ def print_text(
         print("  none")
     print()
 
+    print("stop timeline reports:")
+    if stop_reports:
+        for report in stop_reports:
+            print(f"  session={report.session} classification={report.classification}")
+            print("    t | command | packet | FE01 before | FE01 after | state | speed_raw | app_speed_raw | confirmed")
+            for entry in report.entries[-16:]:
+                t = _fmt(entry.elapsed_s, "s")
+                command = entry.command or entry.event
+                packet = entry.packet or "—"
+                print(
+                    "    "
+                    f"{t} | {command} | {packet} | {entry.fe01_before} | {entry.fe01_after} | "
+                    f"{entry.state or '—'} | {entry.speed_raw or '—'} | {entry.app_speed_raw or '—'} | {entry.confirmed}"
+                )
+            if len(report.entries) > 16:
+                print(f"    … {len(report.entries) - 16} earlier stop rows")
+    else:
+        print("  none")
+    print()
+
     for n, g in enumerate(reports, 1):
         print(f"[gap {n}] session={g.session or '—'}  at {g.ts_raw or '—'}")
         bg = f"true (bg {_fmt(g.background_s, 's')})" if g.was_backgrounded else "false"
@@ -556,6 +693,7 @@ def to_json(
     units: list[UnitsObservation],
     diagnostics: list[DiagnosticObservation],
     imperial_training: list[ImperialTrainingProjectionObservation],
+    stop_reports: list[StopTimelineReport],
 ) -> dict:
     impacted = [g for g in reports if g.belt_impacted]
     backgroundings = count_backgroundings(scene)
@@ -617,6 +755,30 @@ def to_json(
             }
             for item in imperial_training
         ],
+        "stop_timeline_reports": [
+            {
+                "session": report.session,
+                "classification": report.classification,
+                "entries": [
+                    {
+                        "ts": entry.ts_raw,
+                        "event": entry.event,
+                        "elapsed_s": entry.elapsed_s,
+                        "command": entry.command,
+                        "packet": entry.packet,
+                        "fe01_before": entry.fe01_before,
+                        "fe01_after": entry.fe01_after,
+                        "state": entry.state,
+                        "speed_raw": entry.speed_raw,
+                        "app_speed_raw": entry.app_speed_raw,
+                        "confirmed": entry.confirmed,
+                        "freshness": entry.freshness,
+                    }
+                    for entry in report.entries
+                ],
+            }
+            for report in stop_reports
+        ],
         "backgrounded": sum(1 for g in reports if g.was_backgrounded),
         "total_gap_s": round(sum(g.gap_s for g in reports), 1),
         "max_gap_s": round(max((g.gap_s for g in reports), default=0.0), 1),
@@ -660,11 +822,12 @@ def main() -> int:
     units = collect_units_observations(rows)
     diagnostics = collect_diagnostic_observations(rows)
     imperial_training = collect_imperial_training_projection_observations(rows)
+    stop_reports = collect_stop_timeline_reports(rows)
 
     if args.json:
-        print(json.dumps(to_json(args.csv_path, rows, reports, scene, units, diagnostics, imperial_training), indent=2))
+        print(json.dumps(to_json(args.csv_path, rows, reports, scene, units, diagnostics, imperial_training, stop_reports), indent=2))
     else:
-        print_text(args.csv_path, rows, reports, scene, units, diagnostics, imperial_training, args.near_seconds)
+        print_text(args.csv_path, rows, reports, scene, units, diagnostics, imperial_training, stop_reports, args.near_seconds)
 
     # Exit code: 0 = PASS / NO-STALL, 1 = FAIL (belt impact), 3 = NO-GAP. Handy for CI/automation.
     if reports:
