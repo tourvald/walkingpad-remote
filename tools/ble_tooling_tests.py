@@ -165,6 +165,44 @@ class BleDoctorTests(unittest.TestCase):
         self.assertIn("blocked_writes_count=0", text)
         self.assertIn("notifications_count=0", text)
 
+    def test_poll_fe01_read_summary_marks_zero_write(self):
+        lines = scan_ble._format_poll_fe01_read_summary(
+            csv_path="/tmp/poll_fe01.csv",
+            device_name="KS-F0",
+            device_address="dry-run",
+            reads_count=3,
+            non_empty_reads_count=1,
+            writes_count=0,
+            blocked_writes_count=0,
+            observation_id="obs-1",
+            attempted_duration_s=30.0,
+        )
+        text = "\n".join(lines)
+
+        self.assertIn("mode=passive_fe01_read_poll", text)
+        self.assertIn("polled_char=FE01", text)
+        self.assertIn("reads_count=3", text)
+        self.assertIn("non_empty_reads_count=1", text)
+        self.assertIn("writes_count=0", text)
+        self.assertIn("blocked_writes_count=0", text)
+
+    def test_fe01_observation_row_can_mark_read_poll_mode(self):
+        row = scan_ble._make_fe01_observation_row(
+            data=scan_ble._build_sample_fe01_frame(speed_raw_tenths=3),
+            ts="2026-06-28T00:00:00Z",
+            elapsed_s=0,
+            observation_id="obs-1",
+            device_name="KS-F0",
+            device_address="dry-run",
+            notification_index=1,
+            gap_since_previous_s=None,
+            writes_count=0,
+            observer_mode=scan_ble.PASSIVE_READ_POLL_MODE,
+        )
+
+        self.assertEqual(row["observer_mode"], scan_ble.PASSIVE_READ_POLL_MODE)
+        self.assertEqual(row["speed_raw_tenths"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

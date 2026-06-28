@@ -41,6 +41,7 @@ CHAR_FFC1 = "f000ffc1-0451-4000-b000-000000000000"
 CHAR_FFC2 = "f000ffc2-0451-4000-b000-000000000000"
 PASSIVE_OBSERVER_MODE = "passive_fe01_observer"
 PASSIVE_ALL_NOTIFY_MODE = "passive_all_notify_observer"
+PASSIVE_READ_POLL_MODE = "passive_fe01_read_poll"
 STOP_EXPERIMENT_MODE = "stop_experiment"
 STOP_EXPERIMENT_BASELINE_FRESHNESS_SECONDS = 2.0
 STOP_EXPERIMENT_MAX_BASELINE_SPEED_RAW_TENTHS = 40
@@ -397,6 +398,42 @@ def _format_observe_all_notify_summary(
     return lines
 
 
+def _format_poll_fe01_read_summary(
+    csv_path: str,
+    device_name: str,
+    device_address: str,
+    reads_count: int,
+    non_empty_reads_count: int,
+    writes_count: int,
+    blocked_writes_count: int,
+    observation_id: str,
+    attempted_duration_s: float,
+) -> list[str]:
+    lines = [
+        f"mode={PASSIVE_READ_POLL_MODE}",
+        "polled_char=FE01",
+        f"csv_path={csv_path}",
+        f"device_name={device_name}",
+        f"device_address={device_address}",
+        f"attempted_duration_s={attempted_duration_s:g}",
+        f"reads_count={reads_count}",
+        f"non_empty_reads_count={non_empty_reads_count}",
+        f"writes_count={writes_count}",
+        f"blocked_writes_count={blocked_writes_count}",
+        f"observation_id={observation_id}",
+    ]
+    if non_empty_reads_count == 0:
+        lines.extend(
+            [
+                "possible_cause=fe01_read_returns_empty_when_status_stream_is_idle",
+                "possible_cause=device_requires_notify_for_status",
+                "possible_cause=another_central_holds_status_stream",
+                "possible_cause=macos_corebluetooth_read_behavior",
+            ]
+        )
+    return lines
+
+
 def _encode3(value: int) -> list[int]:
     value = max(0, min(0xFF_FF_FF, int(value)))
     return [(value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF]
@@ -464,6 +501,7 @@ def _make_fe01_observation_row(
     notification_index: int,
     gap_since_previous_s: Optional[float],
     writes_count: int,
+    observer_mode: str = PASSIVE_OBSERVER_MODE,
 ) -> dict:
     parsed = _parse_fe01_observation(data)
     row = {
@@ -474,7 +512,7 @@ def _make_fe01_observation_row(
         "device_address": device_address,
         "notification_index": notification_index,
         "gap_since_previous_s": "" if gap_since_previous_s is None else round(gap_since_previous_s, 3),
-        "observer_mode": PASSIVE_OBSERVER_MODE,
+        "observer_mode": observer_mode,
         "writes_count": writes_count,
     }
     row.update(parsed)
@@ -1153,6 +1191,125 @@ async def observe_all_notify(
         print(line)
 
 
+async def poll_fe01_read(
+    address: Optional[str],
+    duration: float,
+    interval: float,
+    name_filter: Optional[str],
+    csv_path: str,
+    dry_run_sample: bool,
+) -> None:
+    observation_id = str(uuid.uuid4())
+    if dry_run_sample:
+        guard = PassiveWriteGuard()
+        sample = _build_sample_fe01_frame(state=1, speed_raw_tenths=0, mode=1)
+        with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=OBSERVE_FE01_CSV_FIELDS)
+            writer.writeheader()
+            writer.writerow(
+                _make_fe01_observation_row(
+                    data=sample,
+                    ts=_utc_now_iso(),
+                    elapsed_s=0,
+                    observation_id=observation_id,
+                    device_name=name_filter or "dry-run",
+                    device_address=address or "dry-run",
+                    notification_index=1,
+                    gap_since_previous_s=None,
+                    writes_count=guard.writes_count,
+                    observer_mode=PASSIVE_READ_POLL_MODE,
+                )
+            )
+        for line in _format_poll_fe01_read_summary(
+            csv_path=csv_path,
+            device_name=name_filter or "dry-run",
+            device_address=address or "dry-run",
+            reads_count=1,
+            non_empty_reads_count=1,
+            writes_count=guard.writes_count,
+            blocked_writes_count=guard.blocked_writes_count,
+            observation_id=observation_id,
+            attempted_duration_s=duration,
+        ):
+            print(line)
+        return
+
+    resolved, resolved_name = await _resolve_device(address, name_filter)
+    device_name = resolved_name or name_filter or ""
+    guard = PassiveWriteGuard()
+    reads_count = 0
+    non_empty_reads_count = 0
+    previous_monotonic: Optional[float] = None
+    started_monotonic = time.monotonic()
+    poll_interval = max(0.2, interval)
+
+    print("Using address:", resolved)
+    print(f"Observation id: {observation_id}")
+    print("Passive FE01 read poll: writes are guarded and forbidden.")
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=OBSERVE_FE01_CSV_FIELDS)
+        writer.writeheader()
+
+        async with BleakClient(resolved) as client:
+            print("Connected:", client.is_connected)
+            guard.install(client)
+            deadline = time.monotonic() + duration
+            while time.monotonic() < deadline:
+                now = time.monotonic()
+                reads_count += 1
+                try:
+                    payload = bytes(await client.read_gatt_char(CHAR_NOTIFY_FE01))
+                except Exception as exc:
+                    print(f"[POLL FE01 READ] #{reads_count} read_error={exc}")
+                    await asyncio.sleep(poll_interval)
+                    continue
+
+                if payload:
+                    non_empty_reads_count += 1
+                    gap = None if previous_monotonic is None else now - previous_monotonic
+                    previous_monotonic = now
+                    row = _make_fe01_observation_row(
+                        data=payload,
+                        ts=_utc_now_iso(),
+                        elapsed_s=now - started_monotonic,
+                        observation_id=observation_id,
+                        device_name=device_name,
+                        device_address=resolved,
+                        notification_index=reads_count,
+                        gap_since_previous_s=gap,
+                        writes_count=guard.writes_count,
+                        observer_mode=PASSIVE_READ_POLL_MODE,
+                    )
+                    writer.writerow(row)
+                    handle.flush()
+                    print(
+                        "[POLL FE01 READ] "
+                        f"#{reads_count} state={row['state']} "
+                        f"speed_raw={row['speed_raw_tenths']} "
+                        f"app_raw={row['app_speed_raw_tenths']} "
+                        f"mode={row['mode']} button={row['button']} "
+                        f"checksum={row['checksum_ok']} raw={row['raw_fe01_hex']}"
+                    )
+                else:
+                    print(f"[POLL FE01 READ] #{reads_count} empty")
+
+                await asyncio.sleep(poll_interval)
+
+    for line in _format_poll_fe01_read_summary(
+        csv_path=csv_path,
+        device_name=device_name,
+        device_address=resolved,
+        reads_count=reads_count,
+        non_empty_reads_count=non_empty_reads_count,
+        writes_count=guard.writes_count,
+        blocked_writes_count=guard.blocked_writes_count,
+        observation_id=observation_id,
+        attempted_duration_s=duration,
+    ):
+        print(line)
+
+
 async def stop_experiment(
     address: Optional[str],
     variant: str,
@@ -1646,6 +1803,14 @@ def main() -> None:
     p_observe_all.add_argument("--csv", required=True, dest="csv_path")
     p_observe_all.add_argument("--dry-run-sample", action="store_true")
 
+    p_poll_read = sub.add_parser("poll-fe01-read", help="Passive FE01 GATT-read poll with CSV export and zero-write guard")
+    p_poll_read.add_argument("address", type=str, nargs="?")
+    p_poll_read.add_argument("--duration", type=float, default=60.0)
+    p_poll_read.add_argument("--interval", type=float, default=1.0)
+    p_poll_read.add_argument("--name", type=str, default=None)
+    p_poll_read.add_argument("--csv", required=True, dest="csv_path")
+    p_poll_read.add_argument("--dry-run-sample", action="store_true")
+
     p_doctor = sub.add_parser("doctor", help="Read-only BLE environment and WalkingPad service preflight")
     p_doctor.add_argument("address", type=str, nargs="?")
     p_doctor.add_argument("--name", type=str, default=None)
@@ -1719,6 +1884,17 @@ def main() -> None:
         asyncio.run(observe_fe01(args.address, args.duration, args.name, args.csv_path, args.dry_run_sample))
     elif args.cmd == "observe-all-notify":
         asyncio.run(observe_all_notify(args.address, args.duration, args.name, args.csv_path, args.dry_run_sample))
+    elif args.cmd == "poll-fe01-read":
+        asyncio.run(
+            poll_fe01_read(
+                args.address,
+                args.duration,
+                args.interval,
+                args.name,
+                args.csv_path,
+                args.dry_run_sample,
+            )
+        )
     elif args.cmd == "doctor":
         asyncio.run(ble_doctor(args.address, args.name, args.dry_run_sample))
     elif args.cmd == "dump-services":

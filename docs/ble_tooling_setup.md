@@ -112,6 +112,38 @@ If `notifications_count=0`, do not run `stop-experiment` yet. Check:
 - macOS Bluetooth permission may be blocked or stale;
 - CoreBluetooth / Bleak may be in a bad adapter state.
 
+## Passive FE01 Read Poll Fallback
+
+If `observe-fe01` / `observe-all-notify` can connect but notifications stay at
+zero, use the read-only FE01 polling fallback:
+
+```bash
+./scripts/run_ble_tool.sh poll-fe01-read \
+  --name KS-F0 \
+  --duration 30 \
+  --interval 1 \
+  --csv /tmp/poll_fe01.csv
+```
+
+This mode only calls `read_gatt_char(FE01)`. It installs the same passive write
+guard as the notification observers, so accidental BLE writes fail and increment
+`blocked_writes_count`.
+
+Expected summary:
+
+```text
+mode=passive_fe01_read_poll
+polled_char=FE01
+reads_count=N
+non_empty_reads_count=N
+writes_count=0
+blocked_writes_count=0
+```
+
+If `non_empty_reads_count=0`, FE01 reads are not a usable timeline source for the
+current device/session. Do not run `stop-experiment`; use the iOS app telemetry
+path or another BLE host that can receive status updates.
+
 ## Stop Experiment
 
 Only after FE01 notifications are stable and the treadmill is moving no-load at low speed:

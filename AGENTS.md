@@ -29,6 +29,7 @@
 - BLE tooling setup (2026-06-28):
   - use `./scripts/setup_ble_env.sh` to create `.venv-ble/` with pinned `bleak==3.0.2`; avoid random system/Xcode Python for live BLE work
   - use `./scripts/run_ble_tool.sh doctor --name KS-F0`, then `dump-services`, then `observe-fe01` before any stop experiment
+  - if notify subscriptions connect but produce no rows, `./scripts/run_ble_tool.sh poll-fe01-read --name KS-F0 --duration 30 --interval 1 --csv /tmp/poll_fe01.csv` is the approved read-only fallback; it reads FE01, installs the passive write guard, and still must show `writes_count=0`
   - if `observe-fe01` reports `notifications_count=0`, treat stop experiments as blocked; the runner must not write without fresh moving FE01 baseline
   - operational docs live in `docs/ble_tooling_setup.md`
 - Imperial units diagnostic MVP (2026-06-28):
