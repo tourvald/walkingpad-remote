@@ -11,7 +11,7 @@ packets.
 | `imperial` from valid `queryParams` | blocked | diagnostic-only with explicit no-load confirmation | Physical speed command semantics are not globally proven. | `STATUS.md`, current app policy |
 | `unknown` unit | blocked | blocked | Unit preference is not trustworthy. | `STATUS.md`, current app policy |
 | parse/checksum failed | blocked | blocked | Source-of-truth params are invalid. | `STATUS.md`, current app policy |
-| operator confirmed imperial physical semantics | still blocked | diagnostic-only | Confirmation is evidence only; it does not unlock HR-control. | `STATUS.md`, current app policy |
+| operator confirmed imperial physical semantics + matching fingerprint + session manual-stop acknowledgement | restricted allowed | diagnostic-only | Physical command semantics are known for this treadmill only; app STOP remains best-effort. | `STATUS.md`, current app policy |
 
 ## `queryParams.unit`
 
@@ -74,11 +74,33 @@ Product rule:
 | Action | Status | Reason |
 | --- | --- | --- |
 | Display `imperial` warning from valid `queryParams.unit=1` | `allowed` | Read-only and safety-positive. |
-| Store operator-confirmed physical semantics per treadmill fingerprint | `allowed` | Evidence storage only; no automatic control unlock. |
+| Store operator-confirmed physical semantics per treadmill fingerprint | `allowed` | Evidence applies only to the matching treadmill fingerprint. |
 | Imperial no-load discriminator profile `rawTenths=30`, 60s | `diagnostic-only` | Requires explicit no-load confirmation. |
-| Auto-convert HR-control commands mph/kmh | `forbidden` | Physical command semantics and safety envelope are not proven. |
-| HR-control on imperial | `forbidden` for current product | Even confirmedImperial does not unlock HR-control yet. |
+| HR-control on unconfirmed imperial | `forbidden` | Physical command semantics are not proven for that treadmill. |
+| HR-control on confirmedImperial | `restricted allowed` | Requires matching fingerprint, valid current params, session-only manual-stop acknowledgement, and first-build physical speed cap. |
+| Automatic conversion for unconfirmed imperial | `forbidden` | Would create safety-critical speed changes without per-treadmill proof. |
+| Physical km/h to native mph projection for confirmedImperial | `allowed` | Scoped to the confirmed treadmill only; preserves existing physical HR profiles. |
 | Auto-switch units with `setUnit` | `forbidden` | Write side effects and recovery are not proven. |
+
+## Imperial HR-Control Projection
+
+For a matching `confirmedImperial` treadmill, HR-control keeps the calibrated
+physical profile in `km/h` and projects commands into native imperial values:
+
+```text
+physicalKmh -> nativeMph -> rawTenths
+```
+
+Current safety constraints:
+
+- valid current `queryParams` are required;
+- stored fingerprint must match current peripheral/controller params;
+- user must acknowledge manual-stop responsibility for the current session only;
+- acknowledgement is not persisted in `UserDefaults`;
+- initial requested physical speed cap is `6.0 km/h`;
+- raw command resolution is `0.1 mph` (`~0.161 km/h`);
+- if projection does not change `rawTenths`, no speed command should be sent;
+- app STOP remains best-effort and must not be treated as solved stop safety.
 
 ## Telemetry Source-of-Truth Fields
 
@@ -92,6 +114,12 @@ Current telemetry should preserve raw and semantic unit evidence:
 | `controller_params_checksum_ok` | Whether params checksum validated. | current app telemetry |
 | `command_raw_tenths` | Raw speed command value, e.g. `30`. | current app telemetry |
 | `command_native_units` | Native command unit context such as imperial/metric. | current app telemetry |
+| `command_native_speed_mph` | Native imperial command speed when projected for confirmedImperial. | current app telemetry |
+| `physical_speed_kmh_estimate` | Estimated physical speed for native imperial command/report. | current app telemetry |
+| `requested_physical_delta_kmh` | Requested physical delta before raw-resolution projection. | current app telemetry |
+| `command_physical_delta_kmh_estimate` | Effective physical delta after raw mph projection. | current app telemetry |
+| `imperial_hr_control_enabled` | Whether confirmedImperial HR-control path is active. | current app telemetry |
+| `manual_stop_acknowledged` | Session-scoped manual-stop acknowledgement state. | current app telemetry |
 | `physical_speed_confidence` | Unknown / operator-confirmed physical semantics state. | current app telemetry |
 | `physical_semantics_source` | Evidence source such as operator visual confirmation. | current app telemetry |
 

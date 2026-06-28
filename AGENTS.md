@@ -24,9 +24,16 @@
   - device-reported distance in imperial diagnostic is raw evidence only; analyzer must not infer physical mph/kmh without external measured distance
   - operator visual confirmation can persist physical semantics per treadmill fingerprint (`peripheralId`, name, WalkingPad protocol, raw controller params, unit pref, checksum)
   - persisted confirmation applies only when current valid imperial `queryParams` match the stored fingerprint; mismatches must not auto-apply
-  - operator confirmation updates physical-speed confidence/telemetry only and must not unlock HR-control on imperial
   - stop verification failures remain in stop-forensics scope and must not be mixed into units MVP
-  - do not add unit-switch writes, HR-control mph/kmh conversion, or silent imperial Test Run
+  - do not add unit-switch writes, service-menu writes, firmware/OTA actions, or silent imperial Test Run
+- Imperial HR-control MVP (2026-06-28):
+  - imperial HR-control is allowed only for the matching `confirmedImperial` treadmill fingerprint and valid current `queryParams`
+  - manual-stop acknowledgement is session-scoped only; do not persist it in `UserDefaults`
+  - first imperial training build caps requested physical speed at `6.0 km/h`
+  - preserve physical km/h HR profiles, project them to native mph/raw tenths only for `confirmedImperial`
+  - raw resolution is `0.1 mph` (`~0.161 km/h`); projection must skip no-op speed writes when raw tenths do not change
+  - telemetry/analyzer must keep both physical estimate and native command fields visible
+  - app STOP remains best-effort on the affected treadmill; keep physical-stop warning visible and leave stop-forensics separate
 - Public repo preparation (2026-03-10):
   - root project is published from the repository root
   - nested `ph4-walkingpad/.git` remains a separate upstream reference clone and is not part of the public root repo

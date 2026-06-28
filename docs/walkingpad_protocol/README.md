@@ -13,8 +13,9 @@ implementation references.
 | Legacy WalkingPad transport | Legacy controllers use service `FE00`, notify `FE01`, write `FE02`, and packet framing around `F7`/`F8` plus checksum. | Raw research, current app codec | [legacy_fe00_protocol.md](legacy_fe00_protocol.md) |
 | Read-only controller params | `queryParams` write packet is `F7 A6 00 00 00 00 00 A6 FD`. | `BLETransportCodec.swift`, raw research | [legacy_fe00_protocol.md](legacy_fe00_protocol.md) |
 | Unit preference byte | `queryParams.unit` maps `0=metric`, `1=imperial`; other values are unknown. | `BLETransportCodec.swift`, raw research | [units_and_setunit.md](units_and_setunit.md) |
-| P0 units safety rule | HR-control is allowed only for metric units read from valid `queryParams` with checksum/parse OK. | `STATUS.md`, current app policy | [units_and_setunit.md](units_and_setunit.md) |
+| P0 units safety rule | HR-control is allowed by default only for metric units read from valid `queryParams` with checksum/parse OK. | `STATUS.md`, current app policy | [units_and_setunit.md](units_and_setunit.md) |
 | Imperial diagnostic flow | Imperial Debug Test Run is diagnostic-only, no-load, explicit confirmation, `rawTenths=30`, `60s`. | `STATUS.md`, current app code | [units_and_setunit.md](units_and_setunit.md), [ks_f0_case_notes.md](ks_f0_case_notes.md) |
+| Restricted imperial HR-control | A matching `confirmedImperial` treadmill can run HR-control only with session-scoped manual-stop acknowledgement, physical speed cap, and mph/raw projection telemetry. | `STATUS.md`, current app policy | [units_and_setunit.md](units_and_setunit.md), [ks_f0_case_notes.md](ks_f0_case_notes.md) |
 | Legacy stop command | Standard legacy stop writes speed raw zero: `F7 A2 01 00 A3 FD`. | Raw research, `BLETransportCodec.swift` | [stop_behavior.md](stop_behavior.md) |
 | OTA surface exists | KingSmith / KS Fit reverse notes expose OTA-related code paths. | Raw research | [firmware_ota.md](firmware_ota.md) |
 | FTMS support surface | Newer devices can expose FTMS `0x1826` with control point and treadmill data characteristics. | Raw research, current app codec | [ftms_and_newer_devices.md](ftms_and_newer_devices.md) |
@@ -32,7 +33,7 @@ implementation references.
 
 | Topic | Unknown | Product Rule | Where to read |
 | --- | --- | --- | --- |
-| Physical command semantics globally | Whether legacy speed command raw tenths always mean km/h, mph, or native units across all controllers. | Do not auto-convert or unlock imperial HR-control. | [units_and_setunit.md](units_and_setunit.md) |
+| Physical command semantics globally | Whether legacy speed command raw tenths always mean km/h, mph, or native units across all controllers. | Do not generalize confirmedImperial behavior to other treadmills. | [units_and_setunit.md](units_and_setunit.md) |
 | KS-F0 stop root cause | Why the affected treadmill does not reliably confirm stop. | Keep in stop-forensics scope. | [ks_f0_case_notes.md](ks_f0_case_notes.md), [stop_behavior.md](stop_behavior.md) |
 | Firmware recovery / rollback | Safe public firmware image, compatibility matrix, and rollback process. | Firmware flashing is forbidden. | [firmware_ota.md](firmware_ota.md) |
 | Service menu writes | Public reliable mapping for F1/F2/F3/F4/F5 or similar service writes. | Service-menu writes are forbidden. | [forbidden_actions.md](forbidden_actions.md) |
@@ -42,6 +43,7 @@ implementation references.
 | Status | Meaning |
 | --- | --- |
 | `allowed` | Safe for normal product use in the current app. |
+| `restricted allowed` | Allowed only when the listed runtime preconditions and safety acknowledgements are satisfied. |
 | `diagnostic-only` | Allowed only in a controlled diagnostic flow with explicit operator confirmation and no person on the treadmill when applicable. |
 | `forbidden` | Do not implement or execute in production or test builds without a separate safety review. |
 | `unknown` | Not enough evidence; treat as blocked for automatic behavior. |

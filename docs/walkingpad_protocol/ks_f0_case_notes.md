@@ -19,11 +19,11 @@ KingSmith models.
 | --- | --- | --- |
 | Controller reports `queryParams.unit=1`. | local observation, product-smoke accepted | `STATUS.md`, device smoke report |
 | App detects `imperial` and shows warning/gates dangerous modes. | confirmed product behavior | `STATUS.md`, current app code |
-| HR-control is blocked on imperial. | confirmed product behavior | `STATUS.md`, current app policy |
+| HR-control on imperial is blocked unless this exact treadmill is `confirmedImperial` and the user acknowledges manual stop for the current session. | confirmed product behavior | `STATUS.md`, current app policy |
 | Imperial diagnostic profile uses `rawTenths=30` for 60 seconds with no-load confirmation. | confirmed product behavior | `STATUS.md`, current app code |
 | Operator visual evidence can confirm physical semantics for this treadmill. | local observation | owner/operator evidence |
 | Operator confirmation is stored per treadmill fingerprint, not globally. | confirmed product behavior | `STATUS.md`, current app code |
-| Confirmed physical semantics do not unlock HR-control. | confirmed product behavior | `STATUS.md`, current app policy |
+| Confirmed physical semantics can unlock restricted HR-control only for this matching fingerprint and only with session manual-stop acknowledgement. | confirmed product behavior | `STATUS.md`, current app policy |
 | Stop confirmation has failed in local logs (`stop_confirmed_ever=false`). | local observation | exported telemetry / runtime snapshot |
 | Native physical remote can also fail to stop the affected treadmill. | local observation | owner report |
 
@@ -42,11 +42,12 @@ KingSmith models.
 | Behavior | Status | Reason |
 | --- | --- | --- |
 | Show imperial warning from valid params | `allowed` | Read-only safety signal. |
-| Block HR-control | `allowed` / required | Safety gate until explicit imperial support design is approved. |
+| Block HR-control without matching confirmation and session ack | `allowed` / required | Safety gate for unconfirmed or stale evidence. |
+| Allow restricted HR-control with matching `confirmedImperial` and session ack | `restricted allowed` | Keeps physical km/h profiles, projects to native mph/raw tenths, caps first build at `6.0 km/h`. |
 | Allow no-load imperial diagnostic after explicit confirmation | `diagnostic-only` | Needed to collect physical evidence safely. |
 | Store operator visual confirmation | `allowed` | Per-device evidence only. |
 | Apply confirmation to other treadmills | `forbidden` | Fingerprint mismatch must block automatic reuse. |
-| Loaded treadmill experiments | `forbidden` | Safety risk while semantics/stop behavior are unresolved. |
+| Loaded treadmill experiments outside the restricted HR-control flow | `forbidden` | Safety risk while stop behavior is unresolved. |
 
 ## Fingerprint Rule
 
@@ -67,3 +68,4 @@ If params changed or checksum fails, the confirmation is not automatically appli
 2. Whether stop issue is firmware, controller state, hardware, remote/app command semantics, or another condition.
 3. Whether imperial physical semantics are a preference state, a controller-region state, or model-specific behavior.
 4. Whether read-only Device Information can help identify affected firmware versions.
+5. Whether app STOP can be made reliable on this affected treadmill; current HR-control use assumes physical manual stop is available.

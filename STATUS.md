@@ -4,8 +4,8 @@
 *Last updated: 2026-06-28*
 
 ## Where development is
-- **Branch:** `ios/hr-decision-engine-and-background`
-- **Last code commit:** `a87fb6a` (Test Run diagnostics unification)
+- **Branch:** `safety/units-gate-with-queryparams`
+- **Current local scope:** Imperial HR-control MVP on top of units safety / operator confirmation
 - **Push status:** local only — not pushed to remote
 - **Repo:** `github.com/tourvald/walkingpad-remote` (canonical)
 
@@ -44,8 +44,9 @@
 | post-observation telemetry (events / outcome) | 🟡 QA pending |
 | Test Run diagnostics unification (session_kind) | 🟡 QA pending |
 | Units safety gate (`queryParams.unit`) | ✅ Done |
-| Imperial no-load diagnostic Test Run | 🟡 Implementation / QA pending |
-| Operator physical semantics confirmation | 🟡 Implementation / QA pending |
+| Imperial no-load diagnostic Test Run | ✅ Done (operator-confirmed on affected pad) |
+| Operator physical semantics confirmation | ✅ Done |
+| Imperial HR-control MVP | 🟡 Implementation local / device QA pending |
 | C — recovery after kill | 📋 Planned (post-v1 — do not start) |
 
 ## Safety decisions (fixed)
@@ -53,16 +54,24 @@
 - v1 background = **safety-first** (guarantee cooldown + stop).
 - **runtime_gap logs only — it never stops the belt.**
 - Stop = speed 0 + standby, with confirmation of the actual stop.
-- HR-control requires WalkingPad `queryParams.unit == metric` with a valid
-  parse/checksum. `imperial`, unknown, or invalid params keep HR-control blocked.
+- HR-control on metric requires WalkingPad `queryParams.unit == metric` with a
+  valid parse/checksum.
 - Debug Test Run on `imperial` is diagnostic-only: explicit no-load confirmation,
   fixed `rawTenths=30`, 60s duration, STOP, and telemetry/analyzer evidence for
-  physical speed. No unit switching, HR-control conversion, or operator bypass is
-  implemented.
+  physical speed. It does not switch units, silently bypass gates, or unlock HR
+  automation by itself.
 - Operator-confirmed physical semantics may be stored only for a specific
   WalkingPad fingerprint (`peripheralId`, name, protocol, raw controller params,
-  unit pref, checksum). This can set `physicalSpeedConfidence`, but **does not**
-  unlock HR-control on imperial.
+  unit pref, checksum).
+- HR-control on imperial is allowed only for the matching `confirmedImperial`
+  treadmill, only after a session-scoped manual-stop acknowledgement. The first
+  implementation caps requested physical speed at `6.0 km/h`, converts physical
+  km/h to native mph/raw tenths, and skips no-op commands when raw tenths do not
+  change. The acknowledgement is not persisted and resets on session end,
+  disconnect, and app restart.
+- App stop remains best-effort on the affected imperial treadmill. UI must keep
+  the physical-stop warning visible; stop-forensics is a separate unresolved
+  scope.
 - Recovery after kill (C): reconnect + **safe stop** + log (resume is a later refinement).
 - Local-first: no cloud, no accounts.
 
@@ -110,8 +119,9 @@ No hard blockers. What remains is **validation, not development**:
 7. After the test, the owner can record operator visual confirmation:
    `confirmedImperial`, `confirmedMetric`, or `unknown`. Confirmation applies
    only when the same peripheral and controller params fingerprint match.
-8. HR-control remains blocked on imperial even after operator confirmation; a
-   separate product decision is required before any imperial automation.
+8. Imperial HR-control MVP QA must verify that the matching `confirmedImperial`
+   treadmill requires session-only manual-stop acknowledgement, uses native mph
+   commands, and keeps physical-stop warning visible.
 9. If `stop_confirmed_ever=false`, keep that in the separate stop-forensics scope.
 
 Runtime-gap QA remains useful, but is paused until the imperial diagnostic path is validated.
