@@ -3,6 +3,10 @@ import asyncio
 import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import importlib.metadata
+import platform
+import subprocess
+import sys
 import time
 import uuid
 from typing import Optional
@@ -95,6 +99,27 @@ class StopExperimentPlan:
     packets: tuple[bytes, ...]
 
 
+@dataclass
+class BleDoctorReport:
+    mode: str
+    python_executable: str
+    python_version: str
+    bleak_version: str
+    macos_version: str
+    bluetooth_state: str
+    device_name: str
+    device_address: str
+    device_rssi: str
+    device_found: bool
+    connected: bool
+    services_count: int
+    characteristics_count: int
+    has_fe00: bool
+    has_fe01_notify: bool
+    has_fe02_write: bool
+    error: str = ""
+
+
 def _hex(data: bytes) -> str:
     return data.hex(" ").upper()
 
@@ -102,6 +127,35 @@ def _hex(data: bytes) -> str:
 def _ensure_bleak_available() -> None:
     if BleakClient is None or BleakScanner is None:
         raise RuntimeError("Python package 'bleak' is required for BLE access. Install it to use live BLE commands.")
+
+
+def _bleak_version() -> str:
+    try:
+        return importlib.metadata.version("bleak")
+    except importlib.metadata.PackageNotFoundError:
+        return "not_installed"
+
+
+def _macos_bluetooth_state() -> str:
+    if platform.system() != "Darwin":
+        return "not_macos"
+    try:
+        result = subprocess.run(
+            ["system_profiler", "SPBluetoothDataType"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"unknown:{exc}"
+
+    output = result.stdout or ""
+    if "State: On" in output:
+        return "on"
+    if "State: Off" in output:
+        return "off"
+    return "unknown"
 
 
 def _from_hex(payload: str) -> bytes:
@@ -127,6 +181,137 @@ def _checksum_ok(data: bytes) -> bool:
     checksum_index = len(data) - 2
     expected = data[checksum_index]
     return (sum(data[1:checksum_index]) & 0xFF) == expected
+
+
+def _bool_text(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _normalize_uuid(value: str) -> str:
+    return str(value or "").lower()
+
+
+def _normalize_properties(properties) -> set[str]:
+    return {str(prop).lower() for prop in (properties or [])}
+
+
+def _inspect_ble_services(services) -> dict:
+    services_count = 0
+    characteristics_count = 0
+    has_fe00 = False
+    has_fe01_notify = False
+    has_fe02_write = False
+
+    for service in services or []:
+        services_count += 1
+        service_uuid = _normalize_uuid(getattr(service, "uuid", ""))
+        if service_uuid == SERVICE_FE00:
+            has_fe00 = True
+        for characteristic in getattr(service, "characteristics", []) or []:
+            characteristics_count += 1
+            char_uuid = _normalize_uuid(getattr(characteristic, "uuid", ""))
+            props = _normalize_properties(getattr(characteristic, "properties", []))
+            if char_uuid == CHAR_NOTIFY_FE01 and ("notify" in props or "indicate" in props):
+                has_fe01_notify = True
+            if char_uuid == CHAR_WRITE_FE02 and (
+                "write" in props or "write-without-response" in props or "write_without_response" in props
+            ):
+                has_fe02_write = True
+
+    return {
+        "services_count": services_count,
+        "characteristics_count": characteristics_count,
+        "has_fe00": has_fe00,
+        "has_fe01_notify": has_fe01_notify,
+        "has_fe02_write": has_fe02_write,
+    }
+
+
+def _make_ble_doctor_dry_run_report(name_filter: Optional[str]) -> BleDoctorReport:
+    return BleDoctorReport(
+        mode="ble_doctor",
+        python_executable=sys.executable,
+        python_version=platform.python_version(),
+        bleak_version=_bleak_version(),
+        macos_version=platform.platform(),
+        bluetooth_state="dry_run",
+        device_name=name_filter or "dry-run",
+        device_address="dry-run",
+        device_rssi="dry-run",
+        device_found=True,
+        connected=True,
+        services_count=1,
+        characteristics_count=2,
+        has_fe00=True,
+        has_fe01_notify=True,
+        has_fe02_write=True,
+    )
+
+
+def _format_ble_doctor_report(report: BleDoctorReport) -> list[str]:
+    lines = [
+        f"mode={report.mode}",
+        f"python_executable={report.python_executable}",
+        f"python_version={report.python_version}",
+        f"bleak_version={report.bleak_version}",
+        f"macos_version={report.macos_version}",
+        f"bluetooth_state={report.bluetooth_state}",
+        f"device_found={_bool_text(report.device_found)}",
+        f"device_name={report.device_name}",
+        f"device_address={report.device_address}",
+        f"device_rssi={report.device_rssi}",
+        f"connected={_bool_text(report.connected)}",
+        f"services_count={report.services_count}",
+        f"characteristics_count={report.characteristics_count}",
+        f"has_fe00={_bool_text(report.has_fe00)}",
+        f"has_fe01_notify={_bool_text(report.has_fe01_notify)}",
+        f"has_fe02_write={_bool_text(report.has_fe02_write)}",
+    ]
+    if report.error:
+        lines.append(f"error={report.error}")
+    if not report.has_fe01_notify:
+        lines.extend(_no_fe01_notification_possible_causes())
+    return lines
+
+
+def _no_fe01_notification_possible_causes() -> list[str]:
+    return [
+        "possible_cause=device_not_moving_or_not_sending_status",
+        "possible_cause=wrong_characteristic_or_missing_fe01_notify",
+        "possible_cause=another_central_connected",
+        "possible_cause=macos_bluetooth_permission_or_corebluetooth_issue",
+        "possible_cause=ble_adapter_issue",
+    ]
+
+
+def _format_observe_fe01_summary(
+    csv_path: str,
+    device_name: str,
+    device_address: str,
+    writes_count: int,
+    blocked_writes_count: int,
+    notifications_count: int,
+    observation_id: str,
+    attempted_duration_s: float,
+    notify_started: bool,
+) -> list[str]:
+    lines = [
+        f"mode={PASSIVE_OBSERVER_MODE}",
+        "subscribed_char=FE01",
+        f"csv_path={csv_path}",
+        f"device_name={device_name}",
+        f"device_address={device_address}",
+        f"notify_started={_bool_text(notify_started)}",
+        f"notification_handler_invoked={_bool_text(notifications_count > 0)}",
+        f"attempted_duration_s={attempted_duration_s:g}",
+        f"writes_count={writes_count}",
+        f"blocked_writes_count={blocked_writes_count}",
+        f"notifications_count={notifications_count}",
+        f"observation_id={observation_id}",
+    ]
+    if notifications_count == 0:
+        lines.extend(_no_fe01_notification_possible_causes())
+    return lines
 
 
 def _encode3(value: int) -> list[int]:
@@ -468,9 +653,127 @@ async def _resolve_device(address: Optional[str], name_filter: Optional[str]) ->
     return found.address, found.name or ""
 
 
+async def _scan_for_device_snapshot(name_filter: Optional[str], timeout: float = 10.0) -> Optional[dict]:
+    _ensure_bleak_available()
+    seen: dict[str, dict] = {}
+
+    def detection_callback(device, adv_data):
+        if not _match_name(device.name, name_filter):
+            return
+        rssi = getattr(adv_data, "rssi", None)
+        if rssi is None:
+            rssi = getattr(device, "rssi", None)
+        seen[device.address] = {
+            "address": device.address,
+            "name": device.name or "",
+            "rssi": "" if rssi is None else str(rssi),
+            "service_uuids": list(getattr(adv_data, "service_uuids", []) or []),
+        }
+
+    scanner = BleakScanner(detection_callback=detection_callback)
+    await scanner.start()
+    await asyncio.sleep(timeout)
+    await scanner.stop()
+    if not seen:
+        return None
+    return sorted(seen.values(), key=lambda item: item.get("rssi") or "", reverse=True)[0]
+
+
+async def _get_client_services(client):
+    if hasattr(client, "get_services"):
+        return await client.get_services()
+    return client.services
+
+
 async def _resolve_address(address: Optional[str], name_filter: Optional[str]) -> str:
     resolved, _ = await _resolve_device(address, name_filter)
     return resolved
+
+
+async def ble_doctor(address: Optional[str], name_filter: Optional[str], dry_run_sample: bool) -> None:
+    if dry_run_sample:
+        for line in _format_ble_doctor_report(_make_ble_doctor_dry_run_report(name_filter)):
+            print(line)
+        return
+
+    report = BleDoctorReport(
+        mode="ble_doctor",
+        python_executable=sys.executable,
+        python_version=platform.python_version(),
+        bleak_version=_bleak_version(),
+        macos_version=platform.platform(),
+        bluetooth_state=_macos_bluetooth_state(),
+        device_name=name_filter or "",
+        device_address=address or "",
+        device_rssi="",
+        device_found=False,
+        connected=False,
+        services_count=0,
+        characteristics_count=0,
+        has_fe00=False,
+        has_fe01_notify=False,
+        has_fe02_write=False,
+    )
+
+    try:
+        if address:
+            snapshot = {"address": address, "name": name_filter or "", "rssi": ""}
+        else:
+            snapshot = await _scan_for_device_snapshot(name_filter)
+        if not snapshot:
+            report.error = "device_not_found"
+            for line in _format_ble_doctor_report(report):
+                print(line)
+            return
+
+        report.device_found = True
+        report.device_name = snapshot.get("name") or name_filter or ""
+        report.device_address = snapshot.get("address") or ""
+        report.device_rssi = snapshot.get("rssi") or ""
+
+        async with BleakClient(report.device_address) as client:
+            report.connected = bool(client.is_connected)
+            services = await _get_client_services(client)
+            capabilities = _inspect_ble_services(services)
+            report.services_count = int(capabilities["services_count"])
+            report.characteristics_count = int(capabilities["characteristics_count"])
+            report.has_fe00 = bool(capabilities["has_fe00"])
+            report.has_fe01_notify = bool(capabilities["has_fe01_notify"])
+            report.has_fe02_write = bool(capabilities["has_fe02_write"])
+    except Exception as exc:
+        report.error = f"{type(exc).__name__}: {exc}"
+
+    for line in _format_ble_doctor_report(report):
+        print(line)
+
+
+async def dump_services(address: Optional[str], name_filter: Optional[str], dry_run_sample: bool) -> None:
+    if dry_run_sample:
+        report = _make_ble_doctor_dry_run_report(name_filter)
+        print("mode=ble_dump_services")
+        for line in _format_ble_doctor_report(report)[1:]:
+            print(line)
+        print("service=FE00")
+        print(f"  char={CHAR_NOTIFY_FE01} props=notify")
+        print(f"  char={CHAR_WRITE_FE02} props=write-without-response")
+        return
+
+    resolved, resolved_name = await _resolve_device(address, name_filter)
+    print("mode=ble_dump_services")
+    print(f"device_name={resolved_name or name_filter or ''}")
+    print(f"device_address={resolved}")
+    async with BleakClient(resolved) as client:
+        print(f"connected={_bool_text(bool(client.is_connected))}")
+        services = await _get_client_services(client)
+        capabilities = _inspect_ble_services(services)
+        print(f"has_fe00={_bool_text(bool(capabilities['has_fe00']))}")
+        print(f"has_fe01_notify={_bool_text(bool(capabilities['has_fe01_notify']))}")
+        print(f"has_fe02_write={_bool_text(bool(capabilities['has_fe02_write']))}")
+        for service in services:
+            print(f"service={service.uuid}")
+            for characteristic in service.characteristics:
+                props = ",".join(characteristic.properties)
+                print(f"  char={characteristic.uuid} props={props}")
 
 
 async def connect_and_list(address: Optional[str], name_filter: Optional[str]) -> None:
@@ -478,11 +781,7 @@ async def connect_and_list(address: Optional[str], name_filter: Optional[str]) -
     print("Using address:", resolved)
     async with BleakClient(resolved) as client:
         print("Connected:", client.is_connected)
-        services = None
-        if hasattr(client, "get_services"):
-            services = await client.get_services()
-        else:
-            services = client.services
+        services = await _get_client_services(client)
         for s in services:
             print("Service:", s.uuid)
             for c in s.characteristics:
@@ -543,12 +842,18 @@ async def observe_fe01(
                 )
             )
         print(f"mode={PASSIVE_OBSERVER_MODE}")
-        print(f"subscribed_char=FE01")
-        print(f"csv_path={csv_path}")
-        print(f"writes_count={guard.writes_count}")
-        print(f"blocked_writes_count={guard.blocked_writes_count}")
-        print("notifications_count=1")
-        print(f"observation_id={observation_id}")
+        for line in _format_observe_fe01_summary(
+            csv_path=csv_path,
+            device_name=name_filter or "dry-run",
+            device_address=address or "dry-run",
+            writes_count=guard.writes_count,
+            blocked_writes_count=guard.blocked_writes_count,
+            notifications_count=1,
+            observation_id=observation_id,
+            attempted_duration_s=duration,
+            notify_started=True,
+        )[1:]:
+            print(line)
         return
 
     resolved, resolved_name = await _resolve_device(address, name_filter)
@@ -601,15 +906,18 @@ async def observe_fe01(
             await asyncio.sleep(duration)
             await client.stop_notify(CHAR_NOTIFY_FE01)
 
-    print(f"mode={PASSIVE_OBSERVER_MODE}")
-    print("subscribed_char=FE01")
-    print(f"csv_path={csv_path}")
-    print(f"device_name={device_name}")
-    print(f"device_address={resolved}")
-    print(f"writes_count={guard.writes_count}")
-    print(f"blocked_writes_count={guard.blocked_writes_count}")
-    print(f"notifications_count={notifications_count}")
-    print(f"observation_id={observation_id}")
+    for line in _format_observe_fe01_summary(
+        csv_path=csv_path,
+        device_name=device_name,
+        device_address=resolved,
+        writes_count=guard.writes_count,
+        blocked_writes_count=guard.blocked_writes_count,
+        notifications_count=notifications_count,
+        observation_id=observation_id,
+        attempted_duration_s=duration,
+        notify_started=True,
+    ):
+        print(line)
 
 
 async def stop_experiment(
@@ -949,10 +1257,7 @@ async def dump(address: Optional[str], duration: float, subscribe_all: bool, nam
     print("Using address:", resolved)
     async with BleakClient(resolved) as client:
         print("Connected:", client.is_connected)
-        if hasattr(client, "get_services"):
-            services = await client.get_services()
-        else:
-            services = client.services
+        services = await _get_client_services(client)
         for s in services:
             print("Service:", s.uuid)
             for c in s.characteristics:
@@ -1101,6 +1406,16 @@ def main() -> None:
     p_observe.add_argument("--csv", required=True, dest="csv_path")
     p_observe.add_argument("--dry-run-sample", action="store_true")
 
+    p_doctor = sub.add_parser("doctor", help="Read-only BLE environment and WalkingPad service preflight")
+    p_doctor.add_argument("address", type=str, nargs="?")
+    p_doctor.add_argument("--name", type=str, default=None)
+    p_doctor.add_argument("--dry-run-sample", action="store_true")
+
+    p_dump_services = sub.add_parser("dump-services", help="Read-only BLE service/characteristic dump")
+    p_dump_services.add_argument("address", type=str, nargs="?")
+    p_dump_services.add_argument("--name", type=str, default=None)
+    p_dump_services.add_argument("--dry-run-sample", action="store_true")
+
     p_stop_exp = sub.add_parser(
         "stop-experiment",
         help="Run a whitelisted no-load stop experiment with FE01 CSV timeline",
@@ -1162,6 +1477,10 @@ def main() -> None:
         asyncio.run(listen(args.address, args.duration, args.name))
     elif args.cmd == "observe-fe01":
         asyncio.run(observe_fe01(args.address, args.duration, args.name, args.csv_path, args.dry_run_sample))
+    elif args.cmd == "doctor":
+        asyncio.run(ble_doctor(args.address, args.name, args.dry_run_sample))
+    elif args.cmd == "dump-services":
+        asyncio.run(dump_services(args.address, args.name, args.dry_run_sample))
     elif args.cmd == "stop-experiment":
         missing = _missing_stop_experiment_confirmations(
             args.confirm_no_load,

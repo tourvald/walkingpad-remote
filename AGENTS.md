@@ -26,6 +26,11 @@
   - variants are fixed whitelist only: `speed-zero-only` sends exactly `F7 A2 01 00 A3 FD`; `toggle-only` sends exactly `F7 A2 04 01 A7 FD`
   - runner must refuse without all three confirmations, require fresh low moving FE01 baseline, and log a CSV Stop Experiment Report readable by `tools/analyze_training_log.py`
   - no arbitrary hex, `raw`, `seq`, `F7 A2 03 07 AC FD`, `setUnit`, service-menu writes, firmware/OTA, or loaded treadmill experiments in this mode
+- BLE tooling setup (2026-06-28):
+  - use `./scripts/setup_ble_env.sh` to create `.venv-ble/` with pinned `bleak==3.0.2`; avoid random system/Xcode Python for live BLE work
+  - use `./scripts/run_ble_tool.sh doctor --name KS-F0`, then `dump-services`, then `observe-fe01` before any stop experiment
+  - if `observe-fe01` reports `notifications_count=0`, treat stop experiments as blocked; the runner must not write without fresh moving FE01 baseline
+  - operational docs live in `docs/ble_tooling_setup.md`
 - Imperial units diagnostic MVP (2026-06-28):
   - affected WalkingPad controllers can report `queryParams.unit=1` (`imperial`)
   - HR-control remains blocked for imperial/unknown units until physical speed semantics are proven
