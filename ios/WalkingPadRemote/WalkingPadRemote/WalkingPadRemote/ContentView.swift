@@ -961,6 +961,7 @@ private struct HRControlPanel: View {
     @State private var showExportButton = false
     @State private var hrFailureBaselineCount = 0
     @State private var showExtendConfirm = false
+    @State private var showImperialManualStopConfirm = false
     @State private var selectedWatchIssue: HrWatchIssue?
 
     init(debugPreview: HRControlPanelPreviewState? = nil) {
@@ -968,6 +969,9 @@ private struct HRControlPanel: View {
     }
 
     private func treadmillUnitsWarningMessage(for state: TreadmillUnitsState) -> String? {
+        if state.nativeUnits == .imperial, state.physicalSpeedConfidence == .confirmedImperial {
+            return "Дорожка работает в mph. Остановка приложением пока не гарантирована — держите физическую кнопку стоп рядом."
+        }
         guard let reason = TreadmillUnitsSafetyPolicy.blockReason(for: state) else { return nil }
         switch reason {
         case .imperialUnits:
@@ -1024,10 +1028,15 @@ private struct HRControlPanel: View {
         let canExtendHrSession = debugPreview?.canExtendHrSession ?? manager.canExtendHrSession
         let hrSessionMaxMinutes = debugPreview?.hrSessionMaxMinutes ?? manager.hrSessionMaxMinutes
         let canStartHrControl = manager.isHrControlStartAllowed
+        let needsImperialManualStopAck = !isPreviewMode && manager.requiresImperialManualStopAcknowledgementForHrControl
+        let startButtonEnabled = !isPreviewMode && (canStartHrControl || needsImperialManualStopAck)
         let unitsWarningMessage = isPreviewMode ? nil : treadmillUnitsWarningMessage(for: manager.treadmillUnitsState)
         let hrStartSubtitle: String = {
             if isPreviewMode {
                 return "Preview mode: команды на дорожку отключены"
+            }
+            if needsImperialManualStopAck {
+                return "mph: подтвердите ручную остановку перед стартом"
             }
             if canStartHrControl {
                 return "Автоподстройка скорости по пульсу и зоне"
@@ -1210,13 +1219,17 @@ private struct HRControlPanel: View {
                         title: isPreviewMode ? "HR‑контроль (preview)" : "Запустить HR‑контроль",
                         subtitle: hrStartSubtitle,
                         systemImage: "heart.circle.fill",
-                        enabled: !isPreviewMode && canStartHrControl,
+                        enabled: startButtonEnabled,
                         tint: .accentColor,
                         accessibilityLabel: "Запустить HR-контроль",
                         accessibilityHint: "Запускает автоматическую тренировку с контролем по пульсу"
                     ) {
                         if !isPreviewMode {
-                            manager.startHrControl()
+                            if needsImperialManualStopAck {
+                                showImperialManualStopConfirm = true
+                            } else {
+                                manager.startHrControl()
+                            }
                         }
                     }
                 }
@@ -1237,6 +1250,15 @@ private struct HRControlPanel: View {
                     )
                 }
             }
+        }
+        .alert("Подтвердите ручную остановку", isPresented: $showImperialManualStopConfirm) {
+            Button("Подтверждаю и запускаю", role: .destructive) {
+                manager.acknowledgeImperialHrControlManualStopForSession()
+                manager.startHrControl()
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Дорожка работает в mph. Остановка приложением пока не гарантирована. Держите физическую кнопку стоп рядом и будьте готовы остановить полотно вручную.")
         }
         .onChange(of: manager.isHrControlRunning) { _, newValue in
             guard !isPreviewMode else { return }
