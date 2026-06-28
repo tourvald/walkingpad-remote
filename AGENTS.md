@@ -16,6 +16,11 @@
   - raw reports under `docs/research/` remain historical research dumps, not the primary decision surface
   - risky protocol actions must carry an explicit status (`allowed`, `diagnostic-only`, `forbidden`, or `unknown`)
   - keep units, stop-forensics, firmware/OTA, FTMS, and KS-F0 local observations separated by topic
+- Passive FE01 remote-observation CLI (2026-06-28):
+  - `python3 scan_ble.py observe-fe01 --name KS-F0 --duration 60 --csv /tmp/fe01_remote_observation.csv` is the approved listener-only path for physical-remote observation
+  - this mode subscribes to FE01, writes parsed/raw notification rows to CSV, prints `writes_count` / `blocked_writes_count`, and installs a write guard that raises on accidental BLE writes
+  - use it before any stop recovery write experiment to determine whether the controller sees physical remote Start/Stop via the FE01 `button` field
+  - do not use `scan_ble.py raw`, `scan_ble.py seq`, `F7 A2 03 07 AC FD`, `setUnit`, service-menu writes, or firmware/OTA for this observation
 - Imperial units diagnostic MVP (2026-06-28):
   - affected WalkingPad controllers can report `queryParams.unit=1` (`imperial`)
   - HR-control remains blocked for imperial/unknown units until physical speed semantics are proven

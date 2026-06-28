@@ -1,9 +1,23 @@
 import argparse
 import asyncio
+import csv
+from datetime import datetime, timezone
+import time
+import uuid
 from typing import Optional
 
-from bleak import BleakClient, BleakScanner
-from bleak.exc import BleakBluetoothNotAvailableError, BleakError
+try:
+    from bleak import BleakClient, BleakScanner
+    from bleak.exc import BleakBluetoothNotAvailableError, BleakError
+except ModuleNotFoundError:
+    BleakClient = None
+    BleakScanner = None
+
+    class BleakError(Exception):
+        pass
+
+    class BleakBluetoothNotAvailableError(BleakError):
+        pass
 
 BLE_BASE = "0000{short}-0000-1000-8000-00805f9b34fb"
 SERVICE_FE00 = BLE_BASE.format(short="fe00")
@@ -14,10 +28,38 @@ CHAR_WRITE_FE02 = BLE_BASE.format(short="fe02")
 SVC_FFC0 = "f000ffc0-0451-4000-b000-000000000000"
 CHAR_FFC1 = "f000ffc1-0451-4000-b000-000000000000"
 CHAR_FFC2 = "f000ffc2-0451-4000-b000-000000000000"
+PASSIVE_OBSERVER_MODE = "passive_fe01_observer"
+OBSERVE_FE01_CSV_FIELDS = [
+    "ts",
+    "elapsed_s",
+    "observation_id",
+    "device_name",
+    "device_address",
+    "raw_fe01_hex",
+    "parse_ok",
+    "checksum_ok",
+    "state",
+    "speed_raw_tenths",
+    "app_speed_raw_tenths",
+    "mode",
+    "button",
+    "time_s",
+    "distance_raw",
+    "steps",
+    "notification_index",
+    "gap_since_previous_s",
+    "observer_mode",
+    "writes_count",
+]
 
 
 def _hex(data: bytes) -> str:
     return data.hex(" ").upper()
+
+
+def _ensure_bleak_available() -> None:
+    if BleakClient is None or BleakScanner is None:
+        raise RuntimeError("Python package 'bleak' is required for BLE access. Install it to use live BLE commands.")
 
 
 def _from_hex(payload: str) -> bytes:
@@ -31,6 +73,116 @@ def _byte2int(data: bytes) -> int:
 def _fix_crc(cmd: bytearray) -> bytearray:
     cmd[-2] = sum(cmd[1:-2]) % 256
     return cmd
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _checksum_ok(data: bytes) -> bool:
+    if len(data) < 3:
+        return False
+    checksum_index = len(data) - 2
+    expected = data[checksum_index]
+    return (sum(data[1:checksum_index]) & 0xFF) == expected
+
+
+def _encode3(value: int) -> list[int]:
+    value = max(0, min(0xFF_FF_FF, int(value)))
+    return [(value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF]
+
+
+def _build_sample_fe01_frame(
+    state: int = 1,
+    speed_raw_tenths: int = 0,
+    mode: int = 1,
+    time_s: int = 0,
+    distance_raw: int = 0,
+    steps: int = 0,
+    app_speed_raw_tenths: int = 0,
+    button: int = 0,
+) -> bytes:
+    frame = bytearray([0xF8, 0xA2, state & 0xFF, speed_raw_tenths & 0xFF, mode & 0xFF])
+    frame.extend(_encode3(time_s))
+    frame.extend(_encode3(distance_raw))
+    frame.extend(_encode3(steps))
+    frame.extend([app_speed_raw_tenths & 0xFF, 0x00, button & 0xFF, 0x00, 0x00, 0xFD])
+    checksum_index = len(frame) - 2
+    frame[checksum_index] = sum(frame[1:checksum_index]) & 0xFF
+    return bytes(frame)
+
+
+def _parse_fe01_observation(data: bytes) -> dict:
+    raw_hex = _hex(data)
+    if len(data) < 20 or data[0] != 0xF8 or data[1] != 0xA2:
+        return {
+            "raw_fe01_hex": raw_hex,
+            "parse_ok": False,
+            "checksum_ok": False,
+            "state": "",
+            "speed_raw_tenths": "",
+            "app_speed_raw_tenths": "",
+            "mode": "",
+            "button": "",
+            "time_s": "",
+            "distance_raw": "",
+            "steps": "",
+        }
+
+    return {
+        "raw_fe01_hex": raw_hex,
+        "parse_ok": True,
+        "checksum_ok": _checksum_ok(data),
+        "state": data[2],
+        "speed_raw_tenths": data[3],
+        "app_speed_raw_tenths": data[14],
+        "mode": data[4],
+        "button": data[16],
+        "time_s": _byte2int(data[5:8]),
+        "distance_raw": _byte2int(data[8:11]),
+        "steps": _byte2int(data[11:14]),
+    }
+
+
+def _make_fe01_observation_row(
+    data: bytes,
+    ts: str,
+    elapsed_s: float,
+    observation_id: str,
+    device_name: str,
+    device_address: str,
+    notification_index: int,
+    gap_since_previous_s: Optional[float],
+    writes_count: int,
+) -> dict:
+    parsed = _parse_fe01_observation(data)
+    row = {
+        "ts": ts,
+        "elapsed_s": round(elapsed_s, 3),
+        "observation_id": observation_id,
+        "device_name": device_name,
+        "device_address": device_address,
+        "notification_index": notification_index,
+        "gap_since_previous_s": "" if gap_since_previous_s is None else round(gap_since_previous_s, 3),
+        "observer_mode": PASSIVE_OBSERVER_MODE,
+        "writes_count": writes_count,
+    }
+    row.update(parsed)
+    return row
+
+
+class PassiveWriteGuard:
+    def __init__(self) -> None:
+        self.writes_count = 0
+        self.blocked_writes_count = 0
+
+    def install(self, client) -> None:
+        async def blocked_write_gatt_char(*args, **kwargs):
+            self.blocked_writes_count += 1
+            print("[PASSIVE GUARD] blocked accidental write_gatt_char call")
+            raise RuntimeError("Passive FE01 observer forbids BLE writes")
+
+        client.write_gatt_char = blocked_write_gatt_char
 
 
 def _parse_status(data: bytes) -> Optional[dict]:
@@ -71,6 +223,7 @@ def _match_name(name: Optional[str], needle: Optional[str]) -> bool:
 
 
 async def scan(timeout: float, name_filter: Optional[str]) -> None:
+    _ensure_bleak_available()
     seen: dict[str, tuple[Optional[str], list[str]]] = {}
 
     def detection_callback(device, adv_data):
@@ -96,9 +249,10 @@ async def scan(timeout: float, name_filter: Optional[str]) -> None:
         print(address, name, uuids or None)
 
 
-async def _resolve_address(address: Optional[str], name_filter: Optional[str]) -> str:
+async def _resolve_device(address: Optional[str], name_filter: Optional[str]) -> tuple[str, str]:
+    _ensure_bleak_available()
     if address:
-        return address
+        return address, name_filter or ""
 
     def predicate(device, adv):
         if name_filter and device.name and name_filter.lower() in device.name.lower():
@@ -112,7 +266,12 @@ async def _resolve_address(address: Optional[str], name_filter: Optional[str]) -
     found = await BleakScanner.find_device_by_filter(predicate, timeout=10.0)
     if not found:
         raise RuntimeError("Device not found. Make sure the treadmill is advertising and nearby.")
-    return found.address
+    return found.address, found.name or ""
+
+
+async def _resolve_address(address: Optional[str], name_filter: Optional[str]) -> str:
+    resolved, _ = await _resolve_device(address, name_filter)
+    return resolved
 
 
 async def connect_and_list(address: Optional[str], name_filter: Optional[str]) -> None:
@@ -146,6 +305,112 @@ async def listen(address: Optional[str], duration: float, name_filter: Optional[
         await client.start_notify(CHAR_NOTIFY_FE01, on_notify)
         await asyncio.sleep(duration)
         await client.stop_notify(CHAR_NOTIFY_FE01)
+
+
+async def observe_fe01(
+    address: Optional[str],
+    duration: float,
+    name_filter: Optional[str],
+    csv_path: str,
+    dry_run_sample: bool,
+) -> None:
+    observation_id = str(uuid.uuid4())
+    if dry_run_sample:
+        guard = PassiveWriteGuard()
+        sample = _build_sample_fe01_frame(
+            state=1,
+            speed_raw_tenths=0,
+            mode=1,
+            time_s=0,
+            distance_raw=0,
+            steps=0,
+            app_speed_raw_tenths=0,
+            button=0,
+        )
+        with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=OBSERVE_FE01_CSV_FIELDS)
+            writer.writeheader()
+            writer.writerow(
+                _make_fe01_observation_row(
+                    data=sample,
+                    ts=_utc_now_iso(),
+                    elapsed_s=0,
+                    observation_id=observation_id,
+                    device_name=name_filter or "dry-run",
+                    device_address=address or "dry-run",
+                    notification_index=1,
+                    gap_since_previous_s=None,
+                    writes_count=guard.writes_count,
+                )
+            )
+        print(f"mode={PASSIVE_OBSERVER_MODE}")
+        print(f"subscribed_char=FE01")
+        print(f"csv_path={csv_path}")
+        print(f"writes_count={guard.writes_count}")
+        print(f"blocked_writes_count={guard.blocked_writes_count}")
+        print("notifications_count=1")
+        print(f"observation_id={observation_id}")
+        return
+
+    resolved, resolved_name = await _resolve_device(address, name_filter)
+    device_name = resolved_name or name_filter or ""
+    guard = PassiveWriteGuard()
+    notifications_count = 0
+    previous_monotonic: Optional[float] = None
+    started_monotonic = time.monotonic()
+
+    print("Using address:", resolved)
+    print(f"Observation id: {observation_id}")
+    print("Passive FE01 observer: writes are guarded and forbidden.")
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=OBSERVE_FE01_CSV_FIELDS)
+        writer.writeheader()
+
+        def on_notify(sender: int, data: bytearray) -> None:
+            nonlocal notifications_count, previous_monotonic
+            now = time.monotonic()
+            notifications_count += 1
+            gap = None if previous_monotonic is None else now - previous_monotonic
+            previous_monotonic = now
+            row = _make_fe01_observation_row(
+                data=bytes(data),
+                ts=_utc_now_iso(),
+                elapsed_s=now - started_monotonic,
+                observation_id=observation_id,
+                device_name=device_name,
+                device_address=resolved,
+                notification_index=notifications_count,
+                gap_since_previous_s=gap,
+                writes_count=guard.writes_count,
+            )
+            writer.writerow(row)
+            handle.flush()
+            print(
+                "[OBSERVE] "
+                f"#{notifications_count} state={row['state']} "
+                f"speed_raw={row['speed_raw_tenths']} "
+                f"app_raw={row['app_speed_raw_tenths']} "
+                f"mode={row['mode']} button={row['button']} "
+                f"checksum={row['checksum_ok']} raw={row['raw_fe01_hex']}"
+            )
+
+        async with BleakClient(resolved) as client:
+            print("Connected:", client.is_connected)
+            guard.install(client)
+            await client.start_notify(CHAR_NOTIFY_FE01, on_notify)
+            await asyncio.sleep(duration)
+            await client.stop_notify(CHAR_NOTIFY_FE01)
+
+    print(f"mode={PASSIVE_OBSERVER_MODE}")
+    print("subscribed_char=FE01")
+    print(f"csv_path={csv_path}")
+    print(f"device_name={device_name}")
+    print(f"device_address={resolved}")
+    print(f"writes_count={guard.writes_count}")
+    print(f"blocked_writes_count={guard.blocked_writes_count}")
+    print(f"notifications_count={notifications_count}")
+    print(f"observation_id={observation_id}")
 
 
 async def write_hex(address: Optional[str], hex_payload: str, name_filter: Optional[str]) -> None:
@@ -315,6 +580,13 @@ def main() -> None:
     p_listen.add_argument("--duration", type=float, default=20.0)
     p_listen.add_argument("--name", type=str, default=None)
 
+    p_observe = sub.add_parser("observe-fe01", help="Passive FE01 observer with CSV export and zero-write guard")
+    p_observe.add_argument("address", type=str, nargs="?")
+    p_observe.add_argument("--duration", type=float, default=60.0)
+    p_observe.add_argument("--name", type=str, default=None)
+    p_observe.add_argument("--csv", required=True, dest="csv_path")
+    p_observe.add_argument("--dry-run-sample", action="store_true")
+
     p_write = sub.add_parser("write", help="Write hex payload to FE02")
     p_write.add_argument("address", type=str, nargs="?")
     p_write.add_argument("hex_payload", type=str)
@@ -359,6 +631,8 @@ def main() -> None:
         asyncio.run(connect_and_list(args.address, args.name))
     elif args.cmd == "listen":
         asyncio.run(listen(args.address, args.duration, args.name))
+    elif args.cmd == "observe-fe01":
+        asyncio.run(observe_fe01(args.address, args.duration, args.name, args.csv_path, args.dry_run_sample))
     elif args.cmd == "write":
         asyncio.run(write_hex(args.address, args.hex_payload, args.name))
     elif args.cmd == "dump":
