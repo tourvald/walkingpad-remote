@@ -193,6 +193,16 @@ class StopExperimentReport:
     latest_ts: str
 
 
+STOP_EXPERIMENT_OUTCOME_SEVERITY = {
+    "": 0,
+    "STOP_CONFIRMED": 1,
+    "NO_FRESH_FE01": 2,
+    "DECELERATED_BUT_NOT_ZERO": 3,
+    "STATE_STILL_RUNNING": 4,
+    "COMMAND_CAUSED_ACCELERATION": 5,
+}
+
+
 @dataclass
 class GapReport:
     session: str
@@ -523,6 +533,11 @@ def collect_stop_experiment_reports(rows: list[Row]) -> list[StopExperimentRepor
         )
         writes_count = int(_to_float(summary.get("writes_count")) or 0)
         blocked_writes_count = int(_to_float(summary.get("blocked_writes_count")) or 0)
+        outcome = max(
+            (str(row.get("outcome") or "") for row in ordered),
+            key=lambda value: STOP_EXPERIMENT_OUTCOME_SEVERITY.get(value, 0),
+            default=str(summary.get("outcome") or ""),
+        )
         reports.append(
             StopExperimentReport(
                 experiment_id=experiment_id,
@@ -533,7 +548,7 @@ def collect_stop_experiment_reports(rows: list[Row]) -> list[StopExperimentRepor
                     or summary.get("stop_command_packet_hex")
                     or ""
                 ),
-                outcome=str(summary.get("outcome") or ""),
+                outcome=outcome,
                 writes_count=writes_count,
                 blocked_writes_count=blocked_writes_count,
                 notifications_count=sum(1 for row in ordered if str(row.get("event") or "") == "notify_fe01"),

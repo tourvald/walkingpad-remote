@@ -180,6 +180,56 @@ class StopExperimentReportTests(unittest.TestCase):
         self.assertEqual(reports[0].final_speed_raw_tenths, 8.0)
         self.assertEqual(reports[0].outcome, "DECELERATED_BUT_NOT_ZERO")
 
+    def test_collect_stop_experiment_preserves_acceleration_outcome_over_later_stale_summary(self):
+        rows = [
+            Row(
+                index=0,
+                ts_raw="2026-06-28T10:00:00Z",
+                t=0.0,
+                session="",
+                event="stop_experiment_snapshot",
+                raw={},
+                data={
+                    "observer_mode": "stop_experiment",
+                    "experiment_id": "exp-accel",
+                    "variant": "toggle-only",
+                    "command_packet_hex": "F7 A2 04 01 A7 FD",
+                    "writes_count": "1",
+                    "blocked_writes_count": "0",
+                    "speed_raw_tenths": "12",
+                    "baseline_speed_raw_tenths": "8",
+                    "confirmed_stop": "false",
+                    "outcome": "COMMAND_CAUSED_ACCELERATION",
+                },
+            ),
+            Row(
+                index=1,
+                ts_raw="2026-06-28T10:01:00Z",
+                t=60.0,
+                session="",
+                event="stop_experiment_summary",
+                raw={},
+                data={
+                    "observer_mode": "stop_experiment",
+                    "experiment_id": "exp-accel",
+                    "variant": "toggle-only",
+                    "command_packet_hex": "F7 A2 04 01 A7 FD",
+                    "writes_count": "1",
+                    "blocked_writes_count": "0",
+                    "speed_raw_tenths": "12",
+                    "baseline_speed_raw_tenths": "8",
+                    "confirmed_stop": "false",
+                    "outcome": "NO_FRESH_FE01",
+                },
+            ),
+        ]
+
+        reports = collect_stop_experiment_reports(rows)
+
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].outcome, "COMMAND_CAUSED_ACCELERATION")
+        self.assertEqual(reports[0].final_speed_raw_tenths, 12.0)
+
     def test_load_rows_reads_raw_jsonl_stop_experiment(self):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
             path = Path(handle.name)

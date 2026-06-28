@@ -36,6 +36,7 @@
   - `scripts/pull_ios_training_logs.sh --device <device-id> [--out-dir /tmp/path]` copies `Library/Application Support/TrainingLogs` from the `sw.WalkingPadRemote` app data container using `devicectl`
   - this helper is read-only: it does not launch the app, connect to BLE, or send treadmill commands
   - `tools/analyze_training_log.py` accepts exported CSV, a single raw `.jsonl`, or a directory tree containing raw `.jsonl` files, so stop-experiment evidence can be analyzed even if the iOS share-sheet CSV export was not used
+  - stop-experiment aggregation must preserve the highest-risk observed outcome across snapshots; do not let a later stale `NO_FRESH_FE01` summary hide an earlier `COMMAND_CAUSED_ACCELERATION`
 - BLE tooling setup (2026-06-28):
   - use `./scripts/setup_ble_env.sh` to create `.venv-ble/` with pinned `bleak==3.0.2`; avoid random system/Xcode Python for live BLE work
   - use `./scripts/run_ble_tool.sh doctor --name KS-F0`, then `dump-services`, then `observe-fe01` before any stop experiment
