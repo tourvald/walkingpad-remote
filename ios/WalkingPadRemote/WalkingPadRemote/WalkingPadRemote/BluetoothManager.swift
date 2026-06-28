@@ -976,6 +976,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published private(set) var imperialDiagnosticConfirmationSummary: String = ""
     @Published private(set) var canClearPhysicalSemanticsConfirmation: Bool = false
     private var lastImperialDiagnosticSessionId: String = ""
+    private var lastWalkingPadCommandRawTenths: Int? = nil
 
     // HR control
     @Published var isHrControlRunning: Bool = false
@@ -3164,9 +3165,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             if shouldSendStart {
                 scheduleWrite(startPacket, label: "START", after: 0.2)
-                scheduleWrite(buildWalkingPadSetSpeedPacket(kmh: v), label: speedLabel, after: 0.45)
+                if let speedCommand = makeWalkingPadSetSpeedCommand(kmh: v, label: speedLabel, force: true) {
+                    scheduleWrite(speedCommand.packet, label: speedCommand.label, after: 0.45)
+                }
             } else {
-                scheduleWrite(buildWalkingPadSetSpeedPacket(kmh: v), label: speedLabel, after: 0.2)
+                if let speedCommand = makeWalkingPadSetSpeedCommand(kmh: v, label: speedLabel, force: true) {
+                    scheduleWrite(speedCommand.packet, label: speedCommand.label, after: 0.2)
+                }
             }
 
         case .ftms:
@@ -3202,6 +3207,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         deviceTargetSpeedKmh = 0
         recordSpeedChange(from: old, to: 0, reason: "stop_belt_once")
         lastCommandLine = "CMD stop"
+        if treadmillProtocol == .walkingPad {
+            lastWalkingPadCommandRawTenths = 0
+        }
         resetSessionStats()
         if treadmillProtocol == .ftms {
             enqueueFtmsRequestControlIfNeeded()
@@ -3286,6 +3294,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         switch command {
         case .stopRetry:
             guard let stopPacket = buildTreadmillStopPacket() else { return }
+            if treadmillProtocol == .walkingPad {
+                lastWalkingPadCommandRawTenths = 0
+            }
             writeCommand(stopPacket, label: "STOP retry")
 
         case .walkingPadStandby:
@@ -4227,6 +4238,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         imperialDiagnosticConfirmationSummary = ""
         lastImperialDiagnosticSessionId = ""
         canClearPhysicalSemanticsConfirmation = false
+        lastWalkingPadCommandRawTenths = nil
     }
 
     private func selectTreadmillProtocol(from discoveredUuids: Set<CBUUID>) -> TreadmillProtocol {
@@ -4302,7 +4314,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func sendTreadmillSetSpeed(_ kmh: Double, label: String) {
         switch treadmillProtocol {
         case .walkingPad:
-            writeCommand(buildWalkingPadSetSpeedPacket(kmh: kmh), label: label)
+            guard let speedCommand = makeWalkingPadSetSpeedCommand(kmh: kmh, label: label, force: false) else {
+                return
+            }
+            writeCommand(speedCommand.packet, label: speedCommand.label)
         case .ftms:
             enqueueFtmsRequestControlIfNeeded()
             if shouldAutoStartForSpeedChange(kmh: kmh) {
@@ -4324,6 +4339,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             sendTreadmillSetSpeed(Double(rawTenths) / 10.0, label: label)
             return
         }
+        lastWalkingPadCommandRawTenths = rawTenths
         writeCommand(BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: rawTenths), label: label)
     }
 
@@ -4342,6 +4358,57 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func buildWalkingPadSetSpeedPacket(kmh: Double) -> Data {
         BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: clampSpeedTenths(kmh))
+    }
+
+    private struct WalkingPadSpeedCommand {
+        let packet: Data
+        let label: String
+    }
+
+    private var shouldUseConfirmedImperialCommandProjection: Bool {
+        treadmillProtocol == .walkingPad
+            && treadmillUnitsState.nativeUnits == .imperial
+            && treadmillUnitsState.physicalSpeedConfidence == .confirmedImperial
+    }
+
+    private func makeWalkingPadSetSpeedCommand(
+        kmh: Double,
+        label: String,
+        force: Bool
+    ) -> WalkingPadSpeedCommand? {
+        guard shouldUseConfirmedImperialCommandProjection else {
+            let rawTenths = clampSpeedTenths(kmh)
+            lastWalkingPadCommandRawTenths = rawTenths
+            return WalkingPadSpeedCommand(
+                packet: BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: rawTenths),
+                label: label
+            )
+        }
+
+        let projection = TreadmillSpeedCommandProjection.project(
+            requestedPhysicalSpeedKmh: kmh,
+            nativeUnits: .imperial,
+            previousRawTenths: lastWalkingPadCommandRawTenths
+        )
+        if !force && !projection.shouldSendCommand {
+            appendLog(
+                "SPEED no-op: requested \(String(format: "%.2f", projection.requestedPhysicalSpeedKmh)) km/h -> raw \(projection.commandRawTenths) unchanged"
+            )
+            return nil
+        }
+
+        lastWalkingPadCommandRawTenths = projection.commandRawTenths
+        let projectedLabel = String(
+            format: "SPEED %.1f mph raw=%d (physical %.2f km/h request, %.2f km/h est)",
+            projection.commandNativeSpeed,
+            projection.commandRawTenths,
+            projection.requestedPhysicalSpeedKmh,
+            projection.commandPhysicalSpeedKmhEstimate
+        )
+        return WalkingPadSpeedCommand(
+            packet: BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: projection.commandRawTenths),
+            label: projectedLabel
+        )
     }
 
     private func buildWalkingPadStandbyPacket() -> Data {
