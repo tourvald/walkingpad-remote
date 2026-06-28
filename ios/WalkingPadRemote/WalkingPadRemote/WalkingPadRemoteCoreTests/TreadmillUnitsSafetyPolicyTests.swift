@@ -46,6 +46,43 @@ final class TreadmillUnitsSafetyPolicyTests: XCTestCase {
         XCTAssertTrue(TreadmillUnitsSafetyPolicy.allowsDebugTestRun(state, confirmedNoLoadDiagnostic: true))
     }
 
+    func testConfirmedImperialRequiresSessionManualStopAcknowledgementForHrControl() {
+        let state = TreadmillUnitsState(
+            nativeUnits: .imperial,
+            source: .queryParams,
+            parseStatus: .validChecksum,
+            readAt: Date(timeIntervalSince1970: 10),
+            rawParamsHex: "F8 A6",
+            physicalSpeedConfidence: .confirmedImperial
+        )
+
+        XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state))
+        XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state, manualStopAcknowledged: false))
+        XCTAssertEqual(
+            TreadmillUnitsSafetyPolicy.blockReason(for: state, manualStopAcknowledged: false),
+            .manualStopAcknowledgementRequired
+        )
+        XCTAssertTrue(TreadmillUnitsSafetyPolicy.allowsHrControl(state, manualStopAcknowledged: true))
+        XCTAssertNil(TreadmillUnitsSafetyPolicy.blockReason(for: state, manualStopAcknowledged: true))
+    }
+
+    func testManualStopAcknowledgementDoesNotAllowUnconfirmedImperialHrControl() {
+        let state = TreadmillUnitsState(
+            nativeUnits: .imperial,
+            source: .queryParams,
+            parseStatus: .validChecksum,
+            readAt: Date(timeIntervalSince1970: 10),
+            rawParamsHex: "F8 A6",
+            physicalSpeedConfidence: .unknown
+        )
+
+        XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state, manualStopAcknowledged: true))
+        XCTAssertEqual(
+            TreadmillUnitsSafetyPolicy.blockReason(for: state, manualStopAcknowledged: true),
+            .imperialUnits
+        )
+    }
+
     func testUnknownOrFailedParamsBlockAutomation() {
         let notRead = TreadmillUnitsState.notRead
         let failed = TreadmillUnitsState(

@@ -113,7 +113,10 @@ final class TreadmillPhysicalSemanticsConfirmationTests: XCTestCase {
         )
 
         XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(confirmedState))
-        XCTAssertEqual(TreadmillUnitsSafetyPolicy.blockReason(for: confirmedState), .imperialUnits)
+        XCTAssertEqual(
+            TreadmillUnitsSafetyPolicy.blockReason(for: confirmedState),
+            .manualStopAcknowledgementRequired
+        )
     }
 
     private func makeDefaults() -> UserDefaults {

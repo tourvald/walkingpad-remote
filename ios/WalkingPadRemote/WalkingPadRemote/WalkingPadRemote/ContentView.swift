@@ -972,6 +972,8 @@ private struct HRControlPanel: View {
         switch reason {
         case .imperialUnits:
             return "Дорожка сообщает imperial units. HR‑контроль и тест дорожки заблокированы."
+        case .manualStopAcknowledgementRequired:
+            return "Дорожка работает в mph. Перед стартом подтвердите ручную остановку."
         case .unitsUnknown:
             return "Единицы скорости дорожки ещё не подтверждены через queryParams."
         case .paramsInvalid:

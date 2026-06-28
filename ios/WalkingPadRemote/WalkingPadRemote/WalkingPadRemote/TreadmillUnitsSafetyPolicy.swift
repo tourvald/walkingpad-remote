@@ -87,13 +87,21 @@ struct TreadmillUnitsState: Equatable {
 
 enum TreadmillUnitsBlockReason: String, Equatable {
     case imperialUnits
+    case manualStopAcknowledgementRequired
     case unitsUnknown
     case paramsInvalid
 }
 
 enum TreadmillUnitsSafetyPolicy {
     static func allowsHrControl(_ state: TreadmillUnitsState) -> Bool {
-        blockReason(for: state) == nil
+        allowsHrControl(state, manualStopAcknowledged: false)
+    }
+
+    static func allowsHrControl(
+        _ state: TreadmillUnitsState,
+        manualStopAcknowledged: Bool
+    ) -> Bool {
+        blockReason(for: state, manualStopAcknowledged: manualStopAcknowledged) == nil
     }
 
     static func allowsDebugTestRun(_ state: TreadmillUnitsState) -> Bool {
@@ -117,6 +125,13 @@ enum TreadmillUnitsSafetyPolicy {
     }
 
     static func blockReason(for state: TreadmillUnitsState) -> TreadmillUnitsBlockReason? {
+        blockReason(for: state, manualStopAcknowledged: false)
+    }
+
+    static func blockReason(
+        for state: TreadmillUnitsState,
+        manualStopAcknowledged: Bool
+    ) -> TreadmillUnitsBlockReason? {
         guard state.source == .queryParams, state.parseStatus.isValidQueryParamsRead else {
             return state.source == .queryParams ? .paramsInvalid : .unitsUnknown
         }
@@ -125,6 +140,9 @@ enum TreadmillUnitsSafetyPolicy {
         case .metric:
             return nil
         case .imperial:
+            if state.physicalSpeedConfidence == .confirmedImperial {
+                return manualStopAcknowledged ? nil : .manualStopAcknowledgementRequired
+            }
             return .imperialUnits
         case .unknown:
             return .unitsUnknown

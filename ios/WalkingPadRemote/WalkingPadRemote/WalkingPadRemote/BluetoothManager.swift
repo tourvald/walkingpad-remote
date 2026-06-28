@@ -982,6 +982,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var isHrControlRunning: Bool = false
     @Published var isHrControlStartAllowed: Bool = false
     @Published var hrControlStartBlockReasonText: String? = nil
+    @Published private(set) var imperialHrControlManualStopAcknowledged: Bool = false
     @Published var hrNextDecisionSeconds: Int = 0
     @Published var hrRemainingSeconds: Int = 0
     @Published var hrCooldownRemainingSeconds: Int = 0
@@ -1378,6 +1379,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             if completionEffect.shouldStopSession {
                 isHrControlRunning = false
                 hrControlStartedAt = nil
+                resetImperialHrControlManualStopAcknowledgement()
             }
             scheduleTrainingStructuredLogClose(reason: completionEffect.structuredLogReason)
             if completionEffect.shouldStopWatch {
@@ -2562,6 +2564,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             if self.isHrControlRunning {
                 self.stopTrainingStructuredLog(reason: "ble_disconnected")
             }
+            self.resetImperialHrControlManualStopAcknowledgement()
             self.resetProtocolState()
             self.connectedPeripheral = nil
             self.appendLog("Disconnected (error: \(error?.localizedDescription ?? "none"))")
@@ -2624,6 +2627,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.deviceTargetSpeedKmh = 0
             self.desiredSpeedKmh = 0
             self.resetSessionStats()
+            self.resetImperialHrControlManualStopAcknowledgement()
             self.stopTelemetry()
             self.isHrControlRunning = false
         }
@@ -3418,6 +3422,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrControlFailed = true
         infoToastMessage = "HR‑контроль остановлен — источник пульса недоступен."
         isHrControlRunning = false
+        resetImperialHrControlManualStopAcknowledgement()
         hrStatusLine = "HR‑контроль остановлен — источник пульса недоступен"
         hrNextDecisionSeconds = 0
         hrRemainingSeconds = 0
@@ -3458,7 +3463,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrControlStartBlockReasonText = "Нет подключения к дорожке"
             return
         }
-        guard TreadmillUnitsSafetyPolicy.allowsHrControl(treadmillUnitsState) else {
+        guard TreadmillUnitsSafetyPolicy.allowsHrControl(
+            treadmillUnitsState,
+            manualStopAcknowledged: imperialHrControlManualStopAcknowledged
+        ) else {
             isHrControlRunning = false
             let reason = treadmillUnitsAutomationBlockReasonText() ?? "Единицы скорости дорожки не подтверждены"
             hrControlStartBlockReasonText = reason
@@ -3537,6 +3545,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ])
         scheduleTrainingStructuredLogClose(reason: "manual_stop")
         isHrControlRunning = false
+        resetImperialHrControlManualStopAcknowledgement()
         hrStatusLine = "HR‑контроль остановлен"
         hrNextDecisionSeconds = 0
         hrRemainingSeconds = 0
@@ -3581,11 +3590,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
+    var requiresImperialManualStopAcknowledgementForHrControl: Bool {
+        TreadmillUnitsSafetyPolicy.blockReason(
+            for: treadmillUnitsState,
+            manualStopAcknowledged: imperialHrControlManualStopAcknowledged
+        ) == .manualStopAcknowledgementRequired
+    }
+
+    func acknowledgeImperialHrControlManualStopForSession() {
+        imperialHrControlManualStopAcknowledged = true
+        recomputeHrStartAllowed()
+    }
+
+    private func resetImperialHrControlManualStopAcknowledgement() {
+        imperialHrControlManualStopAcknowledged = false
+    }
+
     private func treadmillUnitsAutomationBlockReasonText() -> String? {
-        guard let reason = TreadmillUnitsSafetyPolicy.blockReason(for: treadmillUnitsState) else { return nil }
+        guard let reason = TreadmillUnitsSafetyPolicy.blockReason(
+            for: treadmillUnitsState,
+            manualStopAcknowledged: imperialHrControlManualStopAcknowledged
+        ) else { return nil }
         switch reason {
         case .imperialUnits:
             return "Дорожка сообщает imperial units — HR‑контроль и тест дорожки заблокированы."
+        case .manualStopAcknowledgementRequired:
+            return "Дорожка работает в mph. Перед стартом подтвердите, что физическая кнопка стоп рядом."
         case .unitsUnknown:
             return "Единицы скорости дорожки не подтверждены — дождитесь чтения параметров контроллера."
         case .paramsInvalid:
@@ -3595,7 +3625,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func recomputeHrStartAllowed() {
         let sourceReady = isSelectedHeartRateSourceReadyForStart()
-        let unitsReady = TreadmillUnitsSafetyPolicy.allowsHrControl(treadmillUnitsState)
+        let unitsReady = TreadmillUnitsSafetyPolicy.allowsHrControl(
+            treadmillUnitsState,
+            manualStopAcknowledged: imperialHrControlManualStopAcknowledged
+        )
         let allowed = isConnected && unitsReady && sourceReady
         isHrControlStartAllowed = allowed
         if !allowed {
@@ -3791,6 +3824,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         infoToastMessage = "HR‑контроль остановлен — нет подключения. Дорожка останавливается."
                         appendLog("HR control stopped: no connection")
                         isHrControlRunning = false
+                        resetImperialHrControlManualStopAcknowledgement()
                         hrStatusLine = "HR‑контроль остановлен — нет подключения"
                         hrNextDecisionSeconds = 0
                         hrRemainingSeconds = 0
@@ -3849,6 +3883,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         infoToastMessage = "HR‑контроль остановлен — нет данных пульса. Дорожка останавливается."
                         appendLog("HR control stopped: no HR for \(missingSeconds)s")
                         isHrControlRunning = false
+                        resetImperialHrControlManualStopAcknowledgement()
                         hrStatusLine = "HR‑контроль остановлен — нет данных пульса"
                         hrNextDecisionSeconds = 0
                         hrRemainingSeconds = 0
