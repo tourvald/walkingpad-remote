@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from analyze_training_log import Row, collect_diagnostic_observations, collect_stop_experiment_reports
+from analyze_training_log import (
+    Row,
+    collect_diagnostic_observations,
+    collect_stop_experiment_reports,
+    load_rows,
+)
 
 
 class DiagnosticObservationTests(unittest.TestCase):
@@ -170,6 +178,66 @@ class StopExperimentReportTests(unittest.TestCase):
         self.assertEqual(reports[0].baseline_speed_raw_tenths, 30.0)
         self.assertEqual(reports[0].final_speed_raw_tenths, 8.0)
         self.assertEqual(reports[0].outcome, "DECELERATED_BUT_NOT_ZERO")
+
+    def test_load_rows_reads_raw_jsonl_stop_experiment(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+            path = Path(handle.name)
+            handle.write(json.dumps({
+                "ts": "2026-06-29T00:00:00Z",
+                "session_id": "session-a",
+                "event": "stop_experiment_summary",
+                "observer_mode": "stop_experiment",
+                "experiment_id": "experiment-a",
+                "variant": "speed-zero-only",
+                "stop_experiment_command_packet_hex": "F7 A2 01 00 A3 FD",
+                "outcome": "STOP_CONFIRMED",
+                "writes_count": 1,
+                "blocked_writes_count": 0,
+                "confirmed_stop": True,
+                "baseline_speed_raw_tenths": 3,
+                "speed_raw_tenths": 0,
+            }) + "\n")
+
+        rows = load_rows(str(path))
+        reports = collect_stop_experiment_reports(rows)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].experiment_id, "experiment-a")
+        self.assertEqual(reports[0].command_packet_hex, "F7 A2 01 00 A3 FD")
+        self.assertEqual(reports[0].outcome, "STOP_CONFIRMED")
+        self.assertTrue(reports[0].confirmed_stop)
+
+    def test_load_rows_reads_jsonl_directory_tree_in_session_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            nested = directory / "TrainingLogs"
+            nested.mkdir()
+            (nested / "b.jsonl").write_text(json.dumps({
+                "ts": "2026-06-29T00:00:01Z",
+                "session_id": "session-b",
+                "event": "stop_experiment_summary",
+                "observer_mode": "stop_experiment",
+                "experiment_id": "experiment-b",
+                "variant": "toggle-only",
+                "stop_experiment_command_packet_hex": "F7 A2 04 01 A7 FD",
+                "outcome": "STATE_STILL_RUNNING",
+            }) + "\n", encoding="utf-8")
+            (nested / "a.jsonl").write_text(json.dumps({
+                "ts": "2026-06-29T00:00:00Z",
+                "session_id": "session-a",
+                "event": "stop_experiment_summary",
+                "observer_mode": "stop_experiment",
+                "experiment_id": "experiment-a",
+                "variant": "speed-zero-only",
+                "stop_experiment_command_packet_hex": "F7 A2 01 00 A3 FD",
+                "outcome": "DECELERATED_BUT_NOT_ZERO",
+            }) + "\n", encoding="utf-8")
+
+            rows = load_rows(str(directory))
+
+        self.assertEqual([row.session for row in rows], ["session-a", "session-b"])
+        self.assertEqual([row.event for row in rows], ["stop_experiment_summary", "stop_experiment_summary"])
 
 
 if __name__ == "__main__":

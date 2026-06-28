@@ -31,6 +31,10 @@
   - variants remain fixed whitelist only: `speed-zero-only` sends exactly `F7 A2 01 00 A3 FD`; `toggle-only` sends exactly `F7 A2 04 01 A7 FD`
   - UI must require explicit no-load/operator/power-switch confirmation, fresh low moving FE01 baseline, and must log `observer_mode=stop_experiment` rows for `tools/analyze_training_log.py`
   - this is still diagnostic-only: no arbitrary raw packet, no `F7 A2 03 07 AC FD`, no unit writes, no service-menu writes, no firmware/OTA, and no loaded experiments
+- iOS raw TrainingLogs pull helper (2026-06-29):
+  - `scripts/pull_ios_training_logs.sh --device <device-id> [--out-dir /tmp/path]` copies `Library/Application Support/TrainingLogs` from the `sw.WalkingPadRemote` app data container using `devicectl`
+  - this helper is read-only: it does not launch the app, connect to BLE, or send treadmill commands
+  - `tools/analyze_training_log.py` accepts exported CSV, a single raw `.jsonl`, or a directory tree containing raw `.jsonl` files, so stop-experiment evidence can be analyzed even if the iOS share-sheet CSV export was not used
 - BLE tooling setup (2026-06-28):
   - use `./scripts/setup_ble_env.sh` to create `.venv-ble/` with pinned `bleak==3.0.2`; avoid random system/Xcode Python for live BLE work
   - use `./scripts/run_ble_tool.sh doctor --name KS-F0`, then `dump-services`, then `observe-fe01` before any stop experiment

@@ -35,6 +35,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Events that mean the session/control terminated (a real stop) if they show up
 # around a gap rather than at the planned end of the workout.
@@ -228,9 +229,37 @@ class GapReport:
         return "BELT-IMPACT" if self.belt_impacted else "OK"
 
 
-def load_rows(path: str) -> list[Row]:
+def _row_from_payload(index: int, payload: dict) -> Row:
+    return Row(
+        index=index,
+        ts_raw=str(payload.get("ts") or "").strip(),
+        t=_parse_ts(str(payload.get("ts") or "")),
+        session=str(payload.get("session_id") or "").strip(),
+        event=str(payload.get("event") or "").strip(),
+        raw=payload,
+        data={},
+    )
+
+
+def _load_jsonl_rows(path: Path, start_index: int = 0) -> list[Row]:
     rows: list[Row] = []
-    with open(path, newline="", encoding="utf-8") as handle:
+    with path.open(encoding="utf-8") as handle:
+        for offset, line in enumerate(handle):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                rows.append(_row_from_payload(start_index + offset, payload))
+    return rows
+
+
+def _load_csv_rows(path: Path) -> list[Row]:
+    rows: list[Row] = []
+    with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         for i, data in enumerate(reader):
             raw = {}
@@ -251,6 +280,22 @@ def load_rows(path: str) -> list[Row]:
                     data=data,
                 )
             )
+    return rows
+
+
+def load_rows(path: str) -> list[Row]:
+    input_path = Path(path)
+    if input_path.is_dir():
+        rows: list[Row] = []
+        next_index = 0
+        for jsonl_path in sorted(input_path.rglob("*.jsonl")):
+            file_rows = _load_jsonl_rows(jsonl_path, start_index=next_index)
+            rows.extend(file_rows)
+            next_index += len(file_rows)
+    elif input_path.suffix.lower() == ".jsonl":
+        rows = _load_jsonl_rows(input_path)
+    else:
+        rows = _load_csv_rows(input_path)
     rows.sort(key=lambda r: (r.session, r.t if r.t is not None else float("inf"), r.index))
     return rows
 

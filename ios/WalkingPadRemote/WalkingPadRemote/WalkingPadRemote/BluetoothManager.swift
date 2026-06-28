@@ -179,6 +179,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var stopExperimentCurrentVariant: StopExperimentPlanService.Variant?
     private var stopExperimentBaselineSample: StopExperimentPlanService.Sample?
     private var stopExperimentMaxAfterCommandSpeedRawTenths: Int?
+    private var stopExperimentWritesCount: Int = 0
     private var hrTrendMinWindowSeconds: TimeInterval {
         max(6, hrTrendWindowSeconds * 0.4)
     }
@@ -1467,11 +1468,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let now = Date()
         let baselineSample = currentStopExperimentSample(now: now)
 
+        startTrainingStructuredLog(trigger: "stop_experiment")
+
         stopExperimentToken = token
         stopExperimentStartedAt = now
         stopExperimentCurrentVariant = variant
         stopExperimentBaselineSample = baselineSample
         stopExperimentMaxAfterCommandSpeedRawTenths = baselineSample.speedRawTenths
+        stopExperimentWritesCount = 0
         isStopExperimentActive = true
         stopExperimentProgress = 0
         stopExperimentStatusText = "Running \(variant.rawValue) · 60s observation"
@@ -1481,7 +1485,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopCommandSequence = 0
         stopConfirmedEverInWindow = false
 
-        startTrainingStructuredLog(trigger: "stop_experiment")
         appendLog("Stop experiment started: \(variant.rawValue) packet=\(plan.packetHex)")
 
         var fields = stopExperimentTelemetryFields(
@@ -1502,11 +1505,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         logTrainingEvent("stop_experiment_started", fields: fields)
 
         lastCommandLine = "CMD stop experiment \(variant.rawValue)"
-        writeStopCommand(
+        writeStopExperimentCommand(
             Data(plan.packet),
-            label: plan.label,
-            source: "stop_experiment",
-            highPriority: true
+            label: plan.label
         )
         logTrainingEvent("stop_experiment_command_sent", fields: stopExperimentTelemetryFields(
             phase: "command_sent",
@@ -1603,6 +1604,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopExperimentToken = nil
         stopExperimentCurrentVariant = nil
         stopExperimentStartedAt = nil
+        stopExperimentWritesCount = 0
         scheduleTrainingStructuredLogClose(reason: "stop_experiment_\(outcome.rawValue.lowercased())")
     }
 
@@ -1626,7 +1628,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "freshness_s": latestSample.ageSeconds,
             "confirmed_stop": confirmedStop,
             "outcome": outcome,
-            "writes_count": stopCommandSequence,
+            "writes_count": stopExperimentWritesCount,
             "blocked_writes_count": 0,
             "notifications_count": "",
             "stop_experiment_phase": phase,
@@ -3608,9 +3610,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func scheduleStopForensicSnapshots(reason: String) {
+        let expectedAttemptId = currentStopAttemptId
         [0.5, 1.5, 3.0, 5.0, 8.0, 15.0, 30.0].forEach { delay in
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self else { return }
+                guard self.currentStopAttemptId == expectedAttemptId else { return }
                 let verification = self.currentTreadmillStopVerificationSnapshot()
                 if verification.confirmedStopped { self.stopConfirmedEverInWindow = true }
                 var fields = self.stopForensicsFields(phase: "scheduled_snapshot")
@@ -3637,8 +3641,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         action: String,
         command: StopAssistCommand? = nil
     ) {
+        let expectedAttemptId = currentStopAttemptId
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
+            guard self.currentStopAttemptId == expectedAttemptId else { return }
             let snapshot = self.currentTreadmillStopVerificationSnapshot()
             if snapshot.confirmedStopped { self.stopConfirmedEverInWindow = true }
             let commandLabel: String = {
@@ -4535,6 +4541,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "stop_command_label": label,
             "stop_command_packet_hex": hex(data),
             "stop_command_source": source,
+            "stop_write_type": currentCommandWriteTypeLabel(),
+            "stop_queue_size_before": queueSizeBefore,
+            "stop_queue_size_after": queueSizeAfter
+        ]) { _, new in new }
+        logTrainingEvent("stop_command_attempt", fields: fields)
+    }
+
+    private func writeStopExperimentCommand(_ data: Data, label: String) {
+        let now = Date()
+        let beforeSnapshot = currentStopForensicsSnapshot(now: now)
+        let queueSizeBefore = commandQueue.count
+        stopCommandSequence += 1
+        stopExperimentWritesCount += 1
+        let sequence = stopCommandSequence
+        writeCommand(data, label: label, highPriority: true)
+        let queueSizeAfter = commandQueue.count
+
+        var fields = stopForensicsFields(phase: "before_command", snapshot: beforeSnapshot, now: now)
+        fields.merge(stopFe01SnapshotFields(prefix: "stop_fe01_before", snapshot: beforeSnapshot, now: now)) { _, new in new }
+        fields.merge([
+            "observer_mode": "stop_experiment",
+            "stop_command_sequence": sequence,
+            "stop_experiment_writes_count": stopExperimentWritesCount,
+            "stop_command_label": label,
+            "stop_command_packet_hex": hex(data),
+            "stop_command_source": "stop_experiment",
             "stop_write_type": currentCommandWriteTypeLabel(),
             "stop_queue_size_before": queueSizeBefore,
             "stop_queue_size_after": queueSizeAfter
