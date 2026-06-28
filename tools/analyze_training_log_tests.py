@@ -8,6 +8,7 @@ from analyze_training_log import (
     Row,
     collect_diagnostic_observations,
     collect_stop_experiment_reports,
+    collect_stop_timeline_reports,
     load_rows,
 )
 
@@ -238,6 +239,54 @@ class StopExperimentReportTests(unittest.TestCase):
 
         self.assertEqual([row.session for row in rows], ["session-a", "session-b"])
         self.assertEqual([row.event for row in rows], ["stop_experiment_summary", "stop_experiment_summary"])
+
+
+class StopTimelineReportTests(unittest.TestCase):
+    def test_stop_confirmation_requires_fresh_zero_speed_evidence(self):
+        rows = [
+            Row(
+                index=0,
+                ts_raw="2026-06-29T00:00:00Z",
+                t=0.0,
+                session="session-a",
+                event="stop_verification",
+                raw={},
+                data={
+                    "stop_confirmed": "true",
+                    "stop_has_fresh_report": "false",
+                    "stop_fe01_after_app_speed_raw_tenths": "8",
+                },
+            )
+        ]
+
+        reports = collect_stop_timeline_reports(rows)
+
+        self.assertEqual(len(reports), 1)
+        self.assertNotEqual(reports[0].classification, "STOP_CONFIRMED")
+
+    def test_stop_confirmation_accepts_fresh_zero_speed_evidence(self):
+        rows = [
+            Row(
+                index=0,
+                ts_raw="2026-06-29T00:00:00Z",
+                t=0.0,
+                session="session-a",
+                event="stop_verification",
+                raw={},
+                data={
+                    "stop_confirmed": "true",
+                    "stop_has_fresh_report": "true",
+                    "stop_fe01_after_state": "0",
+                    "stop_fe01_after_speed_raw_tenths": "0",
+                    "stop_fe01_after_app_speed_raw_tenths": "0",
+                },
+            )
+        ]
+
+        reports = collect_stop_timeline_reports(rows)
+
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].classification, "STOP_CONFIRMED")
 
 
 if __name__ == "__main__":

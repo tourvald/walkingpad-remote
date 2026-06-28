@@ -592,7 +592,7 @@ def _format_fe01(state: str, speed_raw: str, app_speed_raw: str) -> str:
 
 
 def _classify_stop_timeline(entries: list[StopTimelineEntry]) -> str:
-    if any(entry.confirmed for entry in entries):
+    if any(_has_fresh_zero_stop_evidence(entry) for entry in entries):
         return "STOP_CONFIRMED"
     freshness_values = [entry.freshness for entry in entries if entry.freshness]
     if freshness_values and all(value == "stale" for value in freshness_values):
@@ -616,6 +616,21 @@ def _classify_stop_timeline(entries: list[StopTimelineEntry]) -> str:
         return "APP_TARGET_CHANGED_BUT_BELT_NOT_STOPPED"
 
     return "STOP_NOT_CONFIRMED"
+
+
+def _has_fresh_zero_stop_evidence(entry: StopTimelineEntry) -> bool:
+    if not entry.confirmed:
+        return False
+    speed_raw = _to_float(entry.speed_raw)
+    if speed_raw is None or speed_raw != 0:
+        return False
+    if entry.freshness and entry.freshness.lower() != "fresh":
+        return False
+    if not entry.freshness:
+        return False
+    if entry.state == "1":
+        return False
+    return True
 
 
 def _diagnostic_command_row(rows: list[Row]) -> Row:
