@@ -2965,7 +2965,11 @@ private struct DebugView: View {
             canStartToggleOnlyStopExperiment: manager.canStartStopExperiment(.toggleOnly),
             toggleOnlyStopExperimentSubtitle: manager.stopExperimentStartBlockReason(for: .toggleOnly)
                 ?? "Один packet F7 A2 04 01 A7 FD · 60с observation",
+            canStartUnifiedStopTest: manager.canStartUnifiedStopTest(),
+            unifiedStopTestSubtitle: manager.unifiedStopTestStartBlockReason()
+                ?? "Self-start raw=8 · A then B · 10с",
             stopExperimentConfirmationMessage: "Полотно может двигаться. Никого на дорожке. Оператор рядом с физическим тумблером питания. Эксперимент отправит ровно один whitelisted stop packet и будет наблюдать FE01 60 секунд.",
+            unifiedStopTestConfirmationMessage: "Полотно может двигаться и тест сам запустит дорожку на низкой скорости. Никого на дорожке. Оператор рядом с физическим тумблером питания. Тест отправит setup, затем A: speed-zero, затем B: toggle только если baseline остаётся безопасным. Длительность около 10 секунд.",
             physicalConfirmationSummary: manager.imperialDiagnosticConfirmationSummary,
             physicalConfirmationStatus: manager.physicalSemanticsStatusText,
             canConfirmPhysicalSemantics: manager.imperialDiagnosticConfirmationAvailable,
@@ -3225,6 +3229,13 @@ private struct DebugView: View {
                         onStartStopExperiment: { variant in
                             manager.startStopExperiment(
                                 variant: variant,
+                                confirmedNoLoad: true,
+                                confirmedPowerSwitchReady: true,
+                                confirmedOperatorPresent: true
+                            )
+                        },
+                        onStartUnifiedStopTest: {
+                            manager.startUnifiedStopTest(
                                 confirmedNoLoad: true,
                                 confirmedPowerSwitchReady: true,
                                 confirmedOperatorPresent: true

@@ -30,11 +30,14 @@
   - because macOS/CoreBluetooth can connect to KS-F0 but may receive zero FE01 notifications, the iPhone app Debug `Training Logs` card can run the same controlled stop experiments using the already-working iOS FE01 stream
   - variants remain fixed whitelist only: `speed-zero-only` sends exactly `F7 A2 01 00 A3 FD`; `toggle-only` sends exactly `F7 A2 04 01 A7 FD`
   - UI must require explicit no-load/operator/power-switch confirmation, fresh low moving FE01 baseline, and must log `observer_mode=stop_experiment` rows for `tools/analyze_training_log.py`
+  - Debug also has a short unified A/B test for owner-operated no-load checks: it self-starts at low raw speed (`raw=8`), sends A (`F7 A2 01 00 A3 FD`), then sends B (`F7 A2 04 01 A7 FD`) only if the post-A FE01 baseline is still fresh, low, moving, and not accelerated; expected duration is about 10 seconds
   - imperial no-load Debug Test Run start should decide `START` from fresh FE01 only: fresh moving FE01 skips `START`, but missing/stale FE01 must not let stale `deviceTargetSpeedKmh` suppress `START`
   - this is still diagnostic-only: no arbitrary raw packet, no `F7 A2 03 07 AC FD`, no unit writes, no service-menu writes, no firmware/OTA, and no loaded experiments
 - iOS raw TrainingLogs pull helper (2026-06-29):
   - `scripts/pull_ios_training_logs.sh --device <device-id> [--out-dir /tmp/path]` copies `Library/Application Support/TrainingLogs` from the `sw.WalkingPadRemote` app data container using `devicectl`
   - this helper is read-only: it does not launch the app, connect to BLE, or send treadmill commands
+  - for the owner test loop, use `scripts/pull_analyze_clear_ios_training_logs.sh --device <device-id> [--out-dir /tmp/path]`; it pulls/analyzes logs and then launches the app once with `--clear-training-logs-on-launch`, causing the app to clear raw JSONL logs on-device so a restart shows zero retained logs
+  - the app-side launch cleanup reuses `clearTrainingLogsForActiveProfile()` and deletes only raw `TrainingLogs/*.jsonl` for the active profile; workout history/stats are preserved
   - `tools/analyze_training_log.py` accepts exported CSV, a single raw `.jsonl`, or a directory tree containing raw `.jsonl` files, so stop-experiment evidence can be analyzed even if the iOS share-sheet CSV export was not used
   - stop-experiment aggregation must preserve the highest-risk observed outcome across snapshots; do not let a later stale `NO_FRESH_FE01` summary hide an earlier `COMMAND_CAUSED_ACCELERATION`
 - BLE tooling setup (2026-06-28):

@@ -177,6 +177,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var stopExperimentToken: UUID?
     private var stopExperimentStartedAt: Date?
     private var stopExperimentCurrentVariant: StopExperimentPlanService.Variant?
+    private var unifiedStopTestPlan: StopExperimentPlanService.UnifiedABPlan?
     private var stopExperimentBaselineSample: StopExperimentPlanService.Sample?
     private var stopExperimentMaxAfterCommandSpeedRawTenths: Int?
     private var stopExperimentWritesCount: Int = 0
@@ -1447,6 +1448,92 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return nil
     }
 
+    func canStartUnifiedStopTest() -> Bool {
+        unifiedStopTestStartBlockReason() == nil
+    }
+
+    func unifiedStopTestStartBlockReason() -> String? {
+        guard isConnected else { return "Подключи дорожку" }
+        guard treadmillProtocol == .walkingPad else { return "Unified stop test доступен только для WalkingPad FE00" }
+        guard !isStopExperimentActive else { return "Stop experiment уже идёт" }
+        guard !isHrControlRunning else { return "Останови HR-control перед тестом" }
+        guard !isTreadmillTestRunActive else { return "Останови Debug Test Run перед тестом" }
+        guard commandCharacteristic != nil else { return "FE02 write characteristic не готов" }
+        return nil
+    }
+
+    func startUnifiedStopTest(
+        confirmedNoLoad: Bool,
+        confirmedPowerSwitchReady: Bool,
+        confirmedOperatorPresent: Bool
+    ) {
+        guard confirmedNoLoad, confirmedPowerSwitchReady, confirmedOperatorPresent else {
+            infoToastMessage = "Unified stop test requires no-load, power switch ready, and operator confirmation."
+            return
+        }
+        guard unifiedStopTestStartBlockReason() == nil else {
+            infoToastMessage = unifiedStopTestStartBlockReason()
+            return
+        }
+
+        let plan = StopExperimentPlanService.unifiedABPlan()
+        let experimentId = UUID().uuidString
+        let token = UUID()
+        let now = Date()
+        let initialSample = currentStopExperimentSample(now: now)
+
+        startTrainingStructuredLog(trigger: "stop_experiment")
+
+        stopExperimentToken = token
+        stopExperimentStartedAt = now
+        stopExperimentCurrentVariant = nil
+        unifiedStopTestPlan = plan
+        stopExperimentBaselineSample = nil
+        stopExperimentMaxAfterCommandSpeedRawTenths = initialSample.speedRawTenths
+        stopExperimentWritesCount = 0
+        isStopExperimentActive = true
+        stopExperimentProgress = 0
+        stopExperimentStatusText = "Unified A→B · setup"
+
+        currentStopAttemptId = experimentId
+        currentStopAttemptStartedAt = now
+        stopCommandSequence = 0
+        stopConfirmedEverInWindow = false
+
+        appendLog("Unified stop test started: duration=\(plan.durationSeconds)s raw=\(plan.setupSpeedRawTenths)")
+
+        var fields = unifiedStopTestTelemetryFields(
+            phase: "setup_started",
+            experimentId: experimentId,
+            plan: plan,
+            baselineSample: initialSample,
+            latestSample: initialSample,
+            delay: 0,
+            outcome: "",
+            confirmedStop: StopExperimentPlanService.isStopConfirmed(sample: initialSample),
+            activeCommand: nil
+        )
+        fields.merge([
+            "diagnostic_no_load_confirmed": confirmedNoLoad,
+            "confirm_power_switch_ready": confirmedPowerSwitchReady,
+            "confirm_operator_present": confirmedOperatorPresent
+        ]) { _, new in new }
+        logTrainingEvent("stop_experiment_started", fields: fields)
+
+        resetCommandQueue(reason: "unifiedStopTest")
+        lastCommandLine = "CMD unified stop test"
+        plan.setupCommands.enumerated().forEach { index, command in
+            scheduleUnifiedStopTestCommand(
+                command,
+                token: token,
+                delay: TimeInterval(index) * 0.35,
+                highPriority: false
+            )
+        }
+
+        scheduleUnifiedStopTestFlow(token: token, experimentId: experimentId, plan: plan)
+    }
+
     func startStopExperiment(
         variant: StopExperimentPlanService.Variant,
         confirmedNoLoad: Bool,
@@ -1521,6 +1608,218 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ))
 
         scheduleStopExperimentSnapshots(token: token, experimentId: experimentId, plan: plan, baselineSample: baselineSample)
+    }
+
+    private func scheduleUnifiedStopTestCommand(
+        _ command: StopExperimentPlanService.Command,
+        token: UUID,
+        delay: TimeInterval,
+        highPriority: Bool
+    ) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.stopExperimentToken == token else { return }
+            self.writeStopExperimentCommand(
+                Data(command.packet),
+                label: command.label,
+                highPriority: highPriority
+            )
+        }
+    }
+
+    private func scheduleUnifiedStopTestFlow(
+        token: UUID,
+        experimentId: String,
+        plan: StopExperimentPlanService.UnifiedABPlan
+    ) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.runUnifiedStopTestA(token: token, experimentId: experimentId, plan: plan)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            self?.recordUnifiedStopTestSnapshot(
+                token: token,
+                experimentId: experimentId,
+                plan: plan,
+                delay: 5.0,
+                phase: "after_a",
+                isFinal: false
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) { [weak self] in
+            self?.runUnifiedStopTestBIfNeeded(token: token, experimentId: experimentId, plan: plan)
+        }
+        [7.0, 10.0].forEach { delay in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.recordUnifiedStopTestSnapshot(
+                    token: token,
+                    experimentId: experimentId,
+                    plan: plan,
+                    delay: delay,
+                    phase: delay == 10.0 ? "summary" : "after_b",
+                    isFinal: delay == 10.0
+                )
+            }
+        }
+    }
+
+    private func runUnifiedStopTestA(
+        token: UUID,
+        experimentId: String,
+        plan: StopExperimentPlanService.UnifiedABPlan
+    ) {
+        guard stopExperimentToken == token else { return }
+        let baselineSample = currentStopExperimentSample()
+        stopExperimentBaselineSample = baselineSample
+        stopExperimentMaxAfterCommandSpeedRawTenths = baselineSample.speedRawTenths
+
+        guard StopExperimentPlanService.baselineError(sample: baselineSample) == nil else {
+            recordUnifiedStopTestSnapshot(
+                token: token,
+                experimentId: experimentId,
+                plan: plan,
+                delay: 3.0,
+                phase: "setup_failed_no_moving_baseline",
+                isFinal: true,
+                outcomeOverride: "SETUP_FAILED_NO_MOVING_BASELINE"
+            )
+            return
+        }
+
+        if let command = plan.stopCommands.first {
+            writeStopExperimentCommand(Data(command.packet), label: command.label)
+        }
+        logTrainingEvent("stop_experiment_command_sent", fields: unifiedStopTestTelemetryFields(
+            phase: "a_sent",
+            experimentId: experimentId,
+            plan: plan,
+            baselineSample: baselineSample,
+            latestSample: currentStopExperimentSample(),
+            delay: 3.0,
+            outcome: "",
+            confirmedStop: false,
+            activeCommand: plan.stopCommands.first
+        ))
+    }
+
+    private func runUnifiedStopTestBIfNeeded(
+        token: UUID,
+        experimentId: String,
+        plan: StopExperimentPlanService.UnifiedABPlan
+    ) {
+        guard stopExperimentToken == token else { return }
+        guard let baselineSample = stopExperimentBaselineSample else { return }
+
+        let latestSample = currentStopExperimentSample()
+        switch StopExperimentPlanService.unifiedSecondAttemptReadiness(
+            baselineSpeedRawTenths: baselineSample.speedRawTenths,
+            latest: latestSample
+        ) {
+        case .stopAlreadyConfirmed:
+            recordUnifiedStopTestSnapshot(
+                token: token,
+                experimentId: experimentId,
+                plan: plan,
+                delay: 5.5,
+                phase: "a_confirmed_stop",
+                isFinal: true
+            )
+            return
+
+        case .unsafeBaseline:
+            recordUnifiedStopTestSnapshot(
+                token: token,
+                experimentId: experimentId,
+                plan: plan,
+                delay: 5.5,
+                phase: "b_skipped_no_safe_baseline",
+                isFinal: true,
+                outcomeOverride: "B_SKIPPED_NO_SAFE_BASELINE"
+            )
+            return
+
+        case .acceleratedBaseline:
+            recordUnifiedStopTestSnapshot(
+                token: token,
+                experimentId: experimentId,
+                plan: plan,
+                delay: 5.5,
+                phase: "b_skipped_accelerated_baseline",
+                isFinal: true,
+                outcomeOverride: "B_SKIPPED_ACCELERATED_BASELINE"
+            )
+            return
+
+        case .ready:
+            break
+        }
+
+        if let command = plan.stopCommands.dropFirst().first {
+            writeStopExperimentCommand(Data(command.packet), label: command.label)
+        }
+        logTrainingEvent("stop_experiment_command_sent", fields: unifiedStopTestTelemetryFields(
+            phase: "b_sent",
+            experimentId: experimentId,
+            plan: plan,
+            baselineSample: baselineSample,
+            latestSample: latestSample,
+            delay: 5.5,
+            outcome: "",
+            confirmedStop: false,
+            activeCommand: plan.stopCommands.dropFirst().first
+        ))
+    }
+
+    private func recordUnifiedStopTestSnapshot(
+        token: UUID,
+        experimentId: String,
+        plan: StopExperimentPlanService.UnifiedABPlan,
+        delay: TimeInterval,
+        phase: String,
+        isFinal: Bool,
+        outcomeOverride: String? = nil
+    ) {
+        guard stopExperimentToken == token else { return }
+
+        let latestSample = currentStopExperimentSample()
+        if latestSample.parseOK, latestSample.checksumOK {
+            stopExperimentMaxAfterCommandSpeedRawTenths = max(
+                stopExperimentMaxAfterCommandSpeedRawTenths ?? latestSample.speedRawTenths,
+                latestSample.speedRawTenths
+            )
+        }
+        let baselineSample = stopExperimentBaselineSample ?? latestSample
+        let outcome = outcomeOverride ?? StopExperimentPlanService.classifyOutcome(
+            baselineSpeedRawTenths: baselineSample.speedRawTenths,
+            latest: latestSample,
+            maxAfterCommandSpeedRawTenths: stopExperimentMaxAfterCommandSpeedRawTenths
+        ).rawValue
+        let confirmedStop = StopExperimentPlanService.isStopConfirmed(sample: latestSample)
+        if confirmedStop { stopConfirmedEverInWindow = true }
+
+        stopExperimentProgress = min(1, max(0, delay / Double(plan.durationSeconds)))
+        stopExperimentStatusText = isFinal
+            ? "Finished \(plan.variant): \(outcome)"
+            : "\(plan.variant) · \(Int(delay.rounded()))s · \(outcome)"
+
+        logTrainingEvent(isFinal ? "stop_experiment_summary" : "stop_experiment_snapshot", fields: unifiedStopTestTelemetryFields(
+            phase: phase,
+            experimentId: experimentId,
+            plan: plan,
+            baselineSample: baselineSample,
+            latestSample: latestSample,
+            delay: delay,
+            outcome: outcome,
+            confirmedStop: confirmedStop,
+            activeCommand: nil
+        ))
+
+        guard isFinal else { return }
+        isStopExperimentActive = false
+        stopExperimentToken = nil
+        stopExperimentCurrentVariant = nil
+        unifiedStopTestPlan = nil
+        stopExperimentStartedAt = nil
+        stopExperimentWritesCount = 0
+        scheduleTrainingStructuredLogClose(reason: "unified_stop_test_\(outcome.lowercased())")
     }
 
     private func currentStopExperimentSample(now: Date = Date()) -> StopExperimentPlanService.Sample {
@@ -1639,6 +1938,46 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "stop_experiment_max_speed_raw_tenths": stopExperimentMaxAfterCommandSpeedRawTenths ?? "",
             "stop_command_label": plan.label,
             "stop_command_packet_hex": plan.packetHex,
+            "stop_command_source": "stop_experiment",
+            "stop_confirmed": confirmedStop,
+            "stop_confirmed_ever": stopConfirmedEverInWindow
+        ]) { _, new in new }
+        return fields
+    }
+
+    private func unifiedStopTestTelemetryFields(
+        phase: String,
+        experimentId: String,
+        plan: StopExperimentPlanService.UnifiedABPlan,
+        baselineSample: StopExperimentPlanService.Sample,
+        latestSample: StopExperimentPlanService.Sample,
+        delay: TimeInterval,
+        outcome: String,
+        confirmedStop: Bool,
+        activeCommand: StopExperimentPlanService.Command?
+    ) -> [String: Any] {
+        var fields = stopForensicsFields(phase: phase)
+        fields.merge([
+            "observer_mode": "stop_experiment",
+            "experiment_id": experimentId,
+            "variant": plan.variant,
+            "baseline_speed_raw_tenths": baselineSample.speedRawTenths,
+            "baseline_state": baselineSample.state,
+            "freshness_s": latestSample.ageSeconds,
+            "confirmed_stop": confirmedStop,
+            "outcome": outcome,
+            "writes_count": stopExperimentWritesCount,
+            "blocked_writes_count": 0,
+            "notifications_count": "",
+            "stop_experiment_phase": phase,
+            "stop_experiment_elapsed_s": delay,
+            "stop_experiment_duration_s": plan.durationSeconds,
+            "stop_experiment_command_label": activeCommand?.label ?? "UNIFIED A→B",
+            "stop_experiment_command_packet_hex": activeCommand?.packetHex ?? plan.stopCommands.map { $0.packetHex }.joined(separator: " | "),
+            "stop_experiment_setup_speed_raw_tenths": plan.setupSpeedRawTenths,
+            "stop_experiment_max_speed_raw_tenths": stopExperimentMaxAfterCommandSpeedRawTenths ?? "",
+            "stop_command_label": activeCommand?.label ?? "",
+            "stop_command_packet_hex": activeCommand?.packetHex ?? "",
             "stop_command_source": "stop_experiment",
             "stop_confirmed": confirmedStop,
             "stop_confirmed_ever": stopConfirmedEverInWindow
@@ -4556,14 +4895,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         logTrainingEvent("stop_command_attempt", fields: fields)
     }
 
-    private func writeStopExperimentCommand(_ data: Data, label: String) {
+    private func writeStopExperimentCommand(_ data: Data, label: String, highPriority: Bool = true) {
         let now = Date()
         let beforeSnapshot = currentStopForensicsSnapshot(now: now)
         let queueSizeBefore = commandQueue.count
         stopCommandSequence += 1
         stopExperimentWritesCount += 1
         let sequence = stopCommandSequence
-        writeCommand(data, label: label, highPriority: true)
+        writeCommand(data, label: label, highPriority: highPriority)
         let queueSizeAfter = commandQueue.count
 
         var fields = stopForensicsFields(phase: "before_command", snapshot: beforeSnapshot, now: now)

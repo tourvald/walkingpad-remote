@@ -13,6 +13,39 @@ final class StopExperimentPlanServiceTests: XCTestCase {
         )
     }
 
+    func testUnifiedABPlanUsesTenSecondLowSpeedScenario() {
+        let plan = StopExperimentPlanService.unifiedABPlan()
+
+        XCTAssertEqual(plan.variant, "unified-a-b")
+        XCTAssertEqual(plan.durationSeconds, 10)
+        XCTAssertEqual(plan.setupSpeedRawTenths, 8)
+    }
+
+    func testUnifiedABPlanUsesOnlyKnownPackets() {
+        let plan = StopExperimentPlanService.unifiedABPlan()
+
+        XCTAssertEqual(plan.setupCommands.map { $0.packetHex }, [
+            "F7 A2 02 01 A5 FD",
+            "F7 A2 04 01 A7 FD",
+            "F7 A2 01 08 AB FD"
+        ])
+        XCTAssertEqual(plan.stopCommands.map { $0.packetHex }, [
+            "F7 A2 01 00 A3 FD",
+            "F7 A2 04 01 A7 FD"
+        ])
+        XCTAssertFalse(plan.allCommands.contains { $0.packetHex == "F7 A2 03 07 AC FD" })
+        XCTAssertFalse(plan.allCommands.contains { $0.packet.dropFirst().first == 0xA6 })
+    }
+
+    func testUnifiedABSkipsSecondStopAttemptAfterAcceleration() {
+        let outcome = StopExperimentPlanService.unifiedSecondAttemptReadiness(
+            baselineSpeedRawTenths: 8,
+            latest: .init(parseOK: true, checksumOK: true, state: 1, speedRawTenths: 12, ageSeconds: 0.5)
+        )
+
+        XCTAssertEqual(outcome, .acceleratedBaseline)
+    }
+
     func testMovingLowFreshBaselineIsAllowed() {
         let error = StopExperimentPlanService.baselineError(
             sample: .init(parseOK: true, checksumOK: true, state: 1, speedRawTenths: 3, ageSeconds: 0.5)

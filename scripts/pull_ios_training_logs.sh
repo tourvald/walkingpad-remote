@@ -4,10 +4,11 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/pull_ios_training_logs.sh --device <device-id-or-name> [--bundle-id sw.WalkingPadRemote] [--out-dir /tmp/path] [--no-analyze]
+  scripts/pull_ios_training_logs.sh --device <device-id-or-name> [--bundle-id sw.WalkingPadRemote] [--out-dir /tmp/path] [--no-analyze] [--clear-device-logs-after-pull]
 
 Read-only helper for pulling WalkingPadRemote raw TrainingLogs JSONL files from an iPhone app container.
-It does not launch the app, connect to BLE, or send treadmill commands.
+By default it does not launch the app, connect to BLE, or send treadmill commands.
+With --clear-device-logs-after-pull it launches the app once with a debug cleanup argument after a successful pull/analyze.
 USAGE
 }
 
@@ -15,6 +16,8 @@ device=""
 bundle_id="sw.WalkingPadRemote"
 out_dir=""
 analyze=1
+clear_device_logs_after_pull=0
+analyzer_exit=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-analyze)
       analyze=0
+      shift
+      ;;
+    --clear-device-logs-after-pull)
+      clear_device_logs_after_pull=1
       shift
       ;;
     -h|--help)
@@ -83,4 +90,20 @@ if [[ "$analyze" = "1" ]]; then
   analyzer_exit=$?
   set -e
   echo "analyzer_exit=$analyzer_exit"
+fi
+
+if [[ "$clear_device_logs_after_pull" = "1" ]]; then
+  if [[ "$analyze" = "1" && "$analyzer_exit" != "0" ]]; then
+    echo "device_log_cleanup=skipped_analyzer_failed"
+    exit "$analyzer_exit"
+  fi
+
+  xcrun devicectl device process launch \
+    --device "$device" \
+    --terminate-existing \
+    --timeout 30 \
+    "$bundle_id" \
+    --clear-training-logs-on-launch
+
+  echo "device_log_cleanup=requested"
 fi

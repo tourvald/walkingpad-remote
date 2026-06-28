@@ -71,6 +71,11 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - Debug UI now includes destructive `Clear Training Logs`, which removes only raw JSONL telemetry logs for the active profile
   - clear action does not touch `workoutHistory`/stats, and the currently active session log stays protected
   - `lastTrainingLogPath` is refreshed from the remaining active-profile files after cleanup, so the label does not point to a stale deleted file
+- iOS stop experiment diagnostics (2026-06-29):
+  - Debug `Training Logs` includes single-variant stop experiments plus a short unified A/B test for owner-operated no-load checks
+  - unified A/B self-starts at low raw speed (`raw=8`), sends A `F7 A2 01 00 A3 FD`, and sends B `F7 A2 04 01 A7 FD` only if FE01 after A is fresh, low, moving, and not accelerated relative to baseline
+  - `DebugTrainingLogsCard` only presents confirmation/actions; `BluetoothManager` owns runtime orchestration and `StopExperimentPlanService` owns pure whitelisted packets/readiness rules
+  - `--clear-training-logs-on-launch` is a debug maintenance launch argument; on app startup it calls the same active-profile raw JSONL cleanup used by the Debug Clear Training Logs button and does not delete workout history/statistics
 - Debug treadmill test run (2026-05-19):
   - `DebugTrainingLogsCard` now exposes `Start Test Run` / `Stop Test Run` for a treadmill-only diagnostic run that does not require HR data
   - the plan is 3 minutes: base running speed, ramp toward 8.0 km/h, ramp back to base, then the normal stop sequence with the existing 30-second structured-log observation window

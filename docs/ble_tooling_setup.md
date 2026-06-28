@@ -185,6 +185,29 @@ python3 tools/analyze_training_log.py /tmp/stop_experiment_A.csv
 `NO_FRESH_FE01` means the safety gate worked: no write was sent because the runner
 could not prove a fresh moving baseline.
 
+## Pull iOS Logs After an Owner Test
+
+For iPhone-based stop experiments, pull and analyze raw app logs directly from
+the installed app container:
+
+```bash
+scripts/pull_ios_training_logs.sh --device <device-id-or-name> --out-dir /tmp/walkingpad_ios_logs
+```
+
+This default helper is read-only. It copies `TrainingLogs/*.jsonl` and runs
+`tools/analyze_training_log.py` when logs are present.
+
+For the tight owner test loop where the app should show zero retained logs after
+the engineer has pulled/analyzed them, use:
+
+```bash
+scripts/pull_analyze_clear_ios_training_logs.sh --device <device-id-or-name> --out-dir /tmp/walkingpad_ios_logs
+```
+
+That wrapper performs the same pull/analyze step, then launches the app once with
+`--clear-training-logs-on-launch`. The app uses the existing active-profile raw
+JSONL cleanup path, so workout history/statistics remain intact.
+
 ## Forbidden
 
 Do not use these for stop recovery unless a separate design explicitly approves it:

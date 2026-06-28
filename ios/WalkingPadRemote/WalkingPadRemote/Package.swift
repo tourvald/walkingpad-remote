@@ -43,6 +43,7 @@ let package = Package(
                 "NativeSpeedValue.swift",
                 "RuntimeGapMonitor.swift",
                 "TrainingTelemetryWriter.swift",
+                "TrainingLogMaintenanceLaunchAction.swift",
                 "CommandQueueService.swift",
                 "TreadmillSpeedBoundsService.swift",
                 "TreadmillSpeedCommandProjection.swift",

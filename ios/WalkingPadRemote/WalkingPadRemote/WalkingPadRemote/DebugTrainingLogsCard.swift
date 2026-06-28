@@ -44,7 +44,10 @@ struct DebugTrainingLogsCard: View {
         let speedZeroOnlyStopExperimentSubtitle: String
         let canStartToggleOnlyStopExperiment: Bool
         let toggleOnlyStopExperimentSubtitle: String
+        let canStartUnifiedStopTest: Bool
+        let unifiedStopTestSubtitle: String
         let stopExperimentConfirmationMessage: String
+        let unifiedStopTestConfirmationMessage: String
         let physicalConfirmationSummary: String
         let physicalConfirmationStatus: String
         let canConfirmPhysicalSemantics: Bool
@@ -62,12 +65,14 @@ struct DebugTrainingLogsCard: View {
     let onStartTestRun: (_ confirmedNoLoadDiagnostic: Bool) -> Void
     let onStopTestRun: () -> Void
     let onStartStopExperiment: (_ variant: StopExperimentPlanService.Variant) -> Void
+    let onStartUnifiedStopTest: () -> Void
     let onConfirmPhysicalSemantics: (TreadmillPhysicalSemantics) -> Void
     let onClearPhysicalSemantics: () -> Void
     let onClear: () -> Void
 
     @State private var showClearConfirmation = false
     @State private var showNoLoadConfirmation = false
+    @State private var showUnifiedStopTestConfirmation = false
     @State private var pendingStopExperimentVariant: StopExperimentPlanService.Variant?
 
     private let metricColumns = [
@@ -189,6 +194,14 @@ struct DebugTrainingLogsCard: View {
         } message: {
             Text(presentation.stopExperimentConfirmationMessage)
         }
+        .alert("Unified A→B stop test?", isPresented: $showUnifiedStopTestConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Run", role: .destructive) {
+                onStartUnifiedStopTest()
+            }
+        } message: {
+            Text(presentation.unifiedStopTestConfirmationMessage)
+        }
     }
 
     @ViewBuilder
@@ -307,6 +320,19 @@ struct DebugTrainingLogsCard: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!presentation.canStartToggleOnlyStopExperiment)
+
+                Button {
+                    showUnifiedStopTestConfirmation = true
+                } label: {
+                    DebugActionTileLabel(
+                        title: "A→B 10s",
+                        subtitle: presentation.unifiedStopTestSubtitle,
+                        tint: .purple,
+                        enabled: presentation.canStartUnifiedStopTest
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!presentation.canStartUnifiedStopTest)
             }
         }
     }

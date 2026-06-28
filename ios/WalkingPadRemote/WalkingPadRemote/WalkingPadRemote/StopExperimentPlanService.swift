@@ -21,6 +21,27 @@ enum StopExperimentPlanService {
         }
     }
 
+    struct Command: Equatable {
+        let label: String
+        let packet: [UInt8]
+
+        var packetHex: String {
+            packet.map { String(format: "%02X", $0) }.joined(separator: " ")
+        }
+    }
+
+    struct UnifiedABPlan: Equatable {
+        let variant: String
+        let durationSeconds: Int
+        let setupSpeedRawTenths: Int
+        let setupCommands: [Command]
+        let stopCommands: [Command]
+
+        var allCommands: [Command] {
+            setupCommands + stopCommands
+        }
+    }
+
     struct Sample: Equatable {
         let parseOK: Bool
         let checksumOK: Bool
@@ -44,6 +65,13 @@ enum StopExperimentPlanService {
         case noFreshFE01 = "NO_FRESH_FE01"
     }
 
+    enum UnifiedSecondAttemptReadiness: String, Equatable {
+        case ready
+        case stopAlreadyConfirmed
+        case unsafeBaseline
+        case acceleratedBaseline
+    }
+
     static func plan(for variant: Variant) -> Plan {
         switch variant {
         case .speedZeroOnly:
@@ -59,6 +87,23 @@ enum StopExperimentPlanService {
                 packet: [0xF7, 0xA2, 0x04, 0x01, 0xA7, 0xFD]
             )
         }
+    }
+
+    static func unifiedABPlan() -> UnifiedABPlan {
+        UnifiedABPlan(
+            variant: "unified-a-b",
+            durationSeconds: 10,
+            setupSpeedRawTenths: 8,
+            setupCommands: [
+                Command(label: "MODE MANUAL", packet: [0xF7, 0xA2, 0x02, 0x01, 0xA5, 0xFD]),
+                Command(label: "START", packet: [0xF7, 0xA2, 0x04, 0x01, 0xA7, 0xFD]),
+                Command(label: "SPEED raw=8", packet: [0xF7, 0xA2, 0x01, 0x08, 0xAB, 0xFD])
+            ],
+            stopCommands: [
+                Command(label: "A SPEED ZERO ONLY", packet: [0xF7, 0xA2, 0x01, 0x00, 0xA3, 0xFD]),
+                Command(label: "B START/STOP TOGGLE ONLY", packet: [0xF7, 0xA2, 0x04, 0x01, 0xA7, 0xFD])
+            ]
+        )
     }
 
     static func baselineError(sample: Sample) -> BaselineError? {
@@ -92,6 +137,25 @@ enum StopExperimentPlanService {
         }
 
         return .stateStillRunning
+    }
+
+    static func unifiedSecondAttemptReadiness(
+        baselineSpeedRawTenths: Int,
+        latest: Sample
+    ) -> UnifiedSecondAttemptReadiness {
+        if isStopConfirmed(sample: latest) {
+            return .stopAlreadyConfirmed
+        }
+
+        if let error = baselineError(sample: latest) {
+            return error == .stoppedBaseline ? .stopAlreadyConfirmed : .unsafeBaseline
+        }
+
+        if latest.speedRawTenths > baselineSpeedRawTenths + accelerationMarginRawTenths {
+            return .acceleratedBaseline
+        }
+
+        return .ready
     }
 
     static func isStopConfirmed(sample: Sample) -> Bool {
