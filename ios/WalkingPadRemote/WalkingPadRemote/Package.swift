@@ -48,7 +48,8 @@ let package = Package(
                 "TreadmillSpeedCommandProjection.swift",
                 "TreadmillUnitsSafetyPolicy.swift",
                 "TreadmillPhysicalSemanticsConfirmation.swift",
-                "TreadmillTestRunPlanService.swift"
+                "TreadmillTestRunPlanService.swift",
+                "StopExperimentPlanService.swift"
             ]
         ),
         .testTarget(

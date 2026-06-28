@@ -124,6 +124,23 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "physical_measured_distance_m": "",
             "physical_discriminator_expected_kmh_distance_m": 50,
             "physical_discriminator_expected_mph_distance_m": 80.5,
+            "observer_mode": "stop_experiment",
+            "experiment_id": "stop-exp-1",
+            "variant": "speed-zero-only",
+            "baseline_speed_raw_tenths": 30,
+            "baseline_state": 1,
+            "freshness_s": 0.4,
+            "confirmed_stop": false,
+            "outcome": "DECELERATED_BUT_NOT_ZERO",
+            "writes_count": 1,
+            "blocked_writes_count": 0,
+            "notifications_count": "",
+            "stop_experiment_phase": "summary",
+            "stop_experiment_elapsed_s": 60,
+            "stop_experiment_duration_s": 60,
+            "stop_experiment_command_label": "SPEED ZERO ONLY",
+            "stop_experiment_command_packet_hex": "F7 A2 01 00 A3 FD",
+            "stop_experiment_max_speed_raw_tenths": 30,
             "speed_has_fresh_report": true,
             "speed_report_age_s": 1,
             "stop_confirmed": false,
@@ -234,6 +251,18 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "physical_measured_distance_m")!], "")
         XCTAssertEqual(row[headers.firstIndex(of: "physical_discriminator_expected_kmh_distance_m")!], "50")
         XCTAssertEqual(row[headers.firstIndex(of: "physical_discriminator_expected_mph_distance_m")!], "80.5")
+        XCTAssertEqual(row[headers.firstIndex(of: "observer_mode")!], "stop_experiment")
+        XCTAssertEqual(row[headers.firstIndex(of: "experiment_id")!], "stop-exp-1")
+        XCTAssertEqual(row[headers.firstIndex(of: "variant")!], "speed-zero-only")
+        XCTAssertEqual(row[headers.firstIndex(of: "baseline_speed_raw_tenths")!], "30")
+        XCTAssertEqual(row[headers.firstIndex(of: "baseline_state")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "freshness_s")!], "0.4")
+        XCTAssertEqual(row[headers.firstIndex(of: "confirmed_stop")!], "false")
+        XCTAssertEqual(row[headers.firstIndex(of: "outcome")!], "DECELERATED_BUT_NOT_ZERO")
+        XCTAssertEqual(row[headers.firstIndex(of: "writes_count")!], "1")
+        XCTAssertEqual(row[headers.firstIndex(of: "blocked_writes_count")!], "0")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_experiment_phase")!], "summary")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_experiment_command_packet_hex")!], "F7 A2 01 00 A3 FD")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_has_fresh_report")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "speed_report_age_s")!], "1")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_confirmed")!], "false")

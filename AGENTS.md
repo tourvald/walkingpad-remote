@@ -26,6 +26,11 @@
   - variants are fixed whitelist only: `speed-zero-only` sends exactly `F7 A2 01 00 A3 FD`; `toggle-only` sends exactly `F7 A2 04 01 A7 FD`
   - runner must refuse without all three confirmations, require fresh low moving FE01 baseline, and log a CSV Stop Experiment Report readable by `tools/analyze_training_log.py`
   - no arbitrary hex, `raw`, `seq`, `F7 A2 03 07 AC FD`, `setUnit`, service-menu writes, firmware/OTA, or loaded treadmill experiments in this mode
+- iOS stop experiment runner (2026-06-28):
+  - because macOS/CoreBluetooth can connect to KS-F0 but may receive zero FE01 notifications, the iPhone app Debug `Training Logs` card can run the same controlled stop experiments using the already-working iOS FE01 stream
+  - variants remain fixed whitelist only: `speed-zero-only` sends exactly `F7 A2 01 00 A3 FD`; `toggle-only` sends exactly `F7 A2 04 01 A7 FD`
+  - UI must require explicit no-load/operator/power-switch confirmation, fresh low moving FE01 baseline, and must log `observer_mode=stop_experiment` rows for `tools/analyze_training_log.py`
+  - this is still diagnostic-only: no arbitrary raw packet, no `F7 A2 03 07 AC FD`, no unit writes, no service-menu writes, no firmware/OTA, and no loaded experiments
 - BLE tooling setup (2026-06-28):
   - use `./scripts/setup_ble_env.sh` to create `.venv-ble/` with pinned `bleak==3.0.2`; avoid random system/Xcode Python for live BLE work
   - use `./scripts/run_ble_tool.sh doctor --name KS-F0`, then `dump-services`, then `observe-fe01` before any stop experiment

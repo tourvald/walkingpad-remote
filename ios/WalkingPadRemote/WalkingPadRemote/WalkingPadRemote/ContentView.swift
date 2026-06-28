@@ -2956,6 +2956,16 @@ private struct DebugView: View {
             canStartTestRun: manager.canStartTreadmillTestRun,
             requiresNoLoadConfirmation: manager.requiresNoLoadDiagnosticConfirmationForTreadmillTestRun,
             noLoadConfirmationMessage: "Полотно может двигаться. Никого на дорожке. Рука рядом с аварийным выключением. Тест отправит native 3.0 / controller imperial на 60 секунд и затем STOP.",
+            stopExperimentStatus: manager.stopExperimentStatusText,
+            stopExperimentProgress: manager.stopExperimentProgress,
+            isStopExperimentActive: manager.isStopExperimentActive,
+            canStartSpeedZeroOnlyStopExperiment: manager.canStartStopExperiment(.speedZeroOnly),
+            speedZeroOnlyStopExperimentSubtitle: manager.stopExperimentStartBlockReason(for: .speedZeroOnly)
+                ?? "Один packet F7 A2 01 00 A3 FD · 60с observation",
+            canStartToggleOnlyStopExperiment: manager.canStartStopExperiment(.toggleOnly),
+            toggleOnlyStopExperimentSubtitle: manager.stopExperimentStartBlockReason(for: .toggleOnly)
+                ?? "Один packet F7 A2 04 01 A7 FD · 60с observation",
+            stopExperimentConfirmationMessage: "Полотно может двигаться. Никого на дорожке. Оператор рядом с физическим тумблером питания. Эксперимент отправит ровно один whitelisted stop packet и будет наблюдать FE01 60 секунд.",
             physicalConfirmationSummary: manager.imperialDiagnosticConfirmationSummary,
             physicalConfirmationStatus: manager.physicalSemanticsStatusText,
             canConfirmPhysicalSemantics: manager.imperialDiagnosticConfirmationAvailable,
@@ -3211,6 +3221,14 @@ private struct DebugView: View {
                         },
                         onStopTestRun: {
                             manager.stopTreadmillTestRun()
+                        },
+                        onStartStopExperiment: { variant in
+                            manager.startStopExperiment(
+                                variant: variant,
+                                confirmedNoLoad: true,
+                                confirmedPowerSwitchReady: true,
+                                confirmedOperatorPresent: true
+                            )
                         },
                         onConfirmPhysicalSemantics: { semantics in
                             manager.confirmImperialDiagnosticPhysicalSemantics(semantics)

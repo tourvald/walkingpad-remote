@@ -173,6 +173,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var currentStopAttemptId: String? = nil
     private var currentStopAttemptStartedAt: Date? = nil
     private var stopCommandSequence: Int = 0
+    private let stopExperimentDurationSeconds: TimeInterval = 60
+    private var stopExperimentToken: UUID?
+    private var stopExperimentStartedAt: Date?
+    private var stopExperimentCurrentVariant: StopExperimentPlanService.Variant?
+    private var stopExperimentBaselineSample: StopExperimentPlanService.Sample?
+    private var stopExperimentMaxAfterCommandSpeedRawTenths: Int?
     private var hrTrendMinWindowSeconds: TimeInterval {
         max(6, hrTrendWindowSeconds * 0.4)
     }
@@ -1138,6 +1144,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published private(set) var treadmillTestRunStatusText: String = "Готово к тесту дорожки"
     @Published private(set) var treadmillTestRunRemainingSeconds: Int = 0
     @Published private(set) var treadmillTestRunProgress: Double = 0
+    @Published private(set) var isStopExperimentActive: Bool = false
+    @Published private(set) var stopExperimentStatusText: String = "Готово к stop experiment"
+    @Published private(set) var stopExperimentProgress: Double = 0
 
     private func appendLog(_ line: String) {
         guard loggingEnabled else { return }
@@ -1416,6 +1425,223 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "\(prefix)_raw_hex": currentSnapshot.rawFe01Hex,
             "\(prefix)_age_s": currentSnapshot.responseAgeSeconds
         ]
+    }
+
+    func canStartStopExperiment(_ variant: StopExperimentPlanService.Variant) -> Bool {
+        stopExperimentStartBlockReason(for: variant) == nil
+    }
+
+    func stopExperimentStartBlockReason(for variant: StopExperimentPlanService.Variant) -> String? {
+        guard isConnected else { return "Подключи дорожку" }
+        guard treadmillProtocol == .walkingPad else { return "Stop experiment доступен только для WalkingPad FE00" }
+        guard !isStopExperimentActive else { return "Stop experiment уже идёт" }
+        guard !isHrControlRunning else { return "Останови HR-control перед экспериментом" }
+        guard !isTreadmillTestRunActive else { return "Останови Debug Test Run перед экспериментом" }
+        guard commandCharacteristic != nil else { return "FE02 write characteristic не готов" }
+
+        let sample = currentStopExperimentSample()
+        if let error = StopExperimentPlanService.baselineError(sample: sample) {
+            return "Baseline не готов: \(error.rawValue)"
+        }
+        return nil
+    }
+
+    func startStopExperiment(
+        variant: StopExperimentPlanService.Variant,
+        confirmedNoLoad: Bool,
+        confirmedPowerSwitchReady: Bool,
+        confirmedOperatorPresent: Bool
+    ) {
+        guard confirmedNoLoad, confirmedPowerSwitchReady, confirmedOperatorPresent else {
+            infoToastMessage = "Stop experiment requires no-load, power switch ready, and operator confirmation."
+            return
+        }
+        guard stopExperimentStartBlockReason(for: variant) == nil else {
+            infoToastMessage = stopExperimentStartBlockReason(for: variant)
+            return
+        }
+
+        let plan = StopExperimentPlanService.plan(for: variant)
+        let experimentId = UUID().uuidString
+        let token = UUID()
+        let now = Date()
+        let baselineSample = currentStopExperimentSample(now: now)
+
+        stopExperimentToken = token
+        stopExperimentStartedAt = now
+        stopExperimentCurrentVariant = variant
+        stopExperimentBaselineSample = baselineSample
+        stopExperimentMaxAfterCommandSpeedRawTenths = baselineSample.speedRawTenths
+        isStopExperimentActive = true
+        stopExperimentProgress = 0
+        stopExperimentStatusText = "Running \(variant.rawValue) · 60s observation"
+
+        currentStopAttemptId = experimentId
+        currentStopAttemptStartedAt = now
+        stopCommandSequence = 0
+        stopConfirmedEverInWindow = false
+
+        startTrainingStructuredLog(trigger: "stop_experiment")
+        appendLog("Stop experiment started: \(variant.rawValue) packet=\(plan.packetHex)")
+
+        var fields = stopExperimentTelemetryFields(
+            phase: "baseline_ready",
+            experimentId: experimentId,
+            plan: plan,
+            baselineSample: baselineSample,
+            latestSample: baselineSample,
+            delay: 0,
+            outcome: "",
+            confirmedStop: StopExperimentPlanService.isStopConfirmed(sample: baselineSample)
+        )
+        fields.merge([
+            "diagnostic_no_load_confirmed": confirmedNoLoad,
+            "confirm_power_switch_ready": confirmedPowerSwitchReady,
+            "confirm_operator_present": confirmedOperatorPresent
+        ]) { _, new in new }
+        logTrainingEvent("stop_experiment_started", fields: fields)
+
+        lastCommandLine = "CMD stop experiment \(variant.rawValue)"
+        writeStopCommand(
+            Data(plan.packet),
+            label: plan.label,
+            source: "stop_experiment",
+            highPriority: true
+        )
+        logTrainingEvent("stop_experiment_command_sent", fields: stopExperimentTelemetryFields(
+            phase: "command_sent",
+            experimentId: experimentId,
+            plan: plan,
+            baselineSample: baselineSample,
+            latestSample: currentStopExperimentSample(),
+            delay: 0,
+            outcome: "",
+            confirmedStop: false
+        ))
+
+        scheduleStopExperimentSnapshots(token: token, experimentId: experimentId, plan: plan, baselineSample: baselineSample)
+    }
+
+    private func currentStopExperimentSample(now: Date = Date()) -> StopExperimentPlanService.Sample {
+        let snapshot = currentStopForensicsSnapshot(now: now)
+        let age = snapshot.responseAgeSeconds >= 0
+            ? snapshot.responseAgeSeconds
+            : StopExperimentPlanService.baselineFreshnessSeconds + 1
+        return StopExperimentPlanService.Sample(
+            parseOK: !snapshot.rawFe01Hex.isEmpty,
+            checksumOK: deviceReportedChecksumOk,
+            state: snapshot.parsedState,
+            speedRawTenths: snapshot.speedRawTenths,
+            ageSeconds: age
+        )
+    }
+
+    private func scheduleStopExperimentSnapshots(
+        token: UUID,
+        experimentId: String,
+        plan: StopExperimentPlanService.Plan,
+        baselineSample: StopExperimentPlanService.Sample
+    ) {
+        let finalDelay = stopExperimentDurationSeconds
+        [0.5, 1.5, 3.0, 5.0, 8.0, 15.0, 30.0, finalDelay].forEach { delay in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.recordStopExperimentSnapshot(
+                    token: token,
+                    experimentId: experimentId,
+                    plan: plan,
+                    baselineSample: baselineSample,
+                    delay: delay,
+                    isFinal: delay == finalDelay
+                )
+            }
+        }
+    }
+
+    private func recordStopExperimentSnapshot(
+        token: UUID,
+        experimentId: String,
+        plan: StopExperimentPlanService.Plan,
+        baselineSample: StopExperimentPlanService.Sample,
+        delay: TimeInterval,
+        isFinal: Bool
+    ) {
+        guard stopExperimentToken == token else { return }
+
+        let latestSample = currentStopExperimentSample()
+        if latestSample.parseOK, latestSample.checksumOK {
+            stopExperimentMaxAfterCommandSpeedRawTenths = max(
+                stopExperimentMaxAfterCommandSpeedRawTenths ?? latestSample.speedRawTenths,
+                latestSample.speedRawTenths
+            )
+        }
+        let outcome = StopExperimentPlanService.classifyOutcome(
+            baselineSpeedRawTenths: baselineSample.speedRawTenths,
+            latest: latestSample,
+            maxAfterCommandSpeedRawTenths: stopExperimentMaxAfterCommandSpeedRawTenths
+        )
+        let confirmedStop = StopExperimentPlanService.isStopConfirmed(sample: latestSample)
+        if confirmedStop { stopConfirmedEverInWindow = true }
+
+        stopExperimentProgress = min(1, max(0, delay / stopExperimentDurationSeconds))
+        stopExperimentStatusText = isFinal
+            ? "Finished \(plan.variant.rawValue): \(outcome.rawValue)"
+            : "\(plan.variant.rawValue) · \(Int(delay.rounded()))s · \(outcome.rawValue)"
+
+        logTrainingEvent(isFinal ? "stop_experiment_summary" : "stop_experiment_snapshot", fields: stopExperimentTelemetryFields(
+            phase: isFinal ? "summary" : "scheduled_snapshot",
+            experimentId: experimentId,
+            plan: plan,
+            baselineSample: baselineSample,
+            latestSample: latestSample,
+            delay: delay,
+            outcome: outcome.rawValue,
+            confirmedStop: confirmedStop
+        ))
+
+        guard isFinal else { return }
+        isStopExperimentActive = false
+        stopExperimentToken = nil
+        stopExperimentCurrentVariant = nil
+        stopExperimentStartedAt = nil
+        scheduleTrainingStructuredLogClose(reason: "stop_experiment_\(outcome.rawValue.lowercased())")
+    }
+
+    private func stopExperimentTelemetryFields(
+        phase: String,
+        experimentId: String,
+        plan: StopExperimentPlanService.Plan,
+        baselineSample: StopExperimentPlanService.Sample,
+        latestSample: StopExperimentPlanService.Sample,
+        delay: TimeInterval,
+        outcome: String,
+        confirmedStop: Bool
+    ) -> [String: Any] {
+        var fields = stopForensicsFields(phase: phase)
+        fields.merge([
+            "observer_mode": "stop_experiment",
+            "experiment_id": experimentId,
+            "variant": plan.variant.rawValue,
+            "baseline_speed_raw_tenths": baselineSample.speedRawTenths,
+            "baseline_state": baselineSample.state,
+            "freshness_s": latestSample.ageSeconds,
+            "confirmed_stop": confirmedStop,
+            "outcome": outcome,
+            "writes_count": stopCommandSequence,
+            "blocked_writes_count": 0,
+            "notifications_count": "",
+            "stop_experiment_phase": phase,
+            "stop_experiment_elapsed_s": delay,
+            "stop_experiment_duration_s": stopExperimentDurationSeconds,
+            "stop_experiment_command_label": plan.label,
+            "stop_experiment_command_packet_hex": plan.packetHex,
+            "stop_experiment_max_speed_raw_tenths": stopExperimentMaxAfterCommandSpeedRawTenths ?? "",
+            "stop_command_label": plan.label,
+            "stop_command_packet_hex": plan.packetHex,
+            "stop_command_source": "stop_experiment",
+            "stop_confirmed": confirmedStop,
+            "stop_confirmed_ever": stopConfirmedEverInWindow
+        ]) { _, new in new }
+        return fields
     }
 
     private func currentCooldownSpeedSnapshot() -> HRDomainService.CooldownSpeedSnapshot {
@@ -1840,9 +2066,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             appendLog("Training log started: \(fileName)")
             let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
+            let sessionKind: String
+            switch trigger {
+            case "treadmill_test_run":
+                sessionKind = "test_run"
+            case "stop_experiment":
+                sessionKind = "stop_experiment"
+            default:
+                sessionKind = "hr_control"
+            }
             logTrainingEvent("session_start", fields: [
                 "trigger": trigger,
-                "session_kind": trigger == "treadmill_test_run" ? "test_run" : "hr_control",
+                "session_kind": sessionKind,
                 "target_bpm": hrTargetBPM,
                 "duration_min": hrDurationMinutes,
                 "decision_interval_s": hrDecisionIntervalSeconds,

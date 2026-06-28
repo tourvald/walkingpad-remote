@@ -468,14 +468,26 @@ def collect_stop_experiment_reports(rows: list[Row]) -> list[StopExperimentRepor
     reports: list[StopExperimentReport] = []
     for experiment_id, experiment_rows in grouped.items():
         ordered = sorted(experiment_rows, key=lambda row: (row.t if row.t is not None else float("inf"), row.index))
-        summary = next((row for row in reversed(ordered) if str(row.get("event") or "") == "summary"), ordered[-1])
+        summary = next(
+            (
+                row
+                for row in reversed(ordered)
+                if str(row.get("event") or "") in {"summary", "stop_experiment_summary"}
+            ),
+            ordered[-1],
+        )
         writes_count = int(_to_float(summary.get("writes_count")) or 0)
         blocked_writes_count = int(_to_float(summary.get("blocked_writes_count")) or 0)
         reports.append(
             StopExperimentReport(
                 experiment_id=experiment_id,
                 variant=str(summary.get("variant") or ""),
-                command_packet_hex=str(summary.get("command_packet_hex") or ""),
+                command_packet_hex=str(
+                    summary.get("command_packet_hex")
+                    or summary.get("stop_experiment_command_packet_hex")
+                    or summary.get("stop_command_packet_hex")
+                    or ""
+                ),
                 outcome=str(summary.get("outcome") or ""),
                 writes_count=writes_count,
                 blocked_writes_count=blocked_writes_count,

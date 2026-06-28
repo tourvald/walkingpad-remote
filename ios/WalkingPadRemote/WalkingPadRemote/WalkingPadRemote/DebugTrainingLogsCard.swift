@@ -37,6 +37,14 @@ struct DebugTrainingLogsCard: View {
         let canStartTestRun: Bool
         let requiresNoLoadConfirmation: Bool
         let noLoadConfirmationMessage: String
+        let stopExperimentStatus: String
+        let stopExperimentProgress: Double
+        let isStopExperimentActive: Bool
+        let canStartSpeedZeroOnlyStopExperiment: Bool
+        let speedZeroOnlyStopExperimentSubtitle: String
+        let canStartToggleOnlyStopExperiment: Bool
+        let toggleOnlyStopExperimentSubtitle: String
+        let stopExperimentConfirmationMessage: String
         let physicalConfirmationSummary: String
         let physicalConfirmationStatus: String
         let canConfirmPhysicalSemantics: Bool
@@ -53,12 +61,14 @@ struct DebugTrainingLogsCard: View {
     let onExportSessionSummary: (TrainingSessionSummaryExportScope) -> Void
     let onStartTestRun: (_ confirmedNoLoadDiagnostic: Bool) -> Void
     let onStopTestRun: () -> Void
+    let onStartStopExperiment: (_ variant: StopExperimentPlanService.Variant) -> Void
     let onConfirmPhysicalSemantics: (TreadmillPhysicalSemantics) -> Void
     let onClearPhysicalSemantics: () -> Void
     let onClear: () -> Void
 
     @State private var showClearConfirmation = false
     @State private var showNoLoadConfirmation = false
+    @State private var pendingStopExperimentVariant: StopExperimentPlanService.Variant?
 
     private let metricColumns = [
         GridItem(.flexible(), spacing: 10),
@@ -80,6 +90,7 @@ struct DebugTrainingLogsCard: View {
                 metricsSection(title: "Активный профиль", items: presentation.profileMetrics)
                 metricsSection(title: "Всё устройство", items: presentation.deviceMetrics)
                 testRunSection()
+                stopExperimentSection()
                 physicalSemanticsSection()
 
                 LazyVGrid(columns: actionColumns, spacing: 10) {
@@ -160,6 +171,24 @@ struct DebugTrainingLogsCard: View {
         } message: {
             Text(presentation.noLoadConfirmationMessage)
         }
+        .alert("Stop experiment?", isPresented: Binding(
+            get: { pendingStopExperimentVariant != nil },
+            set: { isPresented in
+                if !isPresented { pendingStopExperimentVariant = nil }
+            }
+        )) {
+            Button("Cancel", role: .cancel) {
+                pendingStopExperimentVariant = nil
+            }
+            Button("Run", role: .destructive) {
+                if let variant = pendingStopExperimentVariant {
+                    onStartStopExperiment(variant)
+                }
+                pendingStopExperimentVariant = nil
+            }
+        } message: {
+            Text(presentation.stopExperimentConfirmationMessage)
+        }
     }
 
     @ViewBuilder
@@ -224,6 +253,61 @@ struct DebugTrainingLogsCard: View {
             }
             .buttonStyle(.plain)
             .disabled(!presentation.isTestRunActive && !presentation.canStartTestRun)
+        }
+    }
+
+    private func stopExperimentSection() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Stop experiments")
+                .font(.caption.weight(.medium))
+                .foregroundColor(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(presentation.stopExperimentStatus)
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.primary)
+                    Spacer()
+                    if presentation.isStopExperimentActive {
+                        Text("\(Int((presentation.stopExperimentProgress * 100).rounded()))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if presentation.isStopExperimentActive {
+                    ProgressView(value: max(0, min(1, presentation.stopExperimentProgress)))
+                        .tint(.red)
+                }
+            }
+
+            LazyVGrid(columns: actionColumns, spacing: 10) {
+                Button {
+                    pendingStopExperimentVariant = .speedZeroOnly
+                } label: {
+                    DebugActionTileLabel(
+                        title: "A: speed zero",
+                        subtitle: presentation.speedZeroOnlyStopExperimentSubtitle,
+                        tint: .red,
+                        enabled: presentation.canStartSpeedZeroOnlyStopExperiment
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!presentation.canStartSpeedZeroOnlyStopExperiment)
+
+                Button {
+                    pendingStopExperimentVariant = .toggleOnly
+                } label: {
+                    DebugActionTileLabel(
+                        title: "B: toggle",
+                        subtitle: presentation.toggleOnlyStopExperimentSubtitle,
+                        tint: .red,
+                        enabled: presentation.canStartToggleOnlyStopExperiment
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!presentation.canStartToggleOnlyStopExperiment)
+            }
         }
     }
 
