@@ -45,6 +45,7 @@ let package = Package(
                 "TrainingTelemetryWriter.swift",
                 "CommandQueueService.swift",
                 "TreadmillSpeedBoundsService.swift",
+                "TreadmillSpeedCommandProjection.swift",
                 "TreadmillUnitsSafetyPolicy.swift",
                 "TreadmillPhysicalSemanticsConfirmation.swift",
                 "TreadmillTestRunPlanService.swift"
