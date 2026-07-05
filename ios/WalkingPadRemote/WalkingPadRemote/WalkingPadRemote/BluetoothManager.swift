@@ -5305,6 +5305,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         force: Bool,
         willSend: Bool
     ) -> [String: Any] {
+        let cappedNoop = !willSend
+            && projection.nativeUnits == .imperial
+            && abs(
+                projection.cappedPhysicalSpeedKmh
+                    - TreadmillSpeedCommandProjection.initialConfirmedImperialPhysicalCapKmh
+            ) < 0.0001
         [
             "label": label,
             "projection_force": force,
@@ -5312,6 +5318,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "projection_noop": !willSend,
             "requested_physical_speed_kmh": projection.requestedPhysicalSpeedKmh,
             "capped_physical_speed_kmh": projection.cappedPhysicalSpeedKmh,
+            "capped_noop": cappedNoop,
             "physical_speed_kmh_estimate": projection.commandPhysicalSpeedKmhEstimate,
             "command_native_units": projection.nativeUnits.rawValue,
             "command_native_speed": projection.commandNativeSpeed,

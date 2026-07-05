@@ -54,6 +54,10 @@ def _to_bool(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes"}
 
 
+def _has_value(value) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
 def _parse_ts(value: str) -> float | None:
     """Parse an ISO-8601 timestamp into epoch seconds (UTC), tolerant of formats."""
     text = (value or "").strip()
@@ -145,12 +149,15 @@ class ImperialTrainingProjectionObservation:
     event: str
     label: str
     requested_physical_speed_kmh: float | None
+    capped_physical_speed_kmh: float | None
     physical_speed_kmh_estimate: float | None
     command_native_speed_mph: float | None
     command_raw_tenths: str
     requested_physical_delta_kmh: float | None
     command_physical_delta_kmh_estimate: float | None
+    projection_will_send: bool
     projection_noop: bool
+    capped_noop: bool
     manual_stop_acknowledged: bool
 
 
@@ -476,6 +483,24 @@ def collect_imperial_training_projection_observations(rows: list[Row]) -> list[I
         event = str(row.event or "").strip()
         if command_mph is None and not (event == "speed_command_projection" and command_units == "imperial"):
             continue
+        projection_noop = _to_bool(row.get("projection_noop"))
+        projection_will_send_value = row.get("projection_will_send")
+        projection_will_send = (
+            _to_bool(projection_will_send_value)
+            if _has_value(projection_will_send_value)
+            else not projection_noop
+        )
+        capped_physical_speed_kmh = row._num("capped_physical_speed_kmh")
+        capped_noop_value = row.get("capped_noop")
+        capped_noop = (
+            _to_bool(capped_noop_value)
+            if _has_value(capped_noop_value)
+            else bool(
+                projection_noop
+                and capped_physical_speed_kmh is not None
+                and abs(capped_physical_speed_kmh - 6.0) < 0.01
+            )
+        )
 
         observations.append(
             ImperialTrainingProjectionObservation(
@@ -483,12 +508,15 @@ def collect_imperial_training_projection_observations(rows: list[Row]) -> list[I
                 event=event,
                 label=str(row.get("label") or ""),
                 requested_physical_speed_kmh=row._num("requested_physical_speed_kmh"),
+                capped_physical_speed_kmh=capped_physical_speed_kmh,
                 physical_speed_kmh_estimate=row._num("physical_speed_kmh_estimate"),
                 command_native_speed_mph=command_mph,
                 command_raw_tenths=str(row.get("command_raw_tenths") or "?"),
                 requested_physical_delta_kmh=row._num("requested_physical_delta_kmh"),
                 command_physical_delta_kmh_estimate=row._num("command_physical_delta_kmh_estimate"),
-                projection_noop=_to_bool(row.get("projection_noop")),
+                projection_will_send=projection_will_send,
+                projection_noop=projection_noop,
+                capped_noop=capped_noop,
                 manual_stop_acknowledged=_to_bool(row.get("manual_stop_acknowledged")),
             )
         )
@@ -755,10 +783,13 @@ def print_text(
                 f"{obs.ts_raw or '—'} raw={obs.command_raw_tenths} "
                 f"native={_fmt(obs.command_native_speed_mph, ' mph')} "
                 f"requested={_fmt(obs.requested_physical_speed_kmh, ' km/h')} "
+                f"capped={_fmt(obs.capped_physical_speed_kmh, ' km/h')} "
                 f"estimate={_fmt(obs.physical_speed_kmh_estimate, ' km/h')} "
                 f"requested_delta={_fmt(obs.requested_physical_delta_kmh, ' km/h')} "
                 f"command_delta={_fmt(obs.command_physical_delta_kmh_estimate, ' km/h')} "
-                f"noop={obs.projection_noop} manual_stop_ack={obs.manual_stop_acknowledged}"
+                f"will_send={obs.projection_will_send} "
+                f"noop={obs.projection_noop} capped_noop={obs.capped_noop} "
+                f"manual_stop_ack={obs.manual_stop_acknowledged}"
             )
         if len(imperial_training) > 12:
             print(f"  … {len(imperial_training) - 12} earlier projection rows")
@@ -906,12 +937,15 @@ def to_json(
                 "event": item.event,
                 "label": item.label,
                 "requested_physical_speed_kmh": item.requested_physical_speed_kmh,
+                "capped_physical_speed_kmh": item.capped_physical_speed_kmh,
                 "physical_speed_kmh_estimate": item.physical_speed_kmh_estimate,
                 "command_native_speed_mph": item.command_native_speed_mph,
                 "command_raw_tenths": item.command_raw_tenths,
                 "requested_physical_delta_kmh": item.requested_physical_delta_kmh,
                 "command_physical_delta_kmh_estimate": item.command_physical_delta_kmh_estimate,
+                "projection_will_send": item.projection_will_send,
                 "projection_noop": item.projection_noop,
+                "capped_noop": item.capped_noop,
                 "manual_stop_acknowledged": item.manual_stop_acknowledged,
             }
             for item in imperial_training

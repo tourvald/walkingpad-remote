@@ -165,6 +165,11 @@
   - the scenario starts the belt at the configured running minimum/base speed, ramps toward 8.0 km/h, ramps back down, sends the normal stop sequence, and keeps the structured log open for the existing 30-second post-stop observation window
   - the pure speed plan lives in `TreadmillTestRunPlanService.swift`; `BluetoothManager` only executes the plan, sends BLE commands, and writes `treadmill_test_*` telemetry events
   - raw CSV export includes normalized test-run columns (`test_phase`, elapsed/remaining/progress, target speed, duration, peak speed) while retaining full payloads in `raw_json`
+- HR imperial projection telemetry cleanup (2026-07-05):
+  - raw CSV export now materializes projection no-op fields instead of requiring `raw_json`: `projection_will_send`, `projection_noop`, `capped_physical_speed_kmh`, and `capped_noop`
+  - `heart_rate_bpm` and `hr_decision` are compatibility aliases for existing `hr_bpm` and `decision`; old columns remain unchanged
+  - analyzer should prefer normalized CSV fields and use `raw_json` only as a fallback for older exports
+  - `capped_noop=true` means an HR `UP` decision reached the imperial physical cap and did not emit a new BLE speed command
 - Debug card extraction / presentation props (2026-03-21):
   - `ContentView.swift` no longer renders `Training Logs` and `HR Failures` inline; these blocks now live in `DebugTrainingLogsCard.swift` and `DebugHrFailuresCard.swift`
   - both debug cards use presentation models/props assembled in `DebugView`, instead of reading `BluetoothManager` directly inside the card views

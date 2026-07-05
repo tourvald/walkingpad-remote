@@ -201,6 +201,7 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "installation_id")!], "install-1")
         XCTAssertEqual(row[headers.firstIndex(of: "profile_id")!], "profile-1")
         XCTAssertEqual(row[headers.firstIndex(of: "profile_label")!], "Dima")
+        XCTAssertEqual(row[headers.firstIndex(of: "heart_rate_bpm")!], "111")
         XCTAssertEqual(row[headers.firstIndex(of: "cooldown_target_bpm")!], "110")
         XCTAssertEqual(row[headers.firstIndex(of: "cooldown_finish_reason")!], "timeout")
         XCTAssertEqual(row[headers.firstIndex(of: "cooldown_timeout_blocker")!], "hr_above_target")
@@ -316,6 +317,56 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "test_peak_speed_kmh")!], "8")
         XCTAssertEqual(row[headers.firstIndex(of: "zone1_s")!], "10")
         XCTAssertTrue(row.last?.contains("\"cooldown_finish_reason\":\"timeout\"") == true)
+    }
+
+    func testCsvRowIncludesImperialCapNoopProjectionFields() {
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        let payload: [String: Any] = [
+            "ts": "2026-07-05T18:53:53.610Z",
+            "session_id": "session-cap",
+            "event": "speed_command_projection",
+            "phase": "workout",
+            "session_state": "running",
+            "is_hr_running": true,
+            "hr_source_mode": "iphone_healthkit",
+            "hr_bpm": 103,
+            "target_bpm": 152,
+            "decision": "set",
+            "diff_bpm": -47,
+            "diff_percent": 30.92,
+            "step_tag": "UP-L2",
+            "step_kmh": 0.2,
+            "speed_target_kmh": 6.0,
+            "label": "SPEED 6.0 km/h (HR)",
+            "command_raw_tenths": 37,
+            "projection_will_send": false,
+            "projection_noop": true,
+            "capped_physical_speed_kmh": 6.0,
+            "capped_noop": true,
+            "command_native_units": "imperial",
+            "command_native_speed": 3.7,
+            "command_native_speed_mph": 3.7,
+            "physical_speed_kmh_estimate": 5.9545728,
+            "imperial_hr_control_enabled": true,
+            "manual_stop_acknowledged": true
+        ]
+
+        let row = TrainingTelemetryWriter.csvRow(sourceFile: "cap.jsonl", payload: payload)
+
+        XCTAssertEqual(row.count, headers.count)
+        XCTAssertEqual(row[headers.firstIndex(of: "hr_bpm")!], "103")
+        XCTAssertEqual(row[headers.firstIndex(of: "heart_rate_bpm")!], "103")
+        XCTAssertEqual(row[headers.firstIndex(of: "decision")!], "set")
+        XCTAssertEqual(row[headers.firstIndex(of: "hr_decision")!], "set")
+        XCTAssertEqual(row[headers.firstIndex(of: "step_tag")!], "UP-L2")
+        XCTAssertEqual(row[headers.firstIndex(of: "projection_noop")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "projection_will_send")!], "false")
+        XCTAssertEqual(row[headers.firstIndex(of: "capped_physical_speed_kmh")!], "6")
+        XCTAssertEqual(row[headers.firstIndex(of: "capped_noop")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_raw_tenths")!], "37")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_native_speed_mph")!], "3.7")
+        XCTAssertEqual(row[headers.firstIndex(of: "write_type")!], "")
+        XCTAssertEqual(row[headers.firstIndex(of: "char_uuid")!], "")
     }
 
     func testCsvRowRepresentsNoHeartRateWaitingAndCancelReason() {

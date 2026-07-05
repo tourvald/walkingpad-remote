@@ -81,6 +81,11 @@ This file tracks UI-level decisions for `WalkingPadRemote` iOS target.
   - the plan is 3 minutes: base running speed, ramp toward 8.0 km/h, ramp back to base, then the normal stop sequence with the existing 30-second structured-log observation window
   - `TreadmillTestRunPlanService.swift` owns the pure schedule/target-speed calculation and is covered by Swift package tests; `BluetoothManager` executes the plan and emits `treadmill_test_start`, `treadmill_test_state`, `treadmill_test_speed_command`, and `treadmill_test_finished`
   - `TrainingTelemetryWriter.trainingCsvHeaders` includes normalized `test_*` columns so raw CSV exports can be filtered/analyzed without opening `raw_json`
+- HR imperial projection telemetry cleanup (2026-07-05):
+  - `speed_command_projection` telemetry now exports normalized no-op/cap fields: `projection_will_send`, `projection_noop`, `capped_physical_speed_kmh`, and `capped_noop`
+  - `heart_rate_bpm` and `hr_decision` are aliases for `hr_bpm` and `decision`; keep the old fields for compatibility
+  - `capped_noop=true` is the export-level signal that an HR `UP` decision hit the imperial cap and no BLE speed write was emitted
+  - analyzer logic should read normalized fields first and fall back to `raw_json` for pre-cleanup exports
 - Imperial diagnostic operator confirmation (2026-06-28):
   - after the imperial no-load diagnostic, Debug UI can record operator visual confirmation: `confirmedImperial`, `confirmedMetric`, or `unknown`
   - confirmation is persisted per treadmill fingerprint, including `peripheralId`, name, WalkingPad protocol, raw controller params, unit pref, and checksum status

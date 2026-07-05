@@ -7,6 +7,7 @@ from pathlib import Path
 from analyze_training_log import (
     Row,
     collect_diagnostic_observations,
+    collect_imperial_training_projection_observations,
     collect_stop_experiment_reports,
     collect_stop_timeline_reports,
     load_rows,
@@ -121,6 +122,82 @@ class DiagnosticObservationTests(unittest.TestCase):
 
         self.assertEqual(observations[0].verdict, "physical_likely_mph")
         self.assertEqual(observations[0].external_distance_m, 81.0)
+
+
+class ImperialProjectionObservationTests(unittest.TestCase):
+    def test_normalized_cap_noop_fields_take_precedence_over_raw_json(self):
+        rows = [
+            Row(
+                index=0,
+                ts_raw="2026-07-05T18:53:53Z",
+                t=0.0,
+                session="session-cap",
+                event="speed_command_projection",
+                raw={
+                    "projection_noop": False,
+                    "projection_will_send": True,
+                    "capped_noop": False,
+                    "capped_physical_speed_kmh": 5.8,
+                },
+                data={
+                    "label": "SPEED 6.0 km/h (HR)",
+                    "command_native_units": "imperial",
+                    "command_native_speed_mph": "3.7",
+                    "command_raw_tenths": "37",
+                    "requested_physical_speed_kmh": "6.0",
+                    "capped_physical_speed_kmh": "6.0",
+                    "physical_speed_kmh_estimate": "5.9545728",
+                    "projection_noop": "true",
+                    "projection_will_send": "false",
+                    "capped_noop": "true",
+                    "manual_stop_acknowledged": "true",
+                },
+            )
+        ]
+
+        observations = collect_imperial_training_projection_observations(rows)
+
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0].command_raw_tenths, "37")
+        self.assertFalse(observations[0].projection_will_send)
+        self.assertTrue(observations[0].projection_noop)
+        self.assertTrue(observations[0].capped_noop)
+        self.assertEqual(observations[0].capped_physical_speed_kmh, 6.0)
+
+    def test_old_exports_infer_capped_noop_from_raw_json_projection_payload(self):
+        rows = [
+            Row(
+                index=0,
+                ts_raw="2026-07-05T18:53:53Z",
+                t=0.0,
+                session="session-cap",
+                event="speed_command_projection",
+                raw={
+                    "label": "SPEED 6.0 km/h (HR)",
+                    "command_native_units": "imperial",
+                    "command_native_speed_mph": 3.7,
+                    "command_raw_tenths": 37,
+                    "requested_physical_speed_kmh": 6.0,
+                    "capped_physical_speed_kmh": 6.0,
+                    "projection_noop": True,
+                    "projection_will_send": False,
+                    "manual_stop_acknowledged": True,
+                },
+                data={
+                    "event": "speed_command_projection",
+                    "projection_noop": "",
+                    "projection_will_send": "",
+                    "capped_noop": "",
+                },
+            )
+        ]
+
+        observations = collect_imperial_training_projection_observations(rows)
+
+        self.assertEqual(len(observations), 1)
+        self.assertFalse(observations[0].projection_will_send)
+        self.assertTrue(observations[0].projection_noop)
+        self.assertTrue(observations[0].capped_noop)
 
 
 class StopExperimentReportTests(unittest.TestCase):
