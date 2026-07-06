@@ -1074,13 +1074,25 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     var treadmillDisplaySpeedValue: Double {
-        if treadmillUnitsState.nativeUnits == .imperial {
-            return NativeSpeedValue(
-                rawTenths: deviceReportedSpeedRawTenths,
-                units: .imperial
-            ).nativeSpeed
-        }
-        return treadmillActualSpeedKmh
+        TreadmillSpeedDisplay.current(
+            reportedRawTenths: deviceReportedSpeedRawTenths,
+            fallbackMetricKmh: treadmillActualSpeedKmh,
+            nativeUnits: treadmillUnitsState.nativeUnits
+        ).value
+    }
+
+    var treadmillAverageDisplaySpeedUnitLabel: String {
+        TreadmillSpeedDisplay.average(
+            legacyAverageSpeed: avgSpeedKmh,
+            nativeUnits: treadmillUnitsState.nativeUnits
+        ).unitLabel
+    }
+
+    var treadmillAverageDisplaySpeedValue: Double {
+        TreadmillSpeedDisplay.average(
+            legacyAverageSpeed: avgSpeedKmh,
+            nativeUnits: treadmillUnitsState.nativeUnits
+        ).value
     }
 
     var physicalSemanticsStatusText: String {
@@ -2246,6 +2258,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let cooldownState = cooldownRuntimeState
         let speedSnapshot = currentTreadmillSpeedSnapshot()
         let nativeUnits = treadmillUnitsState.nativeUnits
+        let displaySpeed = TreadmillSpeedDisplay.current(
+            reportedRawTenths: deviceReportedSpeedRawTenths,
+            fallbackMetricKmh: speedSnapshot.actualSpeedKmh,
+            nativeUnits: nativeUnits
+        )
         let reportedNativeSpeed = NativeSpeedValue(
             rawTenths: deviceReportedSpeedRawTenths,
             units: nativeUnits
@@ -2309,6 +2326,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "speed_report_age_s": speedSnapshot.reportAgeSeconds ?? -1,
             "speed_raw_tenths": deviceReportedSpeedRawTenths,
             "app_speed_raw_tenths": deviceReportedAppSpeedRawTenths,
+            "speed_display_value": displaySpeed.value,
+            "speed_display_units": displaySpeed.unitLabel,
+            "speed_display_semantics": displaySpeed.semantics.rawValue,
+            "speed_physical_kmh_estimate": displaySpeed.physicalKmhEstimate ?? "",
+            "speed_physical_estimate_label": displaySpeed.physicalEstimateLabel ?? "",
             "speed_unit_pref": treadmillUnitsState.nativeUnits.rawValue,
             "command_units": treadmillUnitsState.nativeUnits.rawValue,
             "display_units": nativeUnits == .imperial ? "imperial" : "metric_legacy",
@@ -4738,6 +4760,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     if decision.kind == .set {
                         let requestedNextSpeed = decision.nextSpeedKmh
                         let nextSpeed = effectivePhysicalTargetSpeedKmh(requestedNextSpeed)
+                        let capSource = speedCapSource(
+                            requestedPhysicalKmh: requestedNextSpeed,
+                            effectivePhysicalKmh: nextSpeed
+                        )
                         let old = deviceTargetSpeedKmh
                         desiredSpeedKmh = nextSpeed
                         deviceTargetSpeedKmh = nextSpeed
@@ -4759,7 +4785,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             "speed_before_kmh": currentTarget,
                             "speed_after_kmh": nextSpeed,
                             "requested_speed_after_kmh": requestedNextSpeed,
-                            "capped_speed_after_kmh": nextSpeed
+                            "capped_speed_after_kmh": nextSpeed,
+                            "speed_cap_source": capSource
                         ])
                     } else {
                         hrStatusLine = "HR‑контроль: предел скорости"
@@ -5242,6 +5269,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
+    private func speedCapSource(requestedPhysicalKmh: Double, effectivePhysicalKmh: Double) -> String {
+        guard requestedPhysicalKmh.isFinite, effectivePhysicalKmh.isFinite else { return "invalid" }
+        return abs(requestedPhysicalKmh - effectivePhysicalKmh) < 0.0001 ? "none" : "device_or_app_max"
+    }
+
     private func makeWalkingPadSetSpeedCommand(
         kmh: Double,
         label: String,
@@ -5305,20 +5337,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         force: Bool,
         willSend: Bool
     ) -> [String: Any] {
-        let cappedNoop = !willSend
-            && projection.nativeUnits == .imperial
-            && abs(
-                projection.cappedPhysicalSpeedKmh
-                    - TreadmillSpeedCommandProjection.initialConfirmedImperialPhysicalCapKmh
-            ) < 0.0001
-        [
+        return [
             "label": label,
             "projection_force": force,
             "projection_will_send": willSend,
             "projection_noop": !willSend,
             "requested_physical_speed_kmh": projection.requestedPhysicalSpeedKmh,
             "capped_physical_speed_kmh": projection.cappedPhysicalSpeedKmh,
-            "capped_noop": cappedNoop,
+            "speed_cap_source": "none",
+            "capped_noop": false,
             "physical_speed_kmh_estimate": projection.commandPhysicalSpeedKmhEstimate,
             "command_native_units": projection.nativeUnits.rawValue,
             "command_native_speed": projection.commandNativeSpeed,

@@ -2,7 +2,6 @@ import Foundation
 
 enum TreadmillSpeedCommandProjection {
     static let mphToKmh = 1.609344
-    static let initialConfirmedImperialPhysicalCapKmh = 6.0
 
     struct Projection: Equatable {
         let requestedPhysicalSpeedKmh: Double
@@ -23,14 +22,12 @@ enum TreadmillSpeedCommandProjection {
     static func project(
         requestedPhysicalSpeedKmh: Double,
         nativeUnits: TreadmillNativeUnits,
-        previousRawTenths: Int?,
-        confirmedImperialPhysicalCapKmh: Double = initialConfirmedImperialPhysicalCapKmh
+        previousRawTenths: Int?
     ) -> Projection {
         let sanitizedPhysicalSpeed = max(0.0, requestedPhysicalSpeedKmh.isFinite ? requestedPhysicalSpeedKmh : 0.0)
-        let cappedPhysicalSpeed = cappedPhysicalSpeedKmh(
-            sanitizedPhysicalSpeed,
-            nativeUnits: nativeUnits,
-            confirmedImperialPhysicalCapKmh: confirmedImperialPhysicalCapKmh
+        let cappedPhysicalSpeed = cappedPhysicalTargetKmh(
+            requestedPhysicalSpeedKmh: sanitizedPhysicalSpeed,
+            nativeUnits: nativeUnits
         )
         let rawTenths = commandRawTenths(forPhysicalKmh: cappedPhysicalSpeed, nativeUnits: nativeUnits)
         let nativeSpeed = Double(rawTenths) / 10.0
@@ -62,25 +59,9 @@ enum TreadmillSpeedCommandProjection {
 
     static func cappedPhysicalTargetKmh(
         requestedPhysicalSpeedKmh: Double,
-        nativeUnits: TreadmillNativeUnits,
-        confirmedImperialPhysicalCapKmh: Double = initialConfirmedImperialPhysicalCapKmh
+        nativeUnits: TreadmillNativeUnits
     ) -> Double {
-        let sanitizedPhysicalSpeed = max(0.0, requestedPhysicalSpeedKmh.isFinite ? requestedPhysicalSpeedKmh : 0.0)
-        return cappedPhysicalSpeedKmh(
-            sanitizedPhysicalSpeed,
-            nativeUnits: nativeUnits,
-            confirmedImperialPhysicalCapKmh: confirmedImperialPhysicalCapKmh
-        )
-    }
-
-    private static func cappedPhysicalSpeedKmh(
-        _ physicalKmh: Double,
-        nativeUnits: TreadmillNativeUnits,
-        confirmedImperialPhysicalCapKmh: Double
-    ) -> Double {
-        guard nativeUnits == .imperial else { return physicalKmh }
-        let cap = confirmedImperialPhysicalCapKmh.isFinite ? confirmedImperialPhysicalCapKmh : initialConfirmedImperialPhysicalCapKmh
-        return min(physicalKmh, max(0.0, cap))
+        max(0.0, requestedPhysicalSpeedKmh.isFinite ? requestedPhysicalSpeedKmh : 0.0)
     }
 
     private static func commandRawTenths(

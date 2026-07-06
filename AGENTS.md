@@ -59,7 +59,7 @@
 - Imperial HR-control MVP (2026-06-28):
   - imperial HR-control is allowed only for the matching `confirmedImperial` treadmill fingerprint and valid current `queryParams`
   - manual-stop acknowledgement is session-scoped only; do not persist it in `UserDefaults`
-  - first imperial training build caps requested physical speed at `6.0 km/h`
+  - the old artificial `6.0 km/h` physical speed cap has been removed; use existing device/app speed bounds and controller acceptance instead
   - preserve physical km/h HR profiles, project them to native mph/raw tenths only for `confirmedImperial`
   - raw resolution is `0.1 mph` (`~0.161 km/h`); projection must skip no-op speed writes when raw tenths do not change
   - telemetry/analyzer must keep both physical estimate and native command fields visible
@@ -166,10 +166,10 @@
   - the pure speed plan lives in `TreadmillTestRunPlanService.swift`; `BluetoothManager` only executes the plan, sends BLE commands, and writes `treadmill_test_*` telemetry events
   - raw CSV export includes normalized test-run columns (`test_phase`, elapsed/remaining/progress, target speed, duration, peak speed) while retaining full payloads in `raw_json`
 - HR imperial projection telemetry cleanup (2026-07-05):
-  - raw CSV export now materializes projection no-op fields instead of requiring `raw_json`: `projection_will_send`, `projection_noop`, `capped_physical_speed_kmh`, and `capped_noop`
+  - raw CSV export now materializes projection no-op fields instead of requiring `raw_json`: `projection_will_send`, `projection_noop`, `capped_physical_speed_kmh`, `speed_cap_source`, and `capped_noop`
   - `heart_rate_bpm` and `hr_decision` are compatibility aliases for existing `hr_bpm` and `decision`; old columns remain unchanged
   - analyzer should prefer normalized CSV fields and use `raw_json` only as a fallback for older exports
-  - `capped_noop=true` means an HR `UP` decision reached the imperial physical cap and did not emit a new BLE speed command
+  - `capped_noop=true` requires an explicit real cap source such as device/app max; legacy artificial `6.0 km/h` no-ops should be classified as `legacy_artificial`
 - Debug card extraction / presentation props (2026-03-21):
   - `ContentView.swift` no longer renders `Training Logs` and `HR Failures` inline; these blocks now live in `DebugTrainingLogsCard.swift` and `DebugHrFailuresCard.swift`
   - both debug cards use presentation models/props assembled in `DebugView`, instead of reading `BluetoothManager` directly inside the card views

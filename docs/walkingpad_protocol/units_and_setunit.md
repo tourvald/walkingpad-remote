@@ -77,7 +77,7 @@ Product rule:
 | Store operator-confirmed physical semantics per treadmill fingerprint | `allowed` | Evidence applies only to the matching treadmill fingerprint. |
 | Imperial no-load discriminator profile `rawTenths=30`, 60s | `diagnostic-only` | Requires explicit no-load confirmation. |
 | HR-control on unconfirmed imperial | `forbidden` | Physical command semantics are not proven for that treadmill. |
-| HR-control on confirmedImperial | `restricted allowed` | Requires matching fingerprint, valid current params, session-only manual-stop acknowledgement, and first-build physical speed cap. |
+| HR-control on confirmedImperial | `restricted allowed` | Requires matching fingerprint, valid current params, and session-only manual-stop acknowledgement. Speed is bounded by existing device/app limits and controller acceptance, not by the removed artificial `6.0 km/h` cap. |
 | Automatic conversion for unconfirmed imperial | `forbidden` | Would create safety-critical speed changes without per-treadmill proof. |
 | Physical km/h to native mph projection for confirmedImperial | `allowed` | Scoped to the confirmed treadmill only; preserves existing physical HR profiles. |
 | Auto-switch units with `setUnit` | `forbidden` | Write side effects and recovery are not proven. |
@@ -97,7 +97,8 @@ Current safety constraints:
 - stored fingerprint must match current peripheral/controller params;
 - user must acknowledge manual-stop responsibility for the current session only;
 - acknowledgement is not persisted in `UserDefaults`;
-- initial requested physical speed cap is `6.0 km/h`;
+- no artificial imperial-only physical speed cap is applied in projection;
+- maximum speed remains bounded by existing device/app limits and controller acceptance;
 - raw command resolution is `0.1 mph` (`~0.161 km/h`);
 - if projection does not change `rawTenths`, no speed command should be sent;
 - app STOP remains best-effort and must not be treated as solved stop safety.

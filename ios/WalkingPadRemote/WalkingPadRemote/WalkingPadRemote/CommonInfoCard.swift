@@ -111,7 +111,13 @@ struct CommonInfoCard: View {
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.visible)
                     }
-                    avgMetric(systemImage: "speedometer", title: "Средняя скорость", value: String(format: "%.1f", manager.avgSpeedKmh), unit: "km/h", active: manager.avgSpeedActive)
+                    avgMetric(
+                        systemImage: "speedometer",
+                        title: "Средняя скорость",
+                        value: String(format: "%.1f", manager.treadmillAverageDisplaySpeedValue),
+                        unit: manager.treadmillAverageDisplaySpeedUnitLabel,
+                        active: manager.avgSpeedActive
+                    )
                 }
             }
         }

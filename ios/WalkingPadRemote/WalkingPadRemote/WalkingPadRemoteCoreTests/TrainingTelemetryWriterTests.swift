@@ -319,7 +319,7 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertTrue(row.last?.contains("\"cooldown_finish_reason\":\"timeout\"") == true)
     }
 
-    func testCsvRowIncludesImperialCapNoopProjectionFields() {
+    func testCsvRowIncludesImperialProjectionNoopWithoutArtificialCap() {
         let headers = TrainingTelemetryWriter.trainingCsvHeaders
         let payload: [String: Any] = [
             "ts": "2026-07-05T18:53:53.610Z",
@@ -336,17 +336,18 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "diff_percent": 30.92,
             "step_tag": "UP-L2",
             "step_kmh": 0.2,
-            "speed_target_kmh": 6.0,
-            "label": "SPEED 6.0 km/h (HR)",
-            "command_raw_tenths": 37,
+            "speed_target_kmh": 6.23,
+            "label": "SPEED 6.2 km/h (HR)",
+            "command_raw_tenths": 39,
             "projection_will_send": false,
             "projection_noop": true,
-            "capped_physical_speed_kmh": 6.0,
-            "capped_noop": true,
+            "capped_physical_speed_kmh": 6.23,
+            "speed_cap_source": "none",
+            "capped_noop": false,
             "command_native_units": "imperial",
-            "command_native_speed": 3.7,
-            "command_native_speed_mph": 3.7,
-            "physical_speed_kmh_estimate": 5.9545728,
+            "command_native_speed": 3.9,
+            "command_native_speed_mph": 3.9,
+            "physical_speed_kmh_estimate": 6.2764416,
             "imperial_hr_control_enabled": true,
             "manual_stop_acknowledged": true
         ]
@@ -361,12 +362,43 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row[headers.firstIndex(of: "step_tag")!], "UP-L2")
         XCTAssertEqual(row[headers.firstIndex(of: "projection_noop")!], "true")
         XCTAssertEqual(row[headers.firstIndex(of: "projection_will_send")!], "false")
-        XCTAssertEqual(row[headers.firstIndex(of: "capped_physical_speed_kmh")!], "6")
-        XCTAssertEqual(row[headers.firstIndex(of: "capped_noop")!], "true")
-        XCTAssertEqual(row[headers.firstIndex(of: "command_raw_tenths")!], "37")
-        XCTAssertEqual(row[headers.firstIndex(of: "command_native_speed_mph")!], "3.7")
+        XCTAssertEqual(row[headers.firstIndex(of: "capped_physical_speed_kmh")!], "6.23")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_cap_source")!], "none")
+        XCTAssertEqual(row[headers.firstIndex(of: "capped_noop")!], "false")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_raw_tenths")!], "39")
+        XCTAssertEqual(row[headers.firstIndex(of: "command_native_speed_mph")!], "3.9")
         XCTAssertEqual(row[headers.firstIndex(of: "write_type")!], "")
         XCTAssertEqual(row[headers.firstIndex(of: "char_uuid")!], "")
+    }
+
+    func testCsvRowIncludesExplicitImperialSpeedDisplaySemantics() {
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        let payload: [String: Any] = [
+            "ts": "2026-07-06T17:29:22.012Z",
+            "session_id": "session-imperial-display",
+            "event": "speed_command_projection",
+            "speed_actual_kmh": 3.6,
+            "speed_reported_kmh": 3.6,
+            "speed_reported_app_kmh": 3.7,
+            "speed_unit_pref": "imperial",
+            "display_units": "imperial",
+            "physical_speed_confidence": "confirmedImperial",
+            "speed_display_value": 3.6,
+            "speed_display_units": "mph",
+            "speed_display_semantics": "native_mph",
+            "speed_physical_kmh_estimate": 5.7936384,
+            "speed_physical_estimate_label": "physical km/h estimate"
+        ]
+
+        let row = TrainingTelemetryWriter.csvRow(sourceFile: "imperial-display.jsonl", payload: payload)
+
+        XCTAssertEqual(row.count, headers.count)
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_actual_kmh")!], "3.6")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_display_value")!], "3.6")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_display_units")!], "mph")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_display_semantics")!], "native_mph")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_physical_kmh_estimate")!], "5.7936384")
+        XCTAssertEqual(row[headers.firstIndex(of: "speed_physical_estimate_label")!], "physical km/h estimate")
     }
 
     func testCsvRowRepresentsNoHeartRateWaitingAndCancelReason() {

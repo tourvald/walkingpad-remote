@@ -149,7 +149,13 @@ class ImperialProjectionObservationTests(unittest.TestCase):
                     "physical_speed_kmh_estimate": "5.9545728",
                     "projection_noop": "true",
                     "projection_will_send": "false",
+                    "speed_cap_source": "device_max",
                     "capped_noop": "true",
+                    "speed_display_value": "3.6",
+                    "speed_display_units": "mph",
+                    "speed_display_semantics": "native_mph",
+                    "speed_physical_kmh_estimate": "5.7936384",
+                    "speed_physical_estimate_label": "physical km/h estimate",
                     "manual_stop_acknowledged": "true",
                 },
             )
@@ -161,10 +167,17 @@ class ImperialProjectionObservationTests(unittest.TestCase):
         self.assertEqual(observations[0].command_raw_tenths, "37")
         self.assertFalse(observations[0].projection_will_send)
         self.assertTrue(observations[0].projection_noop)
+        self.assertEqual(observations[0].speed_cap_source, "device_max")
         self.assertTrue(observations[0].capped_noop)
+        self.assertFalse(observations[0].legacy_artificial_cap_noop)
         self.assertEqual(observations[0].capped_physical_speed_kmh, 6.0)
+        self.assertEqual(observations[0].display_speed_value, 3.6)
+        self.assertEqual(observations[0].display_speed_units, "mph")
+        self.assertEqual(observations[0].display_speed_semantics, "native_mph")
+        self.assertEqual(observations[0].speed_physical_kmh_estimate, 5.7936384)
+        self.assertEqual(observations[0].speed_physical_estimate_label, "physical km/h estimate")
 
-    def test_old_exports_infer_capped_noop_from_raw_json_projection_payload(self):
+    def test_old_exports_classify_artificial_cap_without_current_capped_noop(self):
         rows = [
             Row(
                 index=0,
@@ -179,6 +192,8 @@ class ImperialProjectionObservationTests(unittest.TestCase):
                     "command_raw_tenths": 37,
                     "requested_physical_speed_kmh": 6.0,
                     "capped_physical_speed_kmh": 6.0,
+                    "native_speed_mph": 3.6,
+                    "physical_speed_kmh_estimate": 5.7936384,
                     "projection_noop": True,
                     "projection_will_send": False,
                     "manual_stop_acknowledged": True,
@@ -197,7 +212,14 @@ class ImperialProjectionObservationTests(unittest.TestCase):
         self.assertEqual(len(observations), 1)
         self.assertFalse(observations[0].projection_will_send)
         self.assertTrue(observations[0].projection_noop)
-        self.assertTrue(observations[0].capped_noop)
+        self.assertEqual(observations[0].speed_cap_source, "legacy_artificial")
+        self.assertFalse(observations[0].capped_noop)
+        self.assertTrue(observations[0].legacy_artificial_cap_noop)
+        self.assertEqual(observations[0].display_speed_value, 3.6)
+        self.assertEqual(observations[0].display_speed_units, "mph")
+        self.assertEqual(observations[0].display_speed_semantics, "native_mph")
+        self.assertEqual(observations[0].speed_physical_kmh_estimate, 5.7936384)
+        self.assertEqual(observations[0].speed_physical_estimate_label, "physical km/h estimate")
 
 
 class StopExperimentReportTests(unittest.TestCase):

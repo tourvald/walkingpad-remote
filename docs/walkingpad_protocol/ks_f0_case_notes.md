@@ -43,7 +43,7 @@ KingSmith models.
 | --- | --- | --- |
 | Show imperial warning from valid params | `allowed` | Read-only safety signal. |
 | Block HR-control without matching confirmation and session ack | `allowed` / required | Safety gate for unconfirmed or stale evidence. |
-| Allow restricted HR-control with matching `confirmedImperial` and session ack | `restricted allowed` | Keeps physical km/h profiles, projects to native mph/raw tenths, caps first build at `6.0 km/h`. |
+| Allow restricted HR-control with matching `confirmedImperial` and session ack | `restricted allowed` | Keeps physical km/h profiles, projects to native mph/raw tenths, and relies on existing device/app speed bounds rather than the removed artificial `6.0 km/h` cap. |
 | Allow no-load imperial diagnostic after explicit confirmation | `diagnostic-only` | Needed to collect physical evidence safely. |
 | Store operator visual confirmation | `allowed` | Per-device evidence only. |
 | Apply confirmation to other treadmills | `forbidden` | Fingerprint mismatch must block automatic reuse. |

@@ -157,8 +157,15 @@ class ImperialTrainingProjectionObservation:
     command_physical_delta_kmh_estimate: float | None
     projection_will_send: bool
     projection_noop: bool
+    speed_cap_source: str
     capped_noop: bool
+    legacy_artificial_cap_noop: bool
     manual_stop_acknowledged: bool
+    display_speed_value: float | None
+    display_speed_units: str
+    display_speed_semantics: str
+    speed_physical_kmh_estimate: float | None
+    speed_physical_estimate_label: str
 
 
 @dataclass
@@ -492,15 +499,34 @@ def collect_imperial_training_projection_observations(rows: list[Row]) -> list[I
         )
         capped_physical_speed_kmh = row._num("capped_physical_speed_kmh")
         capped_noop_value = row.get("capped_noop")
-        capped_noop = (
-            _to_bool(capped_noop_value)
-            if _has_value(capped_noop_value)
-            else bool(
-                projection_noop
-                and capped_physical_speed_kmh is not None
-                and abs(capped_physical_speed_kmh - 6.0) < 0.01
-            )
+        raw_capped_noop = _to_bool(capped_noop_value) if _has_value(capped_noop_value) else False
+        speed_cap_source = str(row.get("speed_cap_source") or "").strip()
+        legacy_artificial_cap_noop = bool(
+            not speed_cap_source
+            and projection_noop
+            and capped_physical_speed_kmh is not None
+            and abs(capped_physical_speed_kmh - 6.0) < 0.01
         )
+        if legacy_artificial_cap_noop:
+            speed_cap_source = "legacy_artificial"
+        elif not speed_cap_source:
+            speed_cap_source = "unknown"
+        capped_noop = raw_capped_noop and speed_cap_source not in {"none", "legacy_artificial", "unknown"}
+        display_speed_value = row._num("speed_display_value")
+        display_speed_units = str(row.get("speed_display_units") or "").strip()
+        display_speed_semantics = str(row.get("speed_display_semantics") or "").strip()
+        speed_physical_kmh_estimate = row._num("speed_physical_kmh_estimate")
+        speed_physical_estimate_label = str(row.get("speed_physical_estimate_label") or "").strip()
+        if display_speed_value is None and command_units == "imperial":
+            display_speed_value = row._num("native_speed_mph")
+            if display_speed_value is None:
+                display_speed_value = row._num("reported_native_speed")
+            display_speed_units = display_speed_units or "mph"
+            display_speed_semantics = display_speed_semantics or "native_mph"
+        if speed_physical_kmh_estimate is None:
+            speed_physical_kmh_estimate = row._num("physical_speed_kmh_estimate")
+        if not speed_physical_estimate_label and speed_physical_kmh_estimate is not None:
+            speed_physical_estimate_label = "physical km/h estimate"
 
         observations.append(
             ImperialTrainingProjectionObservation(
@@ -516,8 +542,15 @@ def collect_imperial_training_projection_observations(rows: list[Row]) -> list[I
                 command_physical_delta_kmh_estimate=row._num("command_physical_delta_kmh_estimate"),
                 projection_will_send=projection_will_send,
                 projection_noop=projection_noop,
+                speed_cap_source=speed_cap_source,
                 capped_noop=capped_noop,
+                legacy_artificial_cap_noop=legacy_artificial_cap_noop,
                 manual_stop_acknowledged=_to_bool(row.get("manual_stop_acknowledged")),
+                display_speed_value=display_speed_value,
+                display_speed_units=display_speed_units,
+                display_speed_semantics=display_speed_semantics,
+                speed_physical_kmh_estimate=speed_physical_kmh_estimate,
+                speed_physical_estimate_label=speed_physical_estimate_label,
             )
         )
     return observations
@@ -778,17 +811,25 @@ def print_text(
     print("imperial training projections:")
     if imperial_training:
         for obs in imperial_training[-12:]:
+            display = ""
+            if obs.display_speed_value is not None:
+                units = f" {obs.display_speed_units}" if obs.display_speed_units else ""
+                semantics = f"({obs.display_speed_semantics})" if obs.display_speed_semantics else ""
+                display = f"display={_fmt(obs.display_speed_value, units)}{semantics} "
+            physical_label = obs.speed_physical_estimate_label or "physical km/h estimate"
             print(
                 "  "
                 f"{obs.ts_raw or '—'} raw={obs.command_raw_tenths} "
+                f"{display}"
                 f"native={_fmt(obs.command_native_speed_mph, ' mph')} "
                 f"requested={_fmt(obs.requested_physical_speed_kmh, ' km/h')} "
-                f"capped={_fmt(obs.capped_physical_speed_kmh, ' km/h')} "
-                f"estimate={_fmt(obs.physical_speed_kmh_estimate, ' km/h')} "
+                f"effective_physical={_fmt(obs.capped_physical_speed_kmh, ' km/h')} "
+                f"{physical_label}={_fmt(obs.speed_physical_kmh_estimate, ' km/h')} "
                 f"requested_delta={_fmt(obs.requested_physical_delta_kmh, ' km/h')} "
                 f"command_delta={_fmt(obs.command_physical_delta_kmh_estimate, ' km/h')} "
                 f"will_send={obs.projection_will_send} "
-                f"noop={obs.projection_noop} capped_noop={obs.capped_noop} "
+                f"noop={obs.projection_noop} cap_source={obs.speed_cap_source} capped_noop={obs.capped_noop} "
+                f"legacy_artificial_cap_noop={obs.legacy_artificial_cap_noop} "
                 f"manual_stop_ack={obs.manual_stop_acknowledged}"
             )
         if len(imperial_training) > 12:
@@ -945,8 +986,15 @@ def to_json(
                 "command_physical_delta_kmh_estimate": item.command_physical_delta_kmh_estimate,
                 "projection_will_send": item.projection_will_send,
                 "projection_noop": item.projection_noop,
+                "speed_cap_source": item.speed_cap_source,
                 "capped_noop": item.capped_noop,
+                "legacy_artificial_cap_noop": item.legacy_artificial_cap_noop,
                 "manual_stop_acknowledged": item.manual_stop_acknowledged,
+                "display_speed_value": item.display_speed_value,
+                "display_speed_units": item.display_speed_units,
+                "display_speed_semantics": item.display_speed_semantics,
+                "speed_physical_kmh_estimate": item.speed_physical_kmh_estimate,
+                "speed_physical_estimate_label": item.speed_physical_estimate_label,
             }
             for item in imperial_training
         ],
