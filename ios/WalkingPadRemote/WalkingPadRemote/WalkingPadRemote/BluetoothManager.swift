@@ -98,6 +98,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var treadmillMinSpeedKmh: Double = 0.5
     @Published var treadmillMaxSpeedKmh: Double = 12.0
     @Published var treadmillSpeedIncrementKmh: Double = 0.1
+    @Published private(set) var treadmillControllerUnitRawValue: Int? = nil
+    @Published private(set) var unitsDebugLastAction: String = "—"
+    @Published private(set) var unitsDebugLastWritePacketHex: String = "—"
+    @Published private(set) var unitsDebugLastReadbackResult: String = "—"
+    @Published private(set) var unitsDebugLastError: String = ""
 
     // Discovery
     struct DiscoveredPeripheral: Identifiable { let id: UUID; let name: String; let rssi: Int; let isKnown: Bool }
@@ -181,6 +186,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var stopExperimentBaselineSample: StopExperimentPlanService.Sample?
     private var stopExperimentMaxAfterCommandSpeedRawTenths: Int?
     private var stopExperimentWritesCount: Int = 0
+    private var unitsDebugPendingReadback: UnitsDebugPendingReadback?
+    private let unitsDebugReadbackDelaySeconds: TimeInterval = 0.8
+    private let unitsDebugReadbackTimeoutSeconds: TimeInterval = 3.0
     private var hrTrendMinWindowSeconds: TimeInterval {
         max(6, hrTrendWindowSeconds * 0.4)
     }
@@ -333,6 +341,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private enum StopAssistCommand {
         case stopRetry
         case walkingPadStandby
+    }
+
+    private struct UnitsDebugPendingReadback {
+        let token: UUID
+        let action: UnitsControllerPreferencesDiagnostics.Action
+        let before: TreadmillUnitsState
     }
 
     private func loadKnownPeripherals() {
@@ -3922,6 +3936,187 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopBeltSafely(reason: "direct")
     }
 
+    var canRunUnitsDebugDiagnostics: Bool {
+        isConnected && treadmillProtocol == .walkingPad
+    }
+
+    var unitsDebugDiagnosticsBlockReason: String {
+        if !isConnected { return "Connect to WalkingPad first." }
+        if treadmillProtocol != .walkingPad { return "WalkingPad FE00 protocol required." }
+        return "Ready."
+    }
+
+    func runUnitsDebugAction(_ action: UnitsControllerPreferencesDiagnostics.Action) {
+        let before = treadmillUnitsState
+        let startedFields = UnitsControllerPreferencesDiagnostics.actionStartedFields(
+            action: action,
+            controllerState: treadmillStatusText.isEmpty ? currentSessionState() : treadmillStatusText,
+            currentUnitsState: before,
+            connectedPeripheralID: connectedPeripheralId,
+            connectedPeripheralName: deviceName
+        )
+        unitsDebugLastAction = action.rawValue
+        unitsDebugLastError = ""
+        appendUnitsDebugLog(event: "units_debug_action_started", fields: startedFields)
+        logTrainingEvent("units_debug_action_started", fields: startedFields)
+
+        if action == .clearState {
+            clearUnitsDebugStateAfterStart()
+            let fields = UnitsControllerPreferencesDiagnostics.actionFinishedFields(
+                action: action,
+                result: .unchanged,
+                error: nil
+            )
+            appendUnitsDebugLog(event: "units_debug_action_finished", fields: fields)
+            logTrainingEvent("units_debug_action_finished", fields: fields)
+            return
+        }
+
+        guard canRunUnitsDebugDiagnostics else {
+            finishUnitsDebugAction(
+                action: action,
+                before: before,
+                after: nil,
+                error: unitsDebugDiagnosticsBlockReason
+            )
+            return
+        }
+
+        guard let command = UnitsControllerPreferencesDiagnostics.command(for: action) else {
+            finishUnitsDebugAction(
+                action: action,
+                before: before,
+                after: nil,
+                error: "No whitelisted command for action."
+            )
+            return
+        }
+
+        beginUnitsDebugReadback(action: action, before: before)
+
+        switch action {
+        case .readControllerUnits, .readBackVerify:
+            sendUnitsDebugCommand(command, action: action, purpose: "read")
+        case .setMetric, .setImperial:
+            sendUnitsDebugCommand(command, action: action, purpose: "write")
+            scheduleUnitsDebugReadbackQuery(for: action)
+        case .clearState:
+            break
+        }
+    }
+
+    private func clearUnitsDebugStateAfterStart() {
+        unitsDebugPendingReadback = nil
+        unitsDebugLastAction = UnitsControllerPreferencesDiagnostics.Action.clearState.rawValue
+        unitsDebugLastWritePacketHex = "—"
+        unitsDebugLastReadbackResult = "cleared"
+        unitsDebugLastError = ""
+    }
+
+    private func beginUnitsDebugReadback(
+        action: UnitsControllerPreferencesDiagnostics.Action,
+        before: TreadmillUnitsState
+    ) {
+        let token = UUID()
+        unitsDebugPendingReadback = UnitsDebugPendingReadback(
+            token: token,
+            action: action,
+            before: before
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + unitsDebugReadbackTimeoutSeconds) { [weak self] in
+            guard let self else { return }
+            guard self.unitsDebugPendingReadback?.token == token else { return }
+            self.finishUnitsDebugReadback(after: nil, error: nil)
+        }
+    }
+
+    private func scheduleUnitsDebugReadbackQuery(for action: UnitsControllerPreferencesDiagnostics.Action) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + unitsDebugReadbackDelaySeconds) { [weak self] in
+            guard let self else { return }
+            guard self.unitsDebugPendingReadback?.action == action else { return }
+            guard let command = UnitsControllerPreferencesDiagnostics.command(for: .readBackVerify) else { return }
+            self.sendUnitsDebugCommand(command, action: action, purpose: "readback")
+        }
+    }
+
+    private func sendUnitsDebugCommand(
+        _ command: UnitsControllerPreferencesDiagnostics.Command,
+        action: UnitsControllerPreferencesDiagnostics.Action,
+        purpose: String
+    ) {
+        guard UnitsControllerPreferencesDiagnostics.isWhitelistedPacket(command.packet) else {
+            finishUnitsDebugAction(
+                action: action,
+                before: treadmillUnitsState,
+                after: nil,
+                error: "Blocked non-whitelisted units debug packet."
+            )
+            return
+        }
+
+        unitsDebugLastWritePacketHex = command.packetHex
+        let fields = UnitsControllerPreferencesDiagnostics.commandSentFields(
+            action: action,
+            command: command,
+            purpose: purpose
+        )
+        appendUnitsDebugLog(event: "units_debug_command_sent", fields: fields)
+        logTrainingEvent("units_debug_command_sent", fields: fields)
+        writeCommand(command.packet, label: command.label)
+    }
+
+    private func handleUnitsDebugReadback(after: TreadmillUnitsState) {
+        guard unitsDebugPendingReadback != nil else { return }
+        finishUnitsDebugReadback(after: after, error: nil)
+    }
+
+    private func finishUnitsDebugReadback(after: TreadmillUnitsState?, error: String?) {
+        guard let pending = unitsDebugPendingReadback else { return }
+        finishUnitsDebugAction(
+            action: pending.action,
+            before: pending.before,
+            after: after,
+            error: error
+        )
+    }
+
+    private func finishUnitsDebugAction(
+        action: UnitsControllerPreferencesDiagnostics.Action,
+        before: TreadmillUnitsState,
+        after: TreadmillUnitsState?,
+        error: String?
+    ) {
+        let result = UnitsControllerPreferencesDiagnostics.readbackResult(before: before, after: after)
+        unitsDebugPendingReadback = nil
+        unitsDebugLastAction = action.rawValue
+        unitsDebugLastReadbackResult = result.rawValue
+        unitsDebugLastError = error ?? ""
+
+        let readbackFields = UnitsControllerPreferencesDiagnostics.readbackFields(
+            before: before,
+            after: after,
+            result: result
+        )
+        appendUnitsDebugLog(event: "units_debug_readback", fields: readbackFields)
+        logTrainingEvent("units_debug_readback", fields: readbackFields)
+
+        let finishedFields = UnitsControllerPreferencesDiagnostics.actionFinishedFields(
+            action: action,
+            result: result,
+            error: error
+        )
+        appendUnitsDebugLog(event: "units_debug_action_finished", fields: finishedFields)
+        logTrainingEvent("units_debug_action_finished", fields: finishedFields)
+    }
+
+    private func appendUnitsDebugLog(event: String, fields: [String: Any]) {
+        let details = fields
+            .sorted { $0.key < $1.key }
+            .map { key, value in "\(key)=\(value)" }
+            .joined(separator: " ")
+        appendLog("event=\(event) \(details)")
+    }
+
     private func stopBeltOnce() {
         guard isConnected else { return }
         let old = deviceTargetSpeedKmh
@@ -5120,6 +5315,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillMaxSpeedKmh = 12.0
         treadmillSpeedIncrementKmh = 0.1
         treadmillUnitsState = .notRead
+        treadmillControllerUnitRawValue = nil
         physicalSemanticsConfirmation = nil
         physicalSemanticsConfirmationMismatchText = nil
         imperialDiagnosticConfirmationAvailable = false
@@ -6164,8 +6360,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         readAt: readAt,
                         rawParamsHex: params.rawHex
                     )
-                    self.treadmillUnitsState = self.resolvePhysicalSemantics(for: baseState)
+                    let resolvedState = self.resolvePhysicalSemantics(for: baseState)
+                    self.treadmillControllerUnitRawValue = params.unit
+                    self.treadmillUnitsState = resolvedState
                     self.recomputeHrStartAllowed()
+                    self.handleUnitsDebugReadback(after: resolvedState)
                 }
                 appendLog("Controller params: unit=\(params.unit)(\(params.nativeUnitsLabel)) maxSpeedRaw=\(params.maxSpeedRawTenths) startSpeedRaw=\(params.startSpeedRawTenths) checksum=\(params.checksumOk ? "ok" : "bad")")
                 logTrainingEvent("controller_params", fields: [
@@ -6180,14 +6379,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             } else if data.count >= 2, data[0] == 0xF8, data[1] == 0xA6 {
                 let rawHex = hex(data)
                 DispatchQueue.main.async {
-                    self.treadmillUnitsState = TreadmillUnitsState(
+                    let failedState = TreadmillUnitsState(
                         nativeUnits: .unknown,
                         source: .parseFailed,
                         parseStatus: .parseFailed,
                         readAt: Date(),
                         rawParamsHex: rawHex
                     )
+                    self.treadmillControllerUnitRawValue = nil
+                    self.treadmillUnitsState = failedState
                     self.recomputeHrStartAllowed()
+                    self.handleUnitsDebugReadback(after: failedState)
                 }
                 appendLog("Controller params parse failed: \(rawHex)")
                 logTrainingEvent("controller_params_parse_failed", fields: [

@@ -53,6 +53,26 @@ enum BLETransportCodec {
         return Data(bytes)
     }
 
+    static func buildWalkingPadUnitPreferencePacket(nativeUnits: TreadmillNativeUnits) -> Data? {
+        let value: UInt8
+        switch nativeUnits {
+        case .metric:
+            value = 0x00
+        case .imperial:
+            value = 0x01
+        case .unknown:
+            return nil
+        }
+
+        var bytes: [UInt8] = [0xF7, 0xA6, 0x08, 0x00, 0x00, 0x00, value, 0x00, 0xFD]
+        var crc: UInt16 = 0
+        for index in 1...6 {
+            crc = (crc + UInt16(bytes[index])) & 0xFF
+        }
+        bytes[7] = UInt8(crc)
+        return Data(bytes)
+    }
+
     static func buildWalkingPadSetSpeedPacket(rawTenths: Int) -> Data {
         let value = UInt8(max(0, min(255, rawTenths)))
         return buildWalkingPadCommandPacket(command: 0x01, value: value)

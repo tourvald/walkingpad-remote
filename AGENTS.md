@@ -55,7 +55,13 @@
   - operator visual confirmation can persist physical semantics per treadmill fingerprint (`peripheralId`, name, WalkingPad protocol, raw controller params, unit pref, checksum)
   - persisted confirmation applies only when current valid imperial `queryParams` match the stored fingerprint; mismatches must not auto-apply
   - stop verification failures remain in stop-forensics scope and must not be mixed into units MVP
-  - do not add unit-switch writes, service-menu writes, firmware/OTA actions, or silent imperial Test Run
+  - do not add unit-switch writes outside the explicit `Units / Controller Preferences Diagnostics` surface, service-menu writes, firmware/OTA actions, or silent imperial Test Run
+- Units / Controller Preferences Diagnostics (2026-07-06):
+  - Debug-only controller preference diagnostics are allowed only through the fixed UI surface in `DebugView`
+  - the only allowed packets are query params `F7 A6 00 00 00 00 00 A6 FD`, set metric `F7 A6 08 00 00 00 00 AE FD`, and set imperial `F7 A6 08 00 00 00 01 AF FD`
+  - dangerous set actions must show the exact persistent-preference/test-controller warning before writing
+  - every action should log `units_debug_action_started` and `units_debug_action_finished`; every packet write should log `units_debug_command_sent`; readback should log `units_debug_readback`
+  - no arbitrary raw packet input, `scan_ble.py raw`, `scan_ble.py seq`, service-menu writes, firmware/OTA, hidden automatic unit switching, HR-control changes, or stop-behavior changes belong in this surface
 - Imperial HR-control MVP (2026-06-28):
   - imperial HR-control is allowed only for the matching `confirmedImperial` treadmill fingerprint and valid current `queryParams`
   - manual-stop acknowledgement is session-scoped only; do not persist it in `UserDefaults`

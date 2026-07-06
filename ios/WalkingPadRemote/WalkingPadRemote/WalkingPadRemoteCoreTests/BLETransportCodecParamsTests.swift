@@ -9,6 +9,16 @@ final class BLETransportCodecParamsTests: XCTestCase {
         XCTAssertEqual([UInt8](packet), [0xF7, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA6, 0xFD])
     }
 
+    func testUnitPreferencePacketsUseOnlyKnownLegacyA6Key8Values() {
+        let metric = BLETransportCodec.buildWalkingPadUnitPreferencePacket(nativeUnits: .metric)
+        let imperial = BLETransportCodec.buildWalkingPadUnitPreferencePacket(nativeUnits: .imperial)
+        let unknown = BLETransportCodec.buildWalkingPadUnitPreferencePacket(nativeUnits: .unknown)
+
+        XCTAssertEqual([UInt8](metric ?? Data()), [0xF7, 0xA6, 0x08, 0x00, 0x00, 0x00, 0x00, 0xAE, 0xFD])
+        XCTAssertEqual([UInt8](imperial ?? Data()), [0xF7, 0xA6, 0x08, 0x00, 0x00, 0x00, 0x01, 0xAF, 0xFD])
+        XCTAssertNil(unknown)
+    }
+
     func testWalkingPadSetSpeedPacketUsesRawTenths() {
         let packet = BLETransportCodec.buildWalkingPadSetSpeedPacket(rawTenths: 30)
 
