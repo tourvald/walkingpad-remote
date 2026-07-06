@@ -15,9 +15,10 @@ final class TreadmillUnitsSafetyPolicyTests: XCTestCase {
         XCTAssertTrue(TreadmillUnitsSafetyPolicy.allowsHrControl(state))
         XCTAssertTrue(TreadmillUnitsSafetyPolicy.allowsDebugTestRun(state))
         XCTAssertNil(TreadmillUnitsSafetyPolicy.blockReason(for: state))
+        XCTAssertEqual(ControllerUnitsRecovery.stopSafetyStatus(for: state), .ready)
     }
 
-    func testImperialQueryParamsBlocksAutomation() {
+    func testImperialQueryParamsBlocksAutomationWithBrokenStopSafetyStatus() {
         let state = TreadmillUnitsState(
             nativeUnits: .imperial,
             source: .queryParams,
@@ -28,10 +29,11 @@ final class TreadmillUnitsSafetyPolicyTests: XCTestCase {
 
         XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state))
         XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsDebugTestRun(state))
-        XCTAssertEqual(TreadmillUnitsSafetyPolicy.blockReason(for: state), .imperialUnits)
+        XCTAssertEqual(TreadmillUnitsSafetyPolicy.blockReason(for: state), .brokenImperialUnits)
+        XCTAssertEqual(ControllerUnitsRecovery.stopSafetyStatus(for: state), .brokenImperialUnits)
     }
 
-    func testImperialQueryParamsAllowsOnlyConfirmedNoLoadDiagnosticTestRun() {
+    func testImperialQueryParamsBlocksDebugTestRunEvenWithNoLoadConfirmation() {
         let state = TreadmillUnitsState(
             nativeUnits: .imperial,
             source: .queryParams,
@@ -41,12 +43,12 @@ final class TreadmillUnitsSafetyPolicyTests: XCTestCase {
         )
 
         XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state))
-        XCTAssertTrue(TreadmillUnitsSafetyPolicy.requiresNoLoadDiagnosticConfirmation(for: state))
+        XCTAssertFalse(TreadmillUnitsSafetyPolicy.requiresNoLoadDiagnosticConfirmation(for: state))
         XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsDebugTestRun(state))
-        XCTAssertTrue(TreadmillUnitsSafetyPolicy.allowsDebugTestRun(state, confirmedNoLoadDiagnostic: true))
+        XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsDebugTestRun(state, confirmedNoLoadDiagnostic: true))
     }
 
-    func testConfirmedImperialRequiresSessionManualStopAcknowledgementForHrControl() {
+    func testConfirmedImperialStaysBlockedEvenWithSessionManualStopAcknowledgement() {
         let state = TreadmillUnitsState(
             nativeUnits: .imperial,
             source: .queryParams,
@@ -60,10 +62,13 @@ final class TreadmillUnitsSafetyPolicyTests: XCTestCase {
         XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state, manualStopAcknowledged: false))
         XCTAssertEqual(
             TreadmillUnitsSafetyPolicy.blockReason(for: state, manualStopAcknowledged: false),
-            .manualStopAcknowledgementRequired
+            .brokenImperialUnits
         )
-        XCTAssertTrue(TreadmillUnitsSafetyPolicy.allowsHrControl(state, manualStopAcknowledged: true))
-        XCTAssertNil(TreadmillUnitsSafetyPolicy.blockReason(for: state, manualStopAcknowledged: true))
+        XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state, manualStopAcknowledged: true))
+        XCTAssertEqual(
+            TreadmillUnitsSafetyPolicy.blockReason(for: state, manualStopAcknowledged: true),
+            .brokenImperialUnits
+        )
     }
 
     func testManualStopAcknowledgementDoesNotAllowUnconfirmedImperialHrControl() {
@@ -79,7 +84,7 @@ final class TreadmillUnitsSafetyPolicyTests: XCTestCase {
         XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(state, manualStopAcknowledged: true))
         XCTAssertEqual(
             TreadmillUnitsSafetyPolicy.blockReason(for: state, manualStopAcknowledged: true),
-            .imperialUnits
+            .brokenImperialUnits
         )
     }
 

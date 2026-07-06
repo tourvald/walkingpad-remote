@@ -62,8 +62,13 @@
   - dangerous set actions must show the exact persistent-preference/test-controller warning before writing
   - every action should log `units_debug_action_started` and `units_debug_action_finished`; every packet write should log `units_debug_command_sent`; readback should log `units_debug_readback`
   - no arbitrary raw packet input, `scan_ble.py raw`, `scan_ble.py seq`, service-menu writes, firmware/OTA, hidden automatic unit switching, HR-control changes, or stop-behavior changes belong in this surface
-- Imperial HR-control MVP (2026-06-28):
-  - imperial HR-control is allowed only for the matching `confirmedImperial` treadmill fingerprint and valid current `queryParams`
+- Controller units recovery flow (2026-07-06):
+  - on the affected WalkingPad controller, valid `queryParams.unit=1` (`imperial`) is treated as a broken stop-safety state because app stop and physical remote Start/Stop can fail to reach fresh zero
+  - production recovery must be owner-approved: show the persistent-preference warning, send only set metric `F7 A6 08 00 00 00 00 AE FD`, then verify success by read-back `queryParams.unit=0` with checksum OK
+  - do not silently switch units on connect, do not add a production set-imperial path, and keep service-menu writes, firmware/OTA, raw/seq tooling, and stop sequence changes out of this flow
+  - HR-control and Debug Test Run must remain blocked while stop safety is `broken_imperial_units`, `units_unknown`, or `params_invalid`
+- Imperial HR-control MVP (2026-06-28, superseded for affected controller stop safety on 2026-07-06):
+  - historical `confirmedImperial` speed projection remains useful for analysis, but HR-control must not start while current valid `queryParams` report `imperial`; switch controller units to verified metric first
   - manual-stop acknowledgement is session-scoped only; do not persist it in `UserDefaults`
   - the old artificial `6.0 km/h` physical speed cap has been removed; use existing device/app speed bounds and controller acceptance instead
   - preserve physical km/h HR profiles, project them to native mph/raw tenths only for `confirmedImperial`

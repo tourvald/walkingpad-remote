@@ -99,6 +99,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var treadmillMaxSpeedKmh: Double = 12.0
     @Published var treadmillSpeedIncrementKmh: Double = 0.1
     @Published private(set) var treadmillControllerUnitRawValue: Int? = nil
+    @Published private(set) var stopSafetyStatus: TreadmillStopSafetyStatus = .unitsUnknown
+    @Published private(set) var unitsRecoveryLastResult: String = "—"
+    @Published private(set) var unitsRecoveryLastWritePacketHex: String = "—"
+    @Published private(set) var unitsRecoveryLastError: String = ""
     @Published private(set) var unitsDebugLastAction: String = "—"
     @Published private(set) var unitsDebugLastWritePacketHex: String = "—"
     @Published private(set) var unitsDebugLastReadbackResult: String = "—"
@@ -187,6 +191,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var stopExperimentMaxAfterCommandSpeedRawTenths: Int?
     private var stopExperimentWritesCount: Int = 0
     private var unitsDebugPendingReadback: UnitsDebugPendingReadback?
+    private var unitsRecoveryPendingReadback: UnitsRecoveryPendingReadback?
     private let unitsDebugReadbackDelaySeconds: TimeInterval = 0.8
     private let unitsDebugReadbackTimeoutSeconds: TimeInterval = 3.0
     private var hrTrendMinWindowSeconds: TimeInterval {
@@ -347,6 +352,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let token: UUID
         let action: UnitsControllerPreferencesDiagnostics.Action
         let before: TreadmillUnitsState
+    }
+
+    private struct UnitsRecoveryPendingReadback {
+        let token: UUID
+        let before: TreadmillUnitsState
+        let command: ControllerUnitsRecovery.Command
     }
 
     private func loadKnownPeripherals() {
@@ -3940,10 +3951,92 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         isConnected && treadmillProtocol == .walkingPad
     }
 
+    var canRecoverControllerUnitsToMetric: Bool {
+        isConnected
+            && treadmillProtocol == .walkingPad
+            && !isHrControlRunning
+            && !isTreadmillTestRunActive
+            && !isStopExperimentActive
+            && ControllerUnitsRecovery.shouldOfferManualRecovery(for: treadmillUnitsState)
+    }
+
+    var unitsRecoveryBlockReason: String {
+        if !isConnected { return "Connect to WalkingPad first." }
+        if treadmillProtocol != .walkingPad { return "WalkingPad FE00 protocol required." }
+        if isHrControlRunning { return "Stop HR-control before changing controller units." }
+        if isTreadmillTestRunActive { return "Stop Debug Test Run before changing controller units." }
+        if isStopExperimentActive { return "Stop experiment is active." }
+        if !ControllerUnitsRecovery.shouldOfferManualRecovery(for: treadmillUnitsState) {
+            return "Recovery is only available when controller units are imperial with checksum OK."
+        }
+        return "Ready."
+    }
+
+    var stopSafetyStatusText: String {
+        switch stopSafetyStatus {
+        case .ready:
+            return "ready"
+        case .brokenImperialUnits:
+            return "broken: imperial units"
+        case .unitsUnknown:
+            return "unknown"
+        case .paramsInvalid:
+            return "blocked: params invalid"
+        }
+    }
+
+    var unitsRecoveryWarningText: String? {
+        guard stopSafetyStatus == .brokenImperialUnits else { return nil }
+        return "Imperial mode breaks stop on this controller. HR-control and Debug Test Run are blocked until controller read-back confirms metric units."
+    }
+
     var unitsDebugDiagnosticsBlockReason: String {
         if !isConnected { return "Connect to WalkingPad first." }
         if treadmillProtocol != .walkingPad { return "WalkingPad FE00 protocol required." }
         return "Ready."
+    }
+
+    func switchControllerUnitsToMetric() {
+        let before = treadmillUnitsState
+        unitsRecoveryLastResult = "started"
+        unitsRecoveryLastWritePacketHex = "—"
+        unitsRecoveryLastError = ""
+
+        let startedFields = ControllerUnitsRecovery.startedFields(
+            before: before,
+            connectedPeripheralID: connectedPeripheralId,
+            connectedPeripheralName: deviceName
+        )
+        appendUnitsRecoveryLog(event: "units_recovery_started", fields: startedFields)
+        logTrainingEvent("units_recovery_started", fields: startedFields)
+
+        guard canRecoverControllerUnitsToMetric else {
+            finishUnitsRecoveryAction(
+                before: before,
+                after: nil,
+                result: .failed,
+                error: unitsRecoveryBlockReason
+            )
+            return
+        }
+
+        guard let command = ControllerUnitsRecovery.productionCommand(to: .metric) else {
+            finishUnitsRecoveryAction(
+                before: before,
+                after: nil,
+                result: .failed,
+                error: "No production recovery command for target units."
+            )
+            return
+        }
+
+        beginUnitsRecoveryReadback(before: before, command: command)
+        unitsRecoveryLastWritePacketHex = command.packetHex
+        let sentFields = ControllerUnitsRecovery.commandSentFields(command: command)
+        appendUnitsRecoveryLog(event: "units_recovery_command_sent", fields: sentFields)
+        logTrainingEvent("units_recovery_command_sent", fields: sentFields)
+        writeCommand(command.packet, label: command.label)
+        scheduleUnitsRecoveryReadbackQuery()
     }
 
     func runUnitsDebugAction(_ action: UnitsControllerPreferencesDiagnostics.Action) {
@@ -4011,6 +4104,84 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         unitsDebugLastWritePacketHex = "—"
         unitsDebugLastReadbackResult = "cleared"
         unitsDebugLastError = ""
+    }
+
+    private func beginUnitsRecoveryReadback(
+        before: TreadmillUnitsState,
+        command: ControllerUnitsRecovery.Command
+    ) {
+        let token = UUID()
+        unitsRecoveryPendingReadback = UnitsRecoveryPendingReadback(
+            token: token,
+            before: before,
+            command: command
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + unitsDebugReadbackTimeoutSeconds) { [weak self] in
+            guard let self else { return }
+            guard self.unitsRecoveryPendingReadback?.token == token else { return }
+            self.finishUnitsRecoveryReadback(after: nil, error: nil)
+        }
+    }
+
+    private func scheduleUnitsRecoveryReadbackQuery() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + unitsDebugReadbackDelaySeconds) { [weak self] in
+            guard let self else { return }
+            guard self.unitsRecoveryPendingReadback != nil else { return }
+            let packet = BLETransportCodec.buildWalkingPadQueryParamsPacket()
+            self.writeCommand(packet, label: "UNITS RECOVERY READBACK")
+        }
+    }
+
+    private func handleUnitsRecoveryReadback(after: TreadmillUnitsState) {
+        guard unitsRecoveryPendingReadback != nil else { return }
+        finishUnitsRecoveryReadback(after: after, error: nil)
+    }
+
+    private func finishUnitsRecoveryReadback(after: TreadmillUnitsState?, error: String?) {
+        guard let pending = unitsRecoveryPendingReadback else { return }
+        finishUnitsRecoveryAction(
+            before: pending.before,
+            after: after,
+            result: ControllerUnitsRecovery.readbackResult(before: pending.before, after: after),
+            error: error
+        )
+    }
+
+    private func finishUnitsRecoveryAction(
+        before: TreadmillUnitsState,
+        after: TreadmillUnitsState?,
+        result: ControllerUnitsRecovery.ReadbackResult,
+        error: String?
+    ) {
+        unitsRecoveryPendingReadback = nil
+        unitsRecoveryLastResult = result.rawValue
+        unitsRecoveryLastError = error ?? ""
+
+        let readbackFields = ControllerUnitsRecovery.readbackFields(
+            before: before,
+            after: after,
+            result: result
+        )
+        appendUnitsRecoveryLog(event: "units_recovery_readback", fields: readbackFields)
+        logTrainingEvent("units_recovery_readback", fields: readbackFields)
+
+        let finishedFields = ControllerUnitsRecovery.finishedFields(
+            before: before,
+            after: after,
+            result: result,
+            error: error
+        )
+        appendUnitsRecoveryLog(event: "units_recovery_finished", fields: finishedFields)
+        logTrainingEvent("units_recovery_finished", fields: finishedFields)
+
+        switch result {
+        case .success:
+            infoToastMessage = "Controller units switched to metric and verified."
+        case .unchanged:
+            infoToastMessage = "Controller units already metric."
+        case .failed, .noResponse, .parseFailed:
+            infoToastMessage = "Controller units recovery failed: \(result.rawValue)."
+        }
     }
 
     private func beginUnitsDebugReadback(
@@ -4110,6 +4281,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func appendUnitsDebugLog(event: String, fields: [String: Any]) {
+        let details = fields
+            .sorted { $0.key < $1.key }
+            .map { key, value in "\(key)=\(value)" }
+            .joined(separator: " ")
+        appendLog("event=\(event) \(details)")
+    }
+
+    private func appendUnitsRecoveryLog(event: String, fields: [String: Any]) {
         let details = fields
             .sorted { $0.key < $1.key }
             .map { key, value in "\(key)=\(value)" }
@@ -4591,6 +4770,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             manualStopAcknowledged: imperialHrControlManualStopAcknowledged
         ) else { return nil }
         switch reason {
+        case .brokenImperialUnits:
+            return "Imperial mode ломает остановку на этом контроллере — переключите controller units в metric."
         case .imperialUnits:
             return "Дорожка сообщает imperial units — HR‑контроль и тест дорожки заблокированы."
         case .manualStopAcknowledgementRequired:
@@ -5315,7 +5496,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillMaxSpeedKmh = 12.0
         treadmillSpeedIncrementKmh = 0.1
         treadmillUnitsState = .notRead
+        stopSafetyStatus = ControllerUnitsRecovery.stopSafetyStatus(for: .notRead)
         treadmillControllerUnitRawValue = nil
+        unitsRecoveryPendingReadback = nil
+        unitsRecoveryLastResult = "—"
+        unitsRecoveryLastWritePacketHex = "—"
+        unitsRecoveryLastError = ""
         physicalSemanticsConfirmation = nil
         physicalSemanticsConfirmationMismatchText = nil
         imperialDiagnosticConfirmationAvailable = false
@@ -6363,8 +6549,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     let resolvedState = self.resolvePhysicalSemantics(for: baseState)
                     self.treadmillControllerUnitRawValue = params.unit
                     self.treadmillUnitsState = resolvedState
+                    self.stopSafetyStatus = ControllerUnitsRecovery.stopSafetyStatus(for: resolvedState)
                     self.recomputeHrStartAllowed()
                     self.handleUnitsDebugReadback(after: resolvedState)
+                    self.handleUnitsRecoveryReadback(after: resolvedState)
                 }
                 appendLog("Controller params: unit=\(params.unit)(\(params.nativeUnitsLabel)) maxSpeedRaw=\(params.maxSpeedRawTenths) startSpeedRaw=\(params.startSpeedRawTenths) checksum=\(params.checksumOk ? "ok" : "bad")")
                 logTrainingEvent("controller_params", fields: [
@@ -6388,8 +6576,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     )
                     self.treadmillControllerUnitRawValue = nil
                     self.treadmillUnitsState = failedState
+                    self.stopSafetyStatus = ControllerUnitsRecovery.stopSafetyStatus(for: failedState)
                     self.recomputeHrStartAllowed()
                     self.handleUnitsDebugReadback(after: failedState)
+                    self.handleUnitsRecoveryReadback(after: failedState)
                 }
                 appendLog("Controller params parse failed: \(rawHex)")
                 logTrainingEvent("controller_params_parse_failed", fields: [

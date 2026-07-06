@@ -87,9 +87,17 @@ struct TreadmillUnitsState: Equatable {
 
 enum TreadmillUnitsBlockReason: String, Equatable {
     case imperialUnits
+    case brokenImperialUnits = "broken_imperial_units"
     case manualStopAcknowledgementRequired
     case unitsUnknown
     case paramsInvalid
+}
+
+enum TreadmillStopSafetyStatus: String, Equatable {
+    case ready
+    case brokenImperialUnits = "broken_imperial_units"
+    case unitsUnknown = "units_unknown"
+    case paramsInvalid = "params_invalid"
 }
 
 enum TreadmillUnitsSafetyPolicy {
@@ -119,9 +127,7 @@ enum TreadmillUnitsSafetyPolicy {
     }
 
     static func requiresNoLoadDiagnosticConfirmation(for state: TreadmillUnitsState) -> Bool {
-        state.source == .queryParams
-            && state.parseStatus.isValidQueryParamsRead
-            && state.nativeUnits == .imperial
+        false
     }
 
     static func blockReason(for state: TreadmillUnitsState) -> TreadmillUnitsBlockReason? {
@@ -140,13 +146,148 @@ enum TreadmillUnitsSafetyPolicy {
         case .metric:
             return nil
         case .imperial:
-            if state.physicalSpeedConfidence == .confirmedImperial {
-                return manualStopAcknowledged ? nil : .manualStopAcknowledgementRequired
-            }
-            return .imperialUnits
+            return .brokenImperialUnits
         case .unknown:
             return .unitsUnknown
         }
+    }
+}
+
+enum ControllerUnitsRecovery {
+    enum ReadbackResult: String, Equatable {
+        case success
+        case unchanged
+        case failed
+        case noResponse = "no_response"
+        case parseFailed = "parse_failed"
+    }
+
+    struct Command: Equatable {
+        let targetUnits: TreadmillNativeUnits
+        let packet: Data
+        let label: String
+
+        var packetHex: String {
+            hex(packet)
+        }
+    }
+
+    static let confirmationText = """
+    This writes a persistent controller preference.
+    Metric mode is required because imperial mode breaks stop on this treadmill.
+    Use only if you understand this changes controller units.
+    """
+
+    static func productionCommand(to units: TreadmillNativeUnits) -> Command? {
+        guard units == .metric,
+              let packet = BLETransportCodec.buildWalkingPadUnitPreferencePacket(nativeUnits: .metric)
+        else {
+            return nil
+        }
+        return Command(
+            targetUnits: .metric,
+            packet: packet,
+            label: "UNITS RECOVERY METRIC"
+        )
+    }
+
+    static func stopSafetyStatus(for state: TreadmillUnitsState) -> TreadmillStopSafetyStatus {
+        guard state.source == .queryParams, state.parseStatus.isValidQueryParamsRead else {
+            return state.source == .queryParams ? .paramsInvalid : .unitsUnknown
+        }
+
+        switch state.nativeUnits {
+        case .metric:
+            return .ready
+        case .imperial:
+            return .brokenImperialUnits
+        case .unknown:
+            return .unitsUnknown
+        }
+    }
+
+    static func shouldOfferManualRecovery(for state: TreadmillUnitsState) -> Bool {
+        stopSafetyStatus(for: state) == .brokenImperialUnits
+    }
+
+    static func shouldAutoSwitchOnConnect(for state: TreadmillUnitsState) -> Bool {
+        false
+    }
+
+    static func readbackResult(
+        before: TreadmillUnitsState,
+        after: TreadmillUnitsState?
+    ) -> ReadbackResult {
+        guard let after else { return .noResponse }
+        guard after.source == .queryParams, after.parseStatus == .validChecksum else {
+            return .parseFailed
+        }
+        if before.nativeUnits == .metric, after.nativeUnits == .metric {
+            return .unchanged
+        }
+        return after.nativeUnits == .metric ? .success : .failed
+    }
+
+    static func startedFields(
+        before: TreadmillUnitsState,
+        connectedPeripheralID: UUID?,
+        connectedPeripheralName: String
+    ) -> [String: Any] {
+        [
+            "unit_before": before.nativeUnits.rawValue,
+            "raw_params_hex": before.rawParamsHex ?? "",
+            "checksum_ok": before.parseStatus == .validChecksum,
+            "stop_safety_before": stopSafetyStatus(for: before).rawValue,
+            "connected_peripheral_id": connectedPeripheralID?.uuidString ?? "",
+            "connected_peripheral_name": connectedPeripheralName,
+            "owner_approved_required": true
+        ]
+    }
+
+    static func commandSentFields(command: Command) -> [String: Any] {
+        [
+            "packet_hex": command.packetHex,
+            "target_units": command.targetUnits.rawValue,
+            "command_family": "A6",
+            "key": 8,
+            "value": 0
+        ]
+    }
+
+    static func readbackFields(
+        before: TreadmillUnitsState,
+        after: TreadmillUnitsState?,
+        result: ReadbackResult
+    ) -> [String: Any] {
+        [
+            "raw_params_hex": after?.rawParamsHex ?? "",
+            "unit_before": before.nativeUnits.rawValue,
+            "unit_after": after?.nativeUnits.rawValue ?? TreadmillNativeUnits.unknown.rawValue,
+            "checksum_ok": after?.parseStatus == .validChecksum,
+            "result": result.rawValue,
+            "stop_safety_before": stopSafetyStatus(for: before).rawValue,
+            "stop_safety_after": after.map { stopSafetyStatus(for: $0).rawValue } ?? TreadmillStopSafetyStatus.unitsUnknown.rawValue
+        ]
+    }
+
+    static func finishedFields(
+        before: TreadmillUnitsState,
+        after: TreadmillUnitsState?,
+        result: ReadbackResult,
+        error: String?
+    ) -> [String: Any] {
+        [
+            "unit_before": before.nativeUnits.rawValue,
+            "unit_after": after?.nativeUnits.rawValue ?? TreadmillNativeUnits.unknown.rawValue,
+            "result": result.rawValue,
+            "error": error ?? "",
+            "stop_safety_before": stopSafetyStatus(for: before).rawValue,
+            "stop_safety_after": after.map { stopSafetyStatus(for: $0).rawValue } ?? TreadmillStopSafetyStatus.unitsUnknown.rawValue
+        ]
+    }
+
+    private static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02X", $0) }.joined(separator: " ")
     }
 }
 

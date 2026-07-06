@@ -115,7 +115,7 @@ final class TreadmillPhysicalSemanticsConfirmationTests: XCTestCase {
         XCTAssertFalse(TreadmillUnitsSafetyPolicy.allowsHrControl(confirmedState))
         XCTAssertEqual(
             TreadmillUnitsSafetyPolicy.blockReason(for: confirmedState),
-            .manualStopAcknowledgementRequired
+            .brokenImperialUnits
         )
     }
 

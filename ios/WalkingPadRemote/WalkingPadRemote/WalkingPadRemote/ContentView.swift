@@ -969,11 +969,10 @@ private struct HRControlPanel: View {
     }
 
     private func treadmillUnitsWarningMessage(for state: TreadmillUnitsState) -> String? {
-        if state.nativeUnits == .imperial, state.physicalSpeedConfidence == .confirmedImperial {
-            return "Дорожка работает в mph. Остановка приложением пока не гарантирована — держите физическую кнопку стоп рядом."
-        }
         guard let reason = TreadmillUnitsSafetyPolicy.blockReason(for: state) else { return nil }
         switch reason {
+        case .brokenImperialUnits:
+            return "Imperial mode ломает остановку на этом контроллере. HR‑контроль заблокирован, пока controller units не будут verified metric."
         case .imperialUnits:
             return "Дорожка сообщает imperial units. HR‑контроль и тест дорожки заблокированы."
         case .manualStopAcknowledgementRequired:
@@ -2855,6 +2854,7 @@ private struct DebugView: View {
     @State private var hrControlPreviewMode: HrControlPreviewMode = .workout
     @State private var previewNoHrSignal = false
     @State private var pendingUnitsDangerousAction: UnitsControllerPreferencesDiagnostics.Action?
+    @State private var showUnitsRecoveryConfirmation = false
 
     private var rawTrainingLogScopeOptions: [TrainingRawLogExportScope] {
         [.all, .lastSessions(3), .lastSessions(5)]
@@ -3076,6 +3076,10 @@ private struct DebugView: View {
         }
     }
 
+    private func runUnitsRecoveryAction() {
+        showUnitsRecoveryConfirmation = true
+    }
+
     @ViewBuilder
     private var unitsDiagnosticsSection: some View {
         let unitsState = manager.treadmillUnitsState
@@ -3084,6 +3088,7 @@ private struct DebugView: View {
         let rawParams = unitsState.rawParamsHex ?? "—"
         let canRun = manager.canRunUnitsDebugDiagnostics
         let blockReason = manager.unitsDebugDiagnosticsBlockReason
+        let canRecover = manager.canRecoverControllerUnitsToMetric
 
         DebugSectionCard(
             title: "Units / Controller Preferences Diagnostics",
@@ -3094,7 +3099,43 @@ private struct DebugView: View {
                     DebugMetricTile(title: "queryParams.unit", value: rawUnit, tint: .orange)
                     DebugMetricTile(title: "Parsed units", value: unitsState.nativeUnits.rawValue, tint: .blue)
                     DebugMetricTile(title: "Checksum", value: checksum, tint: unitsState.parseStatus == .validChecksum ? .green : .red)
+                    DebugMetricTile(title: "Stop safety", value: manager.stopSafetyStatusText, tint: manager.stopSafetyStatus == .ready ? .green : .red)
+                    DebugMetricTile(title: "Recovery", value: manager.unitsRecoveryLastResult, tint: manager.unitsRecoveryLastResult == "success" ? .green : .secondary)
                     DebugMetricTile(title: "Ready", value: canRun ? "yes" : "no", tint: canRun ? .green : .secondary)
+                }
+
+                if let warning = manager.unitsRecoveryWarningText {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "exclamationmark.octagon.fill")
+                                .foregroundColor(.red)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("P0 stop safety warning")
+                                    .font(.caption.weight(.semibold))
+                                Text(warning)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        Button {
+                            runUnitsRecoveryAction()
+                        } label: {
+                            DebugActionTileLabel(
+                                title: "Switch controller to metric",
+                                subtitle: canRecover ? "F7 A6 08 00 00 00 00 AE FD + read-back" : manager.unitsRecoveryBlockReason,
+                                tint: .red,
+                                enabled: canRecover
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canRecover)
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.red.opacity(0.08))
+                    )
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -3120,6 +3161,15 @@ private struct DebugView: View {
                         .foregroundColor(.secondary)
                     if !manager.unitsDebugLastError.isEmpty {
                         Text("Error: \(manager.unitsDebugLastError)")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                    Text("Last recovery packet: \(manager.unitsRecoveryLastWritePacketHex)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                    if !manager.unitsRecoveryLastError.isEmpty {
+                        Text("Recovery error: \(manager.unitsRecoveryLastError)")
                             .font(.caption)
                             .foregroundColor(.red)
                     }
@@ -3422,6 +3472,14 @@ private struct DebugView: View {
                 }
             } message: {
                 Text(UnitsControllerPreferencesDiagnostics.dangerousConfirmationText)
+            }
+            .alert("Switch controller to metric?", isPresented: $showUnitsRecoveryConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Switch controller to metric", role: .destructive) {
+                    manager.switchControllerUnitsToMetric()
+                }
+            } message: {
+                Text(ControllerUnitsRecovery.confirmationText)
             }
         }
     }
