@@ -40,7 +40,8 @@ let package = Package(
                 "HRSettingsDefaults.swift",
                 "TrainingTelemetryWriter.swift",
                 "CommandQueueService.swift",
-                "TreadmillSpeedBoundsService.swift"
+                "TreadmillSpeedBoundsService.swift",
+                "TreadmillUnitsSafetyPolicy.swift"
             ]
         ),
         .testTarget(

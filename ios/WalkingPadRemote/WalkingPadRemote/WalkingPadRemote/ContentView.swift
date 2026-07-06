@@ -2736,6 +2736,7 @@ private struct DebugView: View {
     @State private var showHrControlPreview = false
     @State private var hrControlPreviewMode: HrControlPreviewMode = .workout
     @State private var previewNoHrSignal = false
+    @State private var pendingUnitsDangerousAction: UnitsControllerPreferencesDiagnostics.Action?
 
     private var trainingLogScopeOptions: [TrainingLogCsvExportScope] {
         [.all, .lastCompletedWorkouts(3), .lastCompletedWorkouts(5)]
@@ -2898,6 +2899,139 @@ private struct DebugView: View {
         }
     }
 
+    private var unitsDiagnosticsActionColumns: [GridItem] {
+        [
+            GridItem(.flexible(), spacing: 10),
+            GridItem(.flexible(), spacing: 10)
+        ]
+    }
+
+    private func runUnitsDiagnosticsAction(_ action: UnitsControllerPreferencesDiagnostics.Action) {
+        if action.requiresConfirmation {
+            pendingUnitsDangerousAction = action
+        } else {
+            manager.runUnitsDebugAction(action)
+        }
+    }
+
+    @ViewBuilder
+    private var unitsDiagnosticsSection: some View {
+        let unitsState = manager.treadmillUnitsState
+        let rawUnit = manager.treadmillControllerUnitRawValue.map(String.init) ?? "—"
+        let checksum = unitsState.parseStatus == .validChecksum ? "ok" : unitsState.parseStatus.rawValue
+        let rawParams = unitsState.rawParamsHex ?? "—"
+        let canRun = manager.canRunUnitsDebugDiagnostics
+        let blockReason = manager.unitsDebugDiagnosticsBlockReason
+
+        DebugSectionCard(
+            title: "Units / Controller Preferences Diagnostics",
+            subtitle: "Debug-only persistent controller preferences. Do not use outside owner-approved diagnostics."
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                LazyVGrid(columns: unitsDiagnosticsActionColumns, spacing: 10) {
+                    DebugMetricTile(title: "queryParams.unit", value: rawUnit, tint: .orange)
+                    DebugMetricTile(title: "Parsed units", value: unitsState.nativeUnits.rawValue, tint: .blue)
+                    DebugMetricTile(title: "Checksum", value: checksum, tint: unitsState.parseStatus == .validChecksum ? .green : .red)
+                    DebugMetricTile(title: "Ready", value: canRun ? "yes" : "no", tint: canRun ? .green : .secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Raw params")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.secondary)
+                    Text(rawParams)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Last units debug action: \(manager.unitsDebugLastAction)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("Last write packet: \(manager.unitsDebugLastWritePacketHex)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                    Text("Last read-back result: \(manager.unitsDebugLastReadbackResult)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    if !manager.unitsDebugLastError.isEmpty {
+                        Text("Error: \(manager.unitsDebugLastError)")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+
+                LazyVGrid(columns: unitsDiagnosticsActionColumns, spacing: 10) {
+                    Button {
+                        runUnitsDiagnosticsAction(.readControllerUnits)
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Read controller units",
+                            subtitle: canRun ? "F7 A6 00 00 00 00 00 A6 FD" : blockReason,
+                            tint: .blue,
+                            enabled: canRun
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canRun)
+
+                    Button {
+                        runUnitsDiagnosticsAction(.readBackVerify)
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Read-back verify",
+                            subtitle: canRun ? "query params read-back" : blockReason,
+                            tint: .green,
+                            enabled: canRun
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canRun)
+
+                    Button {
+                        runUnitsDiagnosticsAction(.setMetric)
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Set metric (dangerous debug)",
+                            subtitle: canRun ? "F7 A6 08 00 00 00 00 AE FD" : blockReason,
+                            tint: .red,
+                            enabled: canRun
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canRun)
+
+                    Button {
+                        runUnitsDiagnosticsAction(.setImperial)
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Set imperial (dangerous debug)",
+                            subtitle: canRun ? "F7 A6 08 00 00 00 01 AF FD" : blockReason,
+                            tint: .red,
+                            enabled: canRun
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canRun)
+
+                    Button {
+                        runUnitsDiagnosticsAction(.clearState)
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Clear units diagnostic state",
+                            subtitle: "local debug state only",
+                            tint: .secondary,
+                            enabled: true
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -3047,6 +3181,8 @@ private struct DebugView: View {
                         }
                     }
 
+                    unitsDiagnosticsSection
+
                     DebugTrainingLogsCard(
                         presentation: trainingLogsCardPresentation,
                         onExportRaw: { scope in
@@ -3076,6 +3212,26 @@ private struct DebugView: View {
             .navigationTitle("Отладка")
             .onAppear {
                 manager.refreshTrainingLogsInventory()
+            }
+            .alert("Controller preference diagnostic", isPresented: Binding(
+                get: { pendingUnitsDangerousAction != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingUnitsDangerousAction = nil
+                    }
+                }
+            )) {
+                Button("Cancel", role: .cancel) {
+                    pendingUnitsDangerousAction = nil
+                }
+                Button("Run diagnostic write", role: .destructive) {
+                    if let action = pendingUnitsDangerousAction {
+                        manager.runUnitsDebugAction(action)
+                    }
+                    pendingUnitsDangerousAction = nil
+                }
+            } message: {
+                Text(UnitsControllerPreferencesDiagnostics.dangerousConfirmationText)
             }
         }
     }
