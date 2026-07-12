@@ -206,7 +206,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var isUpdatingZonePlan: Bool = false
     private var hrNoDataSeconds: Int = 0
     private let hrNoDataMaxSeconds: Int = 60
-    private var hrAwaitingInitialHeartRateSample: Bool = false
+    private var hrSourceStartupGate = HeartRateSourceStartupGate()
+    private var hrAwaitingInitialHeartRateSample: Bool {
+        hrSourceStartupGate.isBeforeFirstSample
+    }
     private let commandAckTimeoutSeconds: TimeInterval = 3
     private let commandMinIntervalWalkingPadSeconds: TimeInterval = 2.0
     private let commandMinIntervalFtmsSeconds: TimeInterval = 0.25
@@ -273,6 +276,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         iPhoneHealthKitHeartRateManager.onFailure = { [weak self] status in
             DispatchQueue.main.async {
                 self?.handleHeartRateSourceFailure(reason: "hr_source_failed", details: status)
+            }
+        }
+        iPhoneHealthKitHeartRateManager.onCollectionStarted = { [weak self] startedAt in
+            DispatchQueue.main.async {
+                self?.handleIPhoneHealthKitCollectionStarted(at: startedAt)
             }
         }
         iPhoneHealthKitHeartRateManager.onWorkoutFinished = { [weak self] uuid, endDate in
@@ -491,7 +499,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func handleHeartRateSourceModeChanged(from oldValue: HeartRateSourceMode) {
-        hrAwaitingInitialHeartRateSample = false
+        hrSourceStartupGate.reset()
         clearHeartRateStreamState()
         if oldValue == .iPhoneHealthKit {
             iPhoneHealthKitHeartRateManager.stop()
@@ -4487,23 +4495,36 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func startSelectedHeartRateSourceForSession() {
         switch hrSourceMode {
         case .appleWatchLegacy:
-            break
+            hrSourceStartupGate.reset()
         case .iPhoneHealthKit:
             clearHeartRateStreamState()
-            hrAwaitingInitialHeartRateSample = true
+            hrSourceStartupGate.beginSourceStart()
             iPhoneHealthKitHrStatusText = "iPhone HealthKit HR starting"
             iPhoneHealthKitHeartRateManager.start()
         }
     }
 
     private func stopSelectedHeartRateSourceForSession() {
-        hrAwaitingInitialHeartRateSample = false
+        hrSourceStartupGate.reset()
         switch hrSourceMode {
         case .appleWatchLegacy:
             sendWatchCommand("stop_hr")
         case .iPhoneHealthKit:
             iPhoneHealthKitHeartRateManager.stop()
         }
+    }
+
+    private func handleIPhoneHealthKitCollectionStarted(at startedAt: Date) {
+        guard hrSourceMode == .iPhoneHealthKit, isHrControlRunning else { return }
+        hrSourceStartupGate.collectionDidStart(at: startedAt)
+        guard hrSourceStartupGate.initialSampleWaitSeconds(at: startedAt) != nil else { return }
+        hrStatusLine = "HR‑контроль: ожидание пульса"
+        hrPredictorStatusLine = "Ожидание первого значения пульса"
+        hrDecisionDetails = "HealthKit запущен. Дорожка стартует после первого свежего HR-сэмпла."
+        logTrainingEvent("hr_source_collection_started", fields: [
+            "hr_source_mode": hrSourceMode.rawValue,
+            "collection_started_at": startedAt.timeIntervalSince1970
+        ])
     }
 
     private func startBeltForHrControlIfNeeded() {
@@ -4538,7 +4559,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func handleHeartRateSourceFailure(reason: String, details: String) {
         iPhoneHealthKitHrStatusText = details
-        hrAwaitingInitialHeartRateSample = false
+        hrSourceStartupGate.reset()
         appendLog("HR source failure: \(details)")
         if hrSourceMode == .iPhoneHealthKit {
             iPhoneHealthKitHeartRateManager.stop()
@@ -4908,17 +4929,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if isHrControlRunning {
             recordRuntimeTickAndDetectGap()
             if hrAwaitingInitialHeartRateSample {
-                let waitSeconds = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
-                if waitSeconds >= hrNoDataMaxSeconds {
-                    handleHeartRateSourceFailure(
-                        reason: "no_initial_hr_signal",
-                        details: "Не получен первый HR-сэмпл от \(hrSourceMode.title)"
-                    )
-                    return
+                if let waitSeconds = hrSourceStartupGate.initialSampleWaitSeconds(at: Date()) {
+                    if waitSeconds >= hrNoDataMaxSeconds {
+                        handleHeartRateSourceFailure(
+                            reason: "no_initial_hr_signal",
+                            details: "Не получен первый HR-сэмпл от \(hrSourceMode.title)"
+                        )
+                        return
+                    }
+                    hrStatusLine = "HR‑контроль: ожидание пульса"
+                    hrPredictorStatusLine = "Ожидание первого значения пульса"
+                    hrDecisionDetails = "Дорожка стартует после первого live HR-сэмпла от \(hrSourceMode.title). Ожидание: \(waitSeconds)с."
+                } else {
+                    hrStatusLine = "HR‑контроль: запуск HealthKit"
+                    hrPredictorStatusLine = "Авторизация и запуск сбора данных"
+                    hrDecisionDetails = "Ожидаем успешный запуск HealthKit collection."
                 }
-                hrStatusLine = "HR‑контроль: ожидание пульса"
-                hrPredictorStatusLine = "Ожидание первого значения пульса"
-                hrDecisionDetails = "Дорожка стартует после первого live HR-сэмпла от \(hrSourceMode.title). Ожидание: \(waitSeconds)с."
                 return
             }
 
@@ -6009,8 +6035,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "age_s": ageSeconds
         ])
 
-        if hrAwaitingInitialHeartRateSample {
-            hrAwaitingInitialHeartRateSample = false
+        if hrSourceStartupGate.markFirstSampleAccepted() {
             hrStatusLine = "HR‑контроль запущен"
             hrDecisionDetails = "Первый HR-сэмпл получен, дорожка стартует."
             hrNextDecisionSeconds = hrDecisionIntervalSeconds

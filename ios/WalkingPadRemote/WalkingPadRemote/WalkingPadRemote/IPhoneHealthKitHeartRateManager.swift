@@ -11,34 +11,48 @@ final class IPhoneHealthKitHeartRateManager: NSObject, ObservableObject {
     var onHeartRateSample: ((HeartRateSample) -> Void)?
     var onStatus: ((String) -> Void)?
     var onFailure: ((String) -> Void)?
+    var onCollectionStarted: ((Date) -> Void)?
     var onWorkoutFinished: ((UUID, Date?) -> Void)?
 
     private let healthStore = HKHealthStore()
     private var session: HKWorkoutSession?
     private var builder: HKLiveWorkoutBuilder?
     private var isActive = false
+    private var startRequestID: UUID?
 
     func start() {
-        if isActive {
-            onStatus?("iPhone HealthKit: HR already active")
+        if isActive || startRequestID != nil {
+            onStatus?("iPhone HealthKit: HR already active or starting")
             return
         }
 
+        let requestID = UUID()
+        startRequestID = requestID
+        onStatus?("iPhone HealthKit: requesting authorization")
         requestAuthorization { [weak self] granted, failureMessage in
             guard let self else { return }
             DispatchQueue.main.async {
+                guard self.startRequestID == requestID else { return }
                 guard granted else {
+                    self.startRequestID = nil
                     self.fail(failureMessage ?? "iPhone HealthKit: authorization denied")
                     return
                 }
-                self.startWorkout()
+                self.startWorkout(requestID: requestID)
             }
         }
     }
 
     func stop() {
-        guard isActive || session != nil || builder != nil else { return }
+        let wasStarting = startRequestID != nil
+        startRequestID = nil
+        guard wasStarting || isActive || session != nil || builder != nil else { return }
         isActive = false
+        if wasStarting {
+            abortWorkoutStart()
+            onStatus?("iPhone HealthKit: HR stopped")
+            return
+        }
         finishWorkout()
     }
 
@@ -68,7 +82,8 @@ final class IPhoneHealthKitHeartRateManager: NSObject, ObservableObject {
         }
     }
 
-    private func startWorkout() {
+    private func startWorkout(requestID: UUID) {
+        guard startRequestID == requestID else { return }
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .walking
         configuration.locationType = .indoor
@@ -84,14 +99,29 @@ final class IPhoneHealthKitHeartRateManager: NSObject, ObservableObject {
 
             let startDate = Date()
             session.startActivity(with: startDate)
-            builder.beginCollection(withStart: startDate) { [weak self] _, error in
-                if let error {
-                    self?.fail("iPhone HealthKit: collection error: \(error.localizedDescription)")
+            builder.beginCollection(withStart: startDate) { [weak self] success, error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    guard self.startRequestID == requestID else {
+                        self.abortWorkoutStart()
+                        return
+                    }
+                    guard success, error == nil else {
+                        self.startRequestID = nil
+                        self.abortWorkoutStart()
+                        let details = error?.localizedDescription ?? "unknown error"
+                        self.fail("iPhone HealthKit: collection error: \(details)")
+                        return
+                    }
+
+                    self.startRequestID = nil
+                    self.isActive = true
+                    self.onStatus?("iPhone HealthKit: HR started")
+                    self.onCollectionStarted?(Date())
                 }
             }
-            isActive = true
-            onStatus?("iPhone HealthKit: HR started")
         } catch {
+            startRequestID = nil
             isActive = false
             session = nil
             builder = nil
@@ -100,6 +130,7 @@ final class IPhoneHealthKitHeartRateManager: NSObject, ObservableObject {
     }
 
     private func finishWorkout() {
+        startRequestID = nil
         let endDate = Date()
         let session = self.session
         let builder = self.builder
@@ -129,6 +160,16 @@ final class IPhoneHealthKitHeartRateManager: NSObject, ObservableObject {
         }
     }
 
+    private func abortWorkoutStart() {
+        let session = self.session
+        let builder = self.builder
+        self.session = nil
+        self.builder = nil
+        isActive = false
+        builder?.discardWorkout()
+        session?.end()
+    }
+
     private func fail(_ message: String) {
         onStatus?(message)
         onFailure?(message)
@@ -152,6 +193,7 @@ extension IPhoneHealthKitHeartRateManager: HKWorkoutSessionDelegate, HKLiveWorko
 
     func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         DispatchQueue.main.async { [weak self] in
+            self?.startRequestID = nil
             self?.isActive = false
             self?.fail("iPhone HealthKit: HR failed: \(error.localizedDescription)")
             self?.finishWorkout()
@@ -167,12 +209,15 @@ extension IPhoneHealthKitHeartRateManager: HKWorkoutSessionDelegate, HKLiveWorko
         guard let hrType = HKQuantityType.quantityType(forIdentifier: .heartRate),
               collectedTypes.contains(hrType),
               let statistics = workoutBuilder.statistics(for: hrType),
-              let quantity = statistics.mostRecentQuantity() else {
+              let quantity = statistics.mostRecentQuantity(),
+              let sampledAt = HealthKitHeartRateSampleTimestamp.resolve(
+                  from: statistics.mostRecentQuantityDateInterval()
+              ) else {
             return
         }
 
         let bpm = Int(quantity.doubleValue(for: HKUnit.count().unitDivided(by: HKUnit.minute())).rounded())
-        let sample = HeartRateSample(bpm: bpm, sampledAt: Date())
+        let sample = HeartRateSample(bpm: bpm, sampledAt: sampledAt)
         DispatchQueue.main.async { [weak self] in
             self?.onHeartRateSample?(sample)
         }
