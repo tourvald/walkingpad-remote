@@ -48,6 +48,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var pendingWatchCommand: String? = nil
 #endif
     private var connectingPeripheralId: UUID? = nil
+    private var controllerUnitsConnectionEpoch: UUID? = nil
+    private var controllerUnitsTruthTracker = ControllerUnitsTruthTracker()
+    private var lastControllerUnitsQueryAt: Date? = nil
+    private var lastControllerUnitsQueryTrigger: String? = nil
 
     // Peripheral/characteristics
     private var connectedPeripheral: CBPeripheral?
@@ -814,6 +818,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var deviceReportedButton: Int = 0
     @Published var deviceReportedChecksumOk: Bool = true
     @Published var deviceReportedRawHex: String = ""
+    @Published private(set) var controllerUnitsTruth: ControllerUnitsTruth = .disconnected
 
     // HR control
     @Published var isHrControlRunning: Bool = false
@@ -1396,7 +1401,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "cooldown_target_bpm": hrCooldownTargetBpm,
                 "cooldown_min_speed_kmh": hrCooldownMinSpeed,
                 "zone_bounds": [hrZone1Max, hrZone2Max, hrZone3Max, hrZone4Max]
-            ])
+            ].merging(controllerUnitsTelemetryFields(action: "session_start")) { current, _ in current })
             scheduleTrainingLogsInventoryRefresh()
         } catch {
             appendLog("Training log file open error: \(error.localizedDescription)")
@@ -2030,6 +2035,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.connectedPeripheral = peripheral
             peripheral.delegate = self
             self.resetProtocolState()
+            self.beginControllerUnitsConnection()
             peripheral.discoverServices(self.supportedServiceUuids)
             self.connectionStateText = "Connected"
             self.startTelemetry()
@@ -2423,8 +2429,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func startHrControl() {
-        // Start only if allowed: must be connected, watch reachable, and HR stream active (fresh)
-        if isConnected && watchReachable && hrStreamingActive {
+        guard !isHrControlRunning else { return }
+        // Preserve the existing connection/watch/fresh-HR gates, then compose the
+        // legacy WalkingPad units gate before any automated motion can start.
+        let existingGatesAllowStart = isConnected && watchReachable && hrStreamingActive
+        guard existingGatesAllowStart else {
+            isHrControlRunning = false
+            if !isConnected {
+                hrControlStartBlockReasonText = "Нет подключения к дорожке"
+            } else if !watchReachable {
+                hrControlStartBlockReasonText = "Часы недоступны — откройте приложение на Apple Watch и дождитесь соединения."
+            } else if !hrStreamingActive {
+                hrControlStartBlockReasonText = "Пульс недоступен — откройте приложение на Apple Watch и дождитесь передачи пульса."
+            }
+            return
+        }
+
+        let unitsDecision = controllerUnitsGateDecision()
+        guard unitsDecision.allowed else {
+            isHrControlRunning = false
+            hrControlStartBlockReasonText = unitsDecision.blockReason?.userMessage ?? "Единицы контроллера не подтверждены"
+            persistBlockedControllerUnitsStart(decision: unitsDecision)
+            retryControllerUnitsQueryAfterBlockedStart()
+            return
+        }
+
+        if existingGatesAllowStart {
             let adaptiveStepDescription = hrAdaptiveStepEnabled
                 ? "adaptive_levels=0.1/0.2/0.3/0.4"
                 : "step=\(String(format: "%.2f", hrSpeedStepKmh))"
@@ -2459,22 +2489,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "adaptive_levels_kmh": adaptiveLevels,
                 "start_speed_kmh": speedKmh,
                 "device_target_kmh": deviceTargetSpeedKmh
-            ])
+            ].merging(controllerUnitsTelemetryFields(action: "hr_control_start")) { current, _ in current })
             if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
                 hrControlStartedBelt = true
                 startWithSpeed(3.0)
             } else if deviceTargetSpeedKmh <= 0.1 {
                 hrControlStartedBelt = true
                 startWithSpeed(desiredSpeedKmh)
-            }
-        } else {
-            isHrControlRunning = false
-            if !isConnected {
-                hrControlStartBlockReasonText = "Нет подключения к дорожке"
-            } else if !watchReachable {
-                hrControlStartBlockReasonText = "Часы недоступны — откройте приложение на Apple Watch и дождитесь соединения."
-            } else if !hrStreamingActive {
-                hrControlStartBlockReasonText = "Пульс недоступен — откройте приложение на Apple Watch и дождитесь передачи пульса."
             }
         }
     }
@@ -2534,7 +2555,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func recomputeHrStartAllowed() {
-        let allowed = isConnected && watchReachable && hrStreamingActive
+        let existingGatesAllowStart = isConnected && watchReachable && hrStreamingActive
+        let unitsDecision = controllerUnitsGateDecision()
+        let allowed = ControllerUnitsSafetyPolicy.allowsStart(
+            path: .hrControl,
+            existingGatesAllowStart: existingGatesAllowStart,
+            state: controllerUnitsTruth,
+            currentConnectionEpoch: controllerUnitsConnectionEpoch,
+            now: Date(),
+            requiresFreshMetricTruth: controllerUnitsTruthRequired
+        )
         isHrControlStartAllowed = allowed
         if !allowed {
             let withinGrace: Bool = {
@@ -2547,10 +2577,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 hrControlStartBlockReasonText = "Часы недоступны — откройте приложение на Apple Watch и дождитесь соединения."
             } else if !hrStreamingActive {
                 hrControlStartBlockReasonText = "Пульс недоступен — откройте приложение на Apple Watch и дождитесь передачи пульса."
+            } else if let unitsBlockReason = unitsDecision.blockReason {
+                hrControlStartBlockReasonText = unitsBlockReason.userMessage
             } else {
                 hrControlStartBlockReasonText = "Недоступно"
             }
-            if isHrControlRunning && !withinGrace {
+            if isHrControlRunning && !withinGrace && !existingGatesAllowStart {
                 hrStatusLine = "HR‑контроль: нет сигнала"
             }
         } else {
@@ -3121,6 +3153,112 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillMinSpeedKmh = 0.5
         treadmillMaxSpeedKmh = 12.0
         treadmillSpeedIncrementKmh = 0.1
+        controllerUnitsConnectionEpoch = nil
+        controllerUnitsTruthTracker.disconnect()
+        controllerUnitsTruth = controllerUnitsTruthTracker.state
+        lastControllerUnitsQueryAt = nil
+        lastControllerUnitsQueryTrigger = nil
+    }
+
+    private var controllerUnitsTruthRequired: Bool {
+        treadmillProtocol == .walkingPad || treadmillProtocol == .unknown
+    }
+
+    private func beginControllerUnitsConnection() {
+        let epoch = UUID()
+        controllerUnitsConnectionEpoch = epoch
+        controllerUnitsTruthTracker.beginConnection(epoch: epoch)
+        controllerUnitsTruth = controllerUnitsTruthTracker.state
+        lastControllerUnitsQueryAt = nil
+        lastControllerUnitsQueryTrigger = nil
+    }
+
+    private func controllerUnitsGateDecision(now: Date = Date()) -> ControllerUnitsGateDecision {
+        ControllerUnitsSafetyPolicy.evaluate(
+            path: .hrControl,
+            state: controllerUnitsTruth,
+            currentConnectionEpoch: controllerUnitsConnectionEpoch,
+            now: now,
+            requiresFreshMetricTruth: controllerUnitsTruthRequired
+        )
+    }
+
+    private func controllerUnitsTelemetryFields(
+        action: String,
+        now: Date = Date(),
+        decision: ControllerUnitsGateDecision? = nil
+    ) -> [String: Any] {
+        let gateDecision = decision ?? controllerUnitsGateDecision(now: now)
+        let age = controllerUnitsTruth.age(at: now)
+        let queryAge = lastControllerUnitsQueryAt.map { max(0, now.timeIntervalSince($0)) }
+        let fresh = controllerUnitsTruth.status == .valid
+            && controllerUnitsTruth.connectionEpoch == controllerUnitsConnectionEpoch
+            && (age.map { $0 <= ControllerUnitsSafetyPolicy.freshnessInterval } ?? false)
+        return [
+            "controller_units_action": action,
+            "controller_units_motion_path": gateDecision.path.rawValue,
+            "controller_units_query_requested": lastControllerUnitsQueryAt != nil,
+            "controller_units_query_trigger": lastControllerUnitsQueryTrigger ?? "",
+            "controller_units_query_age_s": queryAge ?? -1,
+            "controller_units": controllerUnitsTruth.units.rawValue,
+            "controller_units_status": controllerUnitsTruth.status.rawValue,
+            "controller_units_checksum_ok": controllerUnitsTruth.status == .valid,
+            "controller_units_fresh": fresh,
+            "controller_units_age_s": age ?? -1,
+            "controller_units_freshness_limit_s": ControllerUnitsSafetyPolicy.freshnessInterval,
+            "controller_units_gate_allowed": gateDecision.allowed,
+            "controller_units_block_reason": gateDecision.blockReason?.rawValue ?? ""
+        ]
+    }
+
+    private func recordControllerUnitsGate(action: String, decision: ControllerUnitsGateDecision) {
+        let fields = controllerUnitsTelemetryFields(action: action, decision: decision)
+        let ageValue = fields["controller_units_age_s"] ?? -1
+        let blockReason = decision.blockReason?.rawValue ?? "none"
+        appendLog(
+            "Controller units gate: action=\(action) units=\(controllerUnitsTruth.units.rawValue) " +
+            "status=\(controllerUnitsTruth.status.rawValue) age_s=\(ageValue) " +
+            "allowed=\(decision.allowed) block=\(blockReason)"
+        )
+        logTrainingEvent("controller_units_gate", fields: fields)
+    }
+
+    private func persistBlockedControllerUnitsStart(decision: ControllerUnitsGateDecision) {
+        guard !isHrControlRunning else {
+            recordControllerUnitsGate(action: "hr_control_start", decision: decision)
+            return
+        }
+        startTrainingStructuredLog(trigger: "start_hr_units_blocked")
+        recordControllerUnitsGate(action: "hr_control_start", decision: decision)
+        stopTrainingStructuredLog(reason: decision.blockReason?.rawValue ?? "controller_units_blocked")
+    }
+
+    private func requestControllerUnitsTruth(trigger: String) {
+        guard isConnected,
+              treadmillProtocol == .walkingPad,
+              controllerUnitsConnectionEpoch != nil,
+              commandCharacteristic != nil else {
+            return
+        }
+        lastControllerUnitsQueryAt = Date()
+        lastControllerUnitsQueryTrigger = trigger
+        appendLog("Controller units query: trigger=\(trigger) command=A6 key=0 read_only=true")
+        logTrainingEvent("controller_units_query_requested", fields: [
+            "trigger": trigger,
+            "command_family": "A6",
+            "key": 0,
+            "read_only": true
+        ])
+        writeCommand(BLETransportCodec.buildWalkingPadQueryParamsPacket(), label: "QUERY PARAMS")
+    }
+
+    private func retryControllerUnitsQueryAfterBlockedStart(now: Date = Date()) {
+        guard isConnected, treadmillProtocol == .walkingPad else { return }
+        if let lastControllerUnitsQueryAt,
+           now.timeIntervalSince(lastControllerUnitsQueryAt) < 5 {
+            return
+        }
+        requestControllerUnitsTruth(trigger: "gate_blocked")
     }
 
     private func selectTreadmillProtocol(from discoveredUuids: Set<CBUUID>) -> TreadmillProtocol {
@@ -3722,6 +3860,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "protocol": selected.rawValue,
                 "services": services.map { $0.uuid.uuidString }
             ])
+            recomputeHrStartAllowed()
         }
         for s in services {
             appendLog("Service discovered: \(s.uuid.uuidString)")
@@ -3756,6 +3895,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             if let w = write {
                 commandCharacteristic = w
                 appendLog("WalkingPad: command characteristic set to \(w.uuid.uuidString)")
+                requestControllerUnitsTruth(trigger: "connection_ready")
             } else {
                 appendLog("WalkingPad: FE02 write not found on FE00")
             }
@@ -3837,7 +3977,55 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         switch treadmillProtocol {
         case .walkingPad:
-            if let status = parseFe01Status(data) {
+            if let params = BLETransportCodec.parseWalkingPadParams(data) {
+                let observedAt = Date()
+                guard let responseConnectionEpoch = controllerUnitsConnectionEpoch else { return }
+                DispatchQueue.main.async {
+                    self.controllerUnitsTruthTracker.record(
+                        params,
+                        for: responseConnectionEpoch,
+                        at: observedAt
+                    )
+                    self.controllerUnitsTruth = self.controllerUnitsTruthTracker.state
+                    self.recomputeHrStartAllowed()
+                    let decision = self.controllerUnitsGateDecision(now: observedAt)
+                    let freshness = self.controllerUnitsTelemetryFields(
+                        action: "query_response",
+                        now: observedAt,
+                        decision: decision
+                    )["controller_units_fresh"] ?? false
+                    self.appendLog(
+                        "Controller units response: units=\(self.controllerUnitsTruth.units.rawValue) " +
+                        "checksum_ok=\(params.checksumOk) fresh=\(freshness)"
+                    )
+                    self.logTrainingEvent(
+                        "controller_units_response",
+                        fields: self.controllerUnitsTelemetryFields(action: "query_response", now: observedAt, decision: decision).merging([
+                            "max_speed_raw_tenths": params.maxSpeedRawTenths,
+                            "start_speed_raw_tenths": params.startSpeedRawTenths
+                        ]) { current, _ in current }
+                    )
+                }
+            } else if data.count >= 2, data[0] == 0xF8, data[1] == 0xA6 {
+                let observedAt = Date()
+                let rawHex = hex(data)
+                guard let responseConnectionEpoch = controllerUnitsConnectionEpoch else { return }
+                DispatchQueue.main.async {
+                    self.controllerUnitsTruthTracker.recordMalformed(
+                        rawHex: rawHex,
+                        for: responseConnectionEpoch,
+                        at: observedAt
+                    )
+                    self.controllerUnitsTruth = self.controllerUnitsTruthTracker.state
+                    self.recomputeHrStartAllowed()
+                    let decision = self.controllerUnitsGateDecision(now: observedAt)
+                    self.appendLog("Controller units response: status=malformed")
+                    self.logTrainingEvent(
+                        "controller_units_response",
+                        fields: self.controllerUnitsTelemetryFields(action: "query_response", now: observedAt, decision: decision)
+                    )
+                }
+            } else if let status = parseFe01Status(data) {
                 let hexStr = hex(data)
                 DispatchQueue.main.async {
                     self.deviceReportedSpeedKmh = status.speedKmh

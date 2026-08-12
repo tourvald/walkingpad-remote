@@ -35,6 +35,7 @@ let package = Package(
             ],
             sources: [
                 "BLETransportCodec.swift",
+                "ControllerUnitsSafetyPolicy.swift",
                 "CooldownRuntimeEngine.swift",
                 "HRDomainService.swift",
                 "HRSettingsDefaults.swift",

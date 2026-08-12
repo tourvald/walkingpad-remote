@@ -165,6 +165,19 @@ enum TrainingTelemetryWriter {
         "delay_s",
         "status",
         "error",
+        "controller_units_action",
+        "controller_units_motion_path",
+        "controller_units_query_requested",
+        "controller_units_query_trigger",
+        "controller_units_query_age_s",
+        "controller_units",
+        "controller_units_status",
+        "controller_units_checksum_ok",
+        "controller_units_fresh",
+        "controller_units_age_s",
+        "controller_units_freshness_limit_s",
+        "controller_units_gate_allowed",
+        "controller_units_block_reason",
         "raw_json"
     ]
 
@@ -884,6 +897,19 @@ enum TrainingTelemetryWriter {
             csvString(payload["delay_s"]),
             csvString(payload["status"]),
             csvString(payload["error"]),
+            csvString(payload["controller_units_action"]),
+            csvString(payload["controller_units_motion_path"]),
+            csvString(payload["controller_units_query_requested"]),
+            csvString(payload["controller_units_query_trigger"]),
+            csvString(payload["controller_units_query_age_s"]),
+            csvString(payload["controller_units"]),
+            csvString(payload["controller_units_status"]),
+            csvString(payload["controller_units_checksum_ok"]),
+            csvString(payload["controller_units_fresh"]),
+            csvString(payload["controller_units_age_s"]),
+            csvString(payload["controller_units_freshness_limit_s"]),
+            csvString(payload["controller_units_gate_allowed"]),
+            csvString(payload["controller_units_block_reason"]),
             jsonString(payload)
         ]
     }
