@@ -12,8 +12,9 @@ Stop unless the current task contains a separate explicit PM approval and an exp
 - preconditions and fresh baseline telemetry required before any command;
 - exact logging/evidence fields and artifact destination;
 - expected observations, maximum duration/repetitions, explicit abort conditions, and physical recovery procedure;
-- confirmation that the experiment does not include arbitrary raw/sequence commands, unknown packet replay, service-menu or unit writes, unlock attempts, firmware/OTA actions, or unapproved loaded operation.
+- for a PM-approved controller unit/preference validation, the referenced PM-approved `walkingpad-safety-change` behavior contract, exact fixed packet whitelist, expected read-back query/field/value, verification timing, mismatch abort behavior, and recovery procedure;
+- confirmation that the experiment does not include arbitrary raw/sequence commands, unknown packet replay, service-menu writes, unapproved or silent unit writes, unlock attempts, firmware/OTA actions, or unapproved loaded operation.
 
 If any element is missing, stale, ambiguous, or contradicted by live state, perform no hardware action and return `BLOCKED FOR PM DECISION` with the missing contract item.
 
-During an approved experiment, send only the whitelisted command through the approved fixed runner, fail closed on missing/freshness-invalid telemetry, keep the operator in control, stop immediately on unexpected motion/acceleration/state, and preserve the complete evidence. Approval covers only that experiment; it does not authorize code changes, another variant, Ready/merge, deploy/install, or future hardware work.
+During an approved experiment, send only the whitelisted commands through the approved fixed runner, fail closed on missing/freshness-invalid telemetry or a missing/mismatched required read-back, keep the operator in control, stop immediately on unexpected motion/acceleration/state, and preserve the complete evidence. Approval covers only that experiment; it does not authorize code changes, another variant, Ready/merge, deploy/install, or future hardware work.

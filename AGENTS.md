@@ -21,12 +21,15 @@ Do not mark Ready, merge, force-push, deploy, install, launch on a device, or ru
 
 Use [`walkingpad-pr-lifecycle`](.agents/skills/walkingpad-pr-lifecycle/SKILL.md) for normal implementation delivery. Report agent role, bounded task, effective model, reasoning effort, outcome, and any fallback. Default routing is Luna/medium for repository mapping or narrow documentation research and Terra/high for scope challenge or independent review; spawn only roles the task needs.
 
+For substantial autonomous work, select `gpt-5.6-sol` with `high` reasoning for the parent/Goal agent when the client exposes parent model and effort choice. Use cheaper effort only for genuinely simple scoped work. If the client does not expose the selection or the preferred model is unavailable, do not claim it was selected; report the effective parent model, effort, and fallback in the handoff.
+
 ## Treadmill safety invariants
 
 - Ordinary implementation and design work must not connect to a treadmill or send BLE/controller commands.
 - Stop/start/speed behavior, command retries and confirmation, controller units/preferences, HR safety gates, persistent BLE writes, telemetry semantics, and persistence behavior are safety-critical. Change them only through [`walkingpad-safety-change`](.agents/skills/walkingpad-safety-change/SKILL.md) with an explicit PM-approved behavior contract.
 - Real controller experiments require [`walkingpad-hardware-experiment`](.agents/skills/walkingpad-hardware-experiment/SKILL.md) and a separate PM-approved experiment contract. Never infer authorization from implementation scope.
-- Do not use or promote arbitrary `raw`/`seq` commands, unknown packet replay, service-menu writes, unit changes, firmware/OTA actions, or unlock attempts.
+- Do not use or promote arbitrary `raw`/`seq` commands, unknown packet replay, service-menu writes, unapproved or silent controller unit changes, firmware/OTA actions, or unlock attempts.
+- A PM-approved controller unit/preference change is allowed only through `walkingpad-safety-change`. Any physical validation additionally requires its own PM-approved `walkingpad-hardware-experiment` contract with an exact fixed packet whitelist and read-back verification.
 - Debug and simulator paths must not bypass production safety gates. Missing, stale, or ambiguous telemetry is not proof of a safe stopped state or valid unit semantics.
 - Use [`walkingpad-evidence-analysis`](.agents/skills/walkingpad-evidence-analysis/SKILL.md) for read-only JSONL/CSV, capture, protocol, and stop-forensics analysis.
 

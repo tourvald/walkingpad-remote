@@ -12,3 +12,4 @@ description: Implement PM-approved changes to stop behavior, controller units/pr
 5. Run focused tests and every applicable safe suite without connecting to hardware. A simulator or unsigned build is not physical validation.
 6. Require independent Terra/high scope challenge and fresh final review. Report remaining uncertainty separately from verified behavior.
 7. Do not infer permission for controller experiments. Any physical test requires a separate `walkingpad-hardware-experiment` contract and PM approval.
+8. Controller unit/preference writes are allowed only when the PM-approved behavior contract explicitly names the change, write semantics, ownership, read-back expectations, failure behavior, and compatibility boundary. Unapproved or silent unit writes remain forbidden. Physical validation additionally requires a separate PM-approved hardware-experiment contract with an exact fixed packet whitelist and read-back verification.

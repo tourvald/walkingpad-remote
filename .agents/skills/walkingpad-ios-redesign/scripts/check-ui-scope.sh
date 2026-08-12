@@ -40,7 +40,7 @@ is_forbidden() {
 }
 
 status=0
-while IFS= read -r path; do
+while IFS= read -r -d '' path; do
   [[ -n "$path" ]] || continue
   if is_forbidden "$path"; then
     echo "FORBIDDEN: $path" >&2
@@ -53,6 +53,10 @@ while IFS= read -r path; do
     echo "OUT OF SCOPE: $path" >&2
     status=1
   fi
-done < <(git diff --name-only --diff-filter=ACMRD "${base_sha}...HEAD")
+done < <(
+  git diff --cached --name-only -z --no-renames --diff-filter=ACMRD "$base_sha" --
+  git diff --name-only -z --no-renames --diff-filter=ACMRD --
+  git ls-files --others --exclude-standard -z
+)
 
 exit "$status"
