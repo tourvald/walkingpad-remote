@@ -67,7 +67,10 @@ swift test
 xcodebuild -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj -scheme WalkingPadRemote -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
-GitHub-hosted runners may lag behind the local Xcode/SDK version used by the app targets. In that case, the hosted CI keeps Python checks, Swift package tests, and Xcode project validation, while the full unsigned app build stays gated on hosted SDK availability.
+Hosted CI checks out and verifies the exact event head for every gate. The
+unsigned app-build job runs on the macOS 26 runner and fails closed when the
+required Xcode toolchain is unavailable. The separately named metadata job is
+diagnostic only and does not prove that the app compiled.
 
 ## Pull request expectations
 

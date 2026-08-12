@@ -72,10 +72,14 @@ On macOS, Python needs Bluetooth permission in `System Settings -> Privacy & Sec
 
 GitHub Actions currently runs:
 
-- Python syntax compilation for the public BLE/MCP utilities
-- `swift test` for the pure core-logic package
-- unsigned `xcodebuild` for the iOS/watchOS project when the hosted runner has matching iOS/watchOS SDKs
-- transparent fallback project validation (`xcodebuild -list`) when GitHub-hosted Xcode lags behind the local app deployment targets
+- Python syntax compilation for the public BLE/MCP utilities at the exact event head
+- `swift test` for the pure core-logic package at the exact event head
+- a required unsigned `xcodebuild` for the iOS/watchOS project at the exact event head
+- separately named diagnostic-only project metadata validation (`xcodebuild -list`)
+
+The app-build job fails closed if the hosted runner cannot provide the required
+Xcode toolchain. A successful metadata check never substitutes for a successful
+app compile.
 
 ## Safety and privacy
 

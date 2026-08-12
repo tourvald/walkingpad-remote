@@ -10,19 +10,31 @@ on:
 permissions:
   contents: read
 
+env:
+  CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   python-sanity:
-    name: Python Sanity
+    name: Python Checks (exact head)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_HEAD_SHA }}
+
+      - name: Verify exact checked-out head
+        run: |
+          actual_head="$(git rev-parse HEAD)"
+          echo "Expected event head: $CI_HEAD_SHA"
+          echo "Checked out HEAD:    $actual_head"
+          test "$actual_head" = "$CI_HEAD_SHA"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,47 +51,100 @@ jobs:
             tools/mcp_xcode_server.py
 
   swift-tests:
-    name: Swift Package Tests
-    runs-on: macos-latest
+    name: Swift Package Tests (exact head)
+    runs-on: macos-26
     timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_HEAD_SHA }}
+
+      - name: Verify exact checked-out head
+        run: |
+          actual_head="$(git rev-parse HEAD)"
+          echo "Expected event head: $CI_HEAD_SHA"
+          echo "Checked out HEAD:    $actual_head"
+          test "$actual_head" = "$CI_HEAD_SHA"
 
       - name: Run core logic tests
         working-directory: ios/WalkingPadRemote/WalkingPadRemote
         run: swift test
 
+  xcode-metadata:
+    name: Xcode Project Metadata (diagnostic only)
+    runs-on: macos-26
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_HEAD_SHA }}
+
+      - name: Verify exact checked-out head
+        run: |
+          actual_head="$(git rev-parse HEAD)"
+          echo "Expected event head: $CI_HEAD_SHA"
+          echo "Checked out HEAD:    $actual_head"
+          test "$actual_head" = "$CI_HEAD_SHA"
+
+      - name: Validate project metadata (does not compile the app)
+        run: xcodebuild -list -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj
+
   xcode-build:
-    name: Xcode Build
-    runs-on: macos-latest
+    name: iOS/watchOS App Build (unsigned, exact head)
+    runs-on: macos-26
     timeout-minutes: 25
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CI_HEAD_SHA }}
 
-      - name: Inspect hosted Xcode and SDK availability
-        id: hosted_sdk
+      - name: Verify exact checked-out head
         run: |
+          actual_head="$(git rev-parse HEAD)"
+          echo "Expected event head: $CI_HEAD_SHA"
+          echo "Checked out HEAD:    $actual_head"
+          test "$actual_head" = "$CI_HEAD_SHA"
+
+      - name: Verify required hosted toolchain
+        run: |
+          set -euo pipefail
+
           xcodebuild -version
           xcodebuild -showsdks
 
-          if xcodebuild -showsdks | grep -q "iphoneos26" && xcodebuild -showsdks | grep -q "watchos26"; then
-            echo "can_full_build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::Skipping full app build on this hosted runner because it does not provide the iOS 26 / watchOS 26 SDKs required by the current app targets."
-            echo "can_full_build=false" >> "$GITHUB_OUTPUT"
+          if ! ios_sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)" ||
+             ! watchos_sdk_version="$(xcrun --sdk watchos --show-sdk-version)"; then
+            echo "::error title=Hosted runner toolchain limitation::The required iOS/watchOS SDKs are unavailable; the app-build gate fails closed."
+            exit 1
           fi
 
-      - name: Validate Xcode project metadata on older hosted runners
-        if: steps.hosted_sdk.outputs.can_full_build != 'true'
-        run: |
-          xcodebuild -list -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj
+          version_at_least() {
+            awk -v actual="$1" -v required="$2" 'BEGIN {
+              split(actual, actual_parts, ".")
+              split(required, required_parts, ".")
+              for (part_index = 1; part_index <= 3; part_index++) {
+                actual_part = actual_parts[part_index] + 0
+                required_part = required_parts[part_index] + 0
+                if (actual_part > required_part) exit 0
+                if (actual_part < required_part) exit 1
+              }
+              exit 0
+            }'
+          }
 
-      - name: Build iOS app without code signing
-        if: steps.hosted_sdk.outputs.can_full_build == 'true'
+          if ! version_at_least "$ios_sdk_version" "26.2" ||
+             ! version_at_least "$watchos_sdk_version" "26.2"; then
+            echo "::error title=Hosted runner toolchain limitation::The app requires iOS/watchOS 26.2 or newer SDKs, but this runner provides iOS $ios_sdk_version and watchOS $watchos_sdk_version; the app-build gate fails closed."
+            exit 1
+          fi
+
+      - name: Build iOS/watchOS app without code signing
         run: >
           xcodebuild
           -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj
