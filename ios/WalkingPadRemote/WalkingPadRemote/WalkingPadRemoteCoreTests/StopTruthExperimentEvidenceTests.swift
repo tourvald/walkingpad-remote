@@ -152,7 +152,13 @@ final class StopTruthExperimentEvidenceTests: XCTestCase {
             timestamps: nextPair(origin: origin, uptime: &uptime),
             session: &session
         )
-        XCTAssertTrue(session.recordMarker(.stopped, timestamp: clock.now()!, note: "recovery", operatorHadVisibility: true))
+        XCTAssertTrue(session.recordMarker(
+            .stopped,
+            timestamp: clock.now()!,
+            note: "recovery",
+            operatorHadVisibility: true,
+            clock: clock
+        ))
         XCTAssertTrue(session.beginNextRepetition(
             clock: clock,
             nowUptimeNanoseconds: uptime,
