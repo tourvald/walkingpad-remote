@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+@testable import WalkingPadCoreLogic
 
 final class StopCommandBehaviorContractTests: XCTestCase {
     private lazy var source: String = {
@@ -17,6 +18,54 @@ final class StopCommandBehaviorContractTests: XCTestCase {
 
         let bytes: [UInt8] = [0xF7, 0xA2, 0x01, 0x00, 0xA3, 0xFD]
         XCTAssertEqual(bytes.map { String(format: "%02X", $0) }.joined(separator: " "), "F7 A2 01 00 A3 FD")
+    }
+
+    func testProductionWalkingPadCodecBytesRemainEquivalent() throws {
+        let codecURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("WalkingPadRemote/BLETransportCodec.swift")
+        let codec = try String(contentsOf: codecURL)
+        XCTAssertTrue(codec.contains("private static func buildWalkingPadCommandPacket(command: UInt8, value: UInt8)"))
+        XCTAssertTrue(source.contains("private func buildCmdPacket(cmd: UInt8, value: UInt8)"))
+        XCTAssertEqual(
+            BLETransportCodec.buildStopTruthExperimentPacket(role: .initialStop),
+            Data([0xF7, 0xA2, 0x01, 0x00, 0xA3, 0xFD])
+        )
+        XCTAssertEqual(
+            BLETransportCodec.buildStopTruthExperimentPacket(role: .productionStopRecovery),
+            Data([0xF7, 0xA2, 0x04, 0x01, 0xA7, 0xFD])
+        )
+        XCTAssertEqual(
+            BLETransportCodec.buildStopTruthExperimentPacket(role: .speedRaw5),
+            Data([0xF7, 0xA2, 0x01, 0x05, 0xA8, 0xFD])
+        )
+    }
+
+    func testProductionCallsDoNotRouteThroughExperimentExecutor() throws {
+        for signature in [
+            "func manualGo(targetSpeed: Double)",
+            "func manualStop()",
+            "func startWithSpeed(_ kmh: Double)",
+            "func startHrControl()",
+            "func stopHrControl()",
+            "private func stopBeltWithToggle(reason: String)"
+        ] {
+            XCTAssertFalse(try functionBody(signature).contains("stopTruthExperiment"), signature)
+        }
+    }
+
+    func testWalkingPadQueueMinimumIntervalRemainsTwoSeconds() {
+        XCTAssertTrue(source.contains("private let commandMinIntervalWalkingPadSeconds: TimeInterval = 2.0"))
+    }
+
+    func testExistingNotifyFE01SemanticsRemainNormalizedWithoutRawHex() throws {
+        let notifyRange = try XCTUnwrap(source.range(of: "logTrainingEvent(\"notify_fe01\", fields: ["))
+        let suffix = source[notifyRange.lowerBound...]
+        let close = try XCTUnwrap(suffix.range(of: "])"))
+        let event = String(suffix[..<close.upperBound])
+        XCTAssertFalse(event.contains("raw_hex"))
+        XCTAssertTrue(event.contains("checksum_ok"))
     }
 
     func testDirectStopKeepsHighPriorityAndTwoExistingRetries() throws {

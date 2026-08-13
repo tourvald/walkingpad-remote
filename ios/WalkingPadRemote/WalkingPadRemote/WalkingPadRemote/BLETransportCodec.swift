@@ -1,6 +1,16 @@
 import Foundation
 
 enum BLETransportCodec {
+    enum StopTruthExperimentCommandRole: String, CaseIterable, Codable {
+        case queryParams = "query_params"
+        case modeManual = "mode_manual"
+        case baselineStart = "baseline_start"
+        case speedRaw5 = "speed_raw_5"
+        case initialStop = "initial_stop"
+        case productionStopRecovery = "production_stop_recovery"
+        case conditionalStopRetry = "conditional_stop_retry"
+    }
+
     struct FtmsTreadmillData {
         let instantaneousSpeedKmh: Double
         let isMoving: Bool
@@ -52,6 +62,37 @@ enum BLETransportCodec {
     /// not mutate any A6 preference.
     static func buildWalkingPadQueryParamsPacket() -> Data {
         Data([0xF7, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA6, 0xFD])
+    }
+
+    static func buildStopTruthExperimentPacket(
+        role: StopTruthExperimentCommandRole
+    ) -> Data {
+        switch role {
+        case .queryParams:
+            return buildWalkingPadQueryParamsPacket()
+        case .modeManual:
+            return buildWalkingPadCommandPacket(command: 0x02, value: 0x01)
+        case .baselineStart, .productionStopRecovery:
+            return buildWalkingPadCommandPacket(command: 0x04, value: 0x01)
+        case .speedRaw5:
+            return buildWalkingPadCommandPacket(command: 0x01, value: 0x05)
+        case .initialStop, .conditionalStopRetry:
+            return buildWalkingPadCommandPacket(command: 0x01, value: 0x00)
+        }
+    }
+
+    static func validateStopTruthExperimentPacket(
+        _ packet: Data,
+        role: StopTruthExperimentCommandRole
+    ) -> Bool {
+        packet == buildStopTruthExperimentPacket(role: role)
+    }
+
+    private static func buildWalkingPadCommandPacket(command: UInt8, value: UInt8) -> Data {
+        var bytes: [UInt8] = [0xF7, 0xA2, command, value, 0xFF, 0xFD]
+        let checksum = (UInt16(0xA2) + UInt16(command) + UInt16(value)) & 0xFF
+        bytes[4] = UInt8(checksum)
+        return Data(bytes)
     }
 
     static func parseWalkingPadParams(_ data: Data) -> WalkingPadParams? {

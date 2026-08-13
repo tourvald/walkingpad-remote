@@ -82,6 +82,11 @@ struct ContentView: View {
             if phase == .active {
                 manager.pingWatch()
             }
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+            if phase != .active {
+                manager.stopTruthExperimentAppBecameInactive()
+            }
+#endif
         }
     }
 }
@@ -2824,6 +2829,17 @@ private struct DebugView: View {
         )
     }
 
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+    private var stopTruthExperimentPresentation: DebugStopTruthExperimentCard.Presentation {
+        .init(
+            capabilityAvailable: manager.stopTruthExperimentCapabilityAvailable,
+            active: manager.stopTruthExperimentIsActive,
+            status: manager.stopTruthExperimentStatus,
+            artifactPath: manager.stopTruthExperimentArtifactPath
+        )
+    }
+#endif
+
     private var hrFailuresCardPresentation: DebugHrFailuresCard.Presentation {
         let reports = manager.hrFailureReports
         let latestFailureDate = reports.map(\.end).max()
@@ -3059,6 +3075,19 @@ private struct DebugView: View {
                             manager.clearTrainingLogsForActiveProfile()
                         }
                     )
+
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+                    DebugStopTruthExperimentCard(
+                        presentation: stopTruthExperimentPresentation,
+                        onStart: manager.startStopTruthExperiment,
+                        onPrepareMotion: manager.prepareStopTruthExperimentMotion,
+                        onInitialStop: manager.beginStopTruthExperimentStop,
+                        onMovingMarker: manager.markStopTruthExperimentMoving,
+                        onStoppedMarker: manager.markStopTruthExperimentStopped,
+                        onAbortMarker: manager.abortStopTruthExperiment,
+                        onNextRepetition: manager.beginNextStopTruthExperimentRepetition
+                    )
+#endif
 
                     DebugHrFailuresCard(
                         presentation: hrFailuresCardPresentation,
