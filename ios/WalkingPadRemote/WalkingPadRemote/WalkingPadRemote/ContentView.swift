@@ -81,6 +81,8 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 manager.pingWatch()
+            } else {
+                manager.treadmillTestRunAppBecameInactive()
             }
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
             if phase != .active {
@@ -2796,6 +2798,9 @@ private struct DebugView: View {
         }
 
         return DebugTrainingLogsCard.Presentation(
+            testRunActive: manager.treadmillTestRunIsActive,
+            testRunStatusText: manager.treadmillTestRunDisplayText,
+            canStartTestRun: manager.canStartTreadmillTestRun,
             subtitle: "Активный профиль: \(manager.activeUserProfileLabel)",
             profileMetrics: [
                 .init(id: "profile_raw", title: "Raw", value: "\(inventory.matchingProfileSessionFiles)", tint: .accentColor),
@@ -2828,17 +2833,6 @@ private struct DebugView: View {
                 : nil
         )
     }
-
-#if STOP_TRUTH_EXPERIMENT_CAPABILITY
-    private var stopTruthExperimentPresentation: DebugStopTruthExperimentCard.Presentation {
-        .init(
-            capabilityAvailable: manager.stopTruthExperimentCapabilityAvailable,
-            active: manager.stopTruthExperimentIsActive,
-            status: manager.stopTruthExperimentStatus,
-            artifactPath: manager.stopTruthExperimentArtifactPath
-        )
-    }
-#endif
 
     private var hrFailuresCardPresentation: DebugHrFailuresCard.Presentation {
         let reports = manager.hrFailureReports
@@ -3065,6 +3059,13 @@ private struct DebugView: View {
 
                     DebugTrainingLogsCard(
                         presentation: trainingLogsCardPresentation,
+                        onToggleTestRun: {
+                            if manager.treadmillTestRunIsActive {
+                                manager.stopTreadmillTestRun()
+                            } else {
+                                manager.startTreadmillTestRun()
+                            }
+                        },
                         onExportRaw: { scope in
                             exportTrainingHistoryCsv(manager: manager, scope: scope)
                         },
@@ -3075,19 +3076,6 @@ private struct DebugView: View {
                             manager.clearTrainingLogsForActiveProfile()
                         }
                     )
-
-#if STOP_TRUTH_EXPERIMENT_CAPABILITY
-                    DebugStopTruthExperimentCard(
-                        presentation: stopTruthExperimentPresentation,
-                        onStart: manager.startStopTruthExperiment,
-                        onPrepareMotion: manager.prepareStopTruthExperimentMotion,
-                        onInitialStop: manager.beginStopTruthExperimentStop,
-                        onMovingMarker: manager.markStopTruthExperimentMoving,
-                        onStoppedMarker: manager.markStopTruthExperimentStopped,
-                        onAbortMarker: manager.abortStopTruthExperiment,
-                        onNextRepetition: manager.beginNextStopTruthExperimentRepetition
-                    )
-#endif
 
                     DebugHrFailuresCard(
                         presentation: hrFailuresCardPresentation,

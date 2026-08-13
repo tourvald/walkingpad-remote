@@ -72,6 +72,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var stopTruthExperimentController: StopTruthExperimentController?
     private var stopTruthExperimentTerminalLatch = false
 #endif
+    private struct TreadmillTestRunConnectionContext: Equatable {
+        let peripheralID: UUID
+        let connectionEpoch: UUID
+    }
+    private var treadmillTestRunService = TreadmillTestRunService()
+    private var treadmillTestRunTimer: Timer?
+    private var treadmillTestRunContext: TreadmillTestRunConnectionContext?
 
     // Peripheral/characteristics
     private var connectedPeripheral: CBPeripheral?
@@ -840,6 +847,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var deviceReportedChecksumOk: Bool = true
     @Published var deviceReportedRawHex: String = ""
     @Published private(set) var controllerUnitsTruth: ControllerUnitsTruth = .disconnected
+    @Published private(set) var treadmillTestRunIsActive = false
+    @Published private(set) var treadmillTestRunStatusText = "READY"
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
     @Published private(set) var stopTruthExperimentStatus: String = "disabled"
     @Published private(set) var stopTruthExperimentArtifactPath: String = ""
@@ -1971,6 +1980,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.attemptAutoConnectIfNeeded()
             case .poweredOff:
                 self.appendLog("Bluetooth poweredOff; stopping scan and clearing discoveries")
+                self.cancelTreadmillTestRunForConnectionInvalidation()
                 self.stopDiscoveryScan()
                 self.discoveredPeripherals = []
                 self.discoveredMap.removeAll()
@@ -2102,6 +2112,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "error": error?.localizedDescription ?? "none"
         ])
         DispatchQueue.main.async {
+            self.cancelTreadmillTestRunForConnectionInvalidation()
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
             self.stopTruthExperimentController?.connectionContextInvalidated()
 #endif
@@ -2158,6 +2169,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if userInitiated {
             autoConnectSuppressed = true
         }
+        cancelTreadmillTestRunForConnectionInvalidation()
         finishActiveStopObservationUnconfirmed(reason: "disconnect_requested")
         if let pendingAttemptID = unavailableStopAttempt?.id {
             finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
@@ -2498,6 +2510,192 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 #endif
 
     // Treadmill control
+    var canStartTreadmillTestRun: Bool {
+        let unitsDecision = ControllerUnitsSafetyPolicy.evaluate(
+            path: .testRun,
+            state: controllerUnitsTruth,
+            currentConnectionEpoch: controllerUnitsConnectionEpoch,
+            now: Date(),
+            requiresFreshMetricTruth: controllerUnitsTruthRequired
+        )
+        guard !treadmillTestRunService.isActive,
+              !isHrControlRunning,
+              isConnected,
+              connectedPeripheralId != nil,
+              controllerUnitsConnectionEpoch != nil,
+              commandCharacteristic != nil,
+              treadmillProtocol != .unknown,
+              unitsDecision.allowed,
+              treadmillMinSpeedKmh <= 1.0,
+              treadmillMaxSpeedKmh >= 3.0 else {
+            return false
+        }
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+        guard stopTruthExperimentController?.isActive != true else { return false }
+#endif
+        return true
+    }
+
+    var treadmillTestRunDisplayText: String {
+        guard case .idle = treadmillTestRunService.state else {
+            return treadmillTestRunStatusText
+        }
+        if !isConnected {
+            return "Подключите дорожку"
+        }
+        if isHrControlRunning {
+            return "Недоступно во время HR-контроля"
+        }
+        if commandCharacteristic == nil || treadmillProtocol == .unknown {
+            return "Дождитесь готовности управления"
+        }
+        let unitsDecision = ControllerUnitsSafetyPolicy.evaluate(
+            path: .testRun,
+            state: controllerUnitsTruth,
+            currentConnectionEpoch: controllerUnitsConnectionEpoch,
+            now: Date(),
+            requiresFreshMetricTruth: controllerUnitsTruthRequired
+        )
+        if let unitsBlockReason = unitsDecision.blockReason {
+            return unitsBlockReason.userMessage
+        }
+        if treadmillMinSpeedKmh > 1.0 || treadmillMaxSpeedKmh < 3.0 {
+            return "Диапазон дорожки не поддерживает сценарий 1.0–3.0 km/h"
+        }
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+        if stopTruthExperimentController?.isActive == true {
+            return "Недоступно во время Stop-truth experiment"
+        }
+#endif
+        return treadmillTestRunStatusText
+    }
+
+    func startTreadmillTestRun() {
+        guard canStartTreadmillTestRun,
+              let context = currentTreadmillTestRunContext() else {
+            treadmillTestRunStatusText = treadmillTestRunDisplayText
+            return
+        }
+        let runID = UUID()
+        guard let transition = treadmillTestRunService.start(
+            at: ProcessInfo.processInfo.systemUptime,
+            runID: runID
+        ) else {
+            return
+        }
+
+        treadmillTestRunContext = context
+        syncTreadmillTestRunPresentation()
+        startTreadmillTestRunTimer(runID: runID)
+        executeTreadmillTestRunActions(transition.actions)
+    }
+
+    func stopTreadmillTestRun() {
+        let contextIsCurrent = treadmillTestRunContext == currentTreadmillTestRunContext()
+        cancelTreadmillTestRun(
+            reason: .userRequested,
+            requestProductionStop: isConnected && contextIsCurrent
+        )
+    }
+
+    func treadmillTestRunAppBecameInactive() {
+        guard treadmillTestRunService.isActive else { return }
+        let contextIsCurrent = treadmillTestRunContext == currentTreadmillTestRunContext()
+        cancelTreadmillTestRun(
+            reason: .appInactive,
+            requestProductionStop: isConnected && contextIsCurrent
+        )
+    }
+
+    private func currentTreadmillTestRunContext() -> TreadmillTestRunConnectionContext? {
+        guard isConnected,
+              let peripheralID = connectedPeripheralId,
+              let connectionEpoch = controllerUnitsConnectionEpoch else {
+            return nil
+        }
+        return TreadmillTestRunConnectionContext(
+            peripheralID: peripheralID,
+            connectionEpoch: connectionEpoch
+        )
+    }
+
+    private func startTreadmillTestRunTimer(runID: UUID) {
+        treadmillTestRunTimer?.invalidate()
+        treadmillTestRunTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.advanceTreadmillTestRun(expectedRunID: runID)
+        }
+    }
+
+    private func advanceTreadmillTestRun(expectedRunID: UUID) {
+        guard treadmillTestRunService.activeRunID == expectedRunID else { return }
+        guard treadmillTestRunContext == currentTreadmillTestRunContext() else {
+            cancelTreadmillTestRunForConnectionInvalidation()
+            return
+        }
+        guard let transition = treadmillTestRunService.advance(
+            at: ProcessInfo.processInfo.systemUptime,
+            expectedRunID: expectedRunID
+        ) else {
+            return
+        }
+
+        syncTreadmillTestRunPresentation()
+        if !treadmillTestRunService.isActive {
+            invalidateTreadmillTestRunScheduling()
+        }
+        executeTreadmillTestRunActions(transition.actions)
+    }
+
+    private func cancelTreadmillTestRun(
+        reason: TreadmillTestRunService.CancellationReason,
+        requestProductionStop: Bool
+    ) {
+        guard let transition = treadmillTestRunService.cancel(
+            reason: reason,
+            requestProductionStop: requestProductionStop
+        ) else {
+            return
+        }
+
+        invalidateTreadmillTestRunScheduling()
+        syncTreadmillTestRunPresentation()
+        if !requestProductionStop {
+            resetCommandQueue(reason: "Test Run cancelled without safe Stop context")
+        }
+        executeTreadmillTestRunActions(transition.actions)
+    }
+
+    private func cancelTreadmillTestRunForConnectionInvalidation() {
+        cancelTreadmillTestRun(
+            reason: .connectionInvalidated,
+            requestProductionStop: false
+        )
+    }
+
+    private func invalidateTreadmillTestRunScheduling() {
+        treadmillTestRunTimer?.invalidate()
+        treadmillTestRunTimer = nil
+        treadmillTestRunContext = nil
+    }
+
+    private func syncTreadmillTestRunPresentation() {
+        treadmillTestRunIsActive = treadmillTestRunService.isActive
+        treadmillTestRunStatusText = treadmillTestRunService.statusText
+    }
+
+    private func executeTreadmillTestRunActions(_ actions: [TreadmillTestRunService.Action]) {
+        for action in actions {
+            switch action {
+            case .start(let speedKmh):
+                manualGo(targetSpeed: speedKmh)
+            case .setSpeed(let speedKmh):
+                setTargetSpeedFromSlider(speedKmh)
+            case .stop:
+                manualStop()
+            }
+        }
+    }
+
     func manualGo(targetSpeed: Double) {
         logUiAction("GO pressed (target \(String(format: "%.1f", targetSpeed)) km/h, speed=\(String(format: "%.1f", speedKmh)), deviceTarget=\(String(format: "%.1f", deviceTargetSpeedKmh)), status=\(treadmillStatusText))")
         startWithSpeed(targetSpeed)
