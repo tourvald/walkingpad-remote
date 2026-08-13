@@ -15,6 +15,9 @@ struct DebugTrainingLogsCard: View {
             let scope: TrainingLogCsvExportScope
         }
 
+        let testRunActive: Bool
+        let testRunStatusText: String
+        let canStartTestRun: Bool
         let subtitle: String
         let profileMetrics: [Metric]
         let deviceMetrics: [Metric]
@@ -32,6 +35,7 @@ struct DebugTrainingLogsCard: View {
     }
 
     let presentation: Presentation
+    let onToggleTestRun: () -> Void
     let onExportRaw: (TrainingLogCsvExportScope) -> Void
     let onExportSessionSummary: (TrainingLogCsvExportScope) -> Void
     let onClear: () -> Void
@@ -55,6 +59,25 @@ struct DebugTrainingLogsCard: View {
             subtitle: presentation.subtitle
         ) {
             VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Test Run")
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.secondary)
+
+                    Button(action: onToggleTestRun) {
+                        DebugActionTileLabel(
+                            title: presentation.testRunActive
+                                ? "Остановить Test Run"
+                                : "Запустить Test Run",
+                            subtitle: presentation.testRunStatusText,
+                            tint: presentation.testRunActive ? .red : .accentColor,
+                            enabled: presentation.testRunActive || presentation.canStartTestRun
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!presentation.testRunActive && !presentation.canStartTestRun)
+                }
+
                 metricsSection(title: "Активный профиль", items: presentation.profileMetrics)
                 metricsSection(title: "Всё устройство", items: presentation.deviceMetrics)
 
