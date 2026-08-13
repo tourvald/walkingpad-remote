@@ -33,6 +33,21 @@ enum BLETransportCodec {
         let rawHex: String
     }
 
+    struct WalkingPadStatus {
+        let beltState: Int
+        let speedRawTenths: UInt8
+        let manualMode: Int
+        let timeSeconds: Int
+        let distance10m: Int
+        let steps: Int
+        let appSpeedRawTenths: UInt8
+        let lastButton: Int
+        let checksumOk: Bool
+
+        var speedKmh: Double { Double(speedRawTenths) / 10.0 }
+        var appSpeedKmh: Double { Double(appSpeedRawTenths) / 10.0 }
+    }
+
     /// Read-only controller parameters query. A zero key requests state and does
     /// not mutate any A6 preference.
     static func buildWalkingPadQueryParamsPacket() -> Data {
@@ -59,6 +74,24 @@ enum BLETransportCodec {
             rawControllerUnit: data[13],
             checksumOk: UInt8(computedChecksum) == expectedChecksum,
             rawHex: hexString(data)
+        )
+    }
+
+    static func parseWalkingPadStatus(_ data: Data) -> WalkingPadStatus? {
+        guard data.count >= 20, data[0] == 0xF8, data[1] == 0xA2 else {
+            return nil
+        }
+
+        return WalkingPadStatus(
+            beltState: Int(data[2]),
+            speedRawTenths: data[3],
+            manualMode: Int(data[4]),
+            timeSeconds: decode3ByteBE(data, start: 5),
+            distance10m: decode3ByteBE(data, start: 8),
+            steps: decode3ByteBE(data, start: 11),
+            appSpeedRawTenths: data[14],
+            lastButton: Int(data[16]),
+            checksumOk: verifyWalkingPadChecksum(data)
         )
     }
 
@@ -185,6 +218,21 @@ enum BLETransportCodec {
     private static func readUInt16LE(_ data: Data, at offset: Int) -> UInt16? {
         guard offset >= 0, offset + 1 < data.count else { return nil }
         return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private static func decode3ByteBE(_ data: Data, start: Int) -> Int {
+        guard data.count >= start + 3 else { return 0 }
+        return (Int(data[start]) << 16) + (Int(data[start + 1]) << 8) + Int(data[start + 2])
+    }
+
+    private static func verifyWalkingPadChecksum(_ data: Data) -> Bool {
+        guard data.count >= 3 else { return false }
+        let checksumIndex = data.count - 2
+        let expected = data[checksumIndex]
+        let computed = data[1..<checksumIndex].reduce(UInt16(0)) {
+            ($0 + UInt16($1)) & 0xFF
+        }
+        return UInt8(computed) == expected
     }
 
     private static func hexString(_ data: Data) -> String {

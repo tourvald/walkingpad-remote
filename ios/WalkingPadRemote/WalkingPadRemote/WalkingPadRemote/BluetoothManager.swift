@@ -52,6 +52,19 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var controllerUnitsTruthTracker = ControllerUnitsTruthTracker()
     private var lastControllerUnitsQueryAt: Date? = nil
     private var lastControllerUnitsQueryTrigger: String? = nil
+    private var stopObservationStreamID: UUID? = nil
+    private var stopObservationLifecycle: StopObservationLifecycle? = nil
+    private var stopObservationCheckpointWorkItems: [DispatchWorkItem] = []
+    private var stopObservationFreshnessWorkItem: DispatchWorkItem?
+    private var stopObservationOwnsTrainingLog = false
+    private struct UnavailableStopAttempt {
+        let id: UUID
+        let source: String
+        let attemptedAt: Date
+        let ownsTrainingLog: Bool
+        var commandSentAt: Date?
+    }
+    private var unavailableStopAttempt: UnavailableStopAttempt? = nil
 
     // Peripheral/characteristics
     private var connectedPeripheral: CBPeripheral?
@@ -805,6 +818,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var hrLastValueAt: Date? = nil
     @Published var hrDataStaleSeconds: Int = 0
     @Published var treadmillStatusText: String = "unknown"
+    @Published private(set) var stopTruthStatusText: String = ""
     @Published var lastNotifyAgeSeconds: Int = 0
     @Published var lastCommandAckStatusText: String = ""
     @Published var lastCommandTimeoutsCount: Int = 0
@@ -2077,6 +2091,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "error": error?.localizedDescription ?? "none"
         ])
         DispatchQueue.main.async {
+            self.finishActiveStopObservationUnconfirmed(reason: "connection_changed")
+            if let pendingAttemptID = self.unavailableStopAttempt?.id {
+                self.finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
+            }
             if self.isHrControlRunning {
                 self.stopTrainingStructuredLog(reason: "ble_disconnected")
             }
@@ -2125,6 +2143,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ])
         if userInitiated {
             autoConnectSuppressed = true
+        }
+        finishActiveStopObservationUnconfirmed(reason: "disconnect_requested")
+        if let pendingAttemptID = unavailableStopAttempt?.id {
+            finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
         }
         if isHrControlRunning {
             stopTrainingStructuredLog(reason: userInitiated ? "disconnect_user" : "disconnect")
@@ -2265,6 +2287,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             infoToastMessage = "Не подключено к дорожке"
             return
         }
+        endStopObservationForNewMotion()
         // Cancel any pending delayed writes (e.g. stop retries) before starting a new run.
         resetCommandQueue(reason: "startWithSpeed")
         let v = clampRunningSpeedKmh(kmh)
@@ -2330,6 +2353,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         writeCommand(packet, label: "STOP", highPriority: true)
         scheduleWrite(packet, label: "STOP retry", after: 2.0)
         scheduleWrite(packet, label: "STOP retry", after: 4.0)
+        beginStopObservation(source: "direct")
     }
 
     private func stopBeltOnce() {
@@ -2354,7 +2378,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let wasRunning = (deviceTargetSpeedKmh > 0.3) || (speedKmh > 0.3)
         appendLog("STOP sequence (\(reason))")
         stopBeltOnce()
-        guard wasRunning else { return }
+        guard wasRunning else {
+            beginStopObservation(source: reason)
+            return
+        }
         switch treadmillProtocol {
         case .walkingPad:
             let toggle = buildCmdPacket(cmd: 0x04, value: 0x01)
@@ -2379,6 +2406,406 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 scheduleWrite(stopPacket, label: "STOP retry", after: 4.0)
             }
         }
+        beginStopObservation(source: reason)
+    }
+
+    private func currentStopObservationContext() -> StopObservationContext? {
+        guard treadmillProtocol == .walkingPad,
+              isConnected,
+              let peripheralID = connectedPeripheralId,
+              let connectionEpoch = controllerUnitsConnectionEpoch else {
+            return nil
+        }
+        return StopObservationContext(
+            peripheralID: peripheralID,
+            connectionEpoch: connectionEpoch,
+            notificationStreamID: stopObservationStreamID
+        )
+    }
+
+    private func beginStopObservation(source: String, now: Date = Date()) {
+        stopObservationFreshnessWorkItem?.cancel()
+        stopObservationFreshnessWorkItem = nil
+        finishActiveStopObservationUnconfirmed(reason: "superseded_by_new_attempt", now: now)
+        if let pendingAttemptID = unavailableStopAttempt?.id {
+            finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
+        }
+        guard let context = currentStopObservationContext() else {
+            recordUnavailableStopAttempt(source: source, attemptedAt: now)
+            return
+        }
+
+        let needsOwnLog = trainingLogQueue.sync { trainingLogFileHandle == nil }
+        if needsOwnLog {
+            startTrainingStructuredLog(trigger: "stop_observation")
+        }
+        stopObservationOwnsTrainingLog = needsOwnLog
+
+        let lifecycle = StopObservationLifecycle(
+            attemptID: UUID(),
+            source: source,
+            attemptedAt: now,
+            context: context
+        )
+        stopObservationLifecycle = lifecycle
+        stopTruthStatusText = "stop requested • confirming"
+        logTrainingEvent(
+            "stop_attempt_started",
+            fields: stopObservationTelemetryFields(
+                lifecycle: lifecycle,
+                evaluation: lifecycle.currentEvaluation(at: now),
+                now: now
+            )
+        )
+        scheduleStopObservationCheckpoints(attemptID: lifecycle.attemptID)
+    }
+
+    private func recordUnavailableStopAttempt(source: String, attemptedAt: Date) {
+        let attemptID = UUID()
+        let needsOwnLog = trainingLogQueue.sync { trainingLogFileHandle == nil }
+        if needsOwnLog {
+            startTrainingStructuredLog(trigger: "stop_observation_unavailable")
+        }
+        unavailableStopAttempt = UnavailableStopAttempt(
+            id: attemptID,
+            source: source,
+            attemptedAt: attemptedAt,
+            ownsTrainingLog: needsOwnLog,
+            commandSentAt: nil
+        )
+        let transportCanSend = isConnected && commandCharacteristic != nil && buildTreadmillStopPacket() != nil
+        var fields = unavailableStopAttemptFields(
+            attemptID: attemptID,
+            source: source,
+            attemptedAt: attemptedAt,
+            commandSentAt: nil
+        )
+        fields["stop_command_status"] = transportCanSend ? "queued" : "not_sent"
+        fields["stop_final_result"] = ""
+        fields["stop_unconfirmed_reason"] = transportCanSend
+            ? "confirmation_context_unavailable"
+            : "stop_command_not_sent_transport_unavailable"
+        logTrainingEvent("stop_attempt_started", fields: fields)
+
+        if transportCanSend {
+            stopTruthStatusText = "stop requested • confirmation unavailable"
+            infoToastMessage = "Остановка дорожки запрошена, но устройство не может подтвердить её. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
+        } else {
+            stopTruthStatusText = "stop command not sent • confirmation unavailable"
+            infoToastMessage = "Команда остановки не отправлена: соединение с дорожкой недоступно. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.finalizeUnavailableStopAttempt(attemptID: attemptID)
+        }
+    }
+
+    private func unavailableStopAttemptFields(
+        attemptID: UUID,
+        source: String,
+        attemptedAt: Date,
+        commandSentAt: Date?
+    ) -> [String: Any] {
+        [
+            "stop_attempt_id": attemptID.uuidString,
+            "stop_attempt_at": trainingLogIsoFormatter.string(from: attemptedAt),
+            "stop_attempt_source": source,
+            "stop_command_sent_at": commandSentAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
+            "stop_confirmed_ever": false,
+            "stop_currently_confirmed": false,
+            "stop_invalidation_reason": "",
+            "stop_observation_sequence": 0,
+            "stop_observation_count": 0,
+            "stop_observation_age_s": -1,
+            "stop_device_speed_raw_tenths": -1,
+            "stop_device_state": -1,
+            "stop_fe01_checksum_valid": false,
+            "stop_fresh": false,
+            "stop_confirmation_predicate": "fresh_raw_speed_zero_and_accepted_non_running_state",
+            "stop_confirmation_result": StopObservationResult.missingObservation.rawValue,
+            "stop_freshness_limit_s": StopObservationPolicy.freshnessInterval,
+            "stop_observation_window_s": StopObservationPolicy.observationWindow
+        ]
+    }
+
+    private func finalizeUnavailableStopAttempt(attemptID: UUID) {
+        guard let attempt = unavailableStopAttempt, attempt.id == attemptID else { return }
+        var fields = unavailableStopAttemptFields(
+            attemptID: attempt.id,
+            source: attempt.source,
+            attemptedAt: attempt.attemptedAt,
+            commandSentAt: attempt.commandSentAt
+        )
+        fields["stop_command_status"] = attempt.commandSentAt == nil ? "not_sent" : "sent"
+        fields["stop_final_result"] = StopObservationFinalResult.unconfirmed.rawValue
+        fields["stop_unconfirmed_reason"] = attempt.commandSentAt == nil
+            ? "stop_command_not_sent_transport_unavailable"
+            : "confirmation_context_unavailable"
+        logTrainingEvent("stop_observation_finished", fields: fields)
+        unavailableStopAttempt = nil
+        if attempt.ownsTrainingLog {
+            stopTrainingStructuredLog(
+                reason: attempt.commandSentAt == nil
+                    ? "stop_command_not_sent_transport_unavailable"
+                    : "stop_confirmation_unavailable"
+            )
+        }
+    }
+
+    private func scheduleStopObservationCheckpoints(attemptID: UUID) {
+        stopObservationCheckpointWorkItems.forEach { $0.cancel() }
+        stopObservationCheckpointWorkItems.removeAll()
+
+        for delay in StopObservationPolicy.checkpointDelays {
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self,
+                      var lifecycle = self.stopObservationLifecycle,
+                      lifecycle.attemptID == attemptID,
+                      lifecycle.finalResult == nil else {
+                    return
+                }
+                let now = Date()
+                let evaluation = lifecycle.currentEvaluation(at: now)
+                self.refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
+                var fields = self.stopObservationTelemetryFields(
+                    lifecycle: lifecycle,
+                    evaluation: evaluation,
+                    now: now
+                )
+                fields["stop_checkpoint_delay_s"] = delay
+                self.logTrainingEvent("stop_observation_checkpoint", fields: fields)
+
+                if delay == StopObservationPolicy.observationWindow {
+                    _ = lifecycle.finalizeTimeout(at: now)
+                    self.stopObservationLifecycle = lifecycle
+                    self.finishStopObservation(lifecycle: lifecycle, now: now)
+                }
+            }
+            stopObservationCheckpointWorkItems.append(workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
+    }
+
+    private func recordStopObservation(
+        status: BLETransportCodec.WalkingPadStatus,
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic,
+        observedAt: Date
+    ) {
+        guard var lifecycle = stopObservationLifecycle,
+              characteristic === notifyCharacteristic,
+              peripheral.identifier == connectedPeripheralId,
+              let context = currentStopObservationContext() else {
+            return
+        }
+
+        guard lifecycle.finalResult == nil else { return }
+
+        let evaluation = lifecycle.record(
+            speedRawTenths: Int(status.speedRawTenths),
+            state: status.beltState,
+            checksumValid: status.checksumOk,
+            context: context,
+            observedAt: observedAt,
+            evaluatedAt: Date()
+        )
+        stopObservationLifecycle = lifecycle
+        refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
+        logTrainingEvent(
+            "stop_observation",
+            fields: stopObservationTelemetryFields(
+                lifecycle: lifecycle,
+                evaluation: evaluation,
+                now: Date()
+            )
+        )
+        scheduleStopObservationFreshnessRefresh(
+            attemptID: lifecycle.attemptID,
+            observationSequence: lifecycle.observations.last?.sequence
+        )
+    }
+
+    private func scheduleStopObservationFreshnessRefresh(
+        attemptID: UUID,
+        observationSequence: Int?
+    ) {
+        stopObservationFreshnessWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  let lifecycle = self.stopObservationLifecycle,
+                  lifecycle.attemptID == attemptID,
+                  lifecycle.observations.last?.sequence == observationSequence else {
+                return
+            }
+            let now = Date()
+            let evaluation = lifecycle.currentEvaluation(at: now)
+            self.refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
+            if evaluation.result == .stale, lifecycle.finalResult == nil {
+                self.logTrainingEvent(
+                    "stop_observation_freshness_expired",
+                    fields: self.stopObservationTelemetryFields(
+                        lifecycle: lifecycle,
+                        evaluation: evaluation,
+                        now: now
+                    )
+                )
+            }
+            self.updateTreadmillStatus()
+        }
+        stopObservationFreshnessWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + StopObservationPolicy.freshnessInterval + 0.01,
+            execute: workItem
+        )
+    }
+
+    private func refreshStopTruthStatus(
+        lifecycle: StopObservationLifecycle,
+        evaluation: StopObservationEvaluation
+    ) {
+        if lifecycle.finalResult == .timeoutUnconfirmed {
+            stopTruthStatusText = "stop unconfirmed • timeout"
+            return
+        }
+        if lifecycle.finalResult == .unconfirmed {
+            stopTruthStatusText = lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true
+                ? "stop command not sent • confirmation unavailable"
+                : "stop unconfirmed"
+            return
+        }
+
+        switch evaluation.result {
+        case .confirmed:
+            stopTruthStatusText = "stop confirmed by device"
+        case .moving:
+            stopTruthStatusText = "stop unconfirmed • moving"
+        case .contradictory:
+            stopTruthStatusText = "stop unconfirmed • contradictory"
+        case .stale:
+            stopTruthStatusText = "stop unconfirmed • stale"
+        case .missingObservation, .commandNotSent, .beforeCommand:
+            stopTruthStatusText = "stop requested • confirming"
+        case .missingSpeed, .missingState, .invalidChecksum, .wrongContext, .beforeAttempt:
+            stopTruthStatusText = "stop unconfirmed • evidence unavailable"
+        }
+    }
+
+    private func stopObservationTelemetryFields(
+        lifecycle: StopObservationLifecycle,
+        evaluation: StopObservationEvaluation,
+        now: Date
+    ) -> [String: Any] {
+        let latest = lifecycle.observations.last
+        let firstConfirmedElapsed = lifecycle.firstConfirmedAt.map {
+            max(0, $0.timeIntervalSince(lifecycle.attemptedAt))
+        }
+        let confirmedEver = lifecycle.firstConfirmedAt != nil
+        return [
+            "stop_attempt_id": lifecycle.attemptID.uuidString,
+            "stop_attempt_at": trainingLogIsoFormatter.string(from: lifecycle.attemptedAt),
+            "stop_attempt_source": lifecycle.source,
+            "stop_command_sent_at": lifecycle.commandSentAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
+            "stop_command_status": lifecycle.commandStatus,
+            "stop_confirmed_ever": confirmedEver,
+            "stop_currently_confirmed": evaluation.isConfirmed,
+            "stop_invalidation_reason": confirmedEver && !evaluation.isConfirmed
+                ? evaluation.reason
+                : "",
+            "stop_peripheral_id": lifecycle.context.peripheralID.uuidString,
+            "stop_connection_epoch": lifecycle.context.connectionEpoch.uuidString,
+            "stop_notification_stream_id": lifecycle.context.notificationStreamID?.uuidString ?? "",
+            "stop_observation_sequence": latest?.sequence ?? 0,
+            "stop_observation_count": lifecycle.observations.count,
+            "stop_observation_at": latest.map { trainingLogIsoFormatter.string(from: $0.observedAt) } ?? "",
+            "stop_observation_age_s": evaluation.ageSeconds ?? -1,
+            "stop_device_speed_raw_tenths": latest?.speedRawTenths ?? -1,
+            "stop_device_state": latest?.state ?? -1,
+            "stop_fe01_checksum_valid": latest?.checksumValid ?? false,
+            "stop_fresh": evaluation.isFresh,
+            "stop_confirmation_predicate": "fresh_raw_speed_zero_and_accepted_non_running_state",
+            "stop_confirmation_result": evaluation.result.rawValue,
+            "stop_first_confirmed_at": lifecycle.firstConfirmedAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
+            "stop_first_confirmed_elapsed_s": firstConfirmedElapsed ?? -1,
+            "stop_final_result": lifecycle.finalResult?.rawValue ?? "",
+            "stop_unconfirmed_reason": evaluation.isConfirmed
+                ? ""
+                : (lifecycle.finalReason ?? evaluation.reason),
+            "stop_freshness_limit_s": StopObservationPolicy.freshnessInterval,
+            "stop_observation_window_s": StopObservationPolicy.observationWindow,
+            "stop_accepted_non_running_states": StopObservationPolicy.acceptedNonRunningStates.sorted(),
+            "stop_evaluated_at": trainingLogIsoFormatter.string(from: now)
+        ]
+    }
+
+    private func finishStopObservation(lifecycle: StopObservationLifecycle, now: Date) {
+        stopObservationCheckpointWorkItems.forEach { $0.cancel() }
+        stopObservationCheckpointWorkItems.removeAll()
+
+        let evaluation = lifecycle.currentEvaluation(at: now)
+        if !evaluation.isConfirmed {
+            stopObservationFreshnessWorkItem?.cancel()
+            stopObservationFreshnessWorkItem = nil
+        }
+        refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
+        logTrainingEvent(
+            "stop_observation_finished",
+            fields: stopObservationTelemetryFields(
+                lifecycle: lifecycle,
+                evaluation: evaluation,
+                now: now
+            )
+        )
+
+        switch lifecycle.finalResult {
+        case .confirmed:
+            break
+        case .timeoutUnconfirmed:
+            stopTruthStatusText = "stop unconfirmed • timeout"
+            infoToastMessage = "Остановка дорожки не подтверждена. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
+        case .unconfirmed:
+            if lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true {
+                stopTruthStatusText = "stop command not sent • confirmation unavailable"
+                infoToastMessage = "Команда остановки не отправлена. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
+            } else {
+                stopTruthStatusText = "stop unconfirmed"
+            }
+            if lifecycle.finalReason?.hasPrefix("stop_command_not_sent") != true,
+               lifecycle.finalReason != "new_motion_requested",
+               lifecycle.finalReason != "superseded_by_new_attempt" {
+                infoToastMessage = "Остановка дорожки не подтверждена. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
+            }
+        case .none:
+            return
+        }
+
+        if stopObservationOwnsTrainingLog {
+            stopTrainingStructuredLog(reason: lifecycle.finalResult?.rawValue ?? "stop_observation_finished")
+            stopObservationOwnsTrainingLog = false
+        }
+    }
+
+    private func finishActiveStopObservationUnconfirmed(reason: String, now: Date = Date()) {
+        guard var lifecycle = stopObservationLifecycle,
+              lifecycle.finalResult == nil else {
+            return
+        }
+        let finalReason = lifecycle.commandSentAt == nil
+            ? "stop_command_not_sent_\(reason)"
+            : reason
+        _ = lifecycle.finalizeUnconfirmed(at: now, reason: finalReason)
+        stopObservationLifecycle = lifecycle
+        finishStopObservation(lifecycle: lifecycle, now: now)
+    }
+
+    private func endStopObservationForNewMotion() {
+        stopObservationFreshnessWorkItem?.cancel()
+        stopObservationFreshnessWorkItem = nil
+        finishActiveStopObservationUnconfirmed(reason: "new_motion_requested")
+        if let pendingAttemptID = unavailableStopAttempt?.id {
+            finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
+        }
+        stopObservationLifecycle = nil
+        stopTruthStatusText = ""
     }
     func setTargetSpeedFromSlider(_ kmh: Double) {
         let v = clampRunningSpeedKmh(kmh)
@@ -2510,7 +2937,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ])
         stopTrainingStructuredLog(reason: "manual_stop")
         isHrControlRunning = false
-        hrStatusLine = "HR‑контроль остановлен"
+        hrStatusLine = "HR‑контроль завершён • остановка дорожки запрошена"
         hrNextDecisionSeconds = 0
         hrRemainingSeconds = 0
         hrProgress = 0
@@ -2730,7 +3157,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         ])
                         stopTrainingStructuredLog(reason: "hr_no_connection")
                         hrControlFailed = true
-                        infoToastMessage = "HR‑контроль остановлен — нет подключения. Дорожка останавливается."
+                        infoToastMessage = "HR‑контроль остановлен — нет подключения. Остановка дорожки запрошена, но ещё не подтверждена."
                         appendLog("HR control stopped: no connection")
                         isHrControlRunning = false
                         hrStatusLine = "HR‑контроль остановлен — нет подключения"
@@ -2773,7 +3200,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         ])
                         stopTrainingStructuredLog(reason: "hr_no_signal")
                         hrControlFailed = true
-                        infoToastMessage = "HR‑контроль остановлен — нет данных пульса. Дорожка останавливается."
+                        infoToastMessage = "HR‑контроль остановлен — нет данных пульса. Остановка дорожки запрошена, но ещё не подтверждена."
                         appendLog("HR control stopped: no HR for \(missingSeconds)s")
                         isHrControlRunning = false
                         hrStatusLine = "HR‑контроль остановлен — нет данных пульса"
@@ -2949,12 +3376,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func updateTreadmillStatus() {
         let now = Date()
+        if let lifecycle = stopObservationLifecycle {
+            refreshStopTruthStatus(
+                lifecycle: lifecycle,
+                evaluation: lifecycle.currentEvaluation(at: now)
+            )
+        }
         if let notifyAt = lastNotifyAt {
             lastNotifyAgeSeconds = max(0, Int(now.timeIntervalSince(notifyAt)))
         } else {
             lastNotifyAgeSeconds = 0
         }
-        let running = (deviceTargetSpeedKmh > 0.1) || (speedKmh > 0.2)
+        let running = (deviceTargetSpeedKmh > 0.1) || (speedKmh > 0.2) || (deviceReportedSpeedKmh > 0.2)
         let proto = treadmillProtocol.rawValue
         let awakeText: String = {
             guard isConnected else { return "unknown" }
@@ -2963,8 +3396,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }()
         if !isConnected {
             treadmillStatusText = "disconnected"
+        } else if treadmillProtocol == .walkingPad, !stopTruthStatusText.isEmpty {
+            treadmillStatusText = "\(stopTruthStatusText) • \(awakeText) • \(proto)"
         } else if running {
             treadmillStatusText = "running • \(awakeText) • \(proto)"
+        } else if treadmillProtocol == .walkingPad {
+            treadmillStatusText = "idle target • stop not verified • \(awakeText) • \(proto)"
         } else {
             treadmillStatusText = "stopped • \(awakeText) • \(proto)"
         }
@@ -3075,13 +3512,25 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func performWrite(_ data: Data, label: String) {
-        guard isConnected else { appendLog("WRITE SKIPPED (not connected): \(label)"); return }
+        guard isConnected else {
+            appendLog("WRITE SKIPPED (not connected): \(label)")
+            if label == "STOP" {
+                markInitialStopCommandNotSent(reason: "not_connected")
+            }
+            return
+        }
         guard let p = connectedPeripheral, let ch = commandCharacteristic else {
             appendLog("WRITE SKIPPED (no characteristic): \(label)")
+            if label == "STOP" {
+                markInitialStopCommandNotSent(reason: "characteristic_unavailable")
+            }
             return
         }
         let type: CBCharacteristicWriteType = ch.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
         lastCommandSentAt = Date()
+        if label == "STOP" {
+            markInitialStopCommandSent(at: lastCommandSentAt ?? Date())
+        }
         lastCommandAwaitingAck = (type == .withResponse)
         lastCommandAckedAt = (type == .withResponse) ? nil : lastCommandSentAt
         appendLog("WRITE \(label): \(hex(data)) via \(ch.uuid.uuidString) type=\(type == .withoutResponse ? "withoutResponse" : "withResponse")")
@@ -3095,6 +3544,53 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ])
         trackExpectedSpeedIfNeeded(label: label)
         p.writeValue(data, for: ch, type: type)
+    }
+
+    private func markInitialStopCommandSent(at sentAt: Date) {
+        if var lifecycle = stopObservationLifecycle,
+           lifecycle.finalResult == nil,
+           lifecycle.commandSentAt == nil {
+            lifecycle.markCommandSent(at: sentAt)
+            stopObservationLifecycle = lifecycle
+            logTrainingEvent(
+                "stop_command_sent",
+                fields: stopObservationTelemetryFields(
+                    lifecycle: lifecycle,
+                    evaluation: lifecycle.currentEvaluation(at: sentAt),
+                    now: sentAt
+                )
+            )
+        }
+        if var attempt = unavailableStopAttempt, attempt.commandSentAt == nil {
+            attempt.commandSentAt = sentAt
+            unavailableStopAttempt = attempt
+            var fields = unavailableStopAttemptFields(
+                attemptID: attempt.id,
+                source: attempt.source,
+                attemptedAt: attempt.attemptedAt,
+                commandSentAt: sentAt
+            )
+            fields["stop_command_status"] = "sent"
+            fields["stop_final_result"] = ""
+            fields["stop_unconfirmed_reason"] = "confirmation_context_unavailable"
+            logTrainingEvent("stop_command_sent", fields: fields)
+        }
+    }
+
+    private func markInitialStopCommandNotSent(reason: String, at now: Date = Date()) {
+        if var lifecycle = stopObservationLifecycle,
+           lifecycle.finalResult == nil,
+           lifecycle.commandSentAt == nil {
+            _ = lifecycle.finalizeUnconfirmed(
+                at: now,
+                reason: "stop_command_not_sent_\(reason)"
+            )
+            stopObservationLifecycle = lifecycle
+            finishStopObservation(lifecycle: lifecycle, now: now)
+        }
+        if let pendingAttemptID = unavailableStopAttempt?.id {
+            finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
+        }
     }
 
     private func trackExpectedSpeedIfNeeded(label: String) {
@@ -3160,6 +3656,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillMaxSpeedKmh = 12.0
         treadmillSpeedIncrementKmh = 0.1
         controllerUnitsConnectionEpoch = nil
+        stopObservationStreamID = nil
+        stopObservationCheckpointWorkItems.forEach { $0.cancel() }
+        stopObservationCheckpointWorkItems.removeAll()
+        stopObservationFreshnessWorkItem?.cancel()
+        stopObservationFreshnessWorkItem = nil
+        stopObservationLifecycle = nil
+        stopObservationOwnsTrainingLog = false
+        unavailableStopAttempt = nil
+        stopTruthStatusText = ""
         controllerUnitsTruthTracker.disconnect()
         controllerUnitsTruth = controllerUnitsTruthTracker.state
         lastControllerUnitsQueryAt = nil
@@ -3394,6 +3899,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func sendTreadmillSetSpeed(_ kmh: Double, label: String) {
+        if kmh > 0.1 {
+            endStopObservationForNewMotion()
+        }
         switch treadmillProtocol {
         case .walkingPad:
             writeCommand(buildWalkingPadSetSpeedPacket(kmh: kmh), label: label)
@@ -3791,63 +4299,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return Data(bytes)
     }
 
-    private struct Fe01Status {
-        let beltState: Int
-        let speedKmh: Double
-        let manualMode: Int
-        let timeSeconds: Int
-        let distance10m: Int
-        let steps: Int
-        let appSpeedKmh: Double
-        let lastButton: Int
-        let checksumOk: Bool
-    }
-
-    private func parseFe01Status(_ data: Data) -> Fe01Status? {
-        guard data.count >= 19, data.first == 0xF8, data[1] == 0xA2 else { return nil }
-        guard data.count >= 20 else { return nil }
-        let beltState = Int(data[2])
-        let speedKmh = Double(Int(data[3])) / 10.0
-        let manualMode = Int(data[4])
-        let timeSeconds = decode3ByteBE(data, start: 5)
-        let distance10m = decode3ByteBE(data, start: 8)
-        let steps = decode3ByteBE(data, start: 11)
-        let appSpeedKmh = Double(Int(data[14])) / 10.0
-        let lastButton = Int(data[16])
-        let checksumOk = verifyChecksum(data)
-        return Fe01Status(
-            beltState: beltState,
-            speedKmh: speedKmh,
-            manualMode: manualMode,
-            timeSeconds: timeSeconds,
-            distance10m: distance10m,
-            steps: steps,
-            appSpeedKmh: appSpeedKmh,
-            lastButton: lastButton,
-            checksumOk: checksumOk
-        )
-    }
-
-    private func decode3ByteBE(_ data: Data, start: Int) -> Int {
-        guard data.count >= start + 3 else { return 0 }
-        let b0 = Int(data[start])
-        let b1 = Int(data[start + 1])
-        let b2 = Int(data[start + 2])
-        return (b0 << 16) + (b1 << 8) + b2
-    }
-
-    private func verifyChecksum(_ data: Data) -> Bool {
-        guard data.count >= 3 else { return false }
-        let checksumIndex = data.count - 2
-        let expected = data[checksumIndex]
-        var sum: UInt16 = 0
-        for b in data[1..<checksumIndex] {
-            sum += UInt16(b)
-        }
-        return UInt8(sum & 0xFF) == expected
-    }
-
-    private func validateExpectedSpeed(with status: Fe01Status) {
+    private func validateExpectedSpeed(with status: BLETransportCodec.WalkingPadStatus) {
         guard let expected = expectedSpeedKmh, let setAt = expectedSpeedSetAt else { return }
         let age = Date().timeIntervalSince(setAt)
         guard age >= 1.5 else { return }
@@ -3957,6 +4409,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
             if let n = notify {
                 notifyCharacteristic = n
+                stopObservationStreamID = UUID()
                 subscribe(peripheral, to: n, label: "FE01")
             } else {
                 appendLog("WalkingPad: FE01 notify not found on FE00")
@@ -4125,7 +4578,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         ]) { current, _ in current }
                     )
                 }
-            } else if let status = parseFe01Status(data) {
+            } else if let status = BLETransportCodec.parseWalkingPadStatus(data) {
                 let hexStr = hex(data)
                 DispatchQueue.main.async {
                     self.deviceReportedSpeedKmh = status.speedKmh
@@ -4138,6 +4591,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.deviceReportedButton = status.lastButton
                     self.deviceReportedChecksumOk = status.checksumOk
                     self.deviceReportedRawHex = hexStr
+                    self.recordStopObservation(
+                        status: status,
+                        peripheral: peripheral,
+                        characteristic: characteristic,
+                        observedAt: now
+                    )
                 }
                 appendLog("Notify FE01 parsed: state=\(status.beltState) speed=\(String(format: "%.1f", status.speedKmh)) appSpeed=\(String(format: "%.1f", status.appSpeedKmh)) mode=\(status.manualMode) time=\(status.timeSeconds)s dist=\(status.distance10m*10)m steps=\(status.steps) button=\(status.lastButton) checksum=\(status.checksumOk ? "ok" : "bad")")
                 logActualSpeedChangeIfNeeded(status.speedKmh, source: "fe01_notify")
