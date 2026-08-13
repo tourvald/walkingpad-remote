@@ -167,7 +167,7 @@ private struct ControlSwipeView: View {
                             )
                         }
                     }
-                    .padding(16)
+                    .padding(12)
                     .background(
                         RoundedRectangle(cornerRadius: 20, style: .continuous)
                             .fill(
@@ -269,7 +269,7 @@ private struct ControlSwipeView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
+        .padding(8)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(
