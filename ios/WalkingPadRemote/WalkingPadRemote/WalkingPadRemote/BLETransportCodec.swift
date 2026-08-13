@@ -25,6 +25,43 @@ enum BLETransportCodec {
         let rawHex: String
     }
 
+    struct WalkingPadParams {
+        let maxSpeedRawTenths: UInt8
+        let startSpeedRawTenths: UInt8
+        let rawControllerUnit: UInt8
+        let checksumOk: Bool
+        let rawHex: String
+    }
+
+    /// Read-only controller parameters query. A zero key requests state and does
+    /// not mutate any A6 preference.
+    static func buildWalkingPadQueryParamsPacket() -> Data {
+        Data([0xF7, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA6, 0xFD])
+    }
+
+    static func parseWalkingPadParams(_ data: Data) -> WalkingPadParams? {
+        guard data.count == 16,
+              data[0] == 0xF8,
+              data[1] == 0xA6,
+              data[15] == 0xFD else {
+            return nil
+        }
+
+        let checksumIndex = data.count - 2
+        let expectedChecksum = data[checksumIndex]
+        let computedChecksum = data[1..<checksumIndex].reduce(UInt16(0)) {
+            ($0 + UInt16($1)) & 0xFF
+        }
+
+        return WalkingPadParams(
+            maxSpeedRawTenths: data[7],
+            startSpeedRawTenths: data[8],
+            rawControllerUnit: data[13],
+            checksumOk: UInt8(computedChecksum) == expectedChecksum,
+            rawHex: hexString(data)
+        )
+    }
+
     static func buildFtmsRequestControlPacket() -> Data {
         Data([0x00])
     }

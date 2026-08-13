@@ -3,6 +3,35 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class TrainingTelemetryWriterTests: XCTestCase {
+    func testCsvRowIncludesNormalizedControllerUnitsEvidence() {
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        let payload: [String: Any] = [
+            "controller_units_action": "hr_control_start",
+            "controller_units_motion_path": "hr_control",
+            "controller_units_query_requested": true,
+            "controller_units_query_trigger": "connection_ready",
+            "controller_units_query_age_s": 2.5,
+            "controller_units": "imperial",
+            "controller_units_status": "valid",
+            "controller_units_checksum_ok": true,
+            "controller_units_fresh": true,
+            "controller_units_age_s": 2,
+            "controller_units_freshness_limit_s": 30,
+            "controller_units_gate_allowed": false,
+            "controller_units_block_reason": "units_imperial"
+        ]
+
+        let row = TrainingTelemetryWriter.csvRow(sourceFile: "blocked.jsonl", payload: payload)
+
+        XCTAssertEqual(row.count, headers.count)
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_units")!], "imperial")
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_units_status")!], "valid")
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_units_checksum_ok")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_units_fresh")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_units_gate_allowed")!], "false")
+        XCTAssertEqual(row[headers.firstIndex(of: "controller_units_block_reason")!], "units_imperial")
+    }
+
     func testCleanupExportedJsonlFilesRemovesJsonlFilesAndCountsBytes() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
