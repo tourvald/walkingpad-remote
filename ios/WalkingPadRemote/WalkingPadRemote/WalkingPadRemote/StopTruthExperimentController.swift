@@ -6,7 +6,7 @@ final class StopTruthExperimentController {
         BLETransportCodec.StopTruthExperimentCommandRole,
         UUID,
         @escaping (Result<StopTruthExperimentTransportReceipt, Error>) -> Void
-    ) -> Void
+    ) -> Bool
 
     private final class ClosureTransport: StopTruthExperimentTransport {
         var invocation: TransportInvocation
@@ -18,7 +18,7 @@ final class StopTruthExperimentController {
             writeID: UUID,
             completion: @escaping (Result<StopTruthExperimentTransportReceipt, Error>) -> Void
         ) {
-            invocation(packet, role, writeID, completion)
+            _ = invocation(packet, role, writeID, completion)
         }
     }
 
@@ -32,6 +32,7 @@ final class StopTruthExperimentController {
     private let beforeHighPriorityStop: () -> Void
     private let onStateChange: (String) -> Void
     private let deviceMetadata: () -> [String: String]
+    private let scheduleHandler: StopTruthExperimentExecutor.ScheduleHandler?
     private var session: StopTruthExperimentSessionService
     private var executor: StopTruthExperimentExecutor?
     private var run: StopTruthExperimentExecutor.Run?
@@ -40,7 +41,12 @@ final class StopTruthExperimentController {
     private var postWindowWorkItem: DispatchWorkItem?
     private var repetitionTimeoutWorkItem: DispatchWorkItem?
     private var globalTimeoutWorkItem: DispatchWorkItem?
+    private var baselineStartDeadlineWorkItem: DispatchWorkItem?
+    private var movingBaselineDeadlineWorkItem: DispatchWorkItem?
+    private var physicalStopDeadlineWorkItem: DispatchWorkItem?
     private var lastInvocationUptimeNanoseconds: UInt64?
+    private var terminalSafetyCutoffRecorded = false
+    private var hasRecordedTerminalSafety = false
 
     init(
         experimentID: UUID = UUID(),
@@ -53,6 +59,7 @@ final class StopTruthExperimentController {
         speedSnapshot: @escaping () -> (speedKmh: Double, deviceReportedSpeedKmh: Double),
         beforeHighPriorityStop: @escaping () -> Void,
         deviceMetadata: @escaping () -> [String: String] = { [:] },
+        scheduleHandler: StopTruthExperimentExecutor.ScheduleHandler? = nil,
         onStateChange: @escaping (String) -> Void
     ) {
         self.buildIdentity = buildIdentity
@@ -63,6 +70,7 @@ final class StopTruthExperimentController {
         self.speedSnapshot = speedSnapshot
         self.beforeHighPriorityStop = beforeHighPriorityStop
         self.deviceMetadata = deviceMetadata
+        self.scheduleHandler = scheduleHandler
         self.onStateChange = onStateChange
         self.transport = ClosureTransport(invocation: transportInvocation)
         self.session = StopTruthExperimentSessionService(
@@ -77,9 +85,9 @@ final class StopTruthExperimentController {
                 DispatchQueue.main.async {
                     completion(.failure(ControllerError.monotonicClockUnavailable))
                 }
-                return
+                return false
             }
-            self.transportInvoked(
+            return self.transportInvoked(
                 role: role,
                 packet: packet,
                 writeID: writeID,
@@ -98,7 +106,11 @@ final class StopTruthExperimentController {
         }
     }
 
-    var status: String { String(describing: session.phase) }
+    var status: String {
+        let phase = String(describing: session.phase)
+        guard session.physicalCutoffRequired else { return phase }
+        return "\(phase) • physical power cutoff required; no resume/reconnect"
+    }
     var experimentID: UUID { session.experimentID }
 
     func start() -> Bool {
@@ -218,7 +230,16 @@ final class StopTruthExperimentController {
             "connection_epoch": incomingContext.connectionEpoch.uuidString,
             "notification_stream_id": incomingContext.notificationStreamID.uuidString
         ])
+        guard incomingContext == context else {
+            fail("connection_or_notification_context_changed")
+            return
+        }
+        refreshMovingBaselineQualification(nowUptimeNanoseconds: timestamp.monotonicUptimeNanoseconds)
         if var observationService {
+            guard !observationService.isFrozen else {
+                publishState()
+                return
+            }
             let evaluation = observationService.record(
                 observation,
                 nowUptimeNanoseconds: timestamp.monotonicUptimeNanoseconds
@@ -258,7 +279,15 @@ final class StopTruthExperimentController {
             "connection_epoch": incomingContext.connectionEpoch.uuidString,
             "notification_stream_id": incomingContext.notificationStreamID.uuidString
         ])
+        guard incomingContext == context else {
+            fail("connection_or_notification_context_changed")
+            return
+        }
         if var observationService {
+            guard !observationService.isFrozen else {
+                publishState()
+                return
+            }
             let evaluation = observationService.record(
                 observation,
                 nowUptimeNanoseconds: timestamp.monotonicUptimeNanoseconds
@@ -319,31 +348,46 @@ final class StopTruthExperimentController {
             return
         }
         if marker == .abort {
-            executor?.abort(token: run?.token ?? UUID(), note: note)
-            cancelAllDelayedWork()
+            guard session.recordMarker(
+                marker,
+                timestamp: timestamp,
+                note: note,
+                operatorHadVisibility: operatorHadVisibility
+            ) else { return }
+            recordPhysicalMarker(session.markers.last)
+            finalizeTerminalState(note: note)
+            return
         }
         guard session.recordMarker(
             marker,
             timestamp: timestamp,
             note: note,
             operatorHadVisibility: operatorHadVisibility
-        ) else { return }
-        record(.physicalMarker, fields: [
-            "marker": marker.rawValue,
-            "note": note,
-            "operator_had_visibility": String(operatorHadVisibility),
-            "sends_ble_command": "false"
-        ])
+        ) else {
+            if !isActive { finalizeTerminalState(note: session.terminalReason ?? "marker_rejected_terminal") }
+            return
+        }
+        recordPhysicalMarker(session.markers.last)
+        if marker == .moving, let now = clock.now() {
+            refreshMovingBaselineQualification(nowUptimeNanoseconds: now.monotonicUptimeNanoseconds)
+        } else if marker == .stopped, session.hasFirstPhysicalStopForCurrentRepetition() {
+            physicalStopDeadlineWorkItem?.cancel()
+        }
         publishState()
     }
 
     func beginStop() -> Bool {
         guard let now = clock.now(),
               session.acceptMovingBaseline(clock: clock, nowUptimeNanoseconds: now.monotonicUptimeNanoseconds),
-              session.beginStopObservation() else {
+              session.canAttemptInitialStop(nowUptimeNanoseconds: now.monotonicUptimeNanoseconds) else {
+            if case .movingReady = session.phase {
+                fail("initial_stop_attempt_after_motion_deadline")
+            }
             publishState()
             return false
         }
+        cancelMovingBaselineDeadlines()
+        guard session.beginStopObservation() else { return false }
         beforeHighPriorityStop()
         guard enqueue(.initialStop) else {
             fail("initial_stop_enqueue_failed")
@@ -354,7 +398,12 @@ final class StopTruthExperimentController {
     }
 
     func beginNextRepetition() -> Bool {
-        guard session.beginNextRepetition() else { return false }
+        guard let now = clock.now(),
+              session.beginNextRepetition(
+                clock: clock,
+                nowUptimeNanoseconds: now.monotonicUptimeNanoseconds,
+                executorQuiescent: executor?.isQuiescent() == true
+              ) else { return false }
         if case .completed = session.phase {
             cancelAllDelayedWork()
             publishState()
@@ -372,9 +421,7 @@ final class StopTruthExperimentController {
 
     func connectionContextInvalidated() {
         session.recordReconnect()
-        executor?.abort(token: run?.token ?? UUID(), note: "connection_context_invalidated")
-        cancelAllDelayedWork()
-        publishState()
+        finalizeTerminalState(note: "connection_context_invalidated")
     }
 
     private func startExecutor(repetition: Int) -> Bool {
@@ -392,7 +439,11 @@ final class StopTruthExperimentController {
         let executor = StopTruthExperimentExecutor(
             transport: transport,
             clock: clock,
-            evidenceSink: evidenceSink
+            evidenceSink: evidenceSink,
+            scheduleHandler: scheduleHandler,
+            onFailure: { [weak self] reason in
+                self?.fail("executor_\(reason)")
+            }
         )
         guard executor.start(run: run) else { return false }
         self.run = run
@@ -420,19 +471,20 @@ final class StopTruthExperimentController {
         ) != nil
     }
 
+    @discardableResult
     private func transportInvoked(
         role: BLETransportCodec.StopTruthExperimentCommandRole,
         packet: Data,
         writeID: UUID,
         completion: @escaping (Result<StopTruthExperimentTransportReceipt, Error>) -> Void,
         invocation: TransportInvocation
-    ) {
+    ) -> Bool {
         guard let timestamp = clock.now() else {
             DispatchQueue.main.async { [weak self] in
                 completion(.failure(ControllerError.monotonicClockUnavailable))
                 self?.fail("monotonic_clock_unavailable")
             }
-            return
+            return false
         }
         if let last = lastInvocationUptimeNanoseconds,
            timestamp.monotonicUptimeNanoseconds < last + 2_000_000_000 {
@@ -440,43 +492,56 @@ final class StopTruthExperimentController {
                 completion(.failure(ControllerError.minimumWriteIntervalViolation))
                 self?.fail("minimum_write_interval_violation")
             }
-            return
+            return false
+        }
+        if role == .initialStop,
+           !session.canInvokeInitialStop(nowUptimeNanoseconds: timestamp.monotonicUptimeNanoseconds) {
+            DispatchQueue.main.async { [weak self] in
+                completion(.failure(ControllerError.initialStopDeadlineExceeded))
+                self?.fail("initial_stop_actual_invocation_after_motion_deadline")
+            }
+            return false
         }
         lastInvocationUptimeNanoseconds = timestamp.monotonicUptimeNanoseconds
-        if role == .initialStop {
-            observationService = StopTruthExperimentObservationService(
-                context: context,
-                stopInvokedAt: timestamp
-            )
-        }
-        invocation(packet, role, writeID) { [weak self] result in
+        let actuallyInvoked = invocation(packet, role, writeID) { [weak self] result in
             completion(result)
-            if case .success = result {
-                if role == .speedRaw5 {
-                    self?.session.recordRaw5Invocation(timestamp: timestamp)
-                    self?.publishState()
-                } else if role == .initialStop {
-                    guard self?.isActive == true else { return }
-                    self?.scheduleProductionStopActions()
-                    self?.scheduleObservationWindow(stopInvokedAt: timestamp)
-                }
-            } else if case .failure = result {
+            if case .failure = result {
                 self?.fail("transport_invocation_failed")
+            } else {
+                self?.handleSuccessfulReceipt(role: role, timestamp: timestamp)
             }
         }
+        guard actuallyInvoked else {
+            DispatchQueue.main.async { [weak self] in
+                completion(.failure(ControllerError.transportRejectedBeforeInvocation))
+                self?.fail("transport_rejected_before_actual_invocation")
+            }
+            return false
+        }
+        handleActualInvocation(role: role, timestamp: timestamp)
+        return true
     }
 
-    private func scheduleProductionStopActions() {
-        guard let executor, let run else { return }
-        _ = executor.schedule(
+    private func scheduleProductionStopActions(
+        stopInvokedAt: StopTruthExperimentTimestamp
+    ) -> Bool {
+        guard let executor, let run else { return false }
+        guard let recoveryDelay = remainingDeadlineDelay(
+            since: stopInvokedAt,
+            limit: StopTruthExperimentPlanService.recoveryToggleDelaySeconds
+        ), let retryDelay = remainingDeadlineDelay(
+            since: stopInvokedAt,
+            limit: StopTruthExperimentPlanService.conditionalRetryDelaySeconds
+        ) else { return false }
+        guard executor.schedule(
             role: .productionStopRecovery,
             token: run.token,
-            after: StopTruthExperimentPlanService.recoveryToggleDelaySeconds
-        )
-        _ = executor.schedule(
+            after: recoveryDelay
+        ) != nil else { return false }
+        guard executor.schedule(
             role: .conditionalStopRetry,
             token: run.token,
-            after: StopTruthExperimentPlanService.conditionalRetryDelaySeconds,
+            after: retryDelay,
             shouldEnqueue: { [weak self] in
                 guard let self else { return false }
                 let snapshot = self.speedSnapshot()
@@ -492,10 +557,157 @@ final class StopTruthExperimentController {
                 ])
                 return required
             }
-        )
+        ) != nil else { return false }
+        return true
     }
 
-    private func scheduleObservationWindow(stopInvokedAt: StopTruthExperimentTimestamp) {
+    private func handleSuccessfulReceipt(
+        role: BLETransportCodec.StopTruthExperimentCommandRole,
+        timestamp: StopTruthExperimentTimestamp
+    ) {
+        guard isActive else {
+            finalizeTerminalState(note: session.terminalReason ?? "receipt_after_terminal")
+            return
+        }
+        if role == .initialStop,
+           !scheduleProductionStopActions(stopInvokedAt: timestamp) {
+            fail("production_stop_actions_schedule_failed")
+            return
+        }
+        publishState()
+    }
+
+    private func handleActualInvocation(
+        role: BLETransportCodec.StopTruthExperimentCommandRole,
+        timestamp: StopTruthExperimentTimestamp
+    ) {
+        if role == .baselineStart || role == .speedRaw5 || role == .productionStopRecovery {
+            session.recordMotionCapableInvocation(role: role, timestamp: timestamp)
+            recordTerminalSafetyIfNeeded(reason: session.terminalReason ?? "motion_capable_invocation")
+        }
+        guard isActive else {
+            finalizeTerminalState(note: session.terminalReason ?? "invocation_completed_after_terminal")
+            return
+        }
+        switch role {
+        case .baselineStart:
+            scheduleMovingBaselineDeadline(
+                invocationTimestamp: timestamp,
+                limit: StopTruthExperimentPlanService.movingBaselineDeadlineAfterBaselineStartSeconds,
+                reason: "moving_baseline_missing_after_baseline_start_deadline",
+                storage: &baselineStartDeadlineWorkItem
+            )
+        case .speedRaw5:
+            session.recordRaw5Invocation(timestamp: timestamp)
+            scheduleMovingBaselineDeadline(
+                invocationTimestamp: timestamp,
+                limit: StopTruthExperimentPlanService.movingBaselineDeadlineAfterRaw5Seconds,
+                reason: "moving_baseline_missing_after_raw5_deadline",
+                storage: &movingBaselineDeadlineWorkItem
+            )
+        case .initialStop:
+            guard session.recordInitialStopInvocation(timestamp: timestamp) else {
+                return
+            }
+            observationService = StopTruthExperimentObservationService(
+                context: context,
+                stopInvokedAt: timestamp
+            )
+            guard schedulePhysicalStopDeadline(stopInvokedAt: timestamp) else { return }
+            guard scheduleObservationWindow(stopInvokedAt: timestamp) else { return }
+        default:
+            break
+        }
+        publishState()
+    }
+
+    private func refreshMovingBaselineQualification(nowUptimeNanoseconds: UInt64) {
+        guard session.refreshMovingBaselineQualification(
+            clock: clock,
+            nowUptimeNanoseconds: nowUptimeNanoseconds
+        ) else { return }
+        cancelMovingBaselineDeadlines()
+    }
+
+    private func scheduleMovingBaselineDeadline(
+        invocationTimestamp: StopTruthExperimentTimestamp,
+        limit: TimeInterval,
+        reason: String,
+        storage: inout DispatchWorkItem?
+    ) {
+        storage?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, let now = self.clock.now() else {
+                self?.fail("moving_baseline_deadline_clock_unavailable")
+                return
+            }
+            guard !self.session.refreshMovingBaselineQualification(
+                clock: self.clock,
+                nowUptimeNanoseconds: now.monotonicUptimeNanoseconds
+            ) else {
+                self.cancelMovingBaselineDeadlines()
+                return
+            }
+            self.fail(reason)
+        }
+        storage = item
+        guard let delay = remainingDeadlineDelay(since: invocationTimestamp, limit: limit) else {
+            fail("moving_baseline_deadline_clock_discontinuity")
+            return
+        }
+        scheduleWorkItem(after: delay, item: item)
+    }
+
+    private func schedulePhysicalStopDeadline(stopInvokedAt: StopTruthExperimentTimestamp) -> Bool {
+        physicalStopDeadlineWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard !self.session.hasFirstPhysicalStopForCurrentRepetition() else { return }
+            self.fail("physical_stopped_marker_deadline_exceeded")
+        }
+        physicalStopDeadlineWorkItem = item
+        guard let delay = remainingDeadlineDelay(
+            since: stopInvokedAt,
+            limit: StopTruthExperimentPlanService.physicalStoppedDeadlineAfterInitialStopSeconds
+                + StopTruthExperimentPlanService.inclusiveDeadlineEpsilonSeconds
+        ) else {
+            fail("physical_stop_deadline_clock_discontinuity")
+            return false
+        }
+        scheduleWorkItem(after: delay, item: item)
+        return true
+    }
+
+    private func scheduleWorkItem(after delay: TimeInterval, item: DispatchWorkItem) {
+        if let scheduleHandler {
+            scheduleHandler(delay, item)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        }
+    }
+
+    private func remainingDeadlineDelay(
+        since timestamp: StopTruthExperimentTimestamp,
+        limit: TimeInterval
+    ) -> TimeInterval? {
+        guard let now = clock.now(),
+              now.originID == timestamp.originID,
+              now.monotonicUptimeNanoseconds >= timestamp.monotonicUptimeNanoseconds else {
+            return nil
+        }
+        let elapsed = Double(
+            now.monotonicUptimeNanoseconds - timestamp.monotonicUptimeNanoseconds
+        ) / 1_000_000_000
+        guard elapsed <= limit else { return nil }
+        return limit - elapsed
+    }
+
+    private func cancelMovingBaselineDeadlines() {
+        baselineStartDeadlineWorkItem?.cancel()
+        movingBaselineDeadlineWorkItem?.cancel()
+    }
+
+    private func scheduleObservationWindow(stopInvokedAt: StopTruthExperimentTimestamp) -> Bool {
         observationWindowWorkItem?.cancel()
         postWindowWorkItem?.cancel()
         let window = DispatchWorkItem { [weak self] in
@@ -508,7 +720,10 @@ final class StopTruthExperimentController {
             }
             let evaluation = service.finalizeWindow(nowUptimeNanoseconds: now.monotonicUptimeNanoseconds)
             self.observationService = service
-            _ = self.session.finishObservationWindow()
+            guard self.session.finishObservationWindow() else {
+                self.fail("observation_window_missing_physical_stop")
+                return
+            }
             self.record(.stopFinalResult, fields: self.stopFields(evaluation, service: service))
             self.publishState()
         }
@@ -522,10 +737,16 @@ final class StopTruthExperimentController {
             }
             let evaluation = service.recordPostWindowFreshness(nowUptimeNanoseconds: now.monotonicUptimeNanoseconds)
             self.observationService = service
-            _ = self.session.finishPostWindowFreshness()
             self.record(.postWindowFreshness, fields: self.stopFields(evaluation, service: service))
             if let executor = self.executor, let run = self.run, !executor.finish(token: run.token) {
                 self.fail("experiment_command_count_incomplete")
+                return
+            }
+            guard self.session.finishPostWindowFreshness(
+                timestamp: now,
+                executorQuiescent: self.executor?.isQuiescent() == true
+            ) else {
+                self.fail("recovery_entry_not_quiescent")
                 return
             }
             self.repetitionTimeoutWorkItem?.cancel()
@@ -533,21 +754,33 @@ final class StopTruthExperimentController {
         }
         observationWindowWorkItem = window
         postWindowWorkItem = post
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30.0, execute: window)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 32.1, execute: post)
+        guard let windowDelay = remainingDeadlineDelay(
+            since: stopInvokedAt,
+            limit: StopTruthExperimentPlanService.observationWindowSeconds
+        ), let postDelay = remainingDeadlineDelay(
+            since: stopInvokedAt,
+            limit: StopTruthExperimentPlanService.observationWindowSeconds
+                + StopTruthExperimentPlanService.postWindowFreshnessDelaySeconds
+        ) else {
+            fail("observation_schedule_clock_discontinuity")
+            return false
+        }
+        scheduleWorkItem(after: windowDelay, item: window)
+        scheduleWorkItem(after: postDelay, item: post)
+        return true
     }
 
     private func scheduleGlobalTimeout() {
         let item = DispatchWorkItem { [weak self] in self?.fail("global_timeout") }
         globalTimeoutWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutPolicy.globalSeconds, execute: item)
+        scheduleWorkItem(after: timeoutPolicy.globalSeconds, item: item)
     }
 
     private func scheduleRepetitionTimeout(repetition: Int) {
         repetitionTimeoutWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.fail("repetition_\(repetition)_timeout") }
         repetitionTimeoutWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutPolicy.perRepetitionSeconds, execute: item)
+        scheduleWorkItem(after: timeoutPolicy.perRepetitionSeconds, item: item)
     }
 
     private func remainingWriteInterval(nowUptimeNanoseconds: UInt64) -> TimeInterval {
@@ -577,6 +810,37 @@ final class StopTruthExperimentController {
         fields["raw_packet_hex"] = observation.rawHex
         fields["observation_sequence"] = String(service.observations.count)
         record(.stopObservation, timestamp: observation.receivedAt, fields: fields)
+    }
+
+    private func recordPhysicalMarker(_ marker: StopTruthExperimentSessionService.MarkerEvidence?) {
+        guard let marker else { return }
+        var fields = [
+            "marker": marker.marker.rawValue,
+            "marker_role": marker.role.rawValue,
+            "note": marker.note,
+            "operator_had_visibility": String(marker.operatorHadVisibility),
+            "sends_ble_command": "false"
+        ]
+        if marker.role == .movingBaseline {
+            fields["authoritative_moving_uptime_ns"] = String(marker.timestamp.monotonicUptimeNanoseconds)
+            if marker.timestamp.monotonicUptimeNanoseconds >= 1_500_000_000 {
+                fields["motion_evidence_start_uptime_ns"] = String(
+                    marker.timestamp.monotonicUptimeNanoseconds - 1_500_000_000
+                )
+            }
+        } else if marker.role == .firstPhysicalStop {
+            fields["first_physical_stopped_uptime_ns"] = String(marker.timestamp.monotonicUptimeNanoseconds)
+            if marker.timestamp.monotonicUptimeNanoseconds >= 500_000_000 {
+                fields["motion_evidence_stop_uptime_ns"] = String(
+                    marker.timestamp.monotonicUptimeNanoseconds - 500_000_000
+                )
+            }
+            fields["cumulative_motion_duration_s"] = String(session.cumulativeMotionDurationSeconds)
+            fields["initial_stop_uptime_ns"] = session.initialStopInvocation.map {
+                String($0.timestamp.monotonicUptimeNanoseconds)
+            } ?? ""
+        }
+        record(.physicalMarker, timestamp: marker.timestamp, fields: fields)
     }
 
     private func stopFields(
@@ -613,10 +877,32 @@ final class StopTruthExperimentController {
     }
 
     private func fail(_ reason: String) {
-        executor?.abort(token: run?.token ?? UUID(), note: reason)
-        cancelAllDelayedWork()
         session.fail(reason)
+        finalizeTerminalState(note: reason)
+    }
+
+    private func finalizeTerminalState(note: String) {
+        executor?.abort(token: run?.token ?? UUID(), note: note)
+        cancelAllDelayedWork()
+        recordTerminalSafetyIfNeeded(reason: note)
         publishState()
+    }
+
+    private func recordTerminalSafetyIfNeeded(reason: String) {
+        guard session.physicalCutoffRequired || session.terminalReason != nil else { return }
+        guard !hasRecordedTerminalSafety
+                || session.physicalCutoffRequired != terminalSafetyCutoffRecorded else { return }
+        record(.terminalSafety, fields: [
+            "terminal_reason": session.terminalReason ?? reason,
+            "motion_capable_invocation_occurred": String(session.motionCapableInvocationOccurred),
+            "positive_safe_recovery_established": String(session.positiveSafeRecoveryEstablished),
+            "physical_cutoff_required": String(session.physicalCutoffRequired),
+            "operator_instruction": session.physicalCutoffRequired
+                ? "use_physical_power_cutoff_no_resume_reconnect_or_next_repetition"
+                : "no_physical_cutoff_required_before_motion"
+        ])
+        hasRecordedTerminalSafety = true
+        terminalSafetyCutoffRecorded = session.physicalCutoffRequired
     }
 
     private func cancelAllDelayedWork() {
@@ -624,6 +910,9 @@ final class StopTruthExperimentController {
         postWindowWorkItem?.cancel()
         repetitionTimeoutWorkItem?.cancel()
         globalTimeoutWorkItem?.cancel()
+        baselineStartDeadlineWorkItem?.cancel()
+        movingBaselineDeadlineWorkItem?.cancel()
+        physicalStopDeadlineWorkItem?.cancel()
     }
 
     private func publishState() { onStateChange(status) }
@@ -631,5 +920,7 @@ final class StopTruthExperimentController {
     enum ControllerError: Error {
         case monotonicClockUnavailable
         case minimumWriteIntervalViolation
+        case initialStopDeadlineExceeded
+        case transportRejectedBeforeInvocation
     }
 }

@@ -9,6 +9,16 @@ enum StopTruthExperimentPlanService {
     static let recoveryToggleDelaySeconds: TimeInterval = 2.0
     static let conditionalRetryDelaySeconds: TimeInterval = 4.0
     static let maximumObservationAgeSeconds: TimeInterval = 2.0
+    static let movingBaselineDeadlineAfterRaw5Seconds: TimeInterval = 5.0
+    static let movingBaselineDeadlineAfterBaselineStartSeconds: TimeInterval = 10.0
+    static let movingEvidenceLeadSeconds: TimeInterval = 1.5
+    static let initialStopDeadlineAfterMovingEvidenceSeconds: TimeInterval = 5.0
+    static let stoppedEvidenceLeadSeconds: TimeInterval = 0.5
+    static let physicalStoppedDeadlineAfterInitialStopSeconds: TimeInterval = 8.5
+    static let inclusiveDeadlineEpsilonSeconds: TimeInterval = 0.000_000_001
+    static let maximumMotionDurationPerRepetitionSeconds: TimeInterval = 13.0
+    static let maximumCumulativeMotionDurationSeconds: TimeInterval = 39.0
+    static let minimumRecoveryPauseSeconds: TimeInterval = 30.0
     // Query Params is allowed exactly once for the fixed three-repetition
     // experiment. Keep its validity bounded by the approved maximum experiment
     // duration, independent of caller-provided timeout inputs.
@@ -89,7 +99,9 @@ enum StopTruthExperimentPlanService {
             case .stationary:
                 return speed == 0 && StopObservationPolicy.acceptedNonRunningStates.contains(state)
             case .movingRaw5(let markerRecorded):
-                return markerRecorded && speed == 5 && !StopObservationPolicy.acceptedNonRunningStates.contains(state)
+                // The controller state remains evidence, but raw speed is the
+                // approved physical baseline truth for this diagnostic.
+                return markerRecorded && speed == 5
             }
         }) else {
             return false

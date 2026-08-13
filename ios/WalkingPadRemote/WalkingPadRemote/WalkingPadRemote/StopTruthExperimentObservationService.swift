@@ -15,6 +15,8 @@ struct StopTruthExperimentObservationService {
     private(set) var finalWindowEvaluation: StopTruthExperimentStopEvaluation?
     private(set) var postWindowFreshnessEvaluation: StopTruthExperimentStopEvaluation?
 
+    var isFrozen: Bool { finalWindowEvaluation != nil }
+
     let context: StopTruthExperimentPlanService.Context
     let stopInvokedAt: StopTruthExperimentTimestamp
     private let clockOriginID: UUID
@@ -32,6 +34,9 @@ struct StopTruthExperimentObservationService {
         _ observation: StopTruthExperimentPlanService.FE01Observation,
         nowUptimeNanoseconds: UInt64
     ) -> StopTruthExperimentStopEvaluation {
+        if finalWindowEvaluation != nil {
+            return currentEvaluation(nowUptimeNanoseconds: nowUptimeNanoseconds)
+        }
         let evaluation = evaluate(observation, nowUptimeNanoseconds: nowUptimeNanoseconds)
         if observations.count == StopObservationPolicy.maxStoredObservations {
             observations.removeFirst()
@@ -52,6 +57,7 @@ struct StopTruthExperimentObservationService {
     }
 
     mutating func finalizeWindow(nowUptimeNanoseconds: UInt64) -> StopTruthExperimentStopEvaluation {
+        if let finalWindowEvaluation { return finalWindowEvaluation }
         let evaluation = currentEvaluation(nowUptimeNanoseconds: nowUptimeNanoseconds)
         finalWindowEvaluation = evaluation
         return evaluation

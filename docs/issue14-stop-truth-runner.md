@@ -56,6 +56,12 @@ SHA PM approval.
   never widened by configurable timeout input.
 - Stationary and moving gates require the latest two consecutive checksum-valid
   same-context FE01 frames with monotonic age `0...2.0s`.
+- A moving baseline must qualify within `5.0s` of the actual raw-5 invocation
+  and within `10.0s` of the actual baseline Start invocation. The initial Stop
+  must be invoked no later than `5.0s` after the conservative moving-evidence
+  start, and first physical STOPPED evidence must arrive by `T_stop + 8.5s`.
+- Conservative motion evidence is capped at `13.0s` per repetition and `39.0s`
+  over the fixed three-repetition matrix, using monotonic time only.
 - The initial Stop is high priority. Recovery toggle and conditional retry use
   the production `+2.0s` / `+4.0s` timing and `max(speedKmh,
   deviceReportedSpeedKmh) > 0.2` predicate.
@@ -66,6 +72,13 @@ SHA PM approval.
   suspension interval cannot be treated as continuous critical-timing evidence.
 - After an abort following any motion-capable actual write, recovery is physical
   power cutoff by the operator.
+- Any terminal failure after an actual motion-capable invocation and before
+  positive safe recovery records `physical_cutoff_required=true`, invalidates
+  delayed actions, and forbids software resume, reconnect, or a next repetition.
+- A next repetition requires a completed production Stop sequence, no pending
+  delayed motion action, two fresh same-context stationary FE01 frames, a
+  distinct recovery-stationary marker, no renewed motion, and at least `30.0s`
+  in the recovery pause.
 - MOVING, STOPPED, and ABORT controls write evidence only; marker actions never
   send BLE commands. MOVING is accepted only for the current repetition after
   that repetition's successful raw-5 transport invocation.
@@ -86,3 +99,8 @@ The runner records the 30-second final state and the dedicated `deadline + 2.1s`
 freshness state as separate events. It reports core evidence and leaves natural
 contradictory trajectory subclaims `UNKNOWN / NOT OBSERVED`; it never claims a
 hardware PASS by itself.
+
+Finalization freezes the lifecycle observation set, latest retained
+observation, and first-confirmation identity. Later FE01 packets remain in raw
+evidence but cannot mutate the frozen final truth; the `+2.1s` check evaluates
+freshness against that same retained pre-finalization observation.

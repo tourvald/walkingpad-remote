@@ -60,6 +60,7 @@ final class StopTruthExperimentExecutor {
     private let clock: StopTruthExperimentClock
     private weak var evidenceSink: StopTruthExperimentEvidenceSink?
     private let scheduleHandler: ScheduleHandler?
+    private let onFailure: ((String) -> Void)?
     private(set) var state: State = .idle
     private var nextRoleIndex = 0
     private var invocationSequence = 0
@@ -71,12 +72,14 @@ final class StopTruthExperimentExecutor {
         transport: StopTruthExperimentTransport,
         clock: StopTruthExperimentClock,
         evidenceSink: StopTruthExperimentEvidenceSink,
-        scheduleHandler: ScheduleHandler? = nil
+        scheduleHandler: ScheduleHandler? = nil,
+        onFailure: ((String) -> Void)? = nil
     ) {
         self.transport = transport
         self.clock = clock
         self.evidenceSink = evidenceSink
         self.scheduleHandler = scheduleHandler
+        self.onFailure = onFailure
     }
 
     func start(run: Run) -> Bool {
@@ -117,9 +120,11 @@ final class StopTruthExperimentExecutor {
             && !conditionalStopRetryInvoked
         guard (isNextRequiredRole || isAllowedConditionalRetry),
               BLETransportCodec.validateStopTruthExperimentPacket(packet, role: role) else {
-            state = .failed(run, reason: "whitelist_order_or_packet_mismatch")
+            let reason = "whitelist_order_or_packet_mismatch"
+            state = .failed(run, reason: reason)
             lock.unlock()
-            return .rejected(reason: "whitelist_order_or_packet_mismatch")
+            onFailure?(reason)
+            return .rejected(reason: reason)
         }
         if isNextRequiredRole {
             nextRoleIndex += 1
@@ -151,8 +156,10 @@ final class StopTruthExperimentExecutor {
             return nil
         }
         guard let scheduledAt = clock.now() else {
-            state = .failed(run, reason: "monotonic_clock_unavailable")
+            let reason = "monotonic_clock_unavailable"
+            state = .failed(run, reason: reason)
             lock.unlock()
+            onFailure?(reason)
             return nil
         }
         let actionID = UUID()
@@ -222,6 +229,14 @@ final class StopTruthExperimentExecutor {
         return state
     }
 
+    func isQuiescent() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard delayedActions.isEmpty else { return false }
+        if case .completed = state { return true }
+        return false
+    }
+
     private func runDelayed(
         actionID: UUID,
         role: BLETransportCodec.StopTruthExperimentCommandRole,
@@ -244,6 +259,7 @@ final class StopTruthExperimentExecutor {
             state = .failed(run, reason: "monotonic_clock_discontinuity")
             recordLocked(.timingInvalid, run: run, fields: ["reason": "monotonic_clock_discontinuity"])
             lock.unlock()
+            onFailure?("monotonic_clock_discontinuity")
             return
         }
         let actualDelay = Double(
@@ -257,6 +273,7 @@ final class StopTruthExperimentExecutor {
                 "actual_delay_s": String(actualDelay)
             ])
             lock.unlock()
+            onFailure?("critical_timing_discontinuity")
             return
         }
         lock.unlock()
@@ -331,6 +348,9 @@ final class StopTruthExperimentExecutor {
         }
         recordLocked(.transportResult, run: run, fields: resultFields)
         lock.unlock()
+        if !result.isSuccess, !overlapped {
+            onFailure?("transport_invocation_failed")
+        }
     }
 
     private func currentRunLocked() -> Run? {

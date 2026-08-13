@@ -15,6 +15,7 @@ enum StopTruthExperimentEvidenceEvent: String, Codable {
     case timingInvalid = "timing_invalid"
     case conditionalRetryEvaluation = "conditional_retry_evaluation"
     case a6Bounds = "a6_bounds"
+    case terminalSafety = "terminal_safety"
 }
 
 struct StopTruthExperimentEvidenceRecord: Codable, Equatable {

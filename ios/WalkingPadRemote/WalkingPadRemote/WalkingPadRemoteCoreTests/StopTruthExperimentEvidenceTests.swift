@@ -84,13 +84,13 @@ final class StopTruthExperimentEvidenceTests: XCTestCase {
         var session = StopTruthExperimentSessionService(
             context: context,
             clockOriginID: origin,
-            timeoutPolicy: .init(perRepetitionSeconds: 60, globalSeconds: 180),
+            timeoutPolicy: .init(perRepetitionSeconds: 90, globalSeconds: 300),
             buildIdentity: identity
         )
         let marker = timestamp(origin: origin, uptime: 100, wall: Date())
         XCTAssertFalse(session.recordMarker(.moving, timestamp: marker, note: "visible", operatorHadVisibility: true))
-        XCTAssertTrue(session.recordMarker(.stopped, timestamp: marker, note: "visible", operatorHadVisibility: true))
-        XCTAssertEqual(session.markers.count, 1)
+        XCTAssertFalse(session.recordMarker(.stopped, timestamp: marker, note: "visible", operatorHadVisibility: true))
+        XCTAssertEqual(session.markers.count, 0)
         session.recordReconnect()
         XCTAssertEqual(session.reconnectCount, 1)
         XCTAssertEqual(session.phase, .failed(reason: "reconnect_forbidden"))
@@ -126,6 +126,7 @@ final class StopTruthExperimentEvidenceTests: XCTestCase {
         XCTAssertTrue(session.acceptStationaryBaseline(clock: clock, nowUptimeNanoseconds: uptime))
         XCTAssertTrue(session.beginMovingBaseline())
         XCTAssertFalse(session.recordMarker(.moving, timestamp: clock.now()!, note: "too early", operatorHadVisibility: true))
+        session.recordMotionCapableInvocation(role: .baselineStart, timestamp: clock.now()!)
         session.recordRaw5Invocation(timestamp: clock.now()!)
         uptime += 1
         XCTAssertTrue(session.recordMarker(.moving, timestamp: clock.now()!, note: "visible", operatorHadVisibility: true))
@@ -138,9 +139,25 @@ final class StopTruthExperimentEvidenceTests: XCTestCase {
         )
         XCTAssertTrue(session.acceptMovingBaseline(clock: clock, nowUptimeNanoseconds: uptime))
         XCTAssertTrue(session.beginStopObservation())
+        XCTAssertTrue(session.recordInitialStopInvocation(timestamp: clock.now()!))
+        uptime += 100_000_000
+        XCTAssertTrue(session.recordMarker(.stopped, timestamp: clock.now()!, note: "visible", operatorHadVisibility: true))
         XCTAssertTrue(session.finishObservationWindow())
-        XCTAssertTrue(session.finishPostWindowFreshness())
-        XCTAssertTrue(session.beginNextRepetition())
+        XCTAssertTrue(session.finishPostWindowFreshness(timestamp: clock.now()!, executorQuiescent: true))
+        uptime += 30_000_000_000
+        recordBaseline(
+            speed: 0,
+            state: 0,
+            context: context,
+            timestamps: nextPair(origin: origin, uptime: &uptime),
+            session: &session
+        )
+        XCTAssertTrue(session.recordMarker(.stopped, timestamp: clock.now()!, note: "recovery", operatorHadVisibility: true))
+        XCTAssertTrue(session.beginNextRepetition(
+            clock: clock,
+            nowUptimeNanoseconds: uptime,
+            executorQuiescent: true
+        ))
 
         recordBaseline(
             speed: 0,
@@ -151,6 +168,7 @@ final class StopTruthExperimentEvidenceTests: XCTestCase {
         )
         XCTAssertTrue(session.acceptStationaryBaseline(clock: clock, nowUptimeNanoseconds: uptime))
         XCTAssertTrue(session.beginMovingBaseline())
+        session.recordMotionCapableInvocation(role: .baselineStart, timestamp: clock.now()!)
         session.recordRaw5Invocation(timestamp: clock.now()!)
         recordBaseline(
             speed: 5,
@@ -178,7 +196,10 @@ final class StopTruthExperimentEvidenceTests: XCTestCase {
             timeoutPolicy: .init(perRepetitionSeconds: 90, globalSeconds: 300),
             evidenceSink: sink,
             clock: clock,
-            transportInvocation: { _, role, _, _ in invokedRoles.append(role) },
+            transportInvocation: { _, role, _, _ in
+                invokedRoles.append(role)
+                return true
+            },
             speedSnapshot: { (0, 0) },
             beforeHighPriorityStop: {},
             onStateChange: { _ in }

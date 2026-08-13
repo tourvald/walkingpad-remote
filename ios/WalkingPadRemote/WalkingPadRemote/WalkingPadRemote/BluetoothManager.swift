@@ -2325,8 +2325,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 timeoutPolicy: .init(perRepetitionSeconds: 90, globalSeconds: 300),
                 evidenceSink: writer,
                 transportInvocation: { [weak self] packet, role, writeID, completion in
-                    guard let self else { return }
-                    self.invokeStopTruthExperimentTransport(
+                    guard let self else { return false }
+                    return self.invokeStopTruthExperimentTransport(
                         packet: packet,
                         role: role,
                         writeID: writeID,
@@ -2377,7 +2377,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func prepareStopTruthExperimentMotion() {
         guard stopTruthExperimentController?.prepareMotion() == true else {
-            stopTruthExperimentStatus = "blocked: stationary/A6/sequence gate"
+            if let controller = stopTruthExperimentController, !controller.isActive {
+                stopTruthExperimentStatus = controller.status
+            } else {
+                stopTruthExperimentStatus = "blocked: stationary/A6/sequence gate"
+            }
             return
         }
         stopTruthExperimentStatus = stopTruthExperimentController?.status ?? "blocked"
@@ -2385,7 +2389,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func beginStopTruthExperimentStop() {
         guard stopTruthExperimentController?.beginStop() == true else {
-            stopTruthExperimentStatus = "blocked: moving baseline/marker gate"
+            if let controller = stopTruthExperimentController, !controller.isActive {
+                stopTruthExperimentStatus = controller.status
+            } else {
+                stopTruthExperimentStatus = "blocked: moving baseline/marker gate"
+            }
             return
         }
         stopTruthExperimentStatus = stopTruthExperimentController?.status ?? "blocked"
@@ -2402,7 +2410,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     func abortStopTruthExperiment() {
         stopTruthExperimentTerminalLatch = true
         stopTruthExperimentController?.recordMarker(.abort)
-        stopTruthExperimentStatus = "aborted • use physical power cutoff after any motion-capable write"
+        stopTruthExperimentStatus = stopTruthExperimentController?.status
+            ?? "aborted • use physical power cutoff after any motion-capable write"
     }
 
     func stopTruthExperimentAppBecameInactive() {
@@ -2413,7 +2422,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             note: "app_lifecycle_inactive",
             operatorHadVisibility: false
         )
-        stopTruthExperimentStatus = "aborted: app lifecycle inactive / suspension risk"
+        stopTruthExperimentStatus = stopTruthExperimentController?.status
+            ?? "aborted: app lifecycle inactive / suspension risk"
     }
 
     func beginNextStopTruthExperimentRepetition() {
@@ -2460,7 +2470,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         role: BLETransportCodec.StopTruthExperimentCommandRole,
         writeID: UUID,
         completion: @escaping (Result<StopTruthExperimentTransportReceipt, Error>) -> Void
-    ) {
+    ) -> Bool {
         guard Thread.isMainThread,
               stopTruthExperimentController?.isActive == true,
               BLETransportCodec.validateStopTruthExperimentPacket(packet, role: role),
@@ -2469,8 +2479,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               let peripheral = connectedPeripheral,
               let characteristic = commandCharacteristic,
               characteristic.uuid == charFE02 else {
-            DispatchQueue.main.async { completion(.failure(StopTruthExperimentTransportError.unavailable)) }
-            return
+            return false
         }
         let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse)
             ? .withoutResponse
@@ -2483,11 +2492,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             writeType: writeType == .withoutResponse ? "without_response" : "with_response"
         )
         DispatchQueue.main.async { completion(.success(receipt)) }
+        return true
     }
 
-    private enum StopTruthExperimentTransportError: Error {
-        case unavailable
-    }
 #endif
 
     // Treadmill control
