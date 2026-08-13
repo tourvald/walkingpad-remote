@@ -55,6 +55,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var stopObservationStreamID: UUID? = nil
     private var stopObservationLifecycle: StopObservationLifecycle? = nil
     private var stopObservationCheckpointWorkItems: [DispatchWorkItem] = []
+    private var stopObservationFreshnessWorkItem: DispatchWorkItem?
     private var stopObservationOwnsTrainingLog = false
     private struct UnavailableStopAttempt {
         let id: UUID
@@ -2423,6 +2424,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func beginStopObservation(source: String, now: Date = Date()) {
+        stopObservationFreshnessWorkItem?.cancel()
+        stopObservationFreshnessWorkItem = nil
         finishActiveStopObservationUnconfirmed(reason: "superseded_by_new_attempt", now: now)
         if let pendingAttemptID = unavailableStopAttempt?.id {
             finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
@@ -2508,6 +2511,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "stop_attempt_at": trainingLogIsoFormatter.string(from: attemptedAt),
             "stop_attempt_source": source,
             "stop_command_sent_at": commandSentAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
+            "stop_confirmed_ever": false,
+            "stop_currently_confirmed": false,
+            "stop_invalidation_reason": "",
             "stop_observation_sequence": 0,
             "stop_observation_count": 0,
             "stop_observation_age_s": -1,
@@ -2560,6 +2566,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 }
                 let now = Date()
                 let evaluation = lifecycle.currentEvaluation(at: now)
+                self.refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
                 var fields = self.stopObservationTelemetryFields(
                     lifecycle: lifecycle,
                     evaluation: evaluation,
@@ -2592,45 +2599,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
-        if lifecycle.finalResult == .confirmed {
-            guard status.checksumOk, status.speedRawTenths > 0 else { return }
-            let invalidationSequence = (lifecycle.observations.last?.sequence ?? 0) + 1
-            let invalidatingObservation = StopDeviceObservation(
-                sequence: invalidationSequence,
-                observedAt: observedAt,
-                speedRawTenths: Int(status.speedRawTenths),
-                state: status.beltState,
-                checksumValid: status.checksumOk,
-                context: context
-            )
-            let invalidationEvaluation = StopObservationLifecycle.evaluate(
-                invalidatingObservation,
-                attemptAt: lifecycle.attemptedAt,
-                commandSentAt: lifecycle.commandSentAt,
-                expectedContext: lifecycle.context,
-                now: observedAt
-            )
-            var fields = stopObservationTelemetryFields(
-                lifecycle: lifecycle,
-                evaluation: invalidationEvaluation,
-                now: observedAt
-            )
-            fields["stop_invalidation_reason"] = "subsequent_device_motion"
-            fields["stop_observation_sequence"] = invalidationSequence
-            fields["stop_observation_count"] = lifecycle.observations.count + 1
-            fields["stop_observation_at"] = trainingLogIsoFormatter.string(from: observedAt)
-            fields["stop_observation_age_s"] = invalidationEvaluation.ageSeconds ?? 0
-            fields["stop_device_speed_raw_tenths"] = Int(status.speedRawTenths)
-            fields["stop_device_state"] = status.beltState
-            fields["stop_fe01_checksum_valid"] = status.checksumOk
-            fields["stop_fresh"] = invalidationEvaluation.isFresh
-            fields["stop_confirmation_result"] = invalidationEvaluation.result.rawValue
-            logTrainingEvent("stop_confirmation_invalidated", fields: fields)
-            stopObservationLifecycle = nil
-            stopTruthStatusText = ""
-            updateTreadmillStatus()
-            return
-        }
         guard lifecycle.finalResult == nil else { return }
 
         let evaluation = lifecycle.record(
@@ -2642,6 +2610,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             evaluatedAt: Date()
         )
         stopObservationLifecycle = lifecycle
+        refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
         logTrainingEvent(
             "stop_observation",
             fields: stopObservationTelemetryFields(
@@ -2650,9 +2619,74 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 now: Date()
             )
         )
+        scheduleStopObservationFreshnessRefresh(
+            attemptID: lifecycle.attemptID,
+            observationSequence: lifecycle.observations.last?.sequence
+        )
+    }
 
-        if lifecycle.finalResult == .confirmed {
-            finishStopObservation(lifecycle: lifecycle, now: Date())
+    private func scheduleStopObservationFreshnessRefresh(
+        attemptID: UUID,
+        observationSequence: Int?
+    ) {
+        stopObservationFreshnessWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  let lifecycle = self.stopObservationLifecycle,
+                  lifecycle.attemptID == attemptID,
+                  lifecycle.observations.last?.sequence == observationSequence else {
+                return
+            }
+            let now = Date()
+            let evaluation = lifecycle.currentEvaluation(at: now)
+            self.refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
+            if evaluation.result == .stale, lifecycle.finalResult == nil {
+                self.logTrainingEvent(
+                    "stop_observation_freshness_expired",
+                    fields: self.stopObservationTelemetryFields(
+                        lifecycle: lifecycle,
+                        evaluation: evaluation,
+                        now: now
+                    )
+                )
+            }
+            self.updateTreadmillStatus()
+        }
+        stopObservationFreshnessWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + StopObservationPolicy.freshnessInterval + 0.01,
+            execute: workItem
+        )
+    }
+
+    private func refreshStopTruthStatus(
+        lifecycle: StopObservationLifecycle,
+        evaluation: StopObservationEvaluation
+    ) {
+        if lifecycle.finalResult == .timeoutUnconfirmed {
+            stopTruthStatusText = "stop unconfirmed • timeout"
+            return
+        }
+        if lifecycle.finalResult == .unconfirmed {
+            stopTruthStatusText = lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true
+                ? "stop command not sent • confirmation unavailable"
+                : "stop unconfirmed"
+            return
+        }
+
+        switch evaluation.result {
+        case .confirmed:
+            stopTruthStatusText = "stop confirmed by device"
+        case .moving:
+            stopTruthStatusText = "stop unconfirmed • moving"
+        case .contradictory:
+            stopTruthStatusText = "stop unconfirmed • contradictory"
+        case .stale:
+            stopTruthStatusText = "stop unconfirmed • stale"
+        case .missingObservation, .commandNotSent, .beforeCommand:
+            stopTruthStatusText = "stop requested • confirming"
+        case .missingSpeed, .missingState, .invalidChecksum, .wrongContext, .beforeAttempt:
+            stopTruthStatusText = "stop unconfirmed • evidence unavailable"
         }
     }
 
@@ -2665,12 +2699,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let firstConfirmedElapsed = lifecycle.firstConfirmedAt.map {
             max(0, $0.timeIntervalSince(lifecycle.attemptedAt))
         }
+        let confirmedEver = lifecycle.firstConfirmedAt != nil
         return [
             "stop_attempt_id": lifecycle.attemptID.uuidString,
             "stop_attempt_at": trainingLogIsoFormatter.string(from: lifecycle.attemptedAt),
             "stop_attempt_source": lifecycle.source,
             "stop_command_sent_at": lifecycle.commandSentAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
             "stop_command_status": lifecycle.commandStatus,
+            "stop_confirmed_ever": confirmedEver,
+            "stop_currently_confirmed": evaluation.isConfirmed,
+            "stop_invalidation_reason": confirmedEver && !evaluation.isConfirmed
+                ? evaluation.reason
+                : "",
             "stop_peripheral_id": lifecycle.context.peripheralID.uuidString,
             "stop_connection_epoch": lifecycle.context.connectionEpoch.uuidString,
             "stop_notification_stream_id": lifecycle.context.notificationStreamID?.uuidString ?? "",
@@ -2687,7 +2727,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "stop_first_confirmed_at": lifecycle.firstConfirmedAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
             "stop_first_confirmed_elapsed_s": firstConfirmedElapsed ?? -1,
             "stop_final_result": lifecycle.finalResult?.rawValue ?? "",
-            "stop_unconfirmed_reason": lifecycle.finalResult == .confirmed
+            "stop_unconfirmed_reason": evaluation.isConfirmed
                 ? ""
                 : (lifecycle.finalReason ?? evaluation.reason),
             "stop_freshness_limit_s": StopObservationPolicy.freshnessInterval,
@@ -2702,6 +2742,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopObservationCheckpointWorkItems.removeAll()
 
         let evaluation = lifecycle.currentEvaluation(at: now)
+        if !evaluation.isConfirmed {
+            stopObservationFreshnessWorkItem?.cancel()
+            stopObservationFreshnessWorkItem = nil
+        }
+        refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
         logTrainingEvent(
             "stop_observation_finished",
             fields: stopObservationTelemetryFields(
@@ -2713,7 +2758,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         switch lifecycle.finalResult {
         case .confirmed:
-            stopTruthStatusText = "stop confirmed by device"
+            break
         case .timeoutUnconfirmed:
             stopTruthStatusText = "stop unconfirmed • timeout"
             infoToastMessage = "Остановка дорожки не подтверждена. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
@@ -2753,6 +2798,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func endStopObservationForNewMotion() {
+        stopObservationFreshnessWorkItem?.cancel()
+        stopObservationFreshnessWorkItem = nil
         finishActiveStopObservationUnconfirmed(reason: "new_motion_requested")
         if let pendingAttemptID = unavailableStopAttempt?.id {
             finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
@@ -3329,6 +3376,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func updateTreadmillStatus() {
         let now = Date()
+        if let lifecycle = stopObservationLifecycle {
+            refreshStopTruthStatus(
+                lifecycle: lifecycle,
+                evaluation: lifecycle.currentEvaluation(at: now)
+            )
+        }
         if let notifyAt = lastNotifyAt {
             lastNotifyAgeSeconds = max(0, Int(now.timeIntervalSince(notifyAt)))
         } else {
@@ -3606,6 +3659,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopObservationStreamID = nil
         stopObservationCheckpointWorkItems.forEach { $0.cancel() }
         stopObservationCheckpointWorkItems.removeAll()
+        stopObservationFreshnessWorkItem?.cancel()
+        stopObservationFreshnessWorkItem = nil
         stopObservationLifecycle = nil
         stopObservationOwnsTrainingLog = false
         unavailableStopAttempt = nil

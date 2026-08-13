@@ -169,7 +169,7 @@ final class StopObservationServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(lifecycle.firstConfirmedAt, confirmedAt)
-        XCTAssertEqual(lifecycle.finalResult, .confirmed)
+        XCTAssertNil(lifecycle.finalResult)
     }
 
     func testMovingObservationsFinalizeAsTimeoutUnconfirmed() {
@@ -224,7 +224,133 @@ final class StopObservationServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(lifecycle.firstConfirmedAt, confirmedAt)
-        XCTAssertEqual(lifecycle.finalResult, .confirmed)
+        XCTAssertNil(lifecycle.finalResult)
+    }
+
+    func testConfirmedThenFreshZeroWithRunningStateIsCurrentlyContradictory() {
+        let expectedContext = context()
+        var lifecycle = StopObservationLifecycle(
+            attemptID: UUID(),
+            source: "test",
+            attemptedAt: attemptAt,
+            context: expectedContext
+        )
+        lifecycle.markCommandSent(at: attemptAt)
+        let confirmedAt = attemptAt.addingTimeInterval(0.5)
+        _ = lifecycle.record(
+            speedRawTenths: 0,
+            state: 2,
+            checksumValid: true,
+            context: expectedContext,
+            observedAt: confirmedAt,
+            evaluatedAt: confirmedAt
+        )
+
+        let contradictoryAt = attemptAt.addingTimeInterval(1)
+        let contradictory = lifecycle.record(
+            speedRawTenths: 0,
+            state: 1,
+            checksumValid: true,
+            context: expectedContext,
+            observedAt: contradictoryAt,
+            evaluatedAt: contradictoryAt
+        )
+
+        XCTAssertEqual(contradictory.result, .contradictory)
+        XCTAssertFalse(contradictory.isConfirmed)
+        XCTAssertEqual(lifecycle.currentEvaluation(at: contradictoryAt).result, .contradictory)
+        XCTAssertEqual(lifecycle.firstConfirmedAt, confirmedAt)
+        XCTAssertNil(lifecycle.finalResult)
+    }
+
+    func testConfirmedBecomesStaleButKeepsHistoricalFirstConfirmation() {
+        let expectedContext = context()
+        var lifecycle = StopObservationLifecycle(
+            attemptID: UUID(),
+            source: "test",
+            attemptedAt: attemptAt,
+            context: expectedContext
+        )
+        lifecycle.markCommandSent(at: attemptAt)
+        let confirmedAt = attemptAt.addingTimeInterval(0.5)
+        _ = lifecycle.record(
+            speedRawTenths: 0,
+            state: 5,
+            checksumValid: true,
+            context: expectedContext,
+            observedAt: confirmedAt,
+            evaluatedAt: confirmedAt
+        )
+
+        let stale = lifecycle.currentEvaluation(
+            at: confirmedAt.addingTimeInterval(StopObservationPolicy.freshnessInterval + 0.01)
+        )
+
+        XCTAssertEqual(stale.result, .stale)
+        XCTAssertFalse(stale.isConfirmed)
+        XCTAssertEqual(lifecycle.firstConfirmedAt, confirmedAt)
+        XCTAssertNil(lifecycle.finalResult)
+    }
+
+    func testContinuousFreshZeroAcceptedStateKeepsCurrentConfirmation() {
+        let expectedContext = context()
+        var lifecycle = StopObservationLifecycle(
+            attemptID: UUID(),
+            source: "test",
+            attemptedAt: attemptAt,
+            context: expectedContext
+        )
+        lifecycle.markCommandSent(at: attemptAt)
+        let firstConfirmedAt = attemptAt.addingTimeInterval(0.5)
+        _ = lifecycle.record(
+            speedRawTenths: 0,
+            state: 2,
+            checksumValid: true,
+            context: expectedContext,
+            observedAt: firstConfirmedAt,
+            evaluatedAt: firstConfirmedAt
+        )
+        let latestAt = attemptAt.addingTimeInterval(2.0)
+        let latest = lifecycle.record(
+            speedRawTenths: 0,
+            state: 7,
+            checksumValid: true,
+            context: expectedContext,
+            observedAt: latestAt,
+            evaluatedAt: latestAt
+        )
+
+        XCTAssertTrue(latest.isConfirmed)
+        XCTAssertTrue(lifecycle.currentEvaluation(at: latestAt.addingTimeInterval(1.9)).isConfirmed)
+        XCTAssertEqual(lifecycle.firstConfirmedAt, firstConfirmedAt)
+        XCTAssertEqual(lifecycle.observations.count, 2)
+    }
+
+    func testWindowEndUsesCurrentTruthAndPreservesHistoricalConfirmation() {
+        let expectedContext = context()
+        var lifecycle = StopObservationLifecycle(
+            attemptID: UUID(),
+            source: "test",
+            attemptedAt: attemptAt,
+            context: expectedContext
+        )
+        lifecycle.markCommandSent(at: attemptAt)
+        let firstConfirmedAt = attemptAt.addingTimeInterval(0.5)
+        _ = lifecycle.record(
+            speedRawTenths: 0,
+            state: 2,
+            checksumValid: true,
+            context: expectedContext,
+            observedAt: firstConfirmedAt,
+            evaluatedAt: firstConfirmedAt
+        )
+
+        _ = lifecycle.finalizeTimeout(at: attemptAt.addingTimeInterval(StopObservationPolicy.observationWindow))
+
+        XCTAssertEqual(lifecycle.finalResult, .timeoutUnconfirmed)
+        XCTAssertEqual(lifecycle.finalReason, "stale_at_timeout")
+        XCTAssertEqual(lifecycle.firstConfirmedAt, firstConfirmedAt)
+        XCTAssertEqual(lifecycle.deadline, attemptAt.addingTimeInterval(30))
     }
 
     func testNewAttemptRejectsPreviousConnectionAndPreAttemptEvidence() {

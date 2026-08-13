@@ -127,7 +127,7 @@ final class StopCommandBehaviorContractTests: XCTestCase {
         XCTAssertTrue(telemetryBody.contains("\"stop_command_status\": lifecycle.commandStatus"))
     }
 
-    func testNewMotionIntentAndFreshDeviceMotionInvalidateConfirmedStopStatus() throws {
+    func testNewMotionIntentAndCurrentFreshnessInvalidateConfirmedStopStatus() throws {
         let setSpeedBody = try functionBody("private func sendTreadmillSetSpeed(_ kmh: Double, label: String)")
         assertOrdered(
             [
@@ -139,15 +139,13 @@ final class StopCommandBehaviorContractTests: XCTestCase {
         )
 
         let observationBody = try functionBody("private func recordStopObservation(")
-        XCTAssertTrue(observationBody.contains("lifecycle.finalResult == .confirmed"))
-        XCTAssertTrue(observationBody.contains("status.checksumOk, status.speedRawTenths > 0"))
-        XCTAssertTrue(observationBody.contains("stop_confirmation_invalidated"))
-        XCTAssertTrue(observationBody.contains("subsequent_device_motion"))
-        XCTAssertTrue(observationBody.contains("\"stop_observation_at\"") && observationBody.contains("observedAt"))
-        XCTAssertTrue(observationBody.contains("\"stop_observation_age_s\"") && observationBody.contains("invalidationEvaluation.ageSeconds"))
-        XCTAssertTrue(observationBody.contains("\"stop_observation_sequence\"") && observationBody.contains("invalidationSequence"))
-        XCTAssertTrue(observationBody.contains("\"stop_fe01_checksum_valid\"") && observationBody.contains("status.checksumOk"))
-        XCTAssertTrue(observationBody.contains("\"stop_confirmation_result\"") && observationBody.contains("invalidationEvaluation.result.rawValue"))
+        XCTAssertTrue(observationBody.contains("guard lifecycle.finalResult == nil"))
+        XCTAssertTrue(observationBody.contains("lifecycle.record("))
+        XCTAssertTrue(observationBody.contains("refreshStopTruthStatus"))
+        XCTAssertTrue(observationBody.contains("scheduleStopObservationFreshnessRefresh"))
+
+        let statusBody = try functionBody("private func updateTreadmillStatus()")
+        XCTAssertTrue(statusBody.contains("lifecycle.currentEvaluation(at: now)"))
     }
 
     private func functionBody(_ signature: String) throws -> String {

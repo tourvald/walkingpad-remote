@@ -11,6 +11,8 @@ final class TrainingTelemetryWriterTests: XCTestCase {
             "stop_attempt_source": "hr",
             "stop_command_sent_at": "2026-08-13T10:00:00.100Z",
             "stop_command_status": "sent",
+            "stop_confirmed_ever": true,
+            "stop_currently_confirmed": false,
             "stop_invalidation_reason": "subsequent_device_motion",
             "stop_peripheral_id": "peripheral-6",
             "stop_connection_epoch": "epoch-6",
@@ -40,6 +42,8 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(row.count, headers.count)
         XCTAssertEqual(row[headers.firstIndex(of: "stop_attempt_id")!], "attempt-6")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_command_status")!], "sent")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_confirmed_ever")!], "true")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_currently_confirmed")!], "false")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_invalidation_reason")!], "subsequent_device_motion")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_device_speed_raw_tenths")!], "0")
         XCTAssertEqual(row[headers.firstIndex(of: "stop_device_state")!], "2")

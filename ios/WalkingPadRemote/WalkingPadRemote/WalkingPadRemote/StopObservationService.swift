@@ -139,9 +139,6 @@ struct StopObservationLifecycle {
 
         if evaluation.isConfirmed {
             firstConfirmedAt = firstConfirmedAt ?? observedAt
-            finalizedAt = evaluatedAt
-            finalResult = .confirmed
-            finalReason = "fresh_zero_and_non_running_state"
         }
         return evaluation
     }
@@ -166,20 +163,19 @@ struct StopObservationLifecycle {
     }
 
     mutating func finalizeTimeout(at now: Date) -> StopObservationEvaluation {
-        if finalResult == .confirmed {
-            return currentEvaluation(at: firstConfirmedAt ?? now)
-        }
         let evaluation = currentEvaluation(at: now)
         finalizedAt = now
-        finalResult = .timeoutUnconfirmed
-        finalReason = Self.timeoutReason(for: evaluation)
+        if evaluation.isConfirmed {
+            finalResult = .confirmed
+            finalReason = "fresh_zero_and_non_running_state_at_window_end"
+        } else {
+            finalResult = .timeoutUnconfirmed
+            finalReason = Self.timeoutReason(for: evaluation)
+        }
         return evaluation
     }
 
     mutating func finalizeUnconfirmed(at now: Date, reason: String) -> StopObservationEvaluation {
-        if finalResult == .confirmed {
-            return currentEvaluation(at: firstConfirmedAt ?? now)
-        }
         let evaluation = currentEvaluation(at: now)
         finalizedAt = now
         finalResult = .unconfirmed
