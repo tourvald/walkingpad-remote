@@ -3,6 +3,9 @@ import SwiftUI
 import Combine
 import CoreBluetooth
 import HealthKit
+#if canImport(UIKit)
+import UIKit
+#endif
 #if canImport(WatchConnectivity)
 import WatchConnectivity
 #endif
@@ -65,6 +68,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         var commandSentAt: Date?
     }
     private var unavailableStopAttempt: UnavailableStopAttempt? = nil
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+    private var stopTruthExperimentController: StopTruthExperimentController?
+    private var stopTruthExperimentTerminalLatch = false
+#endif
 
     // Peripheral/characteristics
     private var connectedPeripheral: CBPeripheral?
@@ -833,6 +840,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var deviceReportedChecksumOk: Bool = true
     @Published var deviceReportedRawHex: String = ""
     @Published private(set) var controllerUnitsTruth: ControllerUnitsTruth = .disconnected
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+    @Published private(set) var stopTruthExperimentStatus: String = "disabled"
+    @Published private(set) var stopTruthExperimentArtifactPath: String = ""
+#endif
 
     // HR control
     @Published var isHrControlRunning: Bool = false
@@ -2091,6 +2102,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "error": error?.localizedDescription ?? "none"
         ])
         DispatchQueue.main.async {
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+            self.stopTruthExperimentController?.connectionContextInvalidated()
+#endif
             self.finishActiveStopObservationUnconfirmed(reason: "connection_changed")
             if let pendingAttemptID = self.unavailableStopAttempt?.id {
                 self.finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
@@ -2265,6 +2279,216 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
         }
     }
+
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+    var stopTruthExperimentCapabilityAvailable: Bool {
+        StopTruthExperimentBuildIdentity.current().isEnabled && !stopTruthExperimentTerminalLatch
+    }
+
+    var stopTruthExperimentIsActive: Bool {
+        stopTruthExperimentController?.isActive == true
+    }
+
+    func startStopTruthExperiment() {
+        guard stopTruthExperimentController == nil,
+              !stopTruthExperimentTerminalLatch,
+              !isHrControlRunning,
+              treadmillProtocol == .walkingPad,
+              controllerUnitsQueryTransportReady,
+              let context = currentStopTruthExperimentContext() else {
+            stopTruthExperimentStatus = "blocked: transport/context/HR gate"
+            return
+        }
+        let buildIdentity = StopTruthExperimentBuildIdentity.current()
+        guard buildIdentity.isEnabled else {
+            stopTruthExperimentStatus = "disabled: exact build identity mismatch"
+            return
+        }
+        guard let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
+            stopTruthExperimentStatus = "blocked: application support unavailable"
+            return
+        }
+        do {
+            let experimentID = UUID()
+            let writer = try StopTruthExperimentEvidenceWriter(
+                experimentID: experimentID,
+                rootDirectory: applicationSupport
+            )
+            resetCommandQueue(reason: "fixed Stop-truth experiment exclusive start")
+            let controller = StopTruthExperimentController(
+                experimentID: experimentID,
+                buildIdentity: buildIdentity,
+                context: context,
+                timeoutPolicy: .init(perRepetitionSeconds: 90, globalSeconds: 300),
+                evidenceSink: writer,
+                transportInvocation: { [weak self] packet, role, writeID, completion in
+                    guard let self else { return }
+                    self.invokeStopTruthExperimentTransport(
+                        packet: packet,
+                        role: role,
+                        writeID: writeID,
+                        completion: completion
+                    )
+                },
+                speedSnapshot: { [weak self] in
+                    (self?.speedKmh ?? 0, self?.deviceReportedSpeedKmh ?? 0)
+                },
+                beforeHighPriorityStop: { [weak self] in
+                    self?.resetCommandQueue(reason: "experiment initial Stop high priority")
+                },
+                deviceMetadata: { [weak self] in
+                    var fields = [
+                        "treadmill_name": self?.deviceName ?? "",
+                        "installation_id": self?.installationID ?? "",
+                        "profile_id": self?.activeUserProfileID?.uuidString ?? ""
+                    ]
+#if canImport(UIKit)
+                    fields["ios_device_model"] = UIDevice.current.model
+                    fields["ios_system_name"] = UIDevice.current.systemName
+                    fields["ios_system_version"] = UIDevice.current.systemVersion
+#endif
+                    return fields
+                },
+                onStateChange: { [weak self] status in
+                    DispatchQueue.main.async {
+                        self?.stopTruthExperimentStatus = status
+                        if status.hasPrefix("aborted")
+                            || status.hasPrefix("failed")
+                            || status == "completed" {
+                            self?.stopTruthExperimentTerminalLatch = true
+                        }
+                    }
+                }
+            )
+            stopTruthExperimentController = controller
+            stopTruthExperimentArtifactPath = writer.fileURL.path
+            guard controller.start() else {
+                stopTruthExperimentStatus = "blocked: experiment start rejected"
+                return
+            }
+            stopTruthExperimentStatus = controller.status
+        } catch {
+            stopTruthExperimentStatus = "blocked: evidence writer unavailable"
+        }
+    }
+
+    func prepareStopTruthExperimentMotion() {
+        guard stopTruthExperimentController?.prepareMotion() == true else {
+            stopTruthExperimentStatus = "blocked: stationary/A6/sequence gate"
+            return
+        }
+        stopTruthExperimentStatus = stopTruthExperimentController?.status ?? "blocked"
+    }
+
+    func beginStopTruthExperimentStop() {
+        guard stopTruthExperimentController?.beginStop() == true else {
+            stopTruthExperimentStatus = "blocked: moving baseline/marker gate"
+            return
+        }
+        stopTruthExperimentStatus = stopTruthExperimentController?.status ?? "blocked"
+    }
+
+    func markStopTruthExperimentMoving() {
+        stopTruthExperimentController?.recordMarker(.moving)
+    }
+
+    func markStopTruthExperimentStopped() {
+        stopTruthExperimentController?.recordMarker(.stopped)
+    }
+
+    func abortStopTruthExperiment() {
+        stopTruthExperimentTerminalLatch = true
+        stopTruthExperimentController?.recordMarker(.abort)
+        stopTruthExperimentStatus = "aborted • use physical power cutoff after any motion-capable write"
+    }
+
+    func stopTruthExperimentAppBecameInactive() {
+        guard stopTruthExperimentController?.isActive == true else { return }
+        stopTruthExperimentTerminalLatch = true
+        stopTruthExperimentController?.recordMarker(
+            .abort,
+            note: "app_lifecycle_inactive",
+            operatorHadVisibility: false
+        )
+        stopTruthExperimentStatus = "aborted: app lifecycle inactive / suspension risk"
+    }
+
+    func beginNextStopTruthExperimentRepetition() {
+        guard stopTruthExperimentController?.beginNextRepetition() == true else {
+            stopTruthExperimentStatus = "blocked: recovery/post-window gate"
+            return
+        }
+        stopTruthExperimentStatus = stopTruthExperimentController?.status ?? "completed"
+    }
+
+    private func currentStopTruthExperimentContext() -> StopTruthExperimentPlanService.Context? {
+        guard let peripheralID = connectedPeripheralId,
+              let connectionEpoch = controllerUnitsConnectionEpoch,
+              let notificationStreamID = stopObservationStreamID else {
+            return nil
+        }
+        return .init(
+            peripheralID: peripheralID,
+            connectionEpoch: connectionEpoch,
+            notificationStreamID: notificationStreamID
+        )
+    }
+
+    private func stopTruthExperimentObservationContext(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) -> StopTruthExperimentPlanService.Context? {
+        guard let connectionEpoch = controllerUnitsConnectionEpoch,
+              let currentStreamID = stopObservationStreamID else {
+            return nil
+        }
+        let streamID = characteristic === notifyCharacteristic
+            ? currentStreamID
+            : UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        return .init(
+            peripheralID: peripheral.identifier,
+            connectionEpoch: connectionEpoch,
+            notificationStreamID: streamID
+        )
+    }
+
+    private func invokeStopTruthExperimentTransport(
+        packet: Data,
+        role: BLETransportCodec.StopTruthExperimentCommandRole,
+        writeID: UUID,
+        completion: @escaping (Result<StopTruthExperimentTransportReceipt, Error>) -> Void
+    ) {
+        guard Thread.isMainThread,
+              stopTruthExperimentController?.isActive == true,
+              BLETransportCodec.validateStopTruthExperimentPacket(packet, role: role),
+              treadmillProtocol == .walkingPad,
+              currentStopTruthExperimentContext() != nil,
+              let peripheral = connectedPeripheral,
+              let characteristic = commandCharacteristic,
+              characteristic.uuid == charFE02 else {
+            DispatchQueue.main.async { completion(.failure(StopTruthExperimentTransportError.unavailable)) }
+            return
+        }
+        let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse)
+            ? .withoutResponse
+            : .withResponse
+        appendLog("EXPERIMENT WRITE \(role.rawValue) id=\(writeID.uuidString)")
+        peripheral.writeValue(packet, for: characteristic, type: writeType)
+        nextCommandAllowedAt = Date().addingTimeInterval(commandMinIntervalWalkingPadSeconds)
+        let receipt = StopTruthExperimentTransportReceipt(
+            characteristicUUID: characteristic.uuid.uuidString,
+            writeType: writeType == .withoutResponse ? "without_response" : "with_response"
+        )
+        DispatchQueue.main.async { completion(.success(receipt)) }
+    }
+
+    private enum StopTruthExperimentTransportError: Error {
+        case unavailable
+    }
+#endif
 
     // Treadmill control
     func manualGo(targetSpeed: Double) {
@@ -3433,6 +3657,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     // MARK: - BLE write helpers
     private func writeCommand(_ data: Data, label: String, highPriority: Bool = false) {
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+        guard stopTruthExperimentController?.isActive != true else {
+            appendLog("Production command blocked while fixed Stop-truth experiment is active: \(label)")
+            return
+        }
+#endif
         enqueueCommand(data, label: label, highPriority: highPriority)
     }
 
@@ -4551,12 +4781,28 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             for: responseContext.connectionEpoch,
                             at: observedAt
                         )
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+                        if let experimentContext = self.currentStopTruthExperimentContext() {
+                            self.stopTruthExperimentController?.recordA6Bounds(
+                                params: params,
+                                context: experimentContext
+                            )
+                        }
+#endif
                     } else {
                         self.controllerUnitsTruthTracker.recordMalformed(
                             rawHex: self.hex(data),
                             for: responseContext.connectionEpoch,
                             at: observedAt
                         )
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+                        if let experimentContext = self.currentStopTruthExperimentContext() {
+                            self.stopTruthExperimentController?.recordMalformedA6(
+                                rawHex: self.hex(data),
+                                context: experimentContext
+                            )
+                        }
+#endif
                     }
                     self.controllerUnitsTruth = self.controllerUnitsTruthTracker.state
                     self.recomputeHrStartAllowed()
@@ -4591,6 +4837,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.deviceReportedButton = status.lastButton
                     self.deviceReportedChecksumOk = status.checksumOk
                     self.deviceReportedRawHex = hexStr
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+                    if let experimentContext = self.stopTruthExperimentObservationContext(
+                        peripheral: peripheral,
+                        characteristic: characteristic
+                    ) {
+                        self.stopTruthExperimentController?.recordFE01(
+                            rawHex: hexStr,
+                            status: status,
+                            context: experimentContext
+                        )
+                    }
+#endif
                     self.recordStopObservation(
                         status: status,
                         peripheral: peripheral,
@@ -4613,6 +4871,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 ])
                 validateExpectedSpeed(with: status)
             } else {
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+                if data.count >= 2,
+                   data[0] == 0xF8,
+                   data[1] == 0xA2,
+                   let experimentContext = stopTruthExperimentObservationContext(
+                    peripheral: peripheral,
+                    characteristic: characteristic
+                   ) {
+                    stopTruthExperimentController?.recordInvalidFE01(
+                        rawHex: hex(data),
+                        context: experimentContext,
+                        reason: "malformed_fe01"
+                    )
+                }
+#endif
                 appendLog("Notify \(characteristic.uuid.uuidString): \(hex(data))")
             }
 
