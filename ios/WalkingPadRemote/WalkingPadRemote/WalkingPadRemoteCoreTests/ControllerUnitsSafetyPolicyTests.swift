@@ -99,6 +99,152 @@ final class ControllerUnitsSafetyPolicyTests: XCTestCase {
         ))
     }
 
+    func testExpiredMetricAutoRefreshRestoresStartEligibilityWithoutReconnect() {
+        var tracker = ControllerUnitsTruthTracker()
+        tracker.beginConnection(epoch: epoch)
+        tracker.record(validParams(unit: 0), for: epoch, at: now)
+        XCTAssertTrue(evaluate(state: tracker.state).allowed)
+
+        let afterTTL = now.addingTimeInterval(ControllerUnitsSafetyPolicy.freshnessInterval + 1)
+        let staleDecision = ControllerUnitsSafetyPolicy.evaluate(
+            path: .hrControl,
+            state: tracker.state,
+            currentConnectionEpoch: epoch,
+            now: afterTTL,
+            requiresFreshMetricTruth: true
+        )
+        XCTAssertFalse(staleDecision.allowed)
+        XCTAssertEqual(staleDecision.blockReason, .stale)
+
+        let refreshDecision = ControllerUnitsRefreshPolicy.blockedStartRefresh(
+            existingGatesAllowStart: true,
+            isHrControlRunning: false,
+            transportReady: true,
+            unitsDecision: staleDecision,
+            lastQueryAt: now.addingTimeInterval(-ControllerUnitsRefreshPolicy.minimumQueryInterval),
+            now: afterTTL
+        )
+        XCTAssertEqual(refreshDecision.trigger, .gateBlockedAuto)
+
+        let refreshedAt = afterTTL.addingTimeInterval(1)
+        tracker.record(validParams(unit: 0), for: epoch, at: refreshedAt)
+        let refreshedDecision = ControllerUnitsSafetyPolicy.evaluate(
+            path: .hrControl,
+            state: tracker.state,
+            currentConnectionEpoch: epoch,
+            now: refreshedAt,
+            requiresFreshMetricTruth: true
+        )
+        XCTAssertTrue(refreshedDecision.allowed)
+        XCTAssertEqual(tracker.state.connectionEpoch, epoch)
+    }
+
+    func testAutoRefreshRequiresOtherStartGatesAndPreservesQueryThrottle() {
+        let staleDecision = evaluate(
+            state: truth(
+                units: .metric,
+                observedAt: now.addingTimeInterval(-ControllerUnitsSafetyPolicy.freshnessInterval - 1)
+            )
+        )
+
+        XCTAssertFalse(ControllerUnitsRefreshPolicy.blockedStartRefresh(
+            existingGatesAllowStart: false,
+            isHrControlRunning: false,
+            transportReady: true,
+            unitsDecision: staleDecision,
+            lastQueryAt: nil,
+            now: now
+        ).shouldRequest)
+        XCTAssertFalse(ControllerUnitsRefreshPolicy.blockedStartRefresh(
+            existingGatesAllowStart: true,
+            isHrControlRunning: false,
+            transportReady: true,
+            unitsDecision: staleDecision,
+            lastQueryAt: now.addingTimeInterval(-ControllerUnitsRefreshPolicy.minimumQueryInterval + 0.001),
+            now: now
+        ).shouldRequest)
+        XCTAssertTrue(ControllerUnitsRefreshPolicy.blockedStartRefresh(
+            existingGatesAllowStart: true,
+            isHrControlRunning: false,
+            transportReady: true,
+            unitsDecision: staleDecision,
+            lastQueryAt: now.addingTimeInterval(-ControllerUnitsRefreshPolicy.minimumQueryInterval),
+            now: now
+        ).shouldRequest)
+    }
+
+    func testNotReadAutoRefreshesButInvalidAndImperialTruthDoNot() {
+        XCTAssertTrue(ControllerUnitsRefreshPolicy.blockedStartRefresh(
+            existingGatesAllowStart: true,
+            isHrControlRunning: false,
+            transportReady: true,
+            unitsDecision: evaluate(state: notReadTruth()),
+            lastQueryAt: nil,
+            now: now
+        ).shouldRequest)
+        XCTAssertFalse(ControllerUnitsRefreshPolicy.blockedStartRefresh(
+            existingGatesAllowStart: true,
+            isHrControlRunning: false,
+            transportReady: true,
+            unitsDecision: evaluate(state: truth(units: .metric, status: .invalidChecksum)),
+            lastQueryAt: nil,
+            now: now
+        ).shouldRequest)
+        XCTAssertFalse(ControllerUnitsRefreshPolicy.blockedStartRefresh(
+            existingGatesAllowStart: true,
+            isHrControlRunning: false,
+            transportReady: true,
+            unitsDecision: evaluate(state: truth(units: .imperial)),
+            lastQueryAt: nil,
+            now: now
+        ).shouldRequest)
+    }
+
+    func testInitialQueryWaitsForNotificationReadyTransport() {
+        XCTAssertFalse(ControllerUnitsRefreshPolicy.initialQuery(
+            transportReady: false,
+            lastQueryAt: nil,
+            now: now
+        ).shouldRequest)
+        XCTAssertEqual(ControllerUnitsRefreshPolicy.initialQuery(
+            transportReady: true,
+            lastQueryAt: nil,
+            now: now
+        ).trigger, .connectionReady)
+    }
+
+    func testResponseContextRejectsPeripheralEpochAndCharacteristicChanges() {
+        final class CharacteristicToken {}
+        let currentCharacteristic = CharacteristicToken()
+        let staleCharacteristic = CharacteristicToken()
+        let context = ControllerUnitsResponseContext(
+            peripheralID: epoch,
+            connectionEpoch: epoch,
+            notifyCharacteristicID: ObjectIdentifier(currentCharacteristic)
+        )
+
+        XCTAssertTrue(context.matches(
+            currentPeripheralID: epoch,
+            currentConnectionEpoch: epoch,
+            currentNotifyCharacteristicID: ObjectIdentifier(currentCharacteristic)
+        ))
+        XCTAssertFalse(context.matches(
+            currentPeripheralID: UUID(),
+            currentConnectionEpoch: epoch,
+            currentNotifyCharacteristicID: ObjectIdentifier(currentCharacteristic)
+        ))
+        XCTAssertFalse(context.matches(
+            currentPeripheralID: epoch,
+            currentConnectionEpoch: UUID(),
+            currentNotifyCharacteristicID: ObjectIdentifier(currentCharacteristic)
+        ))
+        XCTAssertFalse(context.matches(
+            currentPeripheralID: epoch,
+            currentConnectionEpoch: epoch,
+            currentNotifyCharacteristicID: ObjectIdentifier(staleCharacteristic)
+        ))
+    }
+
     private func evaluate(
         path: ControllerAutomatedMotionPath = .hrControl,
         state: ControllerUnitsTruth

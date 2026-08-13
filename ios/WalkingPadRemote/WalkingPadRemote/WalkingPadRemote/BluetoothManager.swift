@@ -2555,14 +2555,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func recomputeHrStartAllowed() {
+        let now = Date()
         let existingGatesAllowStart = isConnected && watchReachable && hrStreamingActive
-        let unitsDecision = controllerUnitsGateDecision()
+        let unitsDecision = controllerUnitsGateDecision(now: now)
         let allowed = ControllerUnitsSafetyPolicy.allowsStart(
             path: .hrControl,
             existingGatesAllowStart: existingGatesAllowStart,
             state: controllerUnitsTruth,
             currentConnectionEpoch: controllerUnitsConnectionEpoch,
-            now: Date(),
+            now: now,
             requiresFreshMetricTruth: controllerUnitsTruthRequired
         )
         isHrControlStartAllowed = allowed
@@ -2588,6 +2589,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         } else {
             hrControlStartBlockReasonText = nil
         }
+        refreshControllerUnitsTruthIfNeeded(
+            existingGatesAllowStart: existingGatesAllowStart,
+            unitsDecision: unitsDecision,
+            now: now
+        )
     }
     private func startTelemetry() {
         stopTelemetry()
@@ -3233,14 +3239,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopTrainingStructuredLog(reason: decision.blockReason?.rawValue ?? "controller_units_blocked")
     }
 
-    private func requestControllerUnitsTruth(trigger: String) {
-        guard isConnected,
-              treadmillProtocol == .walkingPad,
-              controllerUnitsConnectionEpoch != nil,
-              commandCharacteristic != nil else {
+    private func requestControllerUnitsTruth(trigger: String, now: Date = Date()) {
+        guard controllerUnitsQueryTransportReady,
+              ControllerUnitsRefreshPolicy.throttleAllowsQuery(
+                lastQueryAt: lastControllerUnitsQueryAt,
+                now: now
+              ) else {
             return
         }
-        lastControllerUnitsQueryAt = Date()
+        lastControllerUnitsQueryAt = now
         lastControllerUnitsQueryTrigger = trigger
         appendLog("Controller units query: trigger=\(trigger) command=A6 key=0 read_only=true")
         logTrainingEvent("controller_units_query_requested", fields: [
@@ -3254,11 +3261,73 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func retryControllerUnitsQueryAfterBlockedStart(now: Date = Date()) {
         guard isConnected, treadmillProtocol == .walkingPad else { return }
-        if let lastControllerUnitsQueryAt,
-           now.timeIntervalSince(lastControllerUnitsQueryAt) < 5 {
+        guard ControllerUnitsRefreshPolicy.throttleAllowsQuery(
+            lastQueryAt: lastControllerUnitsQueryAt,
+            now: now
+        ) else {
             return
         }
-        requestControllerUnitsTruth(trigger: "gate_blocked")
+        requestControllerUnitsTruth(trigger: "gate_blocked", now: now)
+    }
+
+    private var controllerUnitsQueryTransportReady: Bool {
+        guard isConnected,
+              treadmillProtocol == .walkingPad,
+              controllerUnitsConnectionEpoch != nil,
+              commandCharacteristic?.uuid == charFE02,
+              notifyCharacteristic?.uuid == charFE01,
+              notifyCharacteristic?.isNotifying == true,
+              let connectedPeripheralID = connectedPeripheralId else {
+            return false
+        }
+        return connectedPeripheral?.identifier == connectedPeripheralID
+    }
+
+    private func requestInitialControllerUnitsTruthIfReady(now: Date = Date()) {
+        let decision = ControllerUnitsRefreshPolicy.initialQuery(
+            transportReady: controllerUnitsQueryTransportReady,
+            lastQueryAt: lastControllerUnitsQueryAt,
+            now: now
+        )
+        guard let trigger = decision.trigger else { return }
+        requestControllerUnitsTruth(trigger: trigger.rawValue, now: now)
+    }
+
+    private func refreshControllerUnitsTruthIfNeeded(
+        existingGatesAllowStart: Bool,
+        unitsDecision: ControllerUnitsGateDecision,
+        now: Date
+    ) {
+        let refreshDecision = ControllerUnitsRefreshPolicy.blockedStartRefresh(
+            existingGatesAllowStart: existingGatesAllowStart,
+            isHrControlRunning: isHrControlRunning,
+            transportReady: controllerUnitsQueryTransportReady,
+            unitsDecision: unitsDecision,
+            lastQueryAt: lastControllerUnitsQueryAt,
+            now: now
+        )
+        guard let trigger = refreshDecision.trigger else { return }
+        requestControllerUnitsTruth(trigger: trigger.rawValue, now: now)
+    }
+
+    private func controllerUnitsResponseContext(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) -> ControllerUnitsResponseContext? {
+        guard characteristic.uuid == charFE01,
+              let currentPeripheralID = connectedPeripheralId,
+              peripheral.identifier == currentPeripheralID,
+              connectedPeripheral?.identifier == currentPeripheralID,
+              let currentNotifyCharacteristic = notifyCharacteristic,
+              characteristic === currentNotifyCharacteristic,
+              let connectionEpoch = controllerUnitsConnectionEpoch else {
+            return nil
+        }
+        return ControllerUnitsResponseContext(
+            peripheralID: currentPeripheralID,
+            connectionEpoch: connectionEpoch,
+            notifyCharacteristicID: ObjectIdentifier(currentNotifyCharacteristic)
+        )
     }
 
     private func selectTreadmillProtocol(from discoveredUuids: Set<CBUUID>) -> TreadmillProtocol {
@@ -3895,7 +3964,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             if let w = write {
                 commandCharacteristic = w
                 appendLog("WalkingPad: command characteristic set to \(w.uuid.uuidString)")
-                requestControllerUnitsTruth(trigger: "connection_ready")
+                requestInitialControllerUnitsTruthIfReady()
             } else {
                 appendLog("WalkingPad: FE02 write not found on FE00")
             }
@@ -3955,6 +4024,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        if let error {
+            appendLog("Notify state error for \(characteristic.uuid.uuidString): \(error.localizedDescription)")
+            return
+        }
+        guard treadmillProtocol == .walkingPad,
+              characteristic.uuid == charFE01,
+              characteristic.isNotifying,
+              peripheral.identifier == connectedPeripheralId,
+              characteristic === notifyCharacteristic else {
+            return
+        }
+        appendLog("WalkingPad: FE01 notifications active")
+        requestInitialControllerUnitsTruthIfReady()
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error {
             appendLog("Notify update error from \(characteristic.uuid.uuidString): \(error.localizedDescription)")
@@ -3965,6 +4050,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         guard let data = characteristic.value else { return }
+        let isControllerUnitsResponse = treadmillProtocol == .walkingPad
+            && data.count >= 2
+            && data[0] == 0xF8
+            && data[1] == 0xA6
+        let unitsResponseContext: ControllerUnitsResponseContext?
+        if isControllerUnitsResponse {
+            guard let context = controllerUnitsResponseContext(
+                peripheral: peripheral,
+                characteristic: characteristic
+            ) else {
+                appendLog("Controller units response ignored: stale peripheral or connection context")
+                return
+            }
+            unitsResponseContext = context
+        } else {
+            unitsResponseContext = nil
+        }
         let now = Date()
         lastNotifyAt = now
         if lastCommandAwaitingAck,
@@ -3977,15 +4079,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         switch treadmillProtocol {
         case .walkingPad:
-            if let params = BLETransportCodec.parseWalkingPadParams(data) {
+            if isControllerUnitsResponse {
                 let observedAt = Date()
-                guard let responseConnectionEpoch = controllerUnitsConnectionEpoch else { return }
+                let params = BLETransportCodec.parseWalkingPadParams(data)
+                guard let responseContext = unitsResponseContext else { return }
                 DispatchQueue.main.async {
-                    self.controllerUnitsTruthTracker.record(
-                        params,
-                        for: responseConnectionEpoch,
-                        at: observedAt
-                    )
+                    guard responseContext.matches(
+                        currentPeripheralID: self.connectedPeripheralId,
+                        currentConnectionEpoch: self.controllerUnitsConnectionEpoch,
+                        currentNotifyCharacteristicID: self.notifyCharacteristic.map(ObjectIdentifier.init)
+                    ) else {
+                        self.appendLog("Controller units response ignored after connection context changed")
+                        return
+                    }
+                    if let params {
+                        self.controllerUnitsTruthTracker.record(
+                            params,
+                            for: responseContext.connectionEpoch,
+                            at: observedAt
+                        )
+                    } else {
+                        self.controllerUnitsTruthTracker.recordMalformed(
+                            rawHex: self.hex(data),
+                            for: responseContext.connectionEpoch,
+                            at: observedAt
+                        )
+                    }
                     self.controllerUnitsTruth = self.controllerUnitsTruthTracker.state
                     self.recomputeHrStartAllowed()
                     let decision = self.controllerUnitsGateDecision(now: observedAt)
@@ -3996,33 +4115,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     )["controller_units_fresh"] ?? false
                     self.appendLog(
                         "Controller units response: units=\(self.controllerUnitsTruth.units.rawValue) " +
-                        "checksum_ok=\(params.checksumOk) fresh=\(freshness)"
+                        "status=\(self.controllerUnitsTruth.status.rawValue) fresh=\(freshness)"
                     )
                     self.logTrainingEvent(
                         "controller_units_response",
                         fields: self.controllerUnitsTelemetryFields(action: "query_response", now: observedAt, decision: decision).merging([
-                            "max_speed_raw_tenths": params.maxSpeedRawTenths,
-                            "start_speed_raw_tenths": params.startSpeedRawTenths
+                            "max_speed_raw_tenths": params?.maxSpeedRawTenths ?? -1,
+                            "start_speed_raw_tenths": params?.startSpeedRawTenths ?? -1
                         ]) { current, _ in current }
-                    )
-                }
-            } else if data.count >= 2, data[0] == 0xF8, data[1] == 0xA6 {
-                let observedAt = Date()
-                let rawHex = hex(data)
-                guard let responseConnectionEpoch = controllerUnitsConnectionEpoch else { return }
-                DispatchQueue.main.async {
-                    self.controllerUnitsTruthTracker.recordMalformed(
-                        rawHex: rawHex,
-                        for: responseConnectionEpoch,
-                        at: observedAt
-                    )
-                    self.controllerUnitsTruth = self.controllerUnitsTruthTracker.state
-                    self.recomputeHrStartAllowed()
-                    let decision = self.controllerUnitsGateDecision(now: observedAt)
-                    self.appendLog("Controller units response: status=malformed")
-                    self.logTrainingEvent(
-                        "controller_units_response",
-                        fields: self.controllerUnitsTelemetryFields(action: "query_response", now: observedAt, decision: decision)
                     )
                 }
             } else if let status = parseFe01Status(data) {

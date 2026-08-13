@@ -121,6 +121,71 @@ struct ControllerUnitsGateDecision: Equatable {
     let ageSeconds: TimeInterval?
 }
 
+enum ControllerUnitsRefreshTrigger: String, Equatable {
+    case connectionReady = "connection_ready"
+    case gateBlockedAuto = "gate_blocked_auto"
+}
+
+struct ControllerUnitsRefreshDecision: Equatable {
+    let trigger: ControllerUnitsRefreshTrigger?
+
+    var shouldRequest: Bool { trigger != nil }
+}
+
+enum ControllerUnitsRefreshPolicy {
+    static let minimumQueryInterval: TimeInterval = 5
+
+    static func initialQuery(
+        transportReady: Bool,
+        lastQueryAt: Date?,
+        now: Date
+    ) -> ControllerUnitsRefreshDecision {
+        guard transportReady, throttleAllowsQuery(lastQueryAt: lastQueryAt, now: now) else {
+            return ControllerUnitsRefreshDecision(trigger: nil)
+        }
+        return ControllerUnitsRefreshDecision(trigger: .connectionReady)
+    }
+
+    static func blockedStartRefresh(
+        existingGatesAllowStart: Bool,
+        isHrControlRunning: Bool,
+        transportReady: Bool,
+        unitsDecision: ControllerUnitsGateDecision,
+        lastQueryAt: Date?,
+        now: Date
+    ) -> ControllerUnitsRefreshDecision {
+        guard existingGatesAllowStart,
+              !isHrControlRunning,
+              transportReady,
+              (unitsDecision.blockReason == .notRead || unitsDecision.blockReason == .stale),
+              throttleAllowsQuery(lastQueryAt: lastQueryAt, now: now) else {
+            return ControllerUnitsRefreshDecision(trigger: nil)
+        }
+        return ControllerUnitsRefreshDecision(trigger: .gateBlockedAuto)
+    }
+
+    static func throttleAllowsQuery(lastQueryAt: Date?, now: Date) -> Bool {
+        guard let lastQueryAt else { return true }
+        return now.timeIntervalSince(lastQueryAt) >= minimumQueryInterval
+    }
+}
+
+struct ControllerUnitsResponseContext: Equatable {
+    let peripheralID: UUID
+    let connectionEpoch: UUID
+    let notifyCharacteristicID: ObjectIdentifier
+
+    func matches(
+        currentPeripheralID: UUID?,
+        currentConnectionEpoch: UUID?,
+        currentNotifyCharacteristicID: ObjectIdentifier?
+    ) -> Bool {
+        peripheralID == currentPeripheralID
+            && connectionEpoch == currentConnectionEpoch
+            && notifyCharacteristicID == currentNotifyCharacteristicID
+    }
+}
+
 enum ControllerAutomatedMotionPath: String, CaseIterable {
     case hrControl = "hr_control"
     case testRun = "test_run"
