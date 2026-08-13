@@ -311,13 +311,10 @@ struct StopTruthExperimentSessionService {
               executorQuiescentForRecovery,
               !renewedMotionAfterStop,
               authoritativeMarker(role: .firstPhysicalStop, repetition: completed) != nil,
-              let recoveryMarker = authoritativeMarker(
+              authoritativeMarker(
                 role: .recoveryStationaryConfirmation,
                 repetition: completed
-              ),
-              let latestStationaryObservation = fe01Observations.last,
-              recoveryMarker.timestamp.monotonicUptimeNanoseconds
-                >= latestStationaryObservation.receivedAt.monotonicUptimeNanoseconds,
+              ) != nil,
               StopTruthExperimentPlanService.baselineSatisfied(
                 observations: fe01Observations,
                 kind: .stationary,
@@ -345,7 +342,8 @@ struct StopTruthExperimentSessionService {
         _ marker: Marker,
         timestamp: StopTruthExperimentTimestamp,
         note: String,
-        operatorHadVisibility: Bool
+        operatorHadVisibility: Bool,
+        clock: StopTruthExperimentClock? = nil
     ) -> Bool {
         guard timestamp.originID == clockOriginID else {
             fail("marker_clock_origin_mismatch")
@@ -381,7 +379,8 @@ struct StopTruthExperimentSessionService {
                 repetition: repetition,
                 timestamp: timestamp,
                 note: note,
-                operatorHadVisibility: operatorHadVisibility
+                operatorHadVisibility: operatorHadVisibility,
+                clock: clock
             )
         case .abort:
             markers.append(.init(
@@ -425,13 +424,24 @@ struct StopTruthExperimentSessionService {
         repetition: Int,
         timestamp: StopTruthExperimentTimestamp,
         note: String,
-        operatorHadVisibility: Bool
+        operatorHadVisibility: Bool,
+        clock: StopTruthExperimentClock?
     ) -> Bool {
         if case .recoveryPause = phase {
             guard operatorHadVisibility,
                   authoritativeMarker(role: .recoveryStationaryConfirmation, repetition: repetition) == nil,
+                  executorQuiescentForRecovery,
                   let recoveryPauseStartedAt,
-                  timestamp.monotonicUptimeNanoseconds >= recoveryPauseStartedAt.monotonicUptimeNanoseconds else {
+                  timestamp.monotonicUptimeNanoseconds >= recoveryPauseStartedAt.monotonicUptimeNanoseconds,
+                  let clock,
+                  clock.originID == clockOriginID,
+                  StopTruthExperimentPlanService.baselineSatisfied(
+                    observations: fe01Observations,
+                    kind: .stationary,
+                    currentContext: context,
+                    clock: clock,
+                    nowUptimeNanoseconds: timestamp.monotonicUptimeNanoseconds
+                  ) else {
                 return false
             }
             markers.append(.init(

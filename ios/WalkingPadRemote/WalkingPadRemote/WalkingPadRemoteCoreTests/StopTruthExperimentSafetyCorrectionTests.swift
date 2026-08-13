@@ -123,7 +123,8 @@ final class StopTruthExperimentSafetyCorrectionTests: XCTestCase {
                 .stopped,
                 timestamp: harness.now(),
                 note: "recovery stationary",
-                operatorHadVisibility: true
+                operatorHadVisibility: true,
+                clock: harness.clock
             ))
             XCTAssertTrue(harness.session.beginNextRepetition(
                 clock: harness.clock,
@@ -168,7 +169,8 @@ final class StopTruthExperimentSafetyCorrectionTests: XCTestCase {
             .stopped,
             timestamp: harness.now(),
             note: "recovery",
-            operatorHadVisibility: true
+            operatorHadVisibility: true,
+            clock: harness.clock
         ))
         XCTAssertEqual(harness.session.markers.filter { $0.role == .firstPhysicalStop }.count, 1)
         XCTAssertEqual(harness.session.markers.filter { $0.role == .recoveryStationaryConfirmation }.count, 1)
@@ -182,6 +184,81 @@ final class StopTruthExperimentSafetyCorrectionTests: XCTestCase {
             nowUptimeNanoseconds: harness.uptime,
             executorQuiescent: true
         ))
+    }
+
+    func testRecoveryMarkerSurvivesLaterStationaryFramesAndAuthoritiesStayImmutable() {
+        let harness = SessionHarness()
+        harness.advanceToRecoveryPause()
+        harness.advance(seconds: 30)
+        harness.recordPair(speed: 0, state: 0)
+
+        let moving = harness.session.markers.first { $0.role == .movingBaseline }
+        let firstPhysicalStop = harness.session.markers.first { $0.role == .firstPhysicalStop }
+        XCTAssertTrue(harness.recordRecoveryMarker(note: "authoritative recovery"))
+        let recovery = harness.session.markers.first { $0.role == .recoveryStationaryConfirmation }
+
+        harness.advance(seconds: 0.1)
+        harness.recordPair(speed: 0, state: 0)
+        XCTAssertFalse(harness.recordRecoveryMarker(note: "duplicate recovery"))
+        XCTAssertEqual(harness.session.markers.first { $0.role == .movingBaseline }, moving)
+        XCTAssertEqual(harness.session.markers.first { $0.role == .firstPhysicalStop }, firstPhysicalStop)
+        XCTAssertEqual(harness.session.markers.first { $0.role == .recoveryStationaryConfirmation }, recovery)
+
+        XCTAssertTrue(harness.session.beginNextRepetition(
+            clock: harness.clock,
+            nowUptimeNanoseconds: harness.uptime,
+            executorQuiescent: true
+        ))
+    }
+
+    func testRecoveryMarkerRequiresQualifyingStationaryPairAtMarkerTime() {
+        let noPair = SessionHarness()
+        noPair.advanceToRecoveryPause()
+        noPair.advance(seconds: 30)
+        XCTAssertFalse(noPair.recordRecoveryMarker())
+
+        let stale = SessionHarness()
+        stale.advanceToRecoveryPause()
+        stale.recordPair(speed: 0, state: 0)
+        stale.advance(seconds: 2.1)
+        XCTAssertFalse(stale.recordRecoveryMarker())
+
+        let invalidChecksum = SessionHarness()
+        invalidChecksum.advanceToRecoveryPause()
+        invalidChecksum.recordPair(speed: 0, state: 0, checksumValid: false)
+        XCTAssertFalse(invalidChecksum.recordRecoveryMarker())
+
+        let wrongContext = SessionHarness()
+        wrongContext.advanceToRecoveryPause()
+        wrongContext.recordPair(speed: 0, state: 0, context: TestFixtures.context())
+        XCTAssertFalse(wrongContext.recordRecoveryMarker())
+
+        let nonzero = SessionHarness()
+        nonzero.advanceToRecoveryPause()
+        nonzero.recordPair(speed: 1, state: 0)
+        XCTAssertFalse(nonzero.recordRecoveryMarker())
+    }
+
+    func testUnsafeTelemetryAfterValidRecoveryMarkerStillBlocksNext() {
+        let nonzero = SessionHarness.readyForNextRepetition()
+        nonzero.recordPair(speed: 1, state: 0)
+        XCTAssertFalse(nonzero.beginNextRepetition())
+
+        let invalid = SessionHarness.readyForNextRepetition()
+        invalid.recordPair(speed: 0, state: 0, checksumValid: false)
+        XCTAssertFalse(invalid.beginNextRepetition())
+
+        let ambiguous = SessionHarness.readyForNextRepetition()
+        ambiguous.recordPair(speed: nil, state: nil)
+        XCTAssertFalse(ambiguous.beginNextRepetition())
+
+        let wrongContext = SessionHarness.readyForNextRepetition()
+        wrongContext.recordPair(speed: 0, state: 0, context: TestFixtures.context())
+        XCTAssertFalse(wrongContext.beginNextRepetition())
+
+        let stale = SessionHarness.readyForNextRepetition()
+        stale.advance(seconds: 2.1)
+        XCTAssertFalse(stale.beginNextRepetition())
     }
 
     func testEveryTerminalPathAfterMotionRequiresPhysicalCutoff() {
@@ -227,7 +304,8 @@ final class StopTruthExperimentSafetyCorrectionTests: XCTestCase {
             .stopped,
             timestamp: harness.now(),
             note: "recovery",
-            operatorHadVisibility: true
+            operatorHadVisibility: true,
+            clock: harness.clock
         ))
         XCTAssertTrue(harness.session.beginNextRepetition(
             clock: harness.clock,
@@ -449,24 +527,75 @@ private final class SessionHarness {
         setUptime(uptime + UInt64(seconds * 1_000_000_000))
     }
 
-    func recordPair(speed: Int, state: Int) {
+    func recordPair(
+        speed: Int?,
+        state: Int?,
+        checksumValid: Bool = true,
+        context observationContext: StopTruthExperimentPlanService.Context? = nil
+    ) {
+        let observationContext = observationContext ?? context
         session.recordFE01(.init(
-            context: context,
+            context: observationContext,
             receivedAt: now(),
             rawHex: "first",
-            checksumValid: true,
+            checksumValid: checksumValid,
             speedRawTenths: speed,
             state: state
         ))
         advance(seconds: 0.1)
         session.recordFE01(.init(
-            context: context,
+            context: observationContext,
             receivedAt: now(),
             rawHex: "second",
-            checksumValid: true,
+            checksumValid: checksumValid,
             speedRawTenths: speed,
             state: state
         ))
+    }
+
+    func advanceToRecoveryPause() {
+        advanceToMovingReady()
+        XCTAssertTrue(session.beginStopObservation())
+        XCTAssertTrue(session.recordInitialStopInvocation(timestamp: now()))
+        advance(seconds: 0.5)
+        XCTAssertTrue(session.recordMarker(
+            .stopped,
+            timestamp: now(),
+            note: "first physical stop",
+            operatorHadVisibility: true
+        ))
+        XCTAssertTrue(session.finishObservationWindow())
+        XCTAssertTrue(session.finishPostWindowFreshness(
+            timestamp: now(),
+            executorQuiescent: true
+        ))
+    }
+
+    func recordRecoveryMarker(note: String = "recovery") -> Bool {
+        session.recordMarker(
+            .stopped,
+            timestamp: now(),
+            note: note,
+            operatorHadVisibility: true,
+            clock: clock
+        )
+    }
+
+    func beginNextRepetition() -> Bool {
+        session.beginNextRepetition(
+            clock: clock,
+            nowUptimeNanoseconds: uptime,
+            executorQuiescent: true
+        )
+    }
+
+    static func readyForNextRepetition() -> SessionHarness {
+        let harness = SessionHarness()
+        harness.advanceToRecoveryPause()
+        harness.advance(seconds: 30)
+        harness.recordPair(speed: 0, state: 0)
+        XCTAssertTrue(harness.recordRecoveryMarker())
+        return harness
     }
 
     func advanceToMovingStart() {

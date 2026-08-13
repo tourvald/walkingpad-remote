@@ -352,7 +352,8 @@ final class StopTruthExperimentController {
                 marker,
                 timestamp: timestamp,
                 note: note,
-                operatorHadVisibility: operatorHadVisibility
+                operatorHadVisibility: operatorHadVisibility,
+                clock: clock
             ) else { return }
             recordPhysicalMarker(session.markers.last)
             finalizeTerminalState(note: note)
@@ -362,7 +363,8 @@ final class StopTruthExperimentController {
             marker,
             timestamp: timestamp,
             note: note,
-            operatorHadVisibility: operatorHadVisibility
+            operatorHadVisibility: operatorHadVisibility,
+            clock: clock
         ) else {
             if !isActive { finalizeTerminalState(note: session.terminalReason ?? "marker_rejected_terminal") }
             return
