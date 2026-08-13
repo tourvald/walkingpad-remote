@@ -39,6 +39,7 @@ let package = Package(
                 "CooldownRuntimeEngine.swift",
                 "HRDomainService.swift",
                 "HRSettingsDefaults.swift",
+                "StopObservationService.swift",
                 "TrainingTelemetryWriter.swift",
                 "CommandQueueService.swift",
                 "TreadmillSpeedBoundsService.swift"

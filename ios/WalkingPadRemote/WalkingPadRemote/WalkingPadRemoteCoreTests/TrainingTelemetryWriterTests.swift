@@ -3,6 +3,52 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class TrainingTelemetryWriterTests: XCTestCase {
+    func testStopTruthFieldsAreMaterializedInRawCsv() {
+        let payload: [String: Any] = [
+            "event": "stop_observation_finished",
+            "stop_attempt_id": "attempt-6",
+            "stop_attempt_at": "2026-08-13T10:00:00.000Z",
+            "stop_attempt_source": "hr",
+            "stop_command_sent_at": "2026-08-13T10:00:00.100Z",
+            "stop_command_status": "sent",
+            "stop_invalidation_reason": "subsequent_device_motion",
+            "stop_peripheral_id": "peripheral-6",
+            "stop_connection_epoch": "epoch-6",
+            "stop_notification_stream_id": "stream-6",
+            "stop_observation_sequence": 4,
+            "stop_observation_count": 4,
+            "stop_observation_at": "2026-08-13T10:00:01.000Z",
+            "stop_observation_age_s": 0.1,
+            "stop_device_speed_raw_tenths": 0,
+            "stop_device_state": 2,
+            "stop_fe01_checksum_valid": true,
+            "stop_fresh": true,
+            "stop_confirmation_predicate": "fresh_raw_speed_zero_and_accepted_non_running_state",
+            "stop_confirmation_result": "confirmed",
+            "stop_first_confirmed_at": "2026-08-13T10:00:01.000Z",
+            "stop_first_confirmed_elapsed_s": 1.0,
+            "stop_final_result": "confirmed",
+            "stop_unconfirmed_reason": "",
+            "stop_freshness_limit_s": 2.0,
+            "stop_observation_window_s": 30.0,
+            "stop_checkpoint_delay_s": 0.5
+        ]
+
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        let row = TrainingTelemetryWriter.csvRow(sourceFile: "stop.jsonl", payload: payload)
+
+        XCTAssertEqual(row.count, headers.count)
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_attempt_id")!], "attempt-6")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_command_status")!], "sent")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_invalidation_reason")!], "subsequent_device_motion")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_device_speed_raw_tenths")!], "0")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_device_state")!], "2")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_confirmation_result")!], "confirmed")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_final_result")!], "confirmed")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_freshness_limit_s")!], "2")
+        XCTAssertEqual(row[headers.firstIndex(of: "stop_observation_window_s")!], "30")
+    }
+
     func testCsvRowIncludesNormalizedControllerUnitsEvidence() {
         let headers = TrainingTelemetryWriter.trainingCsvHeaders
         let payload: [String: Any] = [
