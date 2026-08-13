@@ -9,6 +9,10 @@ enum StopTruthExperimentPlanService {
     static let recoveryToggleDelaySeconds: TimeInterval = 2.0
     static let conditionalRetryDelaySeconds: TimeInterval = 4.0
     static let maximumObservationAgeSeconds: TimeInterval = 2.0
+    // Query Params is allowed exactly once for the fixed three-repetition
+    // experiment. Keep its validity bounded by the approved maximum experiment
+    // duration, independent of caller-provided timeout inputs.
+    static let a6FreshnessIntervalSeconds: TimeInterval = 300.0
     static let classification = "CORE PHYSICAL QUALIFICATION"
     static let edgeSubclaim = "EDGE SUBCLAIM: UNKNOWN / NOT OBSERVED"
 

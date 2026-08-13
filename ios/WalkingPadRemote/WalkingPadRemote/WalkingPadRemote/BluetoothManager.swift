@@ -4751,6 +4751,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             unitsResponseContext = nil
         }
         let now = Date()
+#if STOP_TRUTH_EXPERIMENT_CAPABILITY
+        let experimentReceiveUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+#endif
         lastNotifyAt = now
         if lastCommandAwaitingAck,
            let sentAt = lastCommandSentAt,
@@ -4763,7 +4766,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         switch treadmillProtocol {
         case .walkingPad:
             if isControllerUnitsResponse {
-                let observedAt = Date()
+                let observedAt = now
                 let params = BLETransportCodec.parseWalkingPadParams(data)
                 guard let responseContext = unitsResponseContext else { return }
                 DispatchQueue.main.async {
@@ -4785,7 +4788,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         if let experimentContext = self.currentStopTruthExperimentContext() {
                             self.stopTruthExperimentController?.recordA6Bounds(
                                 params: params,
-                                context: experimentContext
+                                context: experimentContext,
+                                receivedUptimeNanoseconds: experimentReceiveUptimeNanoseconds,
+                                receivedWallDate: observedAt
                             )
                         }
 #endif
@@ -4799,7 +4804,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         if let experimentContext = self.currentStopTruthExperimentContext() {
                             self.stopTruthExperimentController?.recordMalformedA6(
                                 rawHex: self.hex(data),
-                                context: experimentContext
+                                context: experimentContext,
+                                receivedUptimeNanoseconds: experimentReceiveUptimeNanoseconds,
+                                receivedWallDate: observedAt
                             )
                         }
 #endif
@@ -4845,7 +4852,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         self.stopTruthExperimentController?.recordFE01(
                             rawHex: hexStr,
                             status: status,
-                            context: experimentContext
+                            context: experimentContext,
+                            receivedUptimeNanoseconds: experimentReceiveUptimeNanoseconds,
+                            receivedWallDate: now
                         )
                     }
 #endif
@@ -4882,7 +4891,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     stopTruthExperimentController?.recordInvalidFE01(
                         rawHex: hex(data),
                         context: experimentContext,
-                        reason: "malformed_fe01"
+                        reason: "malformed_fe01",
+                        receivedUptimeNanoseconds: experimentReceiveUptimeNanoseconds,
+                        receivedWallDate: now
                     )
                 }
 #endif

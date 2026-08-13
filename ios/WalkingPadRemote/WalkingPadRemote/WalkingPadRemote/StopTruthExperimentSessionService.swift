@@ -25,9 +25,15 @@ struct StopTruthExperimentSessionService {
 
     struct MarkerEvidence: Equatable {
         let marker: Marker
+        let repetition: Int
         let timestamp: StopTruthExperimentTimestamp
         let note: String
         let operatorHadVisibility: Bool
+    }
+
+    struct MotionInvocationEvidence: Equatable {
+        let repetition: Int
+        let timestamp: StopTruthExperimentTimestamp
     }
 
     enum Phase: Equatable {
@@ -53,6 +59,7 @@ struct StopTruthExperimentSessionService {
     private(set) var markers: [MarkerEvidence] = []
     private(set) var a6BoundsEvidence: StopTruthExperimentPlanService.A6BoundsEvidence?
     private(set) var fe01Observations: [StopTruthExperimentPlanService.FE01Observation] = []
+    private(set) var raw5Invocation: MotionInvocationEvidence?
 
     init(
         experimentID: UUID = UUID(),
@@ -115,15 +122,31 @@ struct StopTruthExperimentSessionService {
         return true
     }
 
+    mutating func recordRaw5Invocation(timestamp: StopTruthExperimentTimestamp) {
+        guard case .establishingMovingBaseline(let repetition) = phase,
+              timestamp.originID == clockOriginID else {
+            fail("raw5_invocation_phase_or_clock_mismatch")
+            return
+        }
+        raw5Invocation = MotionInvocationEvidence(repetition: repetition, timestamp: timestamp)
+    }
+
     mutating func acceptMovingBaseline(clock: StopTruthExperimentClock, nowUptimeNanoseconds: UInt64) -> Bool {
         guard case .establishingMovingBaseline(let repetition) = phase,
-              markers.last(where: { $0.marker == .moving })?.operatorHadVisibility == true,
+              let raw5Invocation,
+              raw5Invocation.repetition == repetition,
+              let movingMarker = markers.last(where: {
+                $0.marker == .moving && $0.repetition == repetition
+              }),
+              movingMarker.operatorHadVisibility,
+              movingMarker.timestamp.monotonicUptimeNanoseconds
+                >= raw5Invocation.timestamp.monotonicUptimeNanoseconds,
               StopTruthExperimentPlanService.raw5IsAllowed(
                 by: a6BoundsEvidence,
                 currentContext: context,
                 clock: clock,
                 nowUptimeNanoseconds: nowUptimeNanoseconds,
-                maximumAgeSeconds: timeoutPolicy.globalSeconds
+                maximumAgeSeconds: StopTruthExperimentPlanService.a6FreshnessIntervalSeconds
               ),
               StopTruthExperimentPlanService.baselineSatisfied(
                 observations: fe01Observations,
@@ -167,6 +190,7 @@ struct StopTruthExperimentSessionService {
             return false
         }
         fe01Observations.removeAll()
+        raw5Invocation = nil
         phase = .preflight(repetition: completed + 1)
         return true
     }
@@ -181,8 +205,19 @@ struct StopTruthExperimentSessionService {
             fail("marker_clock_origin_mismatch")
             return false
         }
+        guard let repetition = currentRepetition else { return false }
+        if marker == .moving {
+            guard case .establishingMovingBaseline = phase,
+                  let raw5Invocation,
+                  raw5Invocation.repetition == repetition,
+                  timestamp.monotonicUptimeNanoseconds
+                    >= raw5Invocation.timestamp.monotonicUptimeNanoseconds else {
+                return false
+            }
+        }
         let evidence = MarkerEvidence(
             marker: marker,
+            repetition: repetition,
             timestamp: timestamp,
             note: note,
             operatorHadVisibility: operatorHadVisibility
@@ -200,5 +235,18 @@ struct StopTruthExperimentSessionService {
     mutating func fail(_ reason: String) {
         guard phase != .aborted, phase != .completed else { return }
         phase = .failed(reason: reason)
+    }
+
+    private var currentRepetition: Int? {
+        switch phase {
+        case .preflight(let repetition), .stationaryReady(let repetition),
+             .establishingMovingBaseline(let repetition), .movingReady(let repetition),
+             .observingStop(let repetition), .postWindowFreshness(let repetition):
+            return repetition
+        case .recoveryPause(let completedRepetitions):
+            return completedRepetitions
+        case .disabled, .completed, .aborted, .failed:
+            return nil
+        }
     }
 }

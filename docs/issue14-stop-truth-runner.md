@@ -51,7 +51,9 @@ SHA PM approval.
 
 - The fixed matrix is one core case, three repetitions, one uninterrupted
   context, and zero reconnects.
-- Raw 5 is allowed only after checksum-valid same-context A6 bounds contain 5.
+- Raw 5 is allowed only after checksum-valid same-context A6 bounds contain 5;
+  A6 freshness is fixed to the bounded 300-second experiment lifetime and is
+  never widened by configurable timeout input.
 - Stationary and moving gates require the latest two consecutive checksum-valid
   same-context FE01 frames with monotonic age `0...2.0s`.
 - The initial Stop is high priority. Recovery toggle and conditional retry use
@@ -65,7 +67,8 @@ SHA PM approval.
 - After an abort following any motion-capable actual write, recovery is physical
   power cutoff by the operator.
 - MOVING, STOPPED, and ABORT controls write evidence only; marker actions never
-  send BLE commands.
+  send BLE commands. MOVING is accepted only for the current repetition after
+  that repetition's successful raw-5 transport invocation.
 
 ## Private evidence
 
@@ -74,7 +77,8 @@ The dedicated writer uses:
 `Application Support/TrainingLogs/issue11_stop_truth_<experiment_id>.jsonl`
 
 It records exact build binding, typed commands and transport receipts, unified
-`DispatchTime.now().uptimeNanoseconds` timestamps, raw FE01 bytes, stop truth,
+`DispatchTime.now().uptimeNanoseconds` timestamps captured at the CoreBluetooth
+receive boundary, raw FE01 bytes, stop truth,
 physical markers, command sequencing, and abort-barrier ordering. Existing
 `notify_fe01` event fields and training-log meanings are unchanged.
 

@@ -48,6 +48,7 @@ final class StopTruthExperimentController {
         context: StopTruthExperimentPlanService.Context,
         timeoutPolicy: StopTruthExperimentSessionService.TimeoutPolicy,
         evidenceSink: StopTruthExperimentEvidenceSink,
+        clock: StopTruthExperimentClock = StopTruthExperimentClock(),
         transportInvocation: @escaping TransportInvocation,
         speedSnapshot: @escaping () -> (speedKmh: Double, deviceReportedSpeedKmh: Double),
         beforeHighPriorityStop: @escaping () -> Void,
@@ -55,7 +56,7 @@ final class StopTruthExperimentController {
         onStateChange: @escaping (String) -> Void
     ) {
         self.buildIdentity = buildIdentity
-        self.clock = StopTruthExperimentClock()
+        self.clock = clock
         self.context = context
         self.timeoutPolicy = timeoutPolicy
         self.evidenceSink = evidenceSink
@@ -133,9 +134,16 @@ final class StopTruthExperimentController {
 
     func recordA6Bounds(
         params: BLETransportCodec.WalkingPadParams,
-        context incomingContext: StopTruthExperimentPlanService.Context
+        context incomingContext: StopTruthExperimentPlanService.Context,
+        receivedUptimeNanoseconds: UInt64,
+        receivedWallDate: Date
     ) {
-        guard isActive, incomingContext == context, let timestamp = clock.now() else { return }
+        guard isActive,
+              incomingContext == context,
+              let timestamp = clock.timestamp(
+                uptimeNanoseconds: receivedUptimeNanoseconds,
+                wallDate: receivedWallDate
+              ) else { return }
         let evidence = StopTruthExperimentPlanService.A6BoundsEvidence(
             context: incomingContext,
             observedAt: timestamp,
@@ -144,7 +152,7 @@ final class StopTruthExperimentController {
             maxSpeedRawTenths: params.maxSpeedRawTenths
         )
         session.recordA6Bounds(evidence)
-        record(.a6Bounds, fields: [
+        record(.a6Bounds, timestamp: timestamp, fields: [
             "raw_packet_hex": params.rawHex,
             "checksum_valid": String(params.checksumOk),
             "start_speed_raw_tenths": String(params.startSpeedRawTenths),
@@ -155,9 +163,16 @@ final class StopTruthExperimentController {
 
     func recordMalformedA6(
         rawHex: String,
-        context incomingContext: StopTruthExperimentPlanService.Context
+        context incomingContext: StopTruthExperimentPlanService.Context,
+        receivedUptimeNanoseconds: UInt64,
+        receivedWallDate: Date
     ) {
-        guard isActive, incomingContext == context, let timestamp = clock.now() else { return }
+        guard isActive,
+              incomingContext == context,
+              let timestamp = clock.timestamp(
+                uptimeNanoseconds: receivedUptimeNanoseconds,
+                wallDate: receivedWallDate
+              ) else { return }
         session.recordA6Bounds(.init(
             context: incomingContext,
             observedAt: timestamp,
@@ -165,7 +180,7 @@ final class StopTruthExperimentController {
             startSpeedRawTenths: 0,
             maxSpeedRawTenths: 0
         ))
-        record(.a6Bounds, fields: [
+        record(.a6Bounds, timestamp: timestamp, fields: [
             "raw_packet_hex": rawHex,
             "checksum_valid": "false",
             "parse_result": "malformed_a6"
@@ -176,9 +191,15 @@ final class StopTruthExperimentController {
     func recordFE01(
         rawHex: String,
         status: BLETransportCodec.WalkingPadStatus,
-        context incomingContext: StopTruthExperimentPlanService.Context
+        context incomingContext: StopTruthExperimentPlanService.Context,
+        receivedUptimeNanoseconds: UInt64,
+        receivedWallDate: Date
     ) {
-        guard isActive, let timestamp = clock.now() else { return }
+        guard isActive,
+              let timestamp = clock.timestamp(
+                uptimeNanoseconds: receivedUptimeNanoseconds,
+                wallDate: receivedWallDate
+              ) else { return }
         let observation = StopTruthExperimentPlanService.FE01Observation(
             context: incomingContext,
             receivedAt: timestamp,
@@ -188,7 +209,7 @@ final class StopTruthExperimentController {
             state: status.beltState
         )
         session.recordFE01(observation)
-        record(.fe01Raw, fields: [
+        record(.fe01Raw, timestamp: timestamp, fields: [
             "raw_packet_hex": rawHex,
             "checksum_valid": String(status.checksumOk),
             "speed_raw_tenths": String(status.speedRawTenths),
@@ -211,9 +232,15 @@ final class StopTruthExperimentController {
     func recordInvalidFE01(
         rawHex: String,
         context incomingContext: StopTruthExperimentPlanService.Context,
-        reason: String
+        reason: String,
+        receivedUptimeNanoseconds: UInt64,
+        receivedWallDate: Date
     ) {
-        guard isActive, let timestamp = clock.now() else { return }
+        guard isActive,
+              let timestamp = clock.timestamp(
+                uptimeNanoseconds: receivedUptimeNanoseconds,
+                wallDate: receivedWallDate
+              ) else { return }
         let observation = StopTruthExperimentPlanService.FE01Observation(
             context: incomingContext,
             receivedAt: timestamp,
@@ -223,7 +250,7 @@ final class StopTruthExperimentController {
             state: nil
         )
         session.recordFE01(observation)
-        record(.fe01Raw, fields: [
+        record(.fe01Raw, timestamp: timestamp, fields: [
             "raw_packet_hex": rawHex,
             "checksum_valid": "false",
             "parse_result": reason,
@@ -250,7 +277,7 @@ final class StopTruthExperimentController {
                 currentContext: context,
                 clock: clock,
                 nowUptimeNanoseconds: now.monotonicUptimeNanoseconds,
-                maximumAgeSeconds: timeoutPolicy.globalSeconds
+                maximumAgeSeconds: StopTruthExperimentPlanService.a6FreshnessIntervalSeconds
               ),
               session.beginMovingBaseline(),
               let run else {
@@ -424,10 +451,15 @@ final class StopTruthExperimentController {
         }
         invocation(packet, role, writeID) { [weak self] result in
             completion(result)
-            if case .success = result, role == .initialStop {
-                guard self?.isActive == true else { return }
-                self?.scheduleProductionStopActions()
-                self?.scheduleObservationWindow(stopInvokedAt: timestamp)
+            if case .success = result {
+                if role == .speedRaw5 {
+                    self?.session.recordRaw5Invocation(timestamp: timestamp)
+                    self?.publishState()
+                } else if role == .initialStop {
+                    guard self?.isActive == true else { return }
+                    self?.scheduleProductionStopActions()
+                    self?.scheduleObservationWindow(stopInvokedAt: timestamp)
+                }
             } else if case .failure = result {
                 self?.fail("transport_invocation_failed")
             }
@@ -532,7 +564,7 @@ final class StopTruthExperimentController {
             currentContext: context,
             clock: clock,
             nowUptimeNanoseconds: now.monotonicUptimeNanoseconds,
-            maximumAgeSeconds: timeoutPolicy.globalSeconds
+            maximumAgeSeconds: StopTruthExperimentPlanService.a6FreshnessIntervalSeconds
         )
     }
 
@@ -544,7 +576,7 @@ final class StopTruthExperimentController {
         var fields = stopFields(evaluation, service: service)
         fields["raw_packet_hex"] = observation.rawHex
         fields["observation_sequence"] = String(service.observations.count)
-        record(.stopObservation, fields: fields)
+        record(.stopObservation, timestamp: observation.receivedAt, fields: fields)
     }
 
     private func stopFields(
@@ -565,9 +597,11 @@ final class StopTruthExperimentController {
     private func record(
         _ event: StopTruthExperimentEvidenceEvent,
         repetition: Int? = nil,
+        timestamp providedTimestamp: StopTruthExperimentTimestamp? = nil,
         fields: [String: String]
     ) {
-        guard let timestamp = clock.now() else { return }
+        guard let timestamp = providedTimestamp ?? clock.now(),
+              timestamp.originID == clock.originID else { return }
         evidenceSink.append(StopTruthExperimentEvidenceRecord(
             event: event,
             experimentID: session.experimentID,

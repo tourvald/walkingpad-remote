@@ -88,13 +88,128 @@ final class StopTruthExperimentEvidenceTests: XCTestCase {
             buildIdentity: identity
         )
         let marker = timestamp(origin: origin, uptime: 100, wall: Date())
-        XCTAssertTrue(session.recordMarker(.moving, timestamp: marker, note: "visible", operatorHadVisibility: true))
+        XCTAssertFalse(session.recordMarker(.moving, timestamp: marker, note: "visible", operatorHadVisibility: true))
+        XCTAssertTrue(session.recordMarker(.stopped, timestamp: marker, note: "visible", operatorHadVisibility: true))
         XCTAssertEqual(session.markers.count, 1)
         session.recordReconnect()
         XCTAssertEqual(session.reconnectCount, 1)
         XCTAssertEqual(session.phase, .failed(reason: "reconnect_forbidden"))
         XCTAssertEqual(StopTruthExperimentPlanService.classification, "CORE PHYSICAL QUALIFICATION")
         XCTAssertEqual(StopTruthExperimentPlanService.edgeSubclaim, "EDGE SUBCLAIM: UNKNOWN / NOT OBSERVED")
+    }
+
+    func testMovingMarkerIsCurrentRepetitionAndAfterSuccessfulRaw5Invocation() {
+        var uptime: UInt64 = 1_000_000_000
+        let origin = UUID()
+        let clock = StopTruthExperimentClock(
+            originID: origin,
+            uptimeProvider: { uptime },
+            wallProvider: Date.init
+        )
+        let context = makeContext()
+        var session = makeSession(context: context, origin: origin)
+        session.recordA6Bounds(.init(
+            context: context,
+            observedAt: clock.now()!,
+            checksumValid: true,
+            startSpeedRawTenths: 5,
+            maxSpeedRawTenths: 50
+        ))
+
+        recordBaseline(
+            speed: 0,
+            state: 0,
+            context: context,
+            timestamps: nextPair(origin: origin, uptime: &uptime),
+            session: &session
+        )
+        XCTAssertTrue(session.acceptStationaryBaseline(clock: clock, nowUptimeNanoseconds: uptime))
+        XCTAssertTrue(session.beginMovingBaseline())
+        XCTAssertFalse(session.recordMarker(.moving, timestamp: clock.now()!, note: "too early", operatorHadVisibility: true))
+        session.recordRaw5Invocation(timestamp: clock.now()!)
+        uptime += 1
+        XCTAssertTrue(session.recordMarker(.moving, timestamp: clock.now()!, note: "visible", operatorHadVisibility: true))
+        recordBaseline(
+            speed: 5,
+            state: 1,
+            context: context,
+            timestamps: nextPair(origin: origin, uptime: &uptime),
+            session: &session
+        )
+        XCTAssertTrue(session.acceptMovingBaseline(clock: clock, nowUptimeNanoseconds: uptime))
+        XCTAssertTrue(session.beginStopObservation())
+        XCTAssertTrue(session.finishObservationWindow())
+        XCTAssertTrue(session.finishPostWindowFreshness())
+        XCTAssertTrue(session.beginNextRepetition())
+
+        recordBaseline(
+            speed: 0,
+            state: 0,
+            context: context,
+            timestamps: nextPair(origin: origin, uptime: &uptime),
+            session: &session
+        )
+        XCTAssertTrue(session.acceptStationaryBaseline(clock: clock, nowUptimeNanoseconds: uptime))
+        XCTAssertTrue(session.beginMovingBaseline())
+        session.recordRaw5Invocation(timestamp: clock.now()!)
+        recordBaseline(
+            speed: 5,
+            state: 1,
+            context: context,
+            timestamps: nextPair(origin: origin, uptime: &uptime),
+            session: &session
+        )
+        XCTAssertFalse(session.acceptMovingBaseline(clock: clock, nowUptimeNanoseconds: uptime))
+        XCTAssertEqual(session.markers.filter { $0.marker == .moving }.map(\.repetition), [1])
+    }
+
+    func testControllerBlocksStaleA6AndUsesReceiveBoundaryTimestamp() {
+        var uptime: UInt64 = 1_000_000_000
+        let clock = StopTruthExperimentClock(
+            uptimeProvider: { uptime },
+            wallProvider: { Date(timeIntervalSince1970: Double(uptime) / 1_000_000_000) }
+        )
+        let context = makeContext()
+        let sink = StopTruthExperimentMemoryEvidenceSink()
+        var invokedRoles: [BLETransportCodec.StopTruthExperimentCommandRole] = []
+        let controller = StopTruthExperimentController(
+            buildIdentity: enabledIdentity(),
+            context: context,
+            timeoutPolicy: .init(perRepetitionSeconds: 90, globalSeconds: 300),
+            evidenceSink: sink,
+            clock: clock,
+            transportInvocation: { _, role, _, _ in invokedRoles.append(role) },
+            speedSnapshot: { (0, 0) },
+            beforeHighPriorityStop: {},
+            onStateChange: { _ in }
+        )
+        XCTAssertTrue(controller.start())
+        let a6Received = uptime
+        controller.recordA6Bounds(
+            params: .init(
+                maxSpeedRawTenths: 50,
+                startSpeedRawTenths: 5,
+                rawControllerUnit: 0,
+                checksumOk: true,
+                rawHex: "F8 A6"
+            ),
+            context: context,
+            receivedUptimeNanoseconds: a6Received,
+            receivedWallDate: Date(timeIntervalSince1970: 1)
+        )
+
+        uptime = a6Received + UInt64(StopTruthExperimentPlanService.a6FreshnessIntervalSeconds * 1_000_000_000) + 1
+        let firstReceive = uptime
+        recordControllerFE01(controller, context: context, uptime: uptime, speed: 0, state: 0)
+        uptime += 100_000_000
+        recordControllerFE01(controller, context: context, uptime: uptime, speed: 0, state: 0)
+        uptime += 100_000_000
+
+        XCTAssertFalse(controller.prepareMotion())
+        XCTAssertEqual(invokedRoles, [.queryParams])
+        let rawRows = sink.records.filter { $0.event == .fe01Raw }
+        XCTAssertEqual(rawRows.first?.timestamp.monotonicUptimeNanoseconds, firstReceive)
+        XCTAssertEqual(rawRows.first?.timestamp.wallDate, Date(timeIntervalSince1970: Double(firstReceive) / 1_000_000_000))
     }
 
     func testSessionTimeoutInputsAndThreeRepetitionMatrixAreBounded() {
@@ -118,6 +233,91 @@ final class StopTruthExperimentEvidenceTests: XCTestCase {
 
     private func makeContext() -> StopTruthExperimentPlanService.Context {
         .init(peripheralID: UUID(), connectionEpoch: UUID(), notificationStreamID: UUID())
+    }
+
+    private func enabledIdentity() -> StopTruthExperimentBuildIdentity {
+        let sha = String(repeating: "c", count: 40)
+        return .init(
+            capabilityCompiled: true,
+            capabilityBinding: StopTruthExperimentBuildIdentity.requiredCapability,
+            expectedGitSHA: sha,
+            actualGitSHA: sha,
+            bundleIdentifier: "test",
+            version: "1",
+            build: "1"
+        )
+    }
+
+    private func makeSession(
+        context: StopTruthExperimentPlanService.Context,
+        origin: UUID
+    ) -> StopTruthExperimentSessionService {
+        .init(
+            context: context,
+            clockOriginID: origin,
+            timeoutPolicy: .init(perRepetitionSeconds: 90, globalSeconds: 300),
+            buildIdentity: enabledIdentity()
+        )
+    }
+
+    private func recordBaseline(
+        speed: Int,
+        state: Int,
+        context: StopTruthExperimentPlanService.Context,
+        timestamps: (StopTruthExperimentTimestamp, StopTruthExperimentTimestamp),
+        session: inout StopTruthExperimentSessionService
+    ) {
+        session.recordFE01(.init(
+            context: context,
+            receivedAt: timestamps.0,
+            rawHex: "F8 A2",
+            checksumValid: true,
+            speedRawTenths: speed,
+            state: state
+        ))
+        session.recordFE01(.init(
+            context: context,
+            receivedAt: timestamps.1,
+            rawHex: "F8 A2",
+            checksumValid: true,
+            speedRawTenths: speed,
+            state: state
+        ))
+    }
+
+    private func nextPair(
+        origin: UUID,
+        uptime: inout UInt64
+    ) -> (StopTruthExperimentTimestamp, StopTruthExperimentTimestamp) {
+        let first = timestamp(origin: origin, uptime: uptime, wall: Date())
+        uptime += 100_000_000
+        return (first, timestamp(origin: origin, uptime: uptime, wall: Date()))
+    }
+
+    private func recordControllerFE01(
+        _ controller: StopTruthExperimentController,
+        context: StopTruthExperimentPlanService.Context,
+        uptime: UInt64,
+        speed: UInt8,
+        state: Int
+    ) {
+        controller.recordFE01(
+            rawHex: "F8 A2",
+            status: .init(
+                beltState: state,
+                speedRawTenths: speed,
+                manualMode: 1,
+                timeSeconds: 0,
+                distance10m: 0,
+                steps: 0,
+                appSpeedRawTenths: speed,
+                lastButton: 0,
+                checksumOk: true
+            ),
+            context: context,
+            receivedUptimeNanoseconds: uptime,
+            receivedWallDate: Date(timeIntervalSince1970: Double(uptime) / 1_000_000_000)
+        )
     }
 
     private func timestamp(origin: UUID, uptime: UInt64, wall: Date) -> StopTruthExperimentTimestamp {
