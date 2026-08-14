@@ -122,7 +122,8 @@ the replacement `MetricManager` async API is iOS 27+. Neither is durable workout
 telemetry or an immediate causal event stream.
 
 Signposts, unified logs, MetricKit payloads, and benchmark summaries MUST NOT
-include BPM/HR values, private identifiers, HealthKit UUIDs, raw BLE payloads,
-workout exports, or configuration snapshots. They MAY contain bounded opaque
-run IDs, record-class counts, durations, queue depths, sizes, and error classes
-that cannot reconstruct a private workout.
+include BPM/HR values, person-linked speed trajectories, private identifiers,
+HealthKit UUIDs, raw BLE payloads, workout exports, or configuration snapshots.
+They MAY contain only bounded opaque run IDs and aggregate record-class counts,
+durations, queue depths, sizes, and error classes that cannot reconstruct or be
+linked back to a private workout.
