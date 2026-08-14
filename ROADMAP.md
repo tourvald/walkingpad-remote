@@ -9,6 +9,7 @@ This project is intentionally narrow. The goal is not to become a generic fitnes
 - Better contributor docs and safer bug-reporting flow
 - UI polish and accessibility improvements for the main workout flows
 - Better analysis tooling around exported training logs
+- Implement the [Telemetry V2 specification](docs/telemetry-v2/architecture.md) through its sequential, evidence-gated rollout
 
 ## Nice-to-have improvements
 
