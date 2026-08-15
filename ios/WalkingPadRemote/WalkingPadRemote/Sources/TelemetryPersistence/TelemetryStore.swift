@@ -59,6 +59,29 @@ public struct TelemetryStoreCounts: Codable, Hashable, Sendable {
     }
 }
 
+enum TelemetryGateRecord: Sendable {
+    case session(WorkoutSessionRecord)
+    case source(StoredSignalSource)
+    case heartRate(HeartRateObservation)
+    case treadmill(TreadmillObservation)
+    case event(WorkoutEvent)
+    case frame(CanonicalFrame)
+    case analysis(WorkoutAnalysisResult)
+}
+
+struct TelemetryGateTraversalCounts: Codable, Hashable, Sendable {
+    let sessions: Int
+    let heartRateSamples: Int
+    let treadmillSamples: Int
+    let events: Int
+    let frames: Int
+    let analyses: Int
+
+    var total: Int {
+        sessions + heartRateSamples + treadmillSamples + events + frames + analyses
+    }
+}
+
 public enum TelemetryStoreFactory {
     public static func make(_ configuration: TelemetryStoreConfiguration) throws -> TelemetryStore {
         let schema = Schema(versionedSchema: TelemetrySchemaV1.self)
@@ -76,9 +99,8 @@ public enum TelemetryStoreFactory {
             )
         case let .onDisk(url):
             onDiskStoreURL = url
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
+            _ = try TelemetryStoreFilePolicy.prepareStoreDirectory(
+                primaryStoreURL: url
             )
             modelConfiguration = ModelConfiguration(
                 "TelemetryV2",
@@ -108,6 +130,7 @@ public enum TelemetryStoreFactory {
 @ModelActor
 public actor TelemetryStore {
     private var onDiskStoreURL: URL?
+    private var explicitTransactionDepth = 0
 
     init(modelContainer: ModelContainer, onDiskStoreURL: URL?) {
         let modelContext = ModelContext(modelContainer)
@@ -566,7 +589,161 @@ public actor TelemetryStore {
         modelContext.autosaveEnabled
     }
 
+    /// Issue #26 testability seam. It exercises the existing insert validation and model
+    /// mapping in one explicit transaction without defining a production recorder policy.
+    func insertGateBatch(_ records: [TelemetryGateRecord]) throws {
+        guard !records.isEmpty else {
+            return
+        }
+
+        try explicitTransaction {
+            for record in records {
+                switch record {
+                case let .session(session):
+                    try insertSession(session)
+                case let .source(source):
+                    try insertSource(
+                        source.identity,
+                        firstSeen: source.firstSeen,
+                        lastSeen: source.lastSeen
+                    )
+                case let .heartRate(observation):
+                    try insertHeartRate(observation)
+                case let .treadmill(observation):
+                    try insertTreadmill(observation)
+                case let .event(event):
+                    try insertEvent(event)
+                case let .frame(frame):
+                    try insertFrame(frame)
+                case let .analysis(analysis):
+                    try insertAnalysis(analysis)
+                }
+            }
+        }
+    }
+
+    /// Issue #26 crash-worker seam. The package-only worker stages a real model-context
+    /// tail while autosave is disabled, then the supervisor interrupts the process.
+    package func gateStageUncommittedHeartRate(_ observation: HeartRateObservation) throws {
+        explicitTransactionDepth += 1
+        defer { explicitTransactionDepth -= 1 }
+        try insertHeartRate(observation)
+    }
+
+    func gateFetchRecentSessions(
+        profileLocalIdentifier: String,
+        limit: Int
+    ) throws -> [WorkoutSessionRecord] {
+        guard limit > 0 else {
+            return []
+        }
+        var descriptor = FetchDescriptor<TelemetryWorkoutSessionV1>(
+            predicate: #Predicate { $0.profileLocalIdentifier == profileLocalIdentifier },
+            sortBy: [SortDescriptor(\TelemetryWorkoutSessionV1.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = limit
+        return try modelContext.fetch(descriptor).map(Self.domainSession)
+    }
+
+    func gateFetchComparableSessions(
+        profileLocalIdentifier: String,
+        workoutMode: WorkoutMode,
+        limit: Int
+    ) throws -> [WorkoutSessionRecord] {
+        guard limit > 0 else {
+            return []
+        }
+        let descriptor = FetchDescriptor<TelemetryWorkoutSessionV1>(
+            predicate: #Predicate { $0.profileLocalIdentifier == profileLocalIdentifier },
+            sortBy: [SortDescriptor(\TelemetryWorkoutSessionV1.startedAt, order: .reverse)]
+        )
+        var comparable: [WorkoutSessionRecord] = []
+        for model in try modelContext.fetch(descriptor) {
+            let session = try Self.domainSession(model)
+            if session.workoutMode == workoutMode {
+                comparable.append(session)
+                if comparable.count == limit {
+                    break
+                }
+            }
+        }
+        return comparable
+    }
+
+    func gateFetchEvents(decisionID: DecisionID) throws -> [WorkoutEvent] {
+        let key = decisionID.description
+        let descriptor = FetchDescriptor<TelemetryWorkoutEventV1>(
+            predicate: #Predicate { $0.decisionID == key },
+            sortBy: [SortDescriptor(\TelemetryWorkoutEventV1.occurredElapsedMicroseconds)]
+        )
+        return try modelContext.fetch(descriptor).map(Self.domainEvent)
+    }
+
+    func gateFetchEvents(commandID: CommandID) throws -> [WorkoutEvent] {
+        let key = commandID.description
+        let descriptor = FetchDescriptor<TelemetryWorkoutEventV1>(
+            predicate: #Predicate { $0.commandID == key },
+            sortBy: [SortDescriptor(\TelemetryWorkoutEventV1.occurredElapsedMicroseconds)]
+        )
+        return try modelContext.fetch(descriptor).map(Self.domainEvent)
+    }
+
+    func gateFetchEvents(attemptID: CommandAttemptID) throws -> [WorkoutEvent] {
+        let key = attemptID.description
+        let descriptor = FetchDescriptor<TelemetryWorkoutEventV1>(
+            predicate: #Predicate { $0.attemptID == key },
+            sortBy: [SortDescriptor(\TelemetryWorkoutEventV1.occurredElapsedMicroseconds)]
+        )
+        return try modelContext.fetch(descriptor).map(Self.domainEvent)
+    }
+
+    func gateTraverseSession(_ sessionID: SessionID) throws -> TelemetryGateTraversalCounts {
+        let sessionKey = sessionID.description
+        let sessionDescriptor = FetchDescriptor<TelemetryWorkoutSessionV1>(
+            predicate: #Predicate { $0.sessionID == sessionKey }
+        )
+        let sessions = try modelContext.fetchCount(sessionDescriptor)
+        let heartRateSamples = try fetchHeartRate(sessionID: sessionID).count
+        let treadmillSamples = try fetchTreadmill(sessionID: sessionID).count
+        let events = try fetchEvents(sessionID: sessionID).count
+        let frames = try fetchFrames(sessionID: sessionID).count
+        let analyses = try fetchAnalyses(sessionID: sessionID).count
+        return TelemetryGateTraversalCounts(
+            sessions: sessions,
+            heartRateSamples: heartRateSamples,
+            treadmillSamples: treadmillSamples,
+            events: events,
+            frames: frames,
+            analyses: analyses
+        )
+    }
+
+    func gateMarkInterruptedSessionIncomplete(
+        _ sessionID: SessionID,
+        reason: String
+    ) throws {
+        let session = try sessionModel(sessionID)
+        try explicitTransaction {
+            session.lifecycleStateKey = SessionLifecycleState.incomplete.rawValue
+            session.incompleteReason = reason
+            session.recorderIsComplete = false
+            session.endedAt = nil
+            session.endedElapsedMicroseconds = nil
+        }
+    }
+
+    func gateRunsOnMainThread() -> Bool {
+        Thread.isMainThread
+    }
+
     private func explicitTransaction(_ operation: () throws -> Void) throws {
+        if explicitTransactionDepth > 0 {
+            try operation()
+            return
+        }
+
+        explicitTransactionDepth += 1
+        defer { explicitTransactionDepth -= 1 }
         modelContext.autosaveEnabled = false
         try modelContext.transaction(block: operation)
         if let onDiskStoreURL {

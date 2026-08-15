@@ -120,4 +120,70 @@ final class TelemetrySchemaAndBoundaryTests: XCTestCase {
         let resourceValues = try primary.resourceValues(forKeys: [.isExcludedFromBackupKey])
         XCTAssertEqual(resourceValues.isExcludedFromBackup, true)
     }
+
+    func testDirectoryBackupBoundarySurvivesChildResetAndRecreation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telemetry-directory-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("TelemetryV2", isDirectory: true)
+        let primary = directory.appendingPathComponent("TelemetryV2.store")
+        let wal = directory.appendingPathComponent("TelemetryV2.store-wal")
+
+        let preparedDirectory = try TelemetryStoreFilePolicy.prepareStoreDirectory(
+            primaryStoreURL: primary
+        )
+        XCTAssertEqual(preparedDirectory, directory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: primary.path))
+        XCTAssertEqual(
+            try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+                .isExcludedFromBackup,
+            true
+        )
+
+        try Data().write(to: primary)
+        try Data().write(to: wal)
+        for url in [primary, wal] {
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = false
+            var mutableURL = url
+            try mutableURL.setResourceValues(values)
+        }
+        XCTAssertEqual(
+            try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+                .isExcludedFromBackup,
+            true
+        )
+
+        try FileManager.default.removeItem(at: wal)
+        try Data().write(to: wal)
+        var resetValues = URLResourceValues()
+        resetValues.isExcludedFromBackup = false
+        var mutableWAL = wal
+        try mutableWAL.setResourceValues(resetValues)
+        XCTAssertEqual(
+            try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+                .isExcludedFromBackup,
+            true
+        )
+
+        let result = try TelemetryStoreFilePolicy.applyRequiredAttributes(
+            primaryStoreURL: primary
+        )
+        XCTAssertEqual(
+            result.protectedURLs.map(\.lastPathComponent),
+            [primary.lastPathComponent, wal.lastPathComponent]
+        )
+        for url in result.protectedURLs {
+            XCTAssertEqual(
+                try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
+                    .isExcludedFromBackup,
+                true
+            )
+            XCTAssertEqual(
+                try FileManager.default.attributesOfItem(atPath: url.path)[.protectionKey]
+                    as? FileProtectionType,
+                .completeUntilFirstUserAuthentication
+            )
+        }
+    }
 }

@@ -30,6 +30,10 @@ let package = Package(
             name: "TelemetryPersistence",
             dependencies: ["TelemetryDomain"]
         ),
+        .executableTarget(
+            name: "TelemetryGateCrashWorker",
+            dependencies: ["TelemetryDomain", "TelemetryPersistence"]
+        ),
         .target(
             name: "WalkingPadCoreLogic",
             path: "WalkingPadRemote",
@@ -83,6 +87,14 @@ let package = Package(
         .testTarget(
             name: "TelemetryPersistenceTests",
             dependencies: ["TelemetryDomain", "TelemetryPersistence"]
+        ),
+        .testTarget(
+            name: "TelemetrySwiftDataGateTests",
+            dependencies: [
+                "TelemetryDomain",
+                "TelemetryPersistence",
+                "TelemetryGateCrashWorker",
+            ]
         )
     ]
 )

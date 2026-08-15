@@ -35,6 +35,10 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         )
 
         var writer: TelemetryStore? = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        try assertDirectoryBackupBoundary(
+            primaryStoreURL: storeURL,
+            phase: "store creation"
+        )
         try await writer?.insertSession(session)
         try await writer?.insertSource(
             source,
@@ -43,7 +47,11 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         )
         try await writer?.insertHeartRate(heartRate)
 
-        let protectedFiles = try assertRequiredFilePolicy(
+        let protectedFiles = try assertDiscoveredFileProtection(
+            primaryStoreURL: storeURL,
+            phase: "initial writes"
+        )
+        try assertDirectoryBackupBoundary(
             primaryStoreURL: storeURL,
             phase: "initial writes"
         )
@@ -64,6 +72,25 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
             primaryStoreURL: storeURL,
             phase: "explicit reapplication after file-attribute mutation"
         )
+        try assertDirectoryBackupBoundary(
+            primaryStoreURL: storeURL,
+            phase: "explicit reapplication after file-attribute mutation"
+        )
+
+        for url in protectedFiles {
+            var resetValues = URLResourceValues()
+            resetValues.isExcludedFromBackup = false
+            var mutableURL = url
+            try mutableURL.setResourceValues(resetValues)
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.none],
+                ofItemAtPath: url.path
+            )
+        }
+        try assertDirectoryBackupBoundary(
+            primaryStoreURL: storeURL,
+            phase: "child policy reset"
+        )
 
         try await writer?.insertEvent(
             TelemetryPersistenceFixtures.event(
@@ -73,14 +100,22 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
                 elapsed: 2_000_000
             )
         )
-        _ = try assertRequiredFilePolicy(
+        _ = try assertDiscoveredFileProtection(
+            primaryStoreURL: storeURL,
+            phase: "automatic policy after subsequent write"
+        )
+        try assertDirectoryBackupBoundary(
             primaryStoreURL: storeURL,
             phase: "automatic policy after subsequent write"
         )
         writer = nil
 
         let reader = try TelemetryStoreFactory.make(.onDisk(storeURL))
-        _ = try assertRequiredFilePolicy(
+        _ = try assertDiscoveredFileProtection(
+            primaryStoreURL: storeURL,
+            phase: "reopen"
+        )
+        try assertDirectoryBackupBoundary(
             primaryStoreURL: storeURL,
             phase: "reopen"
         )
@@ -405,6 +440,25 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         primaryStoreURL: URL,
         phase: String
     ) throws -> [URL] {
+        let discovered = try assertDiscoveredFileProtection(
+            primaryStoreURL: primaryStoreURL,
+            phase: phase
+        )
+        for url in discovered {
+            let resourceValues = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
+            XCTAssertEqual(
+                resourceValues.isExcludedFromBackup,
+                true,
+                "\(phase): \(url.lastPathComponent)"
+            )
+        }
+        return discovered
+    }
+
+    private func assertDiscoveredFileProtection(
+        primaryStoreURL: URL,
+        phase: String
+    ) throws -> [URL] {
         let discovered = try TelemetryStoreFilePolicy.discoveredStoreFiles(
             primaryStoreURL: primaryStoreURL
         )
@@ -421,12 +475,6 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         )
 
         for url in discovered {
-            let resourceValues = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
-            XCTAssertEqual(
-                resourceValues.isExcludedFromBackup,
-                true,
-                "\(phase): \(url.lastPathComponent)"
-            )
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             XCTAssertEqual(
                 attributes[.protectionKey] as? FileProtectionType,
@@ -435,5 +483,18 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
             )
         }
         return discovered
+    }
+
+    private func assertDirectoryBackupBoundary(
+        primaryStoreURL: URL,
+        phase: String
+    ) throws {
+        let directory = primaryStoreURL.deletingLastPathComponent()
+        XCTAssertEqual(
+            try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+                .isExcludedFromBackup,
+            true,
+            phase
+        )
     }
 }
