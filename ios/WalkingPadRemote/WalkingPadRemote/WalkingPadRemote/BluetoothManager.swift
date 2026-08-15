@@ -149,7 +149,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let hrTrendMinSamples: Int = 4
     private let hrPredictSeconds: Double = 15
     private let hrPredictMarginBpm: Int = 2
-    private var hrTrendSamples: [(Date, Double)] = []
+    private struct HRTrendSample {
+        let date: Date
+        let smoothedBPM: Double
+        var telemetryDelivery: HeartRateDeliveryEvidence?
+    }
+    private var hrTrendSamples: [HRTrendSample] = []
     private var hrTrendEmaBpm: Double? = nil
     private var hrTrendMinWindowSeconds: TimeInterval {
         max(6, hrTrendWindowSeconds * 0.4)
@@ -180,6 +185,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var pendingHealthkitWorkoutUUID: String? = nil
     private var pendingHealthkitWorkoutProfileID: UUID? = nil
     private var hrControlFailed: Bool = false
+    private let legacyWatchHeartRateSource = HeartRateProviderIdentity(
+        kind: .legacyWatchWorkoutStream,
+        stableLocalKey: "legacyWatchWorkoutStream"
+    )
+    private var heartRateObservationNormalizer = HeartRateObservationNormalizer()
+    private var heartRateTelemetrySink: (any HeartRateTelemetrySink)?
+    private var latestHeartRateDelivery: HeartRateDeliveryEvidence?
     private var expectedSpeedKmh: Double? = nil
     private var expectedSpeedSetAt: Date? = nil
     private var expectedSpeedSource: String? = nil
@@ -858,6 +870,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var isHrControlRunning: Bool = false
     @Published var isHrControlStartAllowed: Bool = false
     @Published var hrControlStartBlockReasonText: String? = nil
+
+    var isHrControlStartAffordanceAvailable: Bool {
+        HRDomainService.heartRateStartAffordanceAvailable(
+            treadmillConnected: isConnected,
+            currentHeartRateVisible: hrStreamingActive
+        )
+    }
+
     @Published var hrNextDecisionSeconds: Int = 0
     @Published var hrRemainingSeconds: Int = 0
     @Published var hrCooldownRemainingSeconds: Int = 0
@@ -999,8 +1019,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard isHrControlRunning else { return "idle" }
         if hrCooldownRemainingSeconds > 0 { return "cooldown" }
         if hrRemainingSeconds > 0 {
-            if let started = hrControlStartedAt,
-               Date().timeIntervalSince(started) < Double(hrStartGraceSeconds) {
+            if HRDomainService.isWithinInitialHeartRateGrace(
+                startedAt: hrControlStartedAt,
+                now: Date(),
+                graceSeconds: hrStartGraceSeconds
+            ) {
                 return "warmup"
             }
             return "main"
@@ -1856,10 +1879,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 #if canImport(WatchConnectivity)
     private func refreshWatchState(_ session: WCSession) {
         DispatchQueue.main.async {
+            let wasReachable = self.watchReachable
             self.watchReachable = session.isReachable
             self.watchPaired = session.isPaired
             self.watchAppInstalled = session.isWatchAppInstalled
             self.recomputeHrStartAllowed()
+            if self.watchReachable != wasReachable {
+                self.observeHeartRateSourceLifecycle(
+                    self.watchReachable ? .available : .unavailable
+                )
+            }
         }
     }
 
@@ -3288,7 +3317,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard !isHrControlRunning else { return }
         // Preserve the existing connection/watch/fresh-HR gates, then compose the
         // legacy WalkingPad units gate before any automated motion can start.
-        let existingGatesAllowStart = isConnected && watchReachable && hrStreamingActive
+        let existingGatesAllowStart = HRDomainService
+            .heartRateRuntimePrerequisitesAllowStart(
+                treadmillConnected: isConnected,
+                watchReachable: watchReachable,
+                currentHeartRateVisible: hrStreamingActive
+            )
         guard existingGatesAllowStart else {
             isHrControlRunning = false
             if !isConnected {
@@ -3412,7 +3446,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func recomputeHrStartAllowed() {
         let now = Date()
-        let existingGatesAllowStart = isConnected && watchReachable && hrStreamingActive
+        let existingGatesAllowStart = HRDomainService
+            .heartRateRuntimePrerequisitesAllowStart(
+                treadmillConnected: isConnected,
+                watchReachable: watchReachable,
+                currentHeartRateVisible: hrStreamingActive
+            )
         let unitsDecision = controllerUnitsGateDecision(now: now)
         let allowed = ControllerUnitsSafetyPolicy.allowsStart(
             path: .hrControl,
@@ -3424,10 +3463,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         isHrControlStartAllowed = allowed
         if !allowed {
-            let withinGrace: Bool = {
-                guard let start = hrControlStartedAt else { return false }
-                return Date().timeIntervalSince(start) < TimeInterval(hrStartGraceSeconds)
-            }()
+            let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
+                startedAt: hrControlStartedAt,
+                now: Date(),
+                graceSeconds: hrStartGraceSeconds
+            )
             if !isConnected {
                 hrControlStartBlockReasonText = "Нет подключения к дорожке"
             } else if !watchReachable {
@@ -3479,7 +3519,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             DispatchQueue.main.async {
                 self.hrDataStaleSeconds = hasLast ? secs : 0
-                let active = (self.heartRateBPM > 0) && hasLast && (secs <= self.hrStaleThresholdSeconds)
+                let active = HRDomainService.heartRateStreamIsActive(
+                    beatsPerMinute: self.heartRateBPM,
+                    hasLastReceivedAt: hasLast,
+                    ageSeconds: secs,
+                    staleThresholdSeconds: self.hrStaleThresholdSeconds
+                )
                 self.hrStreamingActive = active
                 if active != wasActive {
                     self.appendLog("HR stream \(active ? "ACTIVE" : "INACTIVE") (bpm=\(self.heartRateBPM), last=\(hasLast ? "\(secs)s ago" : "none"))")
@@ -3490,6 +3535,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     ])
                 }
                 self.recomputeHrStartAllowed()
+                if active != wasActive {
+                    self.observeHeartRateSourceLifecycle(
+                        active ? .recovered : .stale
+                    )
+                }
             }
         }
         if let t = hrStaleTimer {
@@ -3540,10 +3590,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
 
         if isHrControlRunning {
-            let withinGrace: Bool = {
-                guard let start = hrControlStartedAt else { return false }
-                return Date().timeIntervalSince(start) < TimeInterval(hrStartGraceSeconds)
-            }()
+            let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
+                startedAt: hrControlStartedAt,
+                now: Date(),
+                graceSeconds: hrStartGraceSeconds
+            )
             if hrStreamingActive && heartRateBPM > 0 {
                 hrNoDataSeconds = 0
                 hrSessionPeakBPM = max(hrSessionPeakBPM, heartRateBPM)
@@ -3610,13 +3661,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             hrDecisionDetails = "Ожидание данных пульса…"
                             return
                         }
-                        let missingSeconds: Int = {
-                            if let last = hrLastValueAt {
-                                return max(0, Int(Date().timeIntervalSince(last)))
-                            }
-                            return hrNoDataMaxSeconds
-                        }()
-                        if missingSeconds < hrNoDataMaxSeconds {
+                        let missingSeconds = HRDomainService
+                            .missingHeartRateSignalSeconds(
+                                lastReceivedAt: hrLastValueAt,
+                                now: Date(),
+                                noDataMaximumSeconds: hrNoDataMaxSeconds
+                            )
+                        if !HRDomainService.shouldStopForMissingHeartRateSignal(
+                            missingSeconds: missingSeconds,
+                            noDataMaximumSeconds: hrNoDataMaxSeconds
+                        ) {
                             hrStatusLine = "HR‑контроль: нет сигнала (\(missingSeconds)с)"
                             hrDecisionDetails = "Данные пульса пропали, удерживаем скорость"
                             return
@@ -3649,6 +3703,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     }
 
                     let trend = currentHrTrendBpmPerSecond()
+                    let controlUseEvidence = makeHeartRateControlUseEvidence(
+                        trendUsed: trend != nil,
+                        occurredAt: Date()
+                    )
+                    defer { observeHeartRateControlUse(controlUseEvidence) }
                     let predictedValue = trend.map { Double(heartRateBPM) + $0 * hrPredictSeconds }
                     let predictedBpm = predictedValue.map { Int(round($0)) }
                     let effectiveBpm = max(heartRateBPM, predictedBpm ?? heartRateBPM)
@@ -4587,30 +4646,115 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             smoothed = raw
         }
         hrTrendEmaBpm = smoothed
-        hrTrendSamples.append((date, smoothed))
+        hrTrendSamples.append(
+            HRTrendSample(
+                date: date,
+                smoothedBPM: smoothed,
+                telemetryDelivery: nil
+            )
+        )
         let cutoff = date.addingTimeInterval(-hrTrendWindowSeconds)
-        while hrTrendSamples.count > 2, let first = hrTrendSamples.first, first.0 < cutoff {
+        while hrTrendSamples.count > 2,
+              let first = hrTrendSamples.first,
+              first.date < cutoff
+        {
             hrTrendSamples.removeFirst()
         }
+    }
+
+    private func attachTelemetryDeliveryToLatestHrTrendSample(
+        _ delivery: HeartRateDeliveryEvidence
+    ) {
+        guard !hrTrendSamples.isEmpty else { return }
+        hrTrendSamples[hrTrendSamples.count - 1].telemetryDelivery = delivery
+    }
+
+    func setHeartRateTelemetrySink(_ sink: (any HeartRateTelemetrySink)?) {
+        heartRateTelemetrySink = sink
+    }
+
+    private func observeHeartRateDelivery(
+        _ decoded: DecodedWatchHeartRatePayload,
+        receivedAt: Date
+    ) -> HeartRateTelemetrySinkDisposition {
+        let result = heartRateObservationNormalizer.normalize(
+            HeartRateProviderObservation(
+                source: legacyWatchHeartRateSource,
+                beatsPerMinute: decoded.beatsPerMinute,
+                providerSequence: decoded.providerSequence,
+                providerNativeIdentity: nil,
+                measuredAt: nil,
+                sourceCallbackObservedAt: decoded.sourceCallbackObservedAt,
+                sourceClockRelationship: .independent,
+                receivedAt: receivedAt,
+                metadataQuality: decoded.quality
+            ),
+            canonicalObservationID: HeartRateCanonicalObservationID(),
+            deliveryID: HeartRateDeliveryID(),
+            recordedAt: Date()
+        )
+        latestHeartRateDelivery = result.delivery
+        attachTelemetryDeliveryToLatestHrTrendSample(result.delivery)
+        return heartRateTelemetrySink?.observeHeartRate(result) ?? .unavailable
+    }
+
+    private func observeHeartRateSourceLifecycle(
+        _ transition: HeartRateSourceLifecycleInput,
+        occurredAt: Date = Date()
+    ) {
+        guard let evidence = heartRateObservationNormalizer.observeLifecycle(
+            transition,
+            source: legacyWatchHeartRateSource,
+            occurredAt: occurredAt
+        ) else { return }
+        _ = heartRateTelemetrySink?.observeSourceLifecycle(evidence)
+    }
+
+    private func makeHeartRateControlUseEvidence(
+        trendUsed: Bool,
+        occurredAt: Date
+    ) -> HeartRateControlUseEvidence? {
+        var inputs: [HeartRateCausalReference]
+        if trendUsed {
+            inputs = hrTrendSamples.compactMap { $0.telemetryDelivery?.causalReference }
+        } else {
+            inputs = latestHeartRateDelivery.map { [$0.causalReference] } ?? []
+        }
+        if let latest = latestHeartRateDelivery?.causalReference,
+           !inputs.contains(latest)
+        {
+            inputs.append(latest)
+        }
+        guard !inputs.isEmpty else { return nil }
+        return HeartRateControlUseEvidence(
+            kind: .speedDecision,
+            inputs: inputs,
+            occurredAt: occurredAt
+        )
+    }
+
+    private func observeHeartRateControlUse(_ evidence: HeartRateControlUseEvidence?) {
+        guard let evidence else { return }
+        _ = heartRateTelemetrySink?.observeControlUse(evidence)
     }
 
     private func currentHrTrendBpmPerSecond() -> Double? {
         guard hrTrendSamples.count >= hrTrendMinSamples,
               let first = hrTrendSamples.first,
               let last = hrTrendSamples.last else { return nil }
-        let span = last.0.timeIntervalSince(first.0)
+        let span = last.date.timeIntervalSince(first.date)
         guard span >= hrTrendMinWindowSeconds else { return nil }
-        let t0 = first.0
+        let t0 = first.date
         var sumT = 0.0
         var sumY = 0.0
         var sumTT = 0.0
         var sumTY = 0.0
-        for (date, value) in hrTrendSamples {
-            let t = date.timeIntervalSince(t0)
+        for sample in hrTrendSamples {
+            let t = sample.date.timeIntervalSince(t0)
             sumT += t
-            sumY += value
+            sumY += sample.smoothedBPM
             sumTT += t * t
-            sumTY += t * value
+            sumTY += t * sample.smoothedBPM
         }
         let n = Double(hrTrendSamples.count)
         let denom = (n * sumTT) - (sumT * sumT)
@@ -5242,19 +5386,34 @@ extension BluetoothManager: WCSessionDelegate {
     }
 
     private func handleWatchPayload(_ payload: [String: Any]) {
-        if let hr = payload["hr"] as? Double {
-            let bpm = Int(hr.rounded())
+        let phoneReceivedAt = Date()
+        if let decoded = WatchHeartRatePayloadDecoder.decode(payload) {
             DispatchQueue.main.async {
-                self.heartRateBPM = bpm
-                self.lastKnownHeartRateBPM = bpm
-                self.hrLastValueAt = Date()
-                self.recordHrSample(bpm)
-                // hrStreamingActive will be derived by the staleness timer
-                self.appendLog("HR value: \(bpm)")
-                self.logTrainingEvent("hr_sample", fields: [
-                    "hr_bpm": bpm,
-                    "source": "watch_payload"
-                ])
+                HeartRateObservationalTee.deliver(
+                    decoded.beatsPerMinute,
+                    toLegacyController: { bpm in
+                        HRDomainService.applyHeartRateDelivery(
+                            bpm,
+                            now: Date.init,
+                            updateCurrent: { self.heartRateBPM = $0 },
+                            updateLastKnown: { self.lastKnownHeartRateBPM = $0 },
+                            updateLastReceivedAt: { self.hrLastValueAt = $0 },
+                            recordPredictorInput: { self.recordHrSample($0) }
+                        )
+                        // hrStreamingActive will be derived by the staleness timer
+                        self.appendLog("HR value: \(bpm)")
+                        self.logTrainingEvent("hr_sample", fields: [
+                            "hr_bpm": bpm,
+                            "source": "watch_payload"
+                        ])
+                    },
+                    observe: {
+                        self.observeHeartRateDelivery(
+                            decoded,
+                            receivedAt: phoneReceivedAt
+                        )
+                    }
+                )
             }
         }
         if let uuid = payload["workout_uuid"] as? String {
@@ -5275,17 +5434,20 @@ extension BluetoothManager: WCSessionDelegate {
         }
         if let status = payload["status"] as? String {
             DispatchQueue.main.async {
+                var lifecycleTransition: HeartRateSourceLifecycleInput?
                 switch status.lowercased() {
                 case "hr_started":
                     self.hrPermissionGranted = true
                     self.appendLog("HR stream started; permission granted")
                     self.logTrainingEvent("watch_status", fields: ["status": "hr_started"])
+                    lifecycleTransition = .started
                 case "hr_stopped":
                     // Keep permission as last-known; clear last timestamp to mark no data
                     self.hrLastValueAt = nil
                     self.heartRateBPM = 0
                     self.appendLog("HR stream stopped")
                     self.logTrainingEvent("watch_status", fields: ["status": "hr_stopped"])
+                    lifecycleTransition = .stopped
                 case "watch_ok":
                     self.watchReachable = true
                     self.appendLog("Watch OK")
@@ -5294,6 +5456,9 @@ extension BluetoothManager: WCSessionDelegate {
                     break
                 }
                 self.recomputeHrStartAllowed()
+                if let lifecycleTransition {
+                    self.observeHeartRateSourceLifecycle(lifecycleTransition)
+                }
             }
         }
     }

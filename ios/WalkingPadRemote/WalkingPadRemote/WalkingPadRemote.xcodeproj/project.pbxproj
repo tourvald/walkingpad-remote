@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A28000012F80000000000001 /* HeartRateNormalization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A28000022F80000000000002 /* HeartRateNormalization.swift */; };
 		E31F57CB2F293B5600C6C470 /* WorkoutSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */; };
 		E31F57CD2F293B7100C6C470 /* TreadmillStatsPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */; };
 		E37051C22F233FC100D2FA22 /* WalkingPadRemoteWatch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = E37051B82F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -37,6 +38,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A28000022F80000000000002 /* HeartRateNormalization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/HeartRateNormalization.swift; sourceTree = "<group>"; };
 		E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutSessionController.swift; sourceTree = "<group>"; };
 		E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreadmillStatsPublisher.swift; sourceTree = "<group>"; };
 		E37051762F22AB0C00D2FA22 /* WalkingPadRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WalkingPadRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -79,6 +81,7 @@
 			children = (
 				E37051782F22AB0C00D2FA22 /* WalkingPadRemote */,
 				E37051B92F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */,
+				A28000022F80000000000002 /* HeartRateNormalization.swift */,
 				E37051772F22AB0C00D2FA22 /* Products */,
 				E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */,
 				E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */,
@@ -203,6 +206,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A28000012F80000000000001 /* HeartRateNormalization.swift in Sources */,
 				E31F57CB2F293B5600C6C470 /* WorkoutSessionController.swift in Sources */,
 				E31F57CD2F293B7100C6C470 /* TreadmillStatsPublisher.swift in Sources */,
 			);

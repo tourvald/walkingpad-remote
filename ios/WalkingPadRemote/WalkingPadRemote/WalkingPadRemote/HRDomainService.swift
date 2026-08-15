@@ -26,6 +26,69 @@ enum HRDomainService {
         let upLevel4Start: Double
     }
 
+    static func heartRateStartAffordanceAvailable(
+        treadmillConnected: Bool,
+        currentHeartRateVisible: Bool
+    ) -> Bool {
+        treadmillConnected && currentHeartRateVisible
+    }
+
+    static func heartRateRuntimePrerequisitesAllowStart(
+        treadmillConnected: Bool,
+        watchReachable: Bool,
+        currentHeartRateVisible: Bool
+    ) -> Bool {
+        treadmillConnected && watchReachable && currentHeartRateVisible
+    }
+
+    static func applyHeartRateDelivery(
+        _ beatsPerMinute: Int,
+        now: () -> Date,
+        updateCurrent: (Int) -> Void,
+        updateLastKnown: (Int) -> Void,
+        updateLastReceivedAt: (Date) -> Void,
+        recordPredictorInput: (Int) -> Void
+    ) {
+        updateCurrent(beatsPerMinute)
+        updateLastKnown(beatsPerMinute)
+        updateLastReceivedAt(now())
+        recordPredictorInput(beatsPerMinute)
+    }
+
+    static func heartRateStreamIsActive(
+        beatsPerMinute: Int,
+        hasLastReceivedAt: Bool,
+        ageSeconds: Int,
+        staleThresholdSeconds: Int
+    ) -> Bool {
+        beatsPerMinute > 0 && hasLastReceivedAt && ageSeconds <= staleThresholdSeconds
+    }
+
+    static func isWithinInitialHeartRateGrace(
+        startedAt: Date?,
+        now: Date,
+        graceSeconds: Int
+    ) -> Bool {
+        guard let startedAt else { return false }
+        return now.timeIntervalSince(startedAt) < TimeInterval(graceSeconds)
+    }
+
+    static func missingHeartRateSignalSeconds(
+        lastReceivedAt: Date?,
+        now: Date,
+        noDataMaximumSeconds: Int
+    ) -> Int {
+        guard let lastReceivedAt else { return noDataMaximumSeconds }
+        return max(0, Int(now.timeIntervalSince(lastReceivedAt)))
+    }
+
+    static func shouldStopForMissingHeartRateSignal(
+        missingSeconds: Int,
+        noDataMaximumSeconds: Int
+    ) -> Bool {
+        missingSeconds >= noDataMaximumSeconds
+    }
+
     static func quantizeSpeedStep(_ value: Double) -> Double {
         max(0.1, (value * 10.0).rounded() / 10.0)
     }

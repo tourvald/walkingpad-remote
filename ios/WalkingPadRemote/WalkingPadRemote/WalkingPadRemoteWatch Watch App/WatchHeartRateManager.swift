@@ -101,6 +101,8 @@ final class WatchHeartRateManager: NSObject, ObservableObject {
     private var wcSession: WCSession?
     private var authorized = false
     private var notificationsAuthorized = false
+    private let heartRatePayloadSequenceLock = NSLock()
+    private var heartRatePayloadSequence: Int64 = 0
 
     private let workoutController = WorkoutSessionController()
 
@@ -191,6 +193,7 @@ final class WatchHeartRateManager: NSObject, ObservableObject {
         let config = HKWorkoutConfiguration()
         config.activityType = .running
         config.locationType = .indoor
+        resetHeartRatePayloadSequence()
 
         Task {
             do {
@@ -229,14 +232,33 @@ final class WatchHeartRateManager: NSObject, ObservableObject {
         return true
     }
 
-    private func sendHeartRate(_ value: Double) {
+    private func sendHeartRate(_ value: Double, callbackObservedAt: Date) {
         guard let session = wcSession, canSendToPhone(session) else { return }
-        let payload: [String: Any] = ["hr": value]
+        let payload: [String: Any] = [
+            "hr": value,
+            "hr_callback_observed_at": callbackObservedAt.timeIntervalSince1970,
+            "hr_sequence": nextHeartRatePayloadSequence()
+        ]
         if session.isReachable {
             session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
         } else {
             try? session.updateApplicationContext(payload)
         }
+    }
+
+    private func resetHeartRatePayloadSequence() {
+        heartRatePayloadSequenceLock.lock()
+        heartRatePayloadSequence = 0
+        heartRatePayloadSequenceLock.unlock()
+    }
+
+    private func nextHeartRatePayloadSequence() -> Int64 {
+        heartRatePayloadSequenceLock.lock()
+        defer { heartRatePayloadSequenceLock.unlock() }
+        if heartRatePayloadSequence < Int64.max {
+            heartRatePayloadSequence += 1
+        }
+        return heartRatePayloadSequence
     }
 
     private func sendStatus(_ status: String) {
@@ -323,6 +345,7 @@ extension WatchHeartRateManager: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderD
     func workoutBuilderDidCollectEvent(_ workoutBuilder: HKLiveWorkoutBuilder) {}
 
     func workoutBuilder(_ workoutBuilder: HKLiveWorkoutBuilder, didCollectDataOf collectedTypes: Set<HKSampleType>) {
+        let callbackObservedAt = Date()
         guard let hrType = HKQuantityType.quantityType(forIdentifier: .heartRate),
               collectedTypes.contains(hrType),
               let stats = workoutBuilder.statistics(for: hrType),
@@ -331,7 +354,7 @@ extension WatchHeartRateManager: HKWorkoutSessionDelegate, HKLiveWorkoutBuilderD
         }
         let value = quantity.doubleValue(for: HKUnit.count().unitDivided(by: HKUnit.minute()))
         DispatchQueue.main.async { self.bpm = Int(value.rounded()) }
-        sendHeartRate(value)
+        sendHeartRate(value, callbackObservedAt: callbackObservedAt)
     }
 }
 
