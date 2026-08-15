@@ -44,6 +44,7 @@ let package = Package(
         ),
         .target(
             name: "WalkingPadCoreLogic",
+            dependencies: ["TelemetryDomain"],
             path: "WalkingPadRemote",
             exclude: [
                 "Assets.xcassets",
@@ -80,7 +81,8 @@ let package = Package(
                 "TreadmillTestRunService.swift",
                 "TrainingTelemetryWriter.swift",
                 "CommandQueueService.swift",
-                "TreadmillSpeedBoundsService.swift"
+                "TreadmillSpeedBoundsService.swift",
+                "TreadmillCommandTelemetrySidecar.swift"
             ]
         ),
         .testTarget(
