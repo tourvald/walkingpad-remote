@@ -64,3 +64,39 @@ struct TreadmillCommandTelemetrySidecar {
         return .matched(first.evidence)
     }
 }
+
+/// Mirrors the existing global legacy ACK acceptance predicate without adding
+/// command/attempt correlation or participating in transport behavior.
+struct LegacyAcknowledgementObservationSeam {
+    let isAcceptedByLegacyRuntime: Bool
+    let observation: LegacyAcknowledgementObservation?
+
+    static func evaluate(
+        isAwaitingAcknowledgement: Bool,
+        sentAt: Date?,
+        receivedAt: Date,
+        timeout: TimeInterval,
+        isQualifyingSignal: Bool,
+        protocolKind: TreadmillProtocolKind,
+        connectionEpoch: TreadmillConnectionEpoch?,
+        recordedAt: Date
+    ) -> Self {
+        let isAcceptedByLegacyRuntime = isAwaitingAcknowledgement
+            && sentAt.map { receivedAt.timeIntervalSince($0) <= timeout } == true
+            && isQualifyingSignal
+        let observation = connectionEpoch.flatMap {
+            isAcceptedByLegacyRuntime
+                ? LegacyAcknowledgementObservation.unresolved(
+                    protocolKind: protocolKind,
+                    connectionEpoch: $0,
+                    receivedAt: receivedAt,
+                    recordedAt: recordedAt
+                )
+                : nil
+        }
+        return Self(
+            isAcceptedByLegacyRuntime: isAcceptedByLegacyRuntime,
+            observation: observation
+        )
+    }
+}

@@ -5903,27 +5903,24 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             characteristic: characteristic,
             data: data
         )
-        let legacyAcknowledgementEvidence = treadmillTelemetryConnectionEpoch.flatMap {
-            isLegacyAcknowledgementSignal
-                ? LegacyAcknowledgementObservation.unresolved(
-                    protocolKind: treadmillTelemetryProtocolKind,
-                    connectionEpoch: $0,
-                    receivedAt: now,
-                    recordedAt: Date()
-                )
-                : nil
-        }
+        let legacyAcknowledgementDecision = LegacyAcknowledgementObservationSeam.evaluate(
+            isAwaitingAcknowledgement: lastCommandAwaitingAck,
+            sentAt: lastCommandSentAt,
+            receivedAt: now,
+            timeout: commandAckTimeoutSeconds,
+            isQualifyingSignal: isLegacyAcknowledgementSignal,
+            protocolKind: treadmillTelemetryProtocolKind,
+            connectionEpoch: treadmillTelemetryConnectionEpoch,
+            recordedAt: Date()
+        )
         defer {
-            if let legacyAcknowledgementEvidence {
+            if let observation = legacyAcknowledgementDecision.observation {
                 observeTreadmillTelemetry(
-                    .acknowledgement(legacyAcknowledgementEvidence)
+                    .acknowledgement(observation)
                 )
             }
         }
-        if lastCommandAwaitingAck,
-           let sentAt = lastCommandSentAt,
-           now.timeIntervalSince(sentAt) <= commandAckTimeoutSeconds,
-           isLegacyAcknowledgementSignal {
+        if legacyAcknowledgementDecision.isAcceptedByLegacyRuntime {
             lastCommandAwaitingAck = false
             lastCommandAckedAt = now
         }

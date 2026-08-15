@@ -1,5 +1,7 @@
 import Foundation
+import TelemetryDomain
 import XCTest
+@testable import WalkingPadCoreLogic
 
 final class TreadmillTelemetryBoundaryTests: XCTestCase {
     private lazy var managerSource = try! source("BluetoothManager.swift")
@@ -42,16 +44,101 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
         XCTAssertFalse(managerSource.contains("TreadmillTelemetrySinkDisposition"))
     }
 
-    func testLegacyAcknowledgementIsAlwaysObservedWithoutCausalIDs() throws {
+    func testLegacyAcknowledgementObservationMirrorsAcceptedRuntimeMutation() throws {
         let callback = try functionBody(
             "func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor",
             in: managerSource
         )
         XCTAssertTrue(callback.contains("isLegacyAcknowledgementSignal"))
-        XCTAssertTrue(callback.contains(".unresolved("))
+        XCTAssertTrue(callback.contains("LegacyAcknowledgementObservationSeam.evaluate("))
+        XCTAssertTrue(
+            callback.contains("isAwaitingAcknowledgement: lastCommandAwaitingAck")
+        )
+        XCTAssertTrue(callback.contains("sentAt: lastCommandSentAt"))
+        XCTAssertTrue(callback.contains("timeout: commandAckTimeoutSeconds"))
+        XCTAssertTrue(
+            callback.contains("isQualifyingSignal: isLegacyAcknowledgementSignal")
+        )
+        XCTAssertTrue(callback.contains("legacyAcknowledgementDecision.observation"))
+        XCTAssertTrue(
+            callback.contains("if legacyAcknowledgementDecision.isAcceptedByLegacyRuntime")
+        )
         XCTAssertFalse(callback.contains("deterministicallyAssociated"))
         XCTAssertFalse(callback.contains("observeAcknowledgement"))
         XCTAssertFalse(callback.contains("lastCommandSentAt.map"))
+        XCTAssertFalse(callback.contains("if lastCommandAwaitingAck,"))
+    }
+
+    func testRoutineWalkingPadStatusWithoutPendingAckProducesNoObservation() {
+        let statusPacket: [UInt8] = [0xF8, 0xA2, 0x00, 0x00]
+        let decision = acknowledgementDecision(
+            isAwaiting: false,
+            sentAt: Date(timeIntervalSince1970: 100),
+            receivedAt: Date(timeIntervalSince1970: 101),
+            isQualifyingSignal: statusPacket.first == 0xF8
+        )
+
+        XCTAssertFalse(decision.isAcceptedByLegacyRuntime)
+        XCTAssertTrue([decision.observation].compactMap { $0 }.isEmpty)
+    }
+
+    func testPendingQualifyingSignalInsideWindowMutatesLegacyStateAndEmitsOnce() throws {
+        let receivedAt = Date(timeIntervalSince1970: 102)
+        let decision = acknowledgementDecision(
+            isAwaiting: true,
+            sentAt: Date(timeIntervalSince1970: 99),
+            receivedAt: receivedAt,
+            isQualifyingSignal: true
+        )
+        var isAwaiting = true
+        var acknowledgedAt: Date?
+        if decision.isAcceptedByLegacyRuntime {
+            isAwaiting = false
+            acknowledgedAt = receivedAt
+        }
+        let observations = [decision.observation].compactMap { $0 }
+        let observation = try XCTUnwrap(observations.first)
+
+        XCTAssertFalse(isAwaiting)
+        XCTAssertEqual(acknowledgedAt, receivedAt)
+        XCTAssertEqual(observations.count, 1)
+        XCTAssertEqual(observation.association, .unresolvedByLegacyRuntime)
+        XCTAssertNil(observation.commandID)
+        XCTAssertNil(observation.attemptID)
+    }
+
+    func testQualifyingSignalOutsideWindowLeavesTimeoutOwnershipAndEmitsNothing() {
+        let sentAt = Date(timeIntervalSince1970: 100)
+        let receivedAt = Date(timeIntervalSince1970: 103.001)
+        let decision = acknowledgementDecision(
+            isAwaiting: true,
+            sentAt: sentAt,
+            receivedAt: receivedAt,
+            isQualifyingSignal: true
+        )
+        var isAwaiting = true
+        if decision.isAcceptedByLegacyRuntime {
+            isAwaiting = false
+        }
+
+        XCTAssertFalse(decision.isAcceptedByLegacyRuntime)
+        XCTAssertNil(decision.observation)
+        XCTAssertTrue(isAwaiting)
+        XCTAssertTrue(receivedAt.timeIntervalSince(sentAt) > 3.0)
+    }
+
+    func testLegacyTimeoutOwnerRemainsOutsideNotificationCallback() throws {
+        let callback = try functionBody(
+            "func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor",
+            in: managerSource
+        )
+        let update = try functionBody("private func updateTreadmillStatus()", in: managerSource)
+
+        XCTAssertFalse(callback.contains("lastCommandTimeouts += 1"))
+        XCTAssertTrue(update.contains("now.timeIntervalSince(sentAt) > commandAckTimeoutSeconds"))
+        XCTAssertTrue(update.contains("lastCommandAwaitingAck = false"))
+        XCTAssertTrue(update.contains("lastCommandTimeouts += 1"))
+        XCTAssertTrue(update.contains("observedLegacyCommandTimeout = true"))
     }
 
     func testStartAffordanceAndRuntimeAuthorizationDoNotReadTreadmillTelemetry() throws {
@@ -151,6 +238,26 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
             .appendingPathComponent("WalkingPadRemote")
             .appendingPathComponent(filename)
         return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func acknowledgementDecision(
+        isAwaiting: Bool,
+        sentAt: Date?,
+        receivedAt: Date,
+        isQualifyingSignal: Bool
+    ) -> LegacyAcknowledgementObservationSeam {
+        LegacyAcknowledgementObservationSeam.evaluate(
+            isAwaitingAcknowledgement: isAwaiting,
+            sentAt: sentAt,
+            receivedAt: receivedAt,
+            timeout: 3.0,
+            isQualifyingSignal: isQualifyingSignal,
+            protocolKind: .walkingPad,
+            connectionEpoch: TreadmillConnectionEpoch(
+                rawValue: UUID(uuidString: "00000000-0000-0000-0000-000000000044")!
+            ),
+            recordedAt: receivedAt
+        )
     }
 
     private func telemetryDomainSource(_ filename: String) throws -> String {
