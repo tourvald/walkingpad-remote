@@ -70,23 +70,33 @@ final class StopCommandBehaviorContractTests: XCTestCase {
 
     func testDirectStopKeepsHighPriorityAndTwoExistingRetries() throws {
         let body = try functionBody("func stopBelt()")
-        let initial = "writeCommand(packet, label: \"STOP\", highPriority: true)"
-        let retry2 = "scheduleWrite(packet, label: \"STOP retry\", after: 2.0)"
-        let retry4 = "scheduleWrite(packet, label: \"STOP retry\", after: 4.0)"
-
-        assertOrdered([initial, retry2, retry4], in: body)
-        XCTAssertEqual(body.components(separatedBy: initial).count - 1, 1)
-        XCTAssertEqual(body.components(separatedBy: retry2).count - 1, 1)
-        XCTAssertEqual(body.components(separatedBy: retry4).count - 1, 1)
+        assertOrdered(
+            [
+                "writeCommand(",
+                "label: \"STOP\"",
+                "highPriority: true",
+                "scheduleWrite(",
+                "label: \"STOP retry\"",
+                "after: 2.0",
+                "scheduleWrite(",
+                "label: \"STOP retry\"",
+                "after: 4.0",
+            ],
+            in: body
+        )
+        XCTAssertEqual(body.components(separatedBy: "label: \"STOP\"").count - 1, 1)
+        XCTAssertEqual(body.components(separatedBy: "label: \"STOP retry\"").count - 1, 2)
+        XCTAssertEqual(body.components(separatedBy: "after: 2.0").count - 1, 1)
+        XCTAssertEqual(body.components(separatedBy: "after: 4.0").count - 1, 1)
     }
 
     func testManualAndHrStopSequenceKeepsStopToggleAndConditionalRetryOrder() throws {
         let body = try functionBody("private func stopBeltWithToggle(reason: String)")
-        let initial = "stopBeltOnce()"
+        let initial = "let stopCommandWasEnqueued = stopBeltOnce("
         let togglePacket = "let toggle = buildCmdPacket(cmd: 0x04, value: 0x01)"
-        let toggleDelay = "scheduleWrite(toggle, label: \"START/STOP TOGGLE\", after: 2.0)"
+        let toggleDelay = "label: \"START/STOP TOGGLE\""
         let retryDelay = "DispatchQueue.main.asyncAfter(deadline: .now() + 4.0)"
-        let conditionalRetry = "self.writeCommand(stopPacket, label: \"STOP retry\")"
+        let conditionalRetry = "self.writeCommand("
 
         assertOrdered([initial, togglePacket, toggleDelay, retryDelay, conditionalRetry], in: body)
         XCTAssertEqual(body.components(separatedBy: togglePacket).count - 1, 1)
@@ -100,21 +110,24 @@ final class StopCommandBehaviorContractTests: XCTestCase {
 
         assertOrdered(
             [
-                "stopBeltOnce()",
-                "scheduleWrite(toggle, label: \"START/STOP TOGGLE\", after: 2.0)",
+                "let stopCommandWasEnqueued = stopBeltOnce(",
+                "label: \"START/STOP TOGGLE\"",
                 "DispatchQueue.main.asyncAfter(deadline: .now() + 4.0)",
-                "beginStopObservation(source: reason)"
+                "beginStopObservation(source: reason, telemetryChain: telemetryChain)"
             ],
             in: body
         )
-        let onceBody = try functionBody("private func stopBeltOnce()")
-        XCTAssertTrue(onceBody.contains("writeCommand(packet, label: \"STOP\", highPriority: true)"))
+        let onceBody = try functionBody("private func stopBeltOnce(")
+        assertOrdered(
+            ["writeCommand(", "label: \"STOP\"", "highPriority: true"],
+            in: onceBody
+        )
 
         let directBody = try functionBody("func stopBelt()")
         assertOrdered(
             [
-                "scheduleWrite(packet, label: \"STOP retry\", after: 4.0)",
-                "beginStopObservation(source: \"direct\")"
+                "after: 4.0",
+                "beginStopObservation(source: \"direct\", telemetryChain: telemetryChain)"
             ],
             in: directBody
         )
@@ -138,7 +151,7 @@ final class StopCommandBehaviorContractTests: XCTestCase {
     }
 
     func testStopTruthAnchorsToActualInitialWriteAndPersistsUnavailableOutcome() throws {
-        let writeBody = try functionBody("private func performWrite(_ data: Data, label: String)")
+        let writeBody = try functionBody("private func performWrite(")
         assertOrdered(
             [
                 "lastCommandSentAt = Date()",
@@ -149,7 +162,7 @@ final class StopCommandBehaviorContractTests: XCTestCase {
             in: writeBody
         )
 
-        let beginBody = try functionBody("private func beginStopObservation(source: String, now: Date = Date())")
+        let beginBody = try functionBody("private func beginStopObservation(")
         assertOrdered(
             [
                 "if let pendingAttemptID = unavailableStopAttempt?.id",
@@ -177,7 +190,7 @@ final class StopCommandBehaviorContractTests: XCTestCase {
     }
 
     func testNewMotionIntentAndCurrentFreshnessInvalidateConfirmedStopStatus() throws {
-        let setSpeedBody = try functionBody("private func sendTreadmillSetSpeed(_ kmh: Double, label: String)")
+        let setSpeedBody = try functionBody("private func sendTreadmillSetSpeed(")
         assertOrdered(
             [
                 "if kmh > 0.1",

@@ -192,6 +192,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var heartRateObservationNormalizer = HeartRateObservationNormalizer()
     private var heartRateTelemetrySink: (any HeartRateTelemetrySink)?
     private var latestHeartRateDelivery: HeartRateDeliveryEvidence?
+    private var treadmillObservationNormalizer = TreadmillObservationNormalizer(
+        controllerUnitsFreshnessInterval: ControllerUnitsSafetyPolicy.freshnessInterval
+    )
+    private var treadmillTelemetrySink: (any TreadmillTelemetrySink)?
+    private var latestTreadmillObservationEvidence: TreadmillObservationEvidence?
+    private var treadmillCommandTelemetrySidecar = TreadmillCommandTelemetrySidecar()
+    private var treadmillCommandAttemptNumbers: [CommandID: UInt16] = [:]
+    private struct TreadmillCommandTelemetryRequest {
+        let commandID: CommandID
+        let decisionID: DecisionID?
+        let kind: CommandKind
+    }
+    private struct TreadmillStopTelemetryChain {
+        let decisionID: DecisionID
+        let commandID: CommandID?
+    }
+    private var activeTreadmillStopTelemetryChain: TreadmillStopTelemetryChain?
     private var expectedSpeedKmh: Double? = nil
     private var expectedSpeedSetAt: Date? = nil
     private var expectedSpeedSource: String? = nil
@@ -1131,7 +1148,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             deviceTargetSpeedKmh = speedEffect.targetKmh
             recordSpeedChange(from: old, to: speedEffect.targetKmh, reason: "cooldown_set")
             lastCommandLine = String(format: "CMD cooldown adjust -> %.1f", speedEffect.targetKmh)
-            sendTreadmillSetSpeed(speedEffect.targetKmh, label: String(format: "SPEED %.1f km/h (cooldown)", speedEffect.targetKmh))
+            let telemetryDecision = makeTreadmillDecision(
+                source: .cooldown,
+                intent: .setDesiredSpeed(
+                    DesiredSpeedKilometresPerHour(value: speedEffect.targetKmh)
+                )
+            )
+            defer { observeTreadmillDecision(telemetryDecision) }
+            sendTreadmillSetSpeed(
+                speedEffect.targetKmh,
+                label: String(format: "SPEED %.1f km/h (cooldown)", speedEffect.targetKmh),
+                decision: telemetryDecision
+            )
             appendLog(
                 "HR cooldown speed: \(String(format: "%.1f", speedEffect.targetKmh)) " +
                 "HR=\(speedEffect.hrBpm) step=\(String(format: "%.1f", speedEffect.stepKmh)) " +
@@ -2749,6 +2777,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         // Cancel any pending delayed writes (e.g. stop retries) before starting a new run.
         resetCommandQueue(reason: "startWithSpeed")
         let v = clampRunningSpeedKmh(kmh)
+        let telemetryDecision = makeTreadmillDecision(
+            source: .start,
+            intent: .startAtDesiredSpeed(DesiredSpeedKilometresPerHour(value: v))
+        )
+        defer { observeTreadmillDecision(telemetryDecision) }
         let old = deviceTargetSpeedKmh
         desiredSpeedKmh = v
         deviceTargetSpeedKmh = v
@@ -2761,31 +2794,109 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             let modePacket = buildCmdPacket(cmd: 0x02, value: 0x01)
             let startPacket = buildCmdPacket(cmd: 0x04, value: 0x01)
             if !manualModeSet {
-                writeCommand(modePacket, label: "MODE MANUAL")
+                writeCommand(
+                    modePacket,
+                    label: "MODE MANUAL",
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: .other("mode_manual"),
+                        decision: telemetryDecision
+                    )
+                )
                 manualModeSet = true
             }
             if shouldSendStart {
-                scheduleWrite(startPacket, label: "START", after: 0.2)
-                scheduleWrite(buildWalkingPadSetSpeedPacket(kmh: v), label: String(format: "SPEED %.1f km/h", v), after: 0.45)
+                scheduleWrite(
+                    startPacket,
+                    label: "START",
+                    after: 0.2,
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: .other("start"),
+                        decision: telemetryDecision
+                    )
+                )
+                scheduleWrite(
+                    buildWalkingPadSetSpeedPacket(kmh: v),
+                    label: String(format: "SPEED %.1f km/h", v),
+                    after: 0.45,
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: treadmillSetSpeedCommandKind(v),
+                        decision: telemetryDecision
+                    )
+                )
             } else {
-                scheduleWrite(buildWalkingPadSetSpeedPacket(kmh: v), label: String(format: "SPEED %.1f km/h", v), after: 0.2)
+                scheduleWrite(
+                    buildWalkingPadSetSpeedPacket(kmh: v),
+                    label: String(format: "SPEED %.1f km/h", v),
+                    after: 0.2,
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: treadmillSetSpeedCommandKind(v),
+                        decision: telemetryDecision
+                    )
+                )
             }
 
         case .ftms:
-            enqueueFtmsRequestControlIfNeeded()
+            enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
             if shouldSendStart {
-                scheduleWrite(buildFtmsStartOrResumePacket(), label: "FTMS START/RESUME", after: 0.2)
-                scheduleWrite(buildFtmsSetSpeedPacket(kmh: v), label: String(format: "SPEED %.1f km/h (FTMS)", v), after: 0.45)
+                scheduleWrite(
+                    buildFtmsStartOrResumePacket(),
+                    label: "FTMS START/RESUME",
+                    after: 0.2,
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: .other("start"),
+                        decision: telemetryDecision
+                    )
+                )
+                scheduleWrite(
+                    buildFtmsSetSpeedPacket(kmh: v),
+                    label: String(format: "SPEED %.1f km/h (FTMS)", v),
+                    after: 0.45,
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: treadmillSetSpeedCommandKind(v),
+                        decision: telemetryDecision
+                    )
+                )
             } else {
-                scheduleWrite(buildFtmsSetSpeedPacket(kmh: v), label: String(format: "SPEED %.1f km/h (FTMS)", v), after: 0.2)
+                scheduleWrite(
+                    buildFtmsSetSpeedPacket(kmh: v),
+                    label: String(format: "SPEED %.1f km/h (FTMS)", v),
+                    after: 0.2,
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: treadmillSetSpeedCommandKind(v),
+                        decision: telemetryDecision
+                    )
+                )
             }
 
         case .fitShow:
             if shouldSendStart {
-                writeCommand(buildFitShowStartOrResumePacket(), label: "FitShow START/RESUME")
-                scheduleWrite(buildFitShowSetSpeedPacket(kmh: v, incline: 0), label: String(format: "SPEED %.1f km/h (FitShow)", v), after: 0.35)
+                writeCommand(
+                    buildFitShowStartOrResumePacket(),
+                    label: "FitShow START/RESUME",
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: .other("start"),
+                        decision: telemetryDecision
+                    )
+                )
+                scheduleWrite(
+                    buildFitShowSetSpeedPacket(kmh: v, incline: 0),
+                    label: String(format: "SPEED %.1f km/h (FitShow)", v),
+                    after: 0.35,
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: treadmillSetSpeedCommandKind(v),
+                        decision: telemetryDecision
+                    )
+                )
             } else {
-                scheduleWrite(buildFitShowSetSpeedPacket(kmh: v, incline: 0), label: String(format: "SPEED %.1f km/h (FitShow)", v), after: 0.2)
+                scheduleWrite(
+                    buildFitShowSetSpeedPacket(kmh: v, incline: 0),
+                    label: String(format: "SPEED %.1f km/h (FitShow)", v),
+                    after: 0.2,
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: treadmillSetSpeedCommandKind(v),
+                        decision: telemetryDecision
+                    )
+                )
             }
 
         case .unknown:
@@ -2795,6 +2906,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
     func stopBelt() {
         guard isConnected else { return }
+        let telemetryDecision = makeTreadmillDecision(
+            source: .stop,
+            intent: .stop
+        )
+        defer { observeTreadmillDecision(telemetryDecision) }
+        let telemetryRequest = treadmillCommandRequest(
+            kind: .stop,
+            decision: telemetryDecision
+        )
         let old = deviceTargetSpeedKmh
         desiredSpeedKmh = 0
         deviceTargetSpeedKmh = 0
@@ -2802,20 +2922,44 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         lastCommandLine = "CMD stop"
         resetSessionStats()
         if treadmillProtocol == .ftms {
-            enqueueFtmsRequestControlIfNeeded()
+            enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
         }
         guard let packet = buildTreadmillStopPacket() else {
             appendLog("STOP skipped: unknown treadmill protocol")
             return
         }
-        writeCommand(packet, label: "STOP", highPriority: true)
-        scheduleWrite(packet, label: "STOP retry", after: 2.0)
-        scheduleWrite(packet, label: "STOP retry", after: 4.0)
-        beginStopObservation(source: "direct")
+        let telemetryChain = telemetryDecision.map {
+            TreadmillStopTelemetryChain(
+                decisionID: $0.decisionID,
+                commandID: telemetryRequest.commandID
+            )
+        }
+        writeCommand(
+            packet,
+            label: "STOP",
+            highPriority: true,
+            telemetryRequest: telemetryRequest
+        )
+        scheduleWrite(
+            packet,
+            label: "STOP retry",
+            after: 2.0,
+            telemetryRequest: telemetryRequest
+        )
+        scheduleWrite(
+            packet,
+            label: "STOP retry",
+            after: 4.0,
+            telemetryRequest: telemetryRequest
+        )
+        beginStopObservation(source: "direct", telemetryChain: telemetryChain)
     }
 
-    private func stopBeltOnce() {
-        guard isConnected else { return }
+    private func stopBeltOnce(
+        telemetryDecision: TreadmillControlDecisionEvidence?,
+        telemetryRequest: TreadmillCommandTelemetryRequest
+    ) -> Bool {
+        guard isConnected else { return false }
         let old = deviceTargetSpeedKmh
         desiredSpeedKmh = 0
         deviceTargetSpeedKmh = 0
@@ -2823,34 +2967,70 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         lastCommandLine = "CMD stop"
         resetSessionStats()
         if treadmillProtocol == .ftms {
-            enqueueFtmsRequestControlIfNeeded()
+            enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
         }
         guard let packet = buildTreadmillStopPacket() else {
             appendLog("STOP skipped: unknown treadmill protocol")
-            return
+            return false
         }
-        writeCommand(packet, label: "STOP", highPriority: true)
+        writeCommand(
+            packet,
+            label: "STOP",
+            highPriority: true,
+            telemetryRequest: telemetryRequest
+        )
+        return true
     }
 
     private func stopBeltWithToggle(reason: String) {
         let wasRunning = (deviceTargetSpeedKmh > 0.3) || (speedKmh > 0.3)
+        let telemetryDecision = makeTreadmillDecision(
+            source: .stop,
+            intent: .stop
+        )
+        defer { observeTreadmillDecision(telemetryDecision) }
+        let telemetryRequest = treadmillCommandRequest(
+            kind: .stop,
+            decision: telemetryDecision
+        )
         appendLog("STOP sequence (\(reason))")
-        stopBeltOnce()
+        let stopCommandWasEnqueued = stopBeltOnce(
+            telemetryDecision: telemetryDecision,
+            telemetryRequest: telemetryRequest
+        )
+        let telemetryChain = telemetryDecision.map {
+            TreadmillStopTelemetryChain(
+                decisionID: $0.decisionID,
+                commandID: stopCommandWasEnqueued ? telemetryRequest.commandID : nil
+            )
+        }
         guard wasRunning else {
-            beginStopObservation(source: reason)
+            beginStopObservation(source: reason, telemetryChain: telemetryChain)
             return
         }
         switch treadmillProtocol {
         case .walkingPad:
             let toggle = buildCmdPacket(cmd: 0x04, value: 0x01)
-            scheduleWrite(toggle, label: "START/STOP TOGGLE", after: 2.0)
+            scheduleWrite(
+                toggle,
+                label: "START/STOP TOGGLE",
+                after: 2.0,
+                telemetryRequest: treadmillCommandRequest(
+                    kind: .other("legacy_stop_toggle"),
+                    decision: telemetryDecision
+                )
+            )
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
                 guard let self else { return }
                 let reported = self.deviceReportedSpeedKmh
                 let observed = max(self.speedKmh, reported)
                 if observed > 0.2 {
                     if let stopPacket = self.buildTreadmillStopPacket() {
-                        self.writeCommand(stopPacket, label: "STOP retry")
+                        self.writeCommand(
+                            stopPacket,
+                            label: "STOP retry",
+                            telemetryRequest: telemetryRequest
+                        )
                     }
                 }
             }
@@ -2858,13 +3038,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         case .ftms, .fitShow, .unknown:
             if let stopPacket = buildTreadmillStopPacket() {
                 if treadmillProtocol == .ftms {
-                    enqueueFtmsRequestControlIfNeeded()
+                    enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
                 }
-                scheduleWrite(stopPacket, label: "STOP retry", after: 2.0)
-                scheduleWrite(stopPacket, label: "STOP retry", after: 4.0)
+                scheduleWrite(
+                    stopPacket,
+                    label: "STOP retry",
+                    after: 2.0,
+                    telemetryRequest: telemetryRequest
+                )
+                scheduleWrite(
+                    stopPacket,
+                    label: "STOP retry",
+                    after: 4.0,
+                    telemetryRequest: telemetryRequest
+                )
             }
         }
-        beginStopObservation(source: reason)
+        beginStopObservation(source: reason, telemetryChain: telemetryChain)
     }
 
     private func currentStopObservationContext() -> StopObservationContext? {
@@ -2881,13 +3071,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
-    private func beginStopObservation(source: String, now: Date = Date()) {
+    private func beginStopObservation(
+        source: String,
+        telemetryChain: TreadmillStopTelemetryChain? = nil,
+        now: Date = Date()
+    ) {
         stopObservationFreshnessWorkItem?.cancel()
         stopObservationFreshnessWorkItem = nil
         finishActiveStopObservationUnconfirmed(reason: "superseded_by_new_attempt", now: now)
         if let pendingAttemptID = unavailableStopAttempt?.id {
             finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
         }
+        activeTreadmillStopTelemetryChain = telemetryChain
         guard let context = currentStopObservationContext() else {
             recordUnavailableStopAttempt(source: source, attemptedAt: now)
             return
@@ -2944,6 +3139,26 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ? "confirmation_context_unavailable"
             : "stop_command_not_sent_transport_unavailable"
         logTrainingEvent("stop_attempt_started", fields: fields)
+        let telemetryEvidence = treadmillTelemetryConnectionEpoch.map {
+            TreadmillStopTruthEvidence(
+                stopAttemptID: attemptID,
+                decisionID: activeTreadmillStopTelemetryChain?.decisionID,
+                commandID: activeTreadmillStopTelemetryChain?.commandID,
+                observationID: nil,
+                connectionEpoch: $0,
+                protocolKind: treadmillTelemetryProtocolKind,
+                conclusion: .unconfirmed(
+                    reason: transportCanSend
+                        ? "legacy_stop_confirmation_unavailable_for_protocol"
+                        : "stop_command_not_sent_transport_unavailable"
+                ),
+                rawSpeedTenths: nil,
+                rawDeviceState: nil,
+                checksumValid: nil,
+                observationReceivedAt: nil,
+                evaluatedAt: attemptedAt
+            )
+        }
 
         if transportCanSend {
             stopTruthStatusText = "stop requested • confirmation unavailable"
@@ -2955,6 +3170,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.finalizeUnavailableStopAttempt(attemptID: attemptID)
+        }
+        if let telemetryEvidence {
+            observeTreadmillTelemetry(.stopEvidence(telemetryEvidence))
         }
     }
 
@@ -3240,6 +3458,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             stopTrainingStructuredLog(reason: lifecycle.finalResult?.rawValue ?? "stop_observation_finished")
             stopObservationOwnsTrainingLog = false
         }
+        observeCurrentStopTruth(
+            lifecycle: lifecycle,
+            evaluation: evaluation,
+            evaluatedAt: now
+        )
     }
 
     private func finishActiveStopObservationUnconfirmed(reason: String, now: Date = Date()) {
@@ -3264,6 +3487,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         stopObservationLifecycle = nil
         stopTruthStatusText = ""
+        activeTreadmillStopTelemetryChain = nil
     }
     func setTargetSpeedFromSlider(_ kmh: Double) {
         let v = clampRunningSpeedKmh(kmh)
@@ -3276,7 +3500,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         deviceTargetSpeedKmh = v
         recordSpeedChange(from: old, to: v, reason: "manual_slider")
         lastCommandLine = "CMD set speed=\(String(format: "%.1f", v))"
-        sendTreadmillSetSpeed(v, label: String(format: "SPEED %.1f km/h", v))
+        let telemetryDecision = makeTreadmillDecision(
+            source: .manual,
+            intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: v))
+        )
+        defer { observeTreadmillDecision(telemetryDecision) }
+        sendTreadmillSetSpeed(
+            v,
+            label: String(format: "SPEED %.1f km/h", v),
+            decision: telemetryDecision
+        )
     }
     func adjustSpeed(delta: Double) {
         guard isConnected else { return }
@@ -3288,7 +3521,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         deviceTargetSpeedKmh = v
         recordSpeedChange(from: old, to: v, reason: "manual_adjust")
         lastCommandLine = "CMD adjust delta=\(String(format: "%.1f", delta)) -> \(String(format: "%.1f", v))"
-        sendTreadmillSetSpeed(v, label: String(format: "SPEED %.1f km/h", v))
+        let telemetryDecision = makeTreadmillDecision(
+            source: .manual,
+            intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: v))
+        )
+        defer { observeTreadmillDecision(telemetryDecision) }
+        sendTreadmillSetSpeed(
+            v,
+            label: String(format: "SPEED %.1f km/h", v),
+            decision: telemetryDecision
+        )
     }
 
     // HR control actions
@@ -3795,7 +4037,19 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         deviceTargetSpeedKmh = nextSpeed
                         recordSpeedChange(from: old, to: nextSpeed, reason: "hr_decision_set")
                         lastCommandLine = "CMD HR adjust -> \(String(format: "%.1f", nextSpeed))"
-                        sendTreadmillSetSpeed(nextSpeed, label: String(format: "SPEED %.1f km/h (HR)", nextSpeed))
+                        let telemetryDecision = makeTreadmillDecision(
+                            source: .heartRateControl,
+                            intent: .setDesiredSpeed(
+                                DesiredSpeedKilometresPerHour(value: nextSpeed)
+                            ),
+                            heartRateInputs: controlUseEvidence?.inputs ?? []
+                        )
+                        defer { observeTreadmillDecision(telemetryDecision) }
+                        sendTreadmillSetSpeed(
+                            nextSpeed,
+                            label: String(format: "SPEED %.1f km/h (HR)", nextSpeed),
+                            decision: telemetryDecision
+                        )
                         hrStatusLine = diff > 0 ? "HR‑контроль: уменьшаем скорость" : "HR‑контроль: увеличиваем скорость"
                         hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → \(String(format: "%+.1f", nextSpeed - currentTarget)) км/ч"
                         appendLog("HR decision: set \(String(format: "%.1f", nextSpeed)) from \(String(format: "%.1f", currentTarget)) HR=\(heartRateBPM) diff=\(diff) stepTag=\(stepDebugLabel) step=\(String(format: "%.1f", step))")
@@ -3894,11 +4148,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             treadmillStatusText = "stopped • \(awakeText) • \(proto)"
         }
 
+        var observedLegacyCommandTimeout = false
         if lastCommandAwaitingAck, let sentAt = lastCommandSentAt {
             if now.timeIntervalSince(sentAt) > commandAckTimeoutSeconds {
                 lastCommandAwaitingAck = false
                 lastCommandTimeouts += 1
                 lastCommandTimeoutsCount = lastCommandTimeouts
+                observedLegacyCommandTimeout = true
                 appendLog("CMD ack timeout: \(lastCommandLine)")
                 logTrainingEvent("command_ack_timeout", fields: [
                     "last_command": lastCommandLine,
@@ -3917,24 +4173,50 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         } else {
             lastCommandAckStatusText = ""
         }
+        if observedLegacyCommandTimeout,
+           let connectionEpoch = treadmillTelemetryConnectionEpoch {
+            observeTreadmillTelemetry(
+                .commandTimeout(
+                    LegacyCommandTimeoutObservation(
+                        protocolKind: treadmillTelemetryProtocolKind,
+                        connectionEpoch: connectionEpoch,
+                        occurredAt: now
+                    )
+                )
+            )
+        }
     }
 
     // MARK: - BLE write helpers
-    private func writeCommand(_ data: Data, label: String, highPriority: Bool = false) {
+    private func writeCommand(
+        _ data: Data,
+        label: String,
+        highPriority: Bool = false,
+        telemetryRequest: TreadmillCommandTelemetryRequest? = nil
+    ) {
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
         guard stopTruthExperimentController?.isActive != true else {
             appendLog("Production command blocked while fixed Stop-truth experiment is active: \(label)")
             return
         }
 #endif
-        enqueueCommand(data, label: label, highPriority: highPriority)
+        enqueueCommand(
+            data,
+            label: label,
+            highPriority: highPriority,
+            telemetryRequest: telemetryRequest
+        )
     }
 
     private func isSpeedCommandLabel(_ label: String) -> Bool {
         label.lowercased().hasPrefix("speed")
     }
 
-    private func resetCommandQueue(reason: String) {
+    @discardableResult
+    private func resetCommandQueue(
+        reason: String,
+        observeTelemetryImmediately: Bool = true
+    ) -> [TreadmillCommandEnqueuedEvidence] {
         let dropped = CommandQueueService.clear(queue: &commandQueue)
         commandQueueEpoch += 1
         isCommandQueueProcessing = false
@@ -3944,14 +4226,56 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "reason": reason,
             "dropped_count": dropped
         ])
+        let cancelledTelemetry = treadmillCommandTelemetrySidecar.clear()
+        if observeTelemetryImmediately {
+            observeCancelledTreadmillCommands(
+                cancelledTelemetry,
+                reason: .other("legacy_queue_reset")
+            )
+        }
+        return cancelledTelemetry
     }
 
-    private func enqueueCommand(_ data: Data, label: String, highPriority: Bool) {
+    private func enqueueCommand(
+        _ data: Data,
+        label: String,
+        highPriority: Bool,
+        telemetryRequest: TreadmillCommandTelemetryRequest?
+    ) {
         let command = CommandQueueService.Command(data: data, label: label)
+        let request = telemetryRequest ?? treadmillCommandRequest(kind: .other(label))
+        let telemetryEvidence = treadmillTelemetryConnectionEpoch.map {
+            TreadmillCommandEnqueuedEvidence(
+                commandID: request.commandID,
+                decisionID: request.decisionID,
+                kind: request.kind,
+                protocolKind: treadmillTelemetryProtocolKind,
+                connectionEpoch: $0,
+                enqueuedAt: Date()
+            )
+        }
         if highPriority {
-            resetCommandQueue(reason: "high priority → \(label)")
+            let cancelled = resetCommandQueue(
+                reason: "high priority → \(label)",
+                observeTelemetryImmediately: false
+            )
             CommandQueueService.replaceWithHighPriority(queue: &commandQueue, command: command)
+            var superseded: [TreadmillCommandEnqueuedEvidence] = []
+            if let telemetryEvidence {
+                superseded = treadmillCommandTelemetrySidecar.replaceWithHighPriority(
+                    label: label,
+                    evidence: telemetryEvidence
+                )
+            }
             processCommandQueue()
+            observeCancelledTreadmillCommands(
+                cancelled,
+                reason: .other("legacy_queue_reset")
+            )
+            observeSupersededTreadmillCommands(superseded)
+            if let telemetryEvidence {
+                observeTreadmillTelemetry(.commandEnqueued(telemetryEvidence))
+            }
             return
         }
 
@@ -3960,6 +4284,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             command: command,
             isSpeedLabel: isSpeedCommandLabel
         )
+        var superseded: [TreadmillCommandEnqueuedEvidence] = []
+        if let telemetryEvidence {
+            superseded = treadmillCommandTelemetrySidecar.enqueueRegular(
+                label: label,
+                evidence: telemetryEvidence,
+                isSpeedLabel: isSpeedCommandLabel
+            )
+        }
         if result.coalescedSpeedCount > 0 {
             logTrainingEvent("command_speed_coalesced", fields: [
                 "new_label": label,
@@ -3968,6 +4300,47 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ])
         }
         processCommandQueue()
+        observeSupersededTreadmillCommands(superseded)
+        if let telemetryEvidence {
+            observeTreadmillTelemetry(.commandEnqueued(telemetryEvidence))
+        }
+    }
+
+    private func observeCancelledTreadmillCommands(
+        _ commands: [TreadmillCommandEnqueuedEvidence],
+        reason: CommandCancellationReason
+    ) {
+        for command in commands {
+            observeTreadmillTelemetry(
+                .commandCancelled(
+                    TreadmillCommandCancellationObservation(
+                        commandID: command.commandID,
+                        decisionID: command.decisionID,
+                        connectionEpoch: command.connectionEpoch,
+                        occurredAt: Date(),
+                        reason: reason
+                    )
+                )
+            )
+        }
+    }
+
+    private func observeSupersededTreadmillCommands(
+        _ commands: [TreadmillCommandEnqueuedEvidence]
+    ) {
+        for command in commands {
+            observeTreadmillTelemetry(
+                .commandCancelled(
+                    TreadmillCommandCancellationObservation(
+                        commandID: command.commandID,
+                        decisionID: command.decisionID,
+                        connectionEpoch: command.connectionEpoch,
+                        occurredAt: Date(),
+                        reason: .superseded
+                    )
+                )
+            )
+        }
     }
 
     private func processCommandQueue() {
@@ -3996,29 +4369,103 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 return
             }
             let next = self.commandQueue.removeFirst()
-            self.performWrite(next.data, label: next.label)
+            let telemetryEvidence: TreadmillCommandEnqueuedEvidence?
+            var postWriteTelemetry: [TreadmillTelemetryEvidence] = []
+            switch self.treadmillCommandTelemetrySidecar.dequeue(
+                expectedLabel: next.label,
+                currentEpoch: self.treadmillTelemetryConnectionEpoch
+            ) {
+            case .matched(let evidence):
+                telemetryEvidence = evidence
+            case .staleEpoch(let evidence):
+                telemetryEvidence = nil
+                postWriteTelemetry.append(
+                    .commandCancelled(
+                        TreadmillCommandCancellationObservation(
+                            commandID: evidence.commandID,
+                            decisionID: evidence.decisionID,
+                            connectionEpoch: evidence.connectionEpoch,
+                            occurredAt: Date(),
+                            reason: .other("connection_epoch_changed_before_write")
+                        )
+                    )
+                )
+            case .correlationLost(let evidence):
+                telemetryEvidence = nil
+                postWriteTelemetry.append(
+                    contentsOf: evidence.map {
+                        .commandCancelled(
+                            TreadmillCommandCancellationObservation(
+                                commandID: $0.commandID,
+                                decisionID: $0.decisionID,
+                                connectionEpoch: $0.connectionEpoch,
+                                occurredAt: Date(),
+                                reason: .other("telemetry_sidecar_order_mismatch")
+                            )
+                        )
+                    }
+                )
+            case .missing:
+                telemetryEvidence = nil
+            }
+            postWriteTelemetry.append(
+                contentsOf: self.performWrite(
+                    next.data,
+                    label: next.label,
+                    telemetryEvidence: telemetryEvidence
+                )
+            )
             self.nextCommandAllowedAt = Date().addingTimeInterval(self.commandMinIntervalSecondsForCurrentProtocol())
             self.isCommandQueueProcessing = false
             if !self.commandQueue.isEmpty {
                 self.processCommandQueue()
             }
+            for evidence in postWriteTelemetry {
+                self.observeTreadmillTelemetry(evidence)
+            }
         }
     }
 
-    private func performWrite(_ data: Data, label: String) {
+    private func performWrite(
+        _ data: Data,
+        label: String,
+        telemetryEvidence: TreadmillCommandEnqueuedEvidence?
+    ) -> [TreadmillTelemetryEvidence] {
         guard isConnected else {
             appendLog("WRITE SKIPPED (not connected): \(label)")
             if label == "STOP" {
                 markInitialStopCommandNotSent(reason: "not_connected")
             }
-            return
+            return [
+                .commandFailed(
+                    TreadmillCommandFailureObservation(
+                        commandID: telemetryEvidence?.commandID,
+                        decisionID: telemetryEvidence?.decisionID,
+                        attemptID: nil,
+                        connectionEpoch: telemetryEvidence?.connectionEpoch,
+                        occurredAt: Date(),
+                        reason: .transportUnavailable
+                    )
+                )
+            ]
         }
         guard let p = connectedPeripheral, let ch = commandCharacteristic else {
             appendLog("WRITE SKIPPED (no characteristic): \(label)")
             if label == "STOP" {
                 markInitialStopCommandNotSent(reason: "characteristic_unavailable")
             }
-            return
+            return [
+                .commandFailed(
+                    TreadmillCommandFailureObservation(
+                        commandID: telemetryEvidence?.commandID,
+                        decisionID: telemetryEvidence?.decisionID,
+                        attemptID: nil,
+                        connectionEpoch: telemetryEvidence?.connectionEpoch,
+                        occurredAt: Date(),
+                        reason: .transportUnavailable
+                    )
+                )
+            ]
         }
         let type: CBCharacteristicWriteType = ch.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
         lastCommandSentAt = Date()
@@ -4038,6 +4485,54 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ])
         trackExpectedSpeedIfNeeded(label: label)
         p.writeValue(data, for: ch, type: type)
+        let sentAt = lastCommandSentAt ?? Date()
+        let telemetryWriteType: TreadmillCommandWriteType = type == .withoutResponse
+            ? .withoutResponse
+            : .withResponse
+        if let telemetryEvidence {
+            let previousAttemptNumber = treadmillCommandAttemptNumbers[
+                telemetryEvidence.commandID
+            ] ?? 0
+            let attemptNumber = previousAttemptNumber == UInt16.max
+                ? UInt16.max
+                : previousAttemptNumber + 1
+            treadmillCommandAttemptNumbers[telemetryEvidence.commandID] = attemptNumber
+            return [
+                .commandQueueDelay(
+                    TreadmillCommandQueueDelayEvidence(
+                        commandID: telemetryEvidence.commandID,
+                        decisionID: telemetryEvidence.decisionID,
+                        connectionEpoch: telemetryEvidence.connectionEpoch,
+                        enqueuedAt: telemetryEvidence.enqueuedAt,
+                        sentAt: sentAt
+                    )
+                ),
+                .sendAttempt(
+                    TreadmillCommandSendAttemptEvidence(
+                        commandID: telemetryEvidence.commandID,
+                        decisionID: telemetryEvidence.decisionID,
+                        attemptID: CommandAttemptID(),
+                        attemptNumber: attemptNumber,
+                        protocolKind: telemetryEvidence.protocolKind,
+                        connectionEpoch: telemetryEvidence.connectionEpoch,
+                        sentAt: sentAt,
+                        writeType: telemetryWriteType
+                    )
+                ),
+            ]
+        } else if let connectionEpoch = treadmillTelemetryConnectionEpoch {
+            return [
+                .unassociatedWrite(
+                    UnassociatedLegacyWriteObservation(
+                        protocolKind: treadmillTelemetryProtocolKind,
+                        connectionEpoch: connectionEpoch,
+                        sentAt: sentAt,
+                        writeType: telemetryWriteType
+                    )
+                )
+            ]
+        }
+        return []
     }
 
     private func markInitialStopCommandSent(at sentAt: Date) {
@@ -4137,6 +4632,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func resetProtocolState() {
+        let cancelledTelemetry = treadmillCommandTelemetrySidecar.clear()
+        treadmillCommandAttemptNumbers.removeAll()
+        latestTreadmillObservationEvidence = nil
+        activeTreadmillStopTelemetryChain = nil
         treadmillProtocol = .unknown
         ftmsHasControl = false
         ftmsControlRequestInFlight = false
@@ -4163,6 +4662,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         controllerUnitsTruth = controllerUnitsTruthTracker.state
         lastControllerUnitsQueryAt = nil
         lastControllerUnitsQueryTrigger = nil
+        observeCancelledTreadmillCommands(
+            cancelledTelemetry,
+            reason: .other("connection_epoch_reset")
+        )
     }
 
     private var controllerUnitsTruthRequired: Bool {
@@ -4359,7 +4862,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
-    private func enqueueFtmsRequestControlIfNeeded() {
+    private func enqueueFtmsRequestControlIfNeeded(
+        decision: TreadmillControlDecisionEvidence? = nil
+    ) {
         guard treadmillProtocol == .ftms else { return }
         guard !ftmsHasControl else { return }
         guard !ftmsControlRequestInFlight else { return }
@@ -4368,7 +4873,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         ftmsControlRequestInFlight = true
-        writeCommand(buildFtmsRequestControlPacket(), label: "FTMS REQUEST CONTROL")
+        writeCommand(
+            buildFtmsRequestControlPacket(),
+            label: "FTMS REQUEST CONTROL",
+            telemetryRequest: treadmillCommandRequest(
+                kind: .other("request_control"),
+                decision: decision
+            )
+        )
     }
 
     private func commandMinIntervalSecondsForCurrentProtocol() -> TimeInterval {
@@ -4392,24 +4904,63 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return observed < 0.2
     }
 
-    private func sendTreadmillSetSpeed(_ kmh: Double, label: String) {
+    private func sendTreadmillSetSpeed(
+        _ kmh: Double,
+        label: String,
+        decision: TreadmillControlDecisionEvidence? = nil
+    ) {
         if kmh > 0.1 {
             endStopObservationForNewMotion()
         }
         switch treadmillProtocol {
         case .walkingPad:
-            writeCommand(buildWalkingPadSetSpeedPacket(kmh: kmh), label: label)
+            writeCommand(
+                buildWalkingPadSetSpeedPacket(kmh: kmh),
+                label: label,
+                telemetryRequest: treadmillCommandRequest(
+                    kind: treadmillSetSpeedCommandKind(kmh),
+                    decision: decision
+                )
+            )
         case .ftms:
-            enqueueFtmsRequestControlIfNeeded()
+            enqueueFtmsRequestControlIfNeeded(decision: decision)
             if shouldAutoStartForSpeedChange(kmh: kmh) {
-                writeCommand(buildFtmsStartOrResumePacket(), label: "FTMS START/RESUME (auto)")
+                writeCommand(
+                    buildFtmsStartOrResumePacket(),
+                    label: "FTMS START/RESUME (auto)",
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: .other("auto_start"),
+                        decision: decision
+                    )
+                )
             }
-            writeCommand(buildFtmsSetSpeedPacket(kmh: kmh), label: label)
+            writeCommand(
+                buildFtmsSetSpeedPacket(kmh: kmh),
+                label: label,
+                telemetryRequest: treadmillCommandRequest(
+                    kind: treadmillSetSpeedCommandKind(kmh),
+                    decision: decision
+                )
+            )
         case .fitShow:
             if shouldAutoStartForSpeedChange(kmh: kmh) {
-                writeCommand(buildFitShowStartOrResumePacket(), label: "FitShow START/RESUME (auto)")
+                writeCommand(
+                    buildFitShowStartOrResumePacket(),
+                    label: "FitShow START/RESUME (auto)",
+                    telemetryRequest: treadmillCommandRequest(
+                        kind: .other("auto_start"),
+                        decision: decision
+                    )
+                )
             }
-            writeCommand(buildFitShowSetSpeedPacket(kmh: kmh, incline: 0), label: label)
+            writeCommand(
+                buildFitShowSetSpeedPacket(kmh: kmh, incline: 0),
+                label: label,
+                telemetryRequest: treadmillCommandRequest(
+                    kind: treadmillSetSpeedCommandKind(kmh),
+                    decision: decision
+                )
+            )
         case .unknown:
             appendLog("Set speed skipped: unknown treadmill protocol (speed=\(String(format: "%.1f", kmh)))")
         }
@@ -4488,7 +5039,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         BLETransportCodec.parseFitShowFrame(data)
     }
 
-    private func applyFitShowFrame(_ frame: FitShowFrame) {
+    private func applyFitShowFrame(
+        _ frame: FitShowFrame,
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic,
+        receivedAt: Date
+    ) {
         let cmdHex = String(format: "0x%02X", frame.cmd)
         let subHex = frame.subcmd.map { String(format: "0x%02X", $0) } ?? "-"
 
@@ -4508,6 +5064,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.deviceReportedSpeedKmh = speedKmh
                     self.deviceReportedAppSpeedKmh = speedKmh
                     self.deviceReportedManualMode = incline
+                    if peripheral.identifier == self.connectedPeripheralId,
+                       characteristic.uuid == self.fitShowCharRx,
+                       let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
+                        _ = self.observeTreadmillProviderObservation(
+                            .fitShow(
+                                speedRawTenthsKmh: speedTenths,
+                                rawState: nil,
+                                deviceState: .unknown,
+                                checksumValid: frame.checksumOk,
+                                connectionEpoch: connectionEpoch,
+                                receivedAt: receivedAt
+                            )
+                        )
+                    }
                 }
                 appendLog("Notify FitShow speed: speed=\(String(format: "%.1f", speedKmh)) km/h incline=\(incline) checksum=\(frame.checksumOk ? "ok" : "bad")")
                 logActualSpeedChangeIfNeeded(speedKmh, source: "fitshow_notify")
@@ -4524,12 +5094,31 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             // Status response.
             guard !frame.payload.isEmpty else {
                 appendLog("Notify FitShow status: empty payload checksum=\(frame.checksumOk ? "ok" : "bad")")
+                DispatchQueue.main.async {
+                    guard peripheral.identifier == self.connectedPeripheralId,
+                          characteristic.uuid == self.fitShowCharRx,
+                          let connectionEpoch = self.treadmillTelemetryConnectionEpoch else {
+                        return
+                    }
+                    _ = self.observeTreadmillProviderObservation(
+                        .fitShow(
+                            speedRawTenthsKmh: nil,
+                            rawState: nil,
+                            deviceState: .unknown,
+                            checksumValid: frame.checksumOk,
+                            connectionEpoch: connectionEpoch,
+                            receivedAt: receivedAt
+                        )
+                    )
+                }
                 return
             }
             let state = Int(frame.payload[0])
             var speedKmh: Double? = nil
+            var speedRawTenths: Int? = nil
             if frame.payload.count >= 3 {
                 let speedTenths = Int(frame.payload[1])
+                speedRawTenths = speedTenths
                 speedKmh = Double(speedTenths) / 10.0
             }
             DispatchQueue.main.async {
@@ -4537,6 +5126,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 if let speedKmh {
                     self.deviceReportedSpeedKmh = speedKmh
                     self.deviceReportedAppSpeedKmh = speedKmh
+                }
+                if peripheral.identifier == self.connectedPeripheralId,
+                   characteristic.uuid == self.fitShowCharRx,
+                   let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
+                    _ = self.observeTreadmillProviderObservation(
+                        .fitShow(
+                            speedRawTenthsKmh: speedRawTenths,
+                            rawState: state,
+                            deviceState: .unknown,
+                            checksumValid: frame.checksumOk,
+                            connectionEpoch: connectionEpoch,
+                            receivedAt: receivedAt
+                        )
+                    )
                 }
             }
             appendLog("Notify FitShow status: state=\(state) speed=\(speedKmh.map { String(format: "%.1f", $0) } ?? "-") km/h checksum=\(frame.checksumOk ? "ok" : "bad")")
@@ -4671,6 +5274,189 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func setHeartRateTelemetrySink(_ sink: (any HeartRateTelemetrySink)?) {
         heartRateTelemetrySink = sink
+    }
+
+    func setTreadmillTelemetrySink(_ sink: (any TreadmillTelemetrySink)?) {
+        treadmillTelemetrySink = sink
+    }
+
+    private var treadmillTelemetryConnectionEpoch: TreadmillConnectionEpoch? {
+        controllerUnitsConnectionEpoch.map(TreadmillConnectionEpoch.init(rawValue:))
+    }
+
+    private var treadmillTelemetryProtocolKind: TreadmillProtocolKind {
+        switch treadmillProtocol {
+        case .walkingPad: return .walkingPad
+        case .ftms: return .ftms
+        case .fitShow: return .fitShow
+        case .unknown: return .unknown
+        }
+    }
+
+    private func observeTreadmillTelemetry(_ evidence: TreadmillTelemetryEvidence) {
+        _ = treadmillTelemetrySink?.observeTreadmillEvidence(evidence)
+    }
+
+    private func makeTreadmillDecision(
+        source: TreadmillControlDecisionSource,
+        intent: TreadmillControlDecisionIntent,
+        heartRateInputs: [HeartRateCausalReference] = [],
+        occurredAt: Date = Date()
+    ) -> TreadmillControlDecisionEvidence? {
+        guard let connectionEpoch = treadmillTelemetryConnectionEpoch else { return nil }
+        return TreadmillControlDecisionEvidence(
+            decisionID: DecisionID(),
+            source: source,
+            intent: intent,
+            heartRateInputs: heartRateInputs,
+            occurredAt: occurredAt,
+            connectionEpoch: connectionEpoch
+        )
+    }
+
+    private func observeTreadmillDecision(
+        _ decision: TreadmillControlDecisionEvidence?
+    ) {
+        guard let decision else { return }
+        observeTreadmillTelemetry(.decision(decision))
+    }
+
+    private func treadmillCommandRequest(
+        kind: CommandKind,
+        decision: TreadmillControlDecisionEvidence? = nil,
+        commandID: CommandID = CommandID()
+    ) -> TreadmillCommandTelemetryRequest {
+        TreadmillCommandTelemetryRequest(
+            commandID: commandID,
+            decisionID: decision?.decisionID,
+            kind: kind
+        )
+    }
+
+    private func treadmillSetSpeedCommandKind(_ kmh: Double) -> CommandKind {
+        let commandedSpeed: CommandedSpeed
+        switch treadmillProtocol {
+        case .walkingPad:
+            commandedSpeed = TreadmillCommandedSpeedRepresentation.walkingPad(
+                rawControllerTenths: clampSpeedTenths(kmh)
+            )
+        case .ftms:
+            let raw = UInt16(max(0, min(65_535, (kmh * 100.0).rounded())))
+            commandedSpeed = TreadmillCommandedSpeedRepresentation.ftms(
+                rawHundredthsKmh: raw
+            )
+        case .fitShow:
+            let raw = UInt8(max(0, min(250, Int((kmh * 10.0).rounded()))))
+            commandedSpeed = TreadmillCommandedSpeedRepresentation.fitShow(
+                rawTenthsKmh: raw
+            )
+        case .unknown:
+            commandedSpeed = .init(nativeValue: kmh, nativeUnit: .unknown)
+        }
+        return .setSpeed(commandedSpeed)
+    }
+
+    private func treadmillUnitsTruthEvidence() -> TreadmillUnitsTruth? {
+        guard let currentEpoch = treadmillTelemetryConnectionEpoch else { return nil }
+        guard controllerUnitsTruth.connectionEpoch == currentEpoch.rawValue else {
+            return .notRead(connectionEpoch: currentEpoch)
+        }
+        switch controllerUnitsTruth.status {
+        case .notRead:
+            return .notRead(connectionEpoch: currentEpoch)
+        case .invalidChecksum:
+            return .invalidChecksum(connectionEpoch: currentEpoch)
+        case .malformed:
+            return .malformed(connectionEpoch: currentEpoch)
+        case .valid:
+            guard let observedAt = controllerUnitsTruth.observedAt else {
+                return .malformed(connectionEpoch: currentEpoch)
+            }
+            switch controllerUnitsTruth.units {
+            case .metric:
+                return .valid(
+                    unit: .kilometresPerHour,
+                    connectionEpoch: currentEpoch,
+                    observedAt: observedAt
+                )
+            case .imperial:
+                return .valid(
+                    unit: .milesPerHour,
+                    connectionEpoch: currentEpoch,
+                    observedAt: observedAt
+                )
+            case .unknown:
+                return .unknown(connectionEpoch: currentEpoch)
+            }
+        }
+    }
+
+    private func observeTreadmillProviderObservation(
+        _ observation: TreadmillProviderObservation,
+        unitsTruth: TreadmillUnitsTruth? = nil,
+        recordedAt: Date = Date()
+    ) -> TreadmillObservationEvidence {
+        let evidence = treadmillObservationNormalizer.normalize(
+            observation,
+            unitsTruth: unitsTruth,
+            observationID: ObservationID(),
+            recordedAt: recordedAt
+        )
+        latestTreadmillObservationEvidence = evidence
+        observeTreadmillTelemetry(.observation(evidence))
+        return evidence
+    }
+
+    private func walkingPadTelemetryDeviceState(
+        status: BLETransportCodec.WalkingPadStatus
+    ) -> TreadmillDeviceState {
+        if status.speedRawTenths > 0 { return .moving }
+        if StopObservationPolicy.acceptedNonRunningStates.contains(status.beltState) {
+            return .stopped
+        }
+        return .unknown
+    }
+
+    private func observeCurrentStopTruth(
+        lifecycle: StopObservationLifecycle,
+        evaluation: StopObservationEvaluation,
+        evaluatedAt: Date
+    ) {
+        guard let connectionEpoch = treadmillTelemetryConnectionEpoch,
+              lifecycle.context.connectionEpoch == connectionEpoch.rawValue else {
+            return
+        }
+        let latest = lifecycle.observations.last
+        let factualObservation = latestTreadmillObservationEvidence.flatMap { observation in
+            observation.protocolKind == .walkingPad
+                && observation.connectionEpoch == connectionEpoch
+                && observation.receivedAt == latest?.observedAt
+                ? observation
+                : nil
+        }
+        let conclusion: StopEvidenceConclusion = evaluation.isConfirmed
+            ? factualObservation.map {
+                .confirmedByFreshFactualObservation($0.observationID)
+            } ?? .unconfirmed(reason: "confirmed_predicate_without_correlated_observation_id")
+            : .unconfirmed(reason: lifecycle.finalReason ?? evaluation.reason)
+        observeTreadmillTelemetry(
+            .stopEvidence(
+                TreadmillStopTruthEvidence(
+                    stopAttemptID: lifecycle.attemptID,
+                    decisionID: activeTreadmillStopTelemetryChain?.decisionID,
+                    commandID: activeTreadmillStopTelemetryChain?.commandID,
+                    observationID: factualObservation?.observationID,
+                    connectionEpoch: connectionEpoch,
+                    protocolKind: .walkingPad,
+                    conclusion: conclusion,
+                    rawSpeedTenths: latest?.speedRawTenths,
+                    rawDeviceState: latest?.state,
+                    checksumValid: latest?.checksumValid,
+                    observationReceivedAt: latest?.observedAt,
+                    evaluatedAt: evaluatedAt
+                )
+            )
+        )
     }
 
     private func observeHeartRateDelivery(
@@ -4904,12 +5690,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         expectedSpeedSource = nil
     }
 
-    private func scheduleWrite(_ data: Data, label: String, after delay: TimeInterval) {
+    private func scheduleWrite(
+        _ data: Data,
+        label: String,
+        after delay: TimeInterval,
+        telemetryRequest: TreadmillCommandTelemetryRequest? = nil
+    ) {
         let epoch = commandQueueEpoch
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             guard self.commandQueueEpoch == epoch else { return }
-            self.writeCommand(data, label: label)
+            self.writeCommand(
+                data,
+                label: label,
+                telemetryRequest: telemetryRequest
+            )
         }
     }
 
@@ -5104,10 +5899,28 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let experimentReceiveUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
 #endif
         lastNotifyAt = now
-        if lastCommandAwaitingAck,
-           let sentAt = lastCommandSentAt,
-           now.timeIntervalSince(sentAt) <= commandAckTimeoutSeconds,
-           shouldTreatAsCommandAck(characteristic: characteristic, data: data) {
+        let isLegacyAcknowledgementSignal = shouldTreatAsCommandAck(
+            characteristic: characteristic,
+            data: data
+        )
+        let legacyAcknowledgementDecision = LegacyAcknowledgementObservationSeam.evaluate(
+            isAwaitingAcknowledgement: lastCommandAwaitingAck,
+            sentAt: lastCommandSentAt,
+            receivedAt: now,
+            timeout: commandAckTimeoutSeconds,
+            isQualifyingSignal: isLegacyAcknowledgementSignal,
+            protocolKind: treadmillTelemetryProtocolKind,
+            connectionEpoch: treadmillTelemetryConnectionEpoch,
+            recordedAt: Date()
+        )
+        defer {
+            if let observation = legacyAcknowledgementDecision.observation {
+                observeTreadmillTelemetry(
+                    .acknowledgement(observation)
+                )
+            }
+        }
+        if legacyAcknowledgementDecision.isAcceptedByLegacyRuntime {
             lastCommandAwaitingAck = false
             lastCommandAckedAt = now
         }
@@ -5179,6 +5992,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             "start_speed_raw_tenths": params?.startSpeedRawTenths ?? -1
                         ]) { current, _ in current }
                     )
+                    if let truth = self.treadmillUnitsTruthEvidence() {
+                        self.observeTreadmillTelemetry(
+                            .unitsTruth(
+                                TreadmillUnitsTruthEvidence(
+                                    truth: truth,
+                                    observedAt: observedAt
+                                )
+                            )
+                        )
+                    }
                 }
             } else if let status = BLETransportCodec.parseWalkingPadStatus(data) {
                 let hexStr = hex(data)
@@ -5213,6 +6036,28 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         characteristic: characteristic,
                         observedAt: now
                     )
+                    if peripheral.identifier == self.connectedPeripheralId,
+                       characteristic === self.notifyCharacteristic,
+                       let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
+                        _ = self.observeTreadmillProviderObservation(
+                            .walkingPad(
+                                speedRawTenths: Int(status.speedRawTenths),
+                                rawState: status.beltState,
+                                deviceState: self.walkingPadTelemetryDeviceState(status: status),
+                                checksumValid: status.checksumOk,
+                                connectionEpoch: connectionEpoch,
+                                receivedAt: now
+                            ),
+                            unitsTruth: self.treadmillUnitsTruthEvidence()
+                        )
+                        if let lifecycle = self.stopObservationLifecycle {
+                            self.observeCurrentStopTruth(
+                                lifecycle: lifecycle,
+                                evaluation: lifecycle.currentEvaluation(at: Date()),
+                                evaluatedAt: Date()
+                            )
+                        }
+                    }
                 }
                 appendLog("Notify FE01 parsed: state=\(status.beltState) speed=\(String(format: "%.1f", status.speedKmh)) appSpeed=\(String(format: "%.1f", status.appSpeedKmh)) mode=\(status.manualMode) time=\(status.timeSeconds)s dist=\(status.distance10m*10)m steps=\(status.steps) button=\(status.lastButton) checksum=\(status.checksumOk ? "ok" : "bad")")
                 logActualSpeedChangeIfNeeded(status.speedKmh, source: "fe01_notify")
@@ -5273,6 +6118,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.deviceReportedAppSpeedKmh = parsed.instantaneousSpeedKmh
                     self.deviceReportedState = parsed.isMoving ? 1 : 0
                     self.deviceReportedRawHex = ""
+                    if peripheral.identifier == self.connectedPeripheralId,
+                       characteristic.uuid == self.ftmsCharTreadmillData,
+                       let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
+                        _ = self.observeTreadmillProviderObservation(
+                            .ftms(
+                                speedRawHundredthsKmh: Int(
+                                    parsed.instantaneousSpeedRawHundredthsKmh
+                                ),
+                                rawState: parsed.isMoving ? 1 : 0,
+                                deviceState: parsed.isMoving ? .moving : .stopped,
+                                connectionEpoch: connectionEpoch,
+                                receivedAt: now
+                            )
+                        )
+                    }
                 }
                 appendLog("Notify FTMS treadmill data: speed=\(String(format: "%.2f", parsed.instantaneousSpeedKmh)) km/h moving=\(parsed.isMoving)")
                 logActualSpeedChangeIfNeeded(parsed.instantaneousSpeedKmh, source: "ftms_treadmill_data")
@@ -5306,7 +6166,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         case .fitShow:
             if let frame = parseFitShowFrame(data) {
-                applyFitShowFrame(frame)
+                applyFitShowFrame(
+                    frame,
+                    peripheral: peripheral,
+                    characteristic: characteristic,
+                    receivedAt: now
+                )
             } else {
                 appendLog("Notify \(characteristic.uuid.uuidString): \(hex(data))")
             }
@@ -5330,6 +6195,19 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "char_uuid": characteristic.uuid.uuidString,
                 "status": "ok"
             ])
+        }
+        if peripheral.identifier == connectedPeripheralId,
+           let connectionEpoch = treadmillTelemetryConnectionEpoch {
+            observeTreadmillTelemetry(
+                .writeResult(
+                    LegacyWriteResultObservation(
+                        protocolKind: treadmillTelemetryProtocolKind,
+                        connectionEpoch: connectionEpoch,
+                        occurredAt: Date(),
+                        status: error == nil ? .succeeded : .failed
+                    )
+                )
+            )
         }
     }
 }

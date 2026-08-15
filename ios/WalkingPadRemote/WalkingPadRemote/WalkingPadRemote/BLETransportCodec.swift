@@ -12,6 +12,7 @@ enum BLETransportCodec {
     }
 
     struct FtmsTreadmillData {
+        let instantaneousSpeedRawHundredthsKmh: UInt16
         let instantaneousSpeedKmh: Double
         let isMoving: Bool
     }
@@ -191,7 +192,11 @@ enum BLETransportCodec {
         guard data.count >= 4 else { return nil }
         guard let rawSpeed = readUInt16LE(data, at: 2) else { return nil }
         let kmh = Double(rawSpeed) / 100.0
-        return FtmsTreadmillData(instantaneousSpeedKmh: kmh, isMoving: kmh > 0.2)
+        return FtmsTreadmillData(
+            instantaneousSpeedRawHundredthsKmh: rawSpeed,
+            instantaneousSpeedKmh: kmh,
+            isMoving: kmh > 0.2
+        )
     }
 
     static func parseFtmsSupportedSpeedRange(_ data: Data) -> FtmsSupportedSpeedRange? {
