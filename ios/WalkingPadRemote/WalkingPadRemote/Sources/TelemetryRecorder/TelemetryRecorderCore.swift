@@ -700,9 +700,14 @@ private extension TelemetryRecorderCore {
         endedElapsed: ElapsedDuration?,
         reason: String?
     ) -> TelemetrySessionFinalization {
-        let lifecycle: SessionLifecycleState = completeness == .complete
-            ? .completed
-            : .incomplete
+        let lifecycle: SessionLifecycleState = switch completeness {
+        case .complete:
+            .completed
+        case .cancelled:
+            .cancelled
+        case .incomplete, .failed:
+            .incomplete
+        }
         return TelemetrySessionFinalization(
             sessionID: sessionHeader.sessionID,
             lifecycleState: lifecycle,

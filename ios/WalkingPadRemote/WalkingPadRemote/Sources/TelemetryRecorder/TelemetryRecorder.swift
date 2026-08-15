@@ -270,6 +270,10 @@ private extension TelemetryRecorder {
                     )
                 case let .failure(error):
                     core.persistenceBecameTerminal(error: error, uncertainRecords: [])
+                    await bestEffortIncompleteFinalization(
+                        core: core,
+                        persistence: persistence
+                    )
                     core.completeTerminal(.failed)
                 }
                 continuation.finish()

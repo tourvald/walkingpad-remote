@@ -327,6 +327,8 @@ final class TelemetryRecorderBehaviorTests: XCTestCase {
         let cancelled = await first.cancel()
 
         XCTAssertEqual(cancelled.completeness, .cancelled)
+        let cancelledSnapshot = await persistence.snapshot()
+        XCTAssertEqual(cancelledSnapshot.finalizations.last?.lifecycleState, .cancelled)
         XCTAssertEqual(first.operationalState.lostCriticalCount, 1)
         XCTAssertEqual(
             first.ingress.yield(TelemetryRecorderFixtures.event(sessionID: firstSession.sessionID, order: 2))
@@ -350,6 +352,35 @@ final class TelemetryRecorderBehaviorTests: XCTestCase {
         )
         XCTAssertEqual(finished.completeness, .complete)
         XCTAssertEqual(finished.lastCommittedRecorderSequence, 1)
+    }
+
+    func testAmbiguousCompletionFinalizationDowngradesStoredStateToIncomplete() async {
+        let persistence = InMemoryTelemetryRecorderPersistence(
+            finalizeBehaviors: [.ambiguousAfterCommit, .success]
+        )
+        let scheduler = ManualTelemetryRecorderScheduler()
+        let session = TelemetryRecorderFixtures.session()
+        let recorder = TelemetryRecorder(
+            sessionHeader: session,
+            persistence: persistence,
+            scheduler: scheduler
+        )
+        await persistence.waitForHeaders(1)
+
+        let result = await recorder.finish(
+            endedAt: TelemetryRecorderFixtures.baseDate,
+            endedElapsed: .zero
+        )
+
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.finalizeCalls, 2)
+        XCTAssertEqual(snapshot.finalizations.map(\.lifecycleState), [.completed, .incomplete])
+        XCTAssertEqual(
+            snapshot.finalizations.last?.incompleteReason,
+            "recorder-persistence-failure"
+        )
+        XCTAssertEqual(result.completeness, .failed)
+        XCTAssertEqual(recorder.operationalState.writerFailureCount, 1)
     }
 
     func testUnfinishedSessionRecoveryMarksIncompleteWithoutFabricatedCompletion() async throws {

@@ -121,6 +121,34 @@ final class TelemetryRecorderPersistenceAdapterTests: XCTestCase {
         XCTAssertEqual(reopened.recorderHealth, finalization.recorderHealth)
     }
 
+    func testCancelledSessionIsTerminalAndExcludedFromRecoveryDiscovery() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = runningSession(seed: 9)
+        try await store.beginSession(session)
+
+        try await store.finalizeSession(
+            TelemetrySessionFinalization(
+                sessionID: session.sessionID,
+                lifecycleState: .cancelled,
+                endedAt: nil,
+                endedElapsed: nil,
+                incompleteReason: "recorder-cancelled",
+                recorderHealth: RecorderHealthSummary(
+                    isComplete: false,
+                    lostCriticalRecordCount: 1,
+                    lostNativeRecordCount: 0,
+                    lastPersistedElapsed: nil
+                )
+            )
+        )
+
+        let storedSessions = try await store.fetchSessions()
+        let reopened = try XCTUnwrap(storedSessions.first { $0.sessionID == session.sessionID })
+        let unfinished = try await store.unfinishedSessions()
+        XCTAssertEqual(reopened.lifecycleState, .cancelled)
+        XCTAssertFalse(unfinished.contains { $0.sessionID == session.sessionID })
+    }
+
     private func runningSession(seed: UInt8) -> WorkoutSessionRecord {
         let base = TelemetryPersistenceFixtures.session(seed: seed)
         return WorkoutSessionRecord(

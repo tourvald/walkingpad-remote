@@ -165,6 +165,9 @@ public struct TelemetrySessionFinalization: Hashable, Sendable {
 public protocol TelemetryRecorderPersistence: Sendable {
     func beginSession(_ header: WorkoutSessionRecord) async throws
     func persistBatch(_ records: [SequencedTelemetryRecord]) async throws
+
+    /// Finalization must be idempotent. An adapter that observes an unknown commit
+    /// outcome must read back exact stored state before returning success or failure.
     func finalizeSession(_ finalization: TelemetrySessionFinalization) async throws
     func unfinishedSessions() async throws -> [WorkoutSessionRecord]
 }

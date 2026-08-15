@@ -103,8 +103,13 @@ Normal `finish` stops admission, drains the accepted prefix, finalizes the
 session, and reports complete only when no record is known lost and all required
 persistence succeeded. Explicit failure, retry exhaustion, ambiguous commit,
 catastrophic pressure, and discarded or uncertain tail evidence cannot become a
-complete session. Cancellation accounts the queued or in-flight uncertain tail,
-does not fabricate success, and terminates the consumer.
+complete session. A persistence adapter must resolve an ambiguous final-state
+commit by reading back exact stored state; the SwiftData adapter does so. If an
+unresolved completion update still fails, the recorder makes one fail-closed,
+best-effort incomplete update and reports failure rather than success.
+Cancellation accounts the queued or in-flight uncertain tail, persists the
+terminal `cancelled` lifecycle, does not fabricate success, and terminates the
+consumer.
 
 `unfinishedSessions()` exposes persisted sessions that never reached completed
 or cancelled state. `recoverUnfinishedSessions(using:)` marks them incomplete
