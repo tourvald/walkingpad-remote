@@ -129,16 +129,25 @@ public struct SessionLifecycleEvent: Codable, Hashable, Sendable {
     public let previous: SessionLifecycleState?
     public let current: SessionLifecycleState
     public let incompleteReason: String?
+    public let reason: String?
 
     public init(
         previous: SessionLifecycleState?,
         current: SessionLifecycleState,
-        incompleteReason: String? = nil
+        incompleteReason: String? = nil,
+        reason: String? = nil
     ) {
         self.previous = previous
         self.current = current
         self.incompleteReason = incompleteReason
+        self.reason = reason
     }
+}
+
+public enum HeartRateRuntimeEvidence: Codable, Hashable, Sendable {
+    case delivery(HeartRateNormalizationResult)
+    case sourceLifecycle(HeartRateSourceLifecycleEvidence)
+    case controlUse(HeartRateControlUseEvidence)
 }
 
 public struct WorkoutPhaseTransition: Codable, Hashable, Sendable {
@@ -297,6 +306,8 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
     case safety(SafetyEvent)
     case stopEvidence(StopEvidenceEvent)
     case recorderHealth(RecorderHealthEvent)
+    case heartRateEvidence(HeartRateRuntimeEvidence)
+    case treadmillEvidence(TreadmillTelemetryEvidence)
 
     public var kind: WorkoutEventKind {
         switch self {
@@ -311,6 +322,8 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
         case .safety: .safety
         case .stopEvidence: .stopEvidence
         case .recorderHealth: .recorderHealth
+        case .heartRateEvidence: .heartRateEvidence
+        case .treadmillEvidence: .treadmillEvidence
         }
     }
 
@@ -328,6 +341,8 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
                 commandID: record.commandID,
                 attemptID: record.lifecycle.primaryAttemptID
             )
+        case let .treadmillEvidence(evidence):
+            evidence.causalIDs
         default:
             WorkoutEventCausalIDs(decisionID: nil, commandID: nil, attemptID: nil)
         }
@@ -379,6 +394,83 @@ public enum WorkoutEventKind: String, Codable, Hashable, Sendable {
     case safety
     case stopEvidence
     case recorderHealth
+    case heartRateEvidence
+    case treadmillEvidence
+}
+
+private extension TreadmillTelemetryEvidence {
+    var causalIDs: WorkoutEventCausalIDs {
+        switch self {
+        case let .observation(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: nil,
+                commandID: evidence.commandID,
+                attemptID: evidence.attemptID
+            )
+        case .unitsTruth, .unassociatedWrite:
+            return WorkoutEventCausalIDs(decisionID: nil, commandID: nil, attemptID: nil)
+        case let .decision(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: evidence.decisionID,
+                commandID: nil,
+                attemptID: nil
+            )
+        case let .commandEnqueued(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: evidence.decisionID,
+                commandID: evidence.commandID,
+                attemptID: nil
+            )
+        case let .commandQueueDelay(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: evidence.decisionID,
+                commandID: evidence.commandID,
+                attemptID: nil
+            )
+        case let .sendAttempt(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: evidence.decisionID,
+                commandID: evidence.commandID,
+                attemptID: evidence.attemptID
+            )
+        case let .acknowledgement(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: nil,
+                commandID: evidence.commandID,
+                attemptID: evidence.attemptID
+            )
+        case let .writeResult(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: nil,
+                commandID: evidence.commandID,
+                attemptID: evidence.attemptID
+            )
+        case let .commandTimeout(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: nil,
+                commandID: evidence.commandID,
+                attemptID: evidence.attemptID
+            )
+        case let .commandFailed(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: evidence.decisionID,
+                commandID: evidence.commandID,
+                attemptID: evidence.attemptID
+            )
+        case let .commandCancelled(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: evidence.decisionID,
+                commandID: evidence.commandID,
+                attemptID: nil
+            )
+        case let .stopEvidence(evidence):
+            return WorkoutEventCausalIDs(
+                decisionID: evidence.decisionID,
+                commandID: evidence.commandID,
+                attemptID: nil
+            )
+        }
+    }
 }
 
 public struct EventPayloadEnvelope: Codable, Hashable, Sendable {

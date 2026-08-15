@@ -65,7 +65,7 @@ final class TelemetrySchemaAndBoundaryTests: XCTestCase {
         )
     }
 
-    func testStoreBoundaryDisablesAutosaveAndProductionSourcesDoNotInstantiateV2() async throws {
+    func testStoreBoundaryDisablesAutosaveAndProductionWiringIsSingleCoordinatorFactory() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let autosaveEnabled = await store.isAutosaveEnabled()
         XCTAssertFalse(autosaveEnabled)
@@ -83,8 +83,23 @@ final class TelemetrySchemaAndBoundaryTests: XCTestCase {
 
         for url in sourceURLs {
             let source = try String(contentsOf: url, encoding: .utf8)
-            XCTAssertFalse(source.contains("TelemetryStoreFactory"), "Unexpected V2 store wiring in \(url.lastPathComponent)")
-            XCTAssertFalse(source.contains("TelemetryPersistence"), "Unexpected V2 import in \(url.lastPathComponent)")
+            if url.lastPathComponent == "BluetoothManager.swift" {
+                XCTAssertEqual(
+                    source.components(separatedBy: "TelemetryStoreFactory.make").count - 1,
+                    1
+                )
+                XCTAssertTrue(source.contains("import TelemetryPersistence"))
+                XCTAssertTrue(source.contains("TelemetryV2RuntimeCoordinator("))
+            } else {
+                XCTAssertFalse(
+                    source.contains("TelemetryStoreFactory"),
+                    "Unexpected V2 store wiring in \(url.lastPathComponent)"
+                )
+                XCTAssertFalse(
+                    source.contains("TelemetryPersistence"),
+                    "Unexpected V2 import in \(url.lastPathComponent)"
+                )
+            }
         }
     }
 

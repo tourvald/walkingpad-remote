@@ -136,9 +136,85 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "guard unitsDecision.allowed",
                 "persistBlockedControllerUnitsStart(decision: unitsDecision)",
                 "retryControllerUnitsQueryAfterBlockedStart()",
+                "let legacySessionID = startTrainingStructuredLog(trigger: \"start_hr\")",
+                "isHrControlRunning = true",
+                "beginTelemetryV2Session(legacySessionID: legacySessionID)",
                 "startWithSpeed",
             ],
             in: start
+        )
+    }
+
+    func testTelemetryV2LifecycleHooksCannotPerformPersistenceOnControlPaths() throws {
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        let begin = try functionBody(
+            "private func beginTelemetryV2Session(legacySessionID: UUID?)",
+            in: managerSource
+        )
+        let end = try functionBody(
+            "private func endTelemetryV2Session(reason: String)",
+            in: managerSource
+        )
+        let forbidden = [
+            "TelemetryStore",
+            "TelemetryRecorder",
+            "FileManager",
+            "FileHandle",
+            "trainingLogQueue.sync",
+            "await ",
+            ".finish(",
+            ".finalize",
+        ]
+        for body in [start, begin, end] {
+            for token in forbidden {
+                XCTAssertFalse(body.contains(token), "Control path contains \(token)")
+            }
+        }
+        XCTAssertTrue(begin.contains("telemetryV2Coordinator.beginSession(descriptor)"))
+        XCTAssertTrue(end.contains("telemetryV2Coordinator.endSession(reason: reason)"))
+        XCTAssertFalse(start.contains("telemetryV2Status"))
+    }
+
+    func testTelemetryV2FinalizationIsAfterExistingProductStopEffects() throws {
+        let manual = try functionBody("func stopHrControl()", in: managerSource)
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason: \"manual_stop\")",
+                "isHrControlRunning = false",
+                "stopBeltWithToggle(reason: \"hr\")",
+                "sendWatchCommand(\"stop_hr\")",
+                "endTelemetryV2Session(reason: \"manual_stop\")",
+            ],
+            in: manual
+        )
+
+        let cooldown = try functionBody(
+            "private func executeCooldownEffect(",
+            in: managerSource
+        )
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason: completionEffect.structuredLogReason)",
+                "sendWatchCommand(\"stop_hr\")",
+                "stopBeltWithToggle(reason: \"hr_cooldown_done\")",
+                "endTelemetryV2Session(reason: completionEffect.structuredLogReason)",
+            ],
+            in: cooldown
+        )
+
+        let disconnect = try functionBody(
+            "private func disconnect(userInitiated: Bool = false)",
+            in: managerSource
+        )
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason:",
+                "central.cancelPeripheralConnection(p)",
+                "self.stopTelemetry()",
+                "self.isHrControlRunning = false",
+                "self.endTelemetryV2Session(",
+            ],
+            in: disconnect
         )
     }
 

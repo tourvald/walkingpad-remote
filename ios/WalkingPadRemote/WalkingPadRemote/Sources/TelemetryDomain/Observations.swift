@@ -289,24 +289,91 @@ public struct TreadmillObservation: Codable, Hashable, Sendable {
         self.quality = quality
     }
 
+    public init?(
+        recordID: RecordID,
+        sessionID: SessionID,
+        source: SignalSourceIdentity,
+        observedEvidence: TreadmillObservationEvidence,
+        nativeUnit: TreadmillNativeSpeedUnit,
+        timestamp: ObservationTimestamp,
+        freshness: EvidenceFreshness,
+        quality: QualityFlags
+    ) {
+        guard let reportedNativeSpeed = observedEvidence.nativeSpeed else { return nil }
+        switch (reportedNativeSpeed.unit, nativeUnit) {
+        case (.kilometresPerHour, .kilometresPerHour),
+             (.milesPerHour, .milesPerHour),
+             (.controllerUnit, .controllerNative),
+             (.controllerUnit, .unknown):
+            break
+        default:
+            return nil
+        }
+        self.init(
+            recordID: recordID,
+            observationID: observedEvidence.observationID,
+            sessionID: sessionID,
+            source: source,
+            nativeSpeed: NativeTreadmillSpeed(
+                value: reportedNativeSpeed.scaledValue,
+                unit: nativeUnit
+            ),
+            factualSpeed: observedEvidence.factualSpeed,
+            deviceState: observedEvidence.deviceState,
+            arrivalOrder: observedEvidence.arrivalOrder,
+            timestamp: timestamp,
+            provenance: observedEvidence.provenance,
+            freshness: freshness,
+            quality: quality
+        )
+    }
+
+    private init(
+        recordID: RecordID,
+        observationID: ObservationID,
+        sessionID: SessionID,
+        source: SignalSourceIdentity,
+        nativeSpeed: NativeTreadmillSpeed,
+        factualSpeed: FactualSpeedKilometresPerHour?,
+        deviceState: TreadmillDeviceState,
+        arrivalOrder: UInt64,
+        timestamp: ObservationTimestamp,
+        provenance: EvidenceProvenance,
+        freshness: EvidenceFreshness,
+        quality: QualityFlags
+    ) {
+        self.recordID = recordID
+        self.observationID = observationID
+        self.sessionID = sessionID
+        self.source = source
+        self.nativeSpeed = nativeSpeed
+        self.factualSpeed = factualSpeed
+        self.deviceState = deviceState
+        self.arrivalOrder = arrivalOrder
+        self.timestamp = timestamp
+        self.provenance = provenance
+        self.freshness = freshness
+        self.quality = quality
+    }
+
     public init(from decoder: Decoder) throws {
         let decoded = try CodingRepresentation(from: decoder)
-        self.init(
-            recordID: decoded.recordID,
-            observationID: decoded.observationID,
-            sessionID: decoded.sessionID,
-            source: decoded.source,
-            nativeSpeed: decoded.nativeSpeed,
-            deviceState: decoded.deviceState,
-            arrivalOrder: decoded.arrivalOrder,
-            timestamp: decoded.timestamp,
+        let deterministicallyNormalized = FactualSpeedKilometresPerHour.normalized(
+            from: decoded.nativeSpeed,
             provenance: decoded.provenance,
-            freshness: decoded.freshness,
-            quality: decoded.quality,
             normalizationRule: decoded.factualSpeed?.normalizationRule
                 ?? .nativeToKilometresPerHourV1
         )
-        guard factualSpeed == decoded.factualSpeed else {
+        let factualSpeedIsConsistent: Bool
+        switch decoded.nativeSpeed.unit {
+        case .controllerNative:
+            factualSpeedIsConsistent = true
+        case .unknown:
+            factualSpeedIsConsistent = decoded.factualSpeed == nil
+        case .kilometresPerHour, .milesPerHour:
+            factualSpeedIsConsistent = deterministicallyNormalized == decoded.factualSpeed
+        }
+        guard factualSpeedIsConsistent else {
             throw DecodingError.dataCorrupted(
                 DecodingError.Context(
                     codingPath: decoder.codingPath,
@@ -314,6 +381,20 @@ public struct TreadmillObservation: Codable, Hashable, Sendable {
                 )
             )
         }
+        self = Self(
+            recordID: decoded.recordID,
+            observationID: decoded.observationID,
+            sessionID: decoded.sessionID,
+            source: decoded.source,
+            nativeSpeed: decoded.nativeSpeed,
+            factualSpeed: decoded.factualSpeed,
+            deviceState: decoded.deviceState,
+            arrivalOrder: decoded.arrivalOrder,
+            timestamp: decoded.timestamp,
+            provenance: decoded.provenance,
+            freshness: decoded.freshness,
+            quality: decoded.quality
+        )
     }
 
     public func encode(to encoder: Encoder) throws {

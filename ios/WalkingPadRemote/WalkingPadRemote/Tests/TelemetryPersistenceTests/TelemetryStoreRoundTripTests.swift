@@ -4,6 +4,73 @@ import TelemetryPersistence
 import XCTest
 
 final class TelemetryStoreRoundTripTests: XCTestCase {
+    func testUnknownTreadmillCausalityRemainsNilAfterPersistenceReplay() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = TelemetryPersistenceFixtures.session(seed: 30)
+        try await store.insertSession(session)
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let date = TelemetryPersistenceFixtures.baseDate
+        let payloads: [WorkoutEventPayload] = [
+            .treadmillEvidence(
+                .acknowledgement(
+                    .unresolved(
+                        protocolKind: .walkingPad,
+                        connectionEpoch: epoch,
+                        receivedAt: date,
+                        recordedAt: date
+                    )
+                )
+            ),
+            .treadmillEvidence(
+                .commandTimeout(
+                    LegacyCommandTimeoutObservation(
+                        protocolKind: .walkingPad,
+                        connectionEpoch: epoch,
+                        occurredAt: date
+                    )
+                )
+            ),
+            .treadmillEvidence(
+                .writeResult(
+                    LegacyWriteResultObservation(
+                        protocolKind: .walkingPad,
+                        connectionEpoch: epoch,
+                        occurredAt: date,
+                        status: .succeeded
+                    )
+                )
+            ),
+        ]
+        for (offset, payload) in payloads.enumerated() {
+            let elapsed = ElapsedDuration(microseconds: Int64(offset + 1) * 1_000_000)
+            try await store.insertEvent(
+                WorkoutEvent(
+                    recordID: RecordID(),
+                    sessionID: session.sessionID,
+                    timestamp: EventTimestamp(
+                        occurredAt: date.addingTimeInterval(TimeInterval(offset)),
+                        recordedAt: date.addingTimeInterval(TimeInterval(offset)),
+                        occurredElapsed: elapsed,
+                        recordedElapsed: elapsed
+                    ),
+                    sourceID: nil,
+                    payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
+                )
+            )
+        }
+
+        let replayed = try await store.fetchEvents(
+            sessionID: session.sessionID,
+            kind: .treadmillEvidence
+        )
+        XCTAssertEqual(replayed.count, 3)
+        for event in replayed {
+            XCTAssertNil(event.decisionID)
+            XCTAssertNil(event.commandID)
+            XCTAssertNil(event.attemptID)
+        }
+    }
+
     func testInsertFetchOrderAndFilterAllConceptualRecords() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let sharedConfiguration = TelemetryPersistenceFixtures.configuration(seed: 1)

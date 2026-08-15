@@ -24,6 +24,10 @@ let package = Package(
         .library(
             name: "TelemetryPersistence",
             targets: ["TelemetryPersistence"]
+        ),
+        .library(
+            name: "TelemetryRuntime",
+            targets: ["TelemetryRuntime"]
         )
     ],
     targets: [
@@ -36,6 +40,10 @@ let package = Package(
         ),
         .target(
             name: "TelemetryPersistence",
+            dependencies: ["TelemetryDomain", "TelemetryRecorder"]
+        ),
+        .target(
+            name: "TelemetryRuntime",
             dependencies: ["TelemetryDomain", "TelemetryRecorder"]
         ),
         .executableTarget(
@@ -97,6 +105,10 @@ let package = Package(
         .testTarget(
             name: "TelemetryRecorderTests",
             dependencies: ["TelemetryDomain", "TelemetryRecorder"]
+        ),
+        .testTarget(
+            name: "TelemetryRuntimeTests",
+            dependencies: ["TelemetryDomain", "TelemetryRecorder", "TelemetryRuntime"]
         ),
         .testTarget(
             name: "TelemetryPersistenceTests",
