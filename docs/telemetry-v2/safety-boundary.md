@@ -27,6 +27,12 @@ Throughout this Epic:
    production gates or reach production transport.
 8. Telemetry, persistence, export, and analyzer failure MUST be fail-independent:
    they may degrade evidence health, never motion safety.
+9. The Start HR Control affordance MUST remain available under the existing
+   connected-treadmill plus current/fresh-visible-HR rule. Telemetry health,
+   readiness, factual-speed availability, persistence, migration, analysis,
+   history, export, or evidence completeness MUST NOT add an affordance gate.
+   Existing non-telemetry runtime authorization checks after a tap remain
+   fail-closed.
 
 These are safety boundaries, not learnable parameters.
 
@@ -130,3 +136,10 @@ A failure involving safety, factual provenance, causal correlation, unexplained
 critical loss, or control divergence blocks legacy retirement. An unverified
 item requires explicit PM disposition; simulation alone is not authority to
 delete the comparison path.
+
+Executable regression references include
+`HeartRateLegacyBehaviorContractTests.testStartAffordanceIsSeparateFromRuntimeAuthorization`
+and
+`TreadmillTelemetryBoundaryTests.testStartAffordanceAndRuntimeAuthorizationDoNotReadTreadmillTelemetry`.
+Treadmill unknown-association and no-heuristic-correlation coverage lives in
+`TreadmillTruthTests`.
