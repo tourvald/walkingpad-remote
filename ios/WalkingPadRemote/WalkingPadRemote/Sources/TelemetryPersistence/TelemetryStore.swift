@@ -126,9 +126,16 @@ public actor TelemetryStore {
         let lostNative = try Self.int64(record.recorderHealth.lostNativeRecordCount, field: "lostNativeRecordCount")
 
         try explicitTransaction {
-            try requireAbsent(TelemetryWorkoutSessionV1.self, key: sessionKey) { model, value in
-                model.sessionID == value || model.recordID == recordKey
-            }
+            try rejectDuplicate(
+                TelemetryWorkoutSessionV1.self,
+                key: sessionKey,
+                predicate: #Predicate { $0.sessionID == sessionKey }
+            )
+            try rejectDuplicate(
+                TelemetryWorkoutSessionV1.self,
+                key: recordKey,
+                predicate: #Predicate { $0.recordID == recordKey }
+            )
 
             let configuration = try configurationModel(
                 snapshot: record.configuration,
@@ -176,9 +183,16 @@ public actor TelemetryStore {
         let knownDevicePayload = try source.knownDevice.map(Self.encode)
 
         try explicitTransaction {
-            try requireAbsent(TelemetrySignalSourceV1.self, key: sourceKey) { model, value in
-                model.sourceID == value || model.stableIdentityKey == stableIdentityKey
-            }
+            try rejectDuplicate(
+                TelemetrySignalSourceV1.self,
+                key: sourceKey,
+                predicate: #Predicate { $0.sourceID == sourceKey }
+            )
+            try rejectDuplicate(
+                TelemetrySignalSourceV1.self,
+                key: stableIdentityKey,
+                predicate: #Predicate { $0.stableIdentityKey == stableIdentityKey }
+            )
             modelContext.insert(
                 TelemetrySignalSourceV1(
                     sourceID: sourceKey,
@@ -203,10 +217,32 @@ public actor TelemetryStore {
         let freshnessPayload = try Self.encode(observation.freshness)
         let qualityPayload = try Self.encode(observation.quality)
         let arrivalOrder = try Self.int64(observation.arrivalOrder, field: "arrivalOrder")
+        let nativeSampleIdentityKey = try observation.providerSampleIdentity.map {
+            try Self.heartRateNativeSampleIdentityKey(
+                sourceStableIdentityKey: source.stableIdentityKey,
+                providerSampleIdentity: $0
+            )
+        }
 
         try explicitTransaction {
-            try requireAbsent(TelemetryHeartRateSampleV1.self, key: observationKey) { model, value in
-                model.observationID == value || model.recordID == recordKey
+            try rejectDuplicate(
+                TelemetryHeartRateSampleV1.self,
+                key: observationKey,
+                predicate: #Predicate { $0.observationID == observationKey }
+            )
+            try rejectDuplicate(
+                TelemetryHeartRateSampleV1.self,
+                key: recordKey,
+                predicate: #Predicate { $0.recordID == recordKey }
+            )
+            if let nativeSampleIdentityKey {
+                try rejectDuplicate(
+                    TelemetryHeartRateSampleV1.self,
+                    key: nativeSampleIdentityKey,
+                    predicate: #Predicate {
+                        $0.nativeSampleIdentityKey == nativeSampleIdentityKey
+                    }
+                )
             }
             modelContext.insert(
                 TelemetryHeartRateSampleV1(
@@ -217,7 +253,8 @@ public actor TelemetryStore {
                     beatsPerMinute: Int(observation.beatsPerMinute),
                     arrivalOrder: arrivalOrder,
                     providerSequence: observation.providerSequence,
-                    providerSampleIdentifier: observation.providerSampleIdentifier,
+                    providerSampleIdentifier: observation.providerSampleIdentity?.identifier,
+                    nativeSampleIdentityKey: nativeSampleIdentityKey,
                     measuredAt: observation.timestamp.measuredAt,
                     receivedAt: observation.timestamp.receivedAt,
                     recordedAt: observation.timestamp.recordedAt,
@@ -246,9 +283,16 @@ public actor TelemetryStore {
         let arrivalOrder = try Self.int64(observation.arrivalOrder, field: "arrivalOrder")
 
         try explicitTransaction {
-            try requireAbsent(TelemetryTreadmillSampleV1.self, key: observationKey) { model, value in
-                model.observationID == value || model.recordID == recordKey
-            }
+            try rejectDuplicate(
+                TelemetryTreadmillSampleV1.self,
+                key: observationKey,
+                predicate: #Predicate { $0.observationID == observationKey }
+            )
+            try rejectDuplicate(
+                TelemetryTreadmillSampleV1.self,
+                key: recordKey,
+                predicate: #Predicate { $0.recordID == recordKey }
+            )
             modelContext.insert(
                 TelemetryTreadmillSampleV1(
                     observationID: observationKey,
@@ -286,9 +330,11 @@ public actor TelemetryStore {
         let payload = try Self.encode(event.payload.payload)
 
         try explicitTransaction {
-            try requireAbsent(TelemetryWorkoutEventV1.self, key: recordKey) { model, value in
-                model.recordID == value
-            }
+            try rejectDuplicate(
+                TelemetryWorkoutEventV1.self,
+                key: recordKey,
+                predicate: #Predicate { $0.recordID == recordKey }
+            )
             modelContext.insert(
                 TelemetryWorkoutEventV1(
                     recordID: recordKey,
@@ -327,9 +373,21 @@ public actor TelemetryStore {
         let gapPayload = try frame.precedingGap.map(Self.encode)
 
         try explicitTransaction {
-            try requireAbsent(TelemetryWorkoutFrameV1.self, key: identityKey) { model, value in
-                model.canonicalIdentityKey == value || model.frameID == frameKey || model.recordID == recordKey
-            }
+            try rejectDuplicate(
+                TelemetryWorkoutFrameV1.self,
+                key: identityKey,
+                predicate: #Predicate { $0.canonicalIdentityKey == identityKey }
+            )
+            try rejectDuplicate(
+                TelemetryWorkoutFrameV1.self,
+                key: frameKey,
+                predicate: #Predicate { $0.frameID == frameKey }
+            )
+            try rejectDuplicate(
+                TelemetryWorkoutFrameV1.self,
+                key: recordKey,
+                predicate: #Predicate { $0.recordID == recordKey }
+            )
             modelContext.insert(
                 TelemetryWorkoutFrameV1(
                     frameID: frameKey,
@@ -356,9 +414,21 @@ public actor TelemetryStore {
         let exclusionsPayload = try Self.encode(analysis.exclusions)
 
         try explicitTransaction {
-            try requireAbsent(TelemetryWorkoutAnalysisV1.self, key: identityKey) { model, value in
-                model.analysisIdentityKey == value || model.analysisID == analysisKey || model.recordID == recordKey
-            }
+            try rejectDuplicate(
+                TelemetryWorkoutAnalysisV1.self,
+                key: identityKey,
+                predicate: #Predicate { $0.analysisIdentityKey == identityKey }
+            )
+            try rejectDuplicate(
+                TelemetryWorkoutAnalysisV1.self,
+                key: analysisKey,
+                predicate: #Predicate { $0.analysisID == analysisKey }
+            )
+            try rejectDuplicate(
+                TelemetryWorkoutAnalysisV1.self,
+                key: recordKey,
+                predicate: #Predicate { $0.recordID == recordKey }
+            )
             modelContext.insert(
                 TelemetryWorkoutAnalysisV1(
                     analysisID: analysisKey,
@@ -562,13 +632,14 @@ public actor TelemetryStore {
         return created
     }
 
-    private func requireAbsent<Model: PersistentModel>(
-        _ type: Model.Type,
+    private func rejectDuplicate<Model: PersistentModel>(
+        _: Model.Type,
         key: String,
-        matches: (Model, String) -> Bool
+        predicate: Predicate<Model>
     ) throws {
-        let models = try modelContext.fetch(FetchDescriptor<Model>())
-        guard !models.contains(where: { matches($0, key) }) else {
+        var descriptor = FetchDescriptor<Model>(predicate: predicate)
+        descriptor.fetchLimit = 1
+        guard try modelContext.fetch(descriptor).isEmpty else {
             throw TelemetryStoreError.duplicateStableIdentity(key)
         }
     }
@@ -622,6 +693,16 @@ private extension TelemetryStore {
     static func sourceStableIdentityKey(_ source: SignalSourceIdentity) throws -> String {
         let providerIdentity = try encode(source.providerKind).base64EncodedString()
         return "\(providerIdentity)|\(source.stableLocalKey)"
+    }
+
+    static func heartRateNativeSampleIdentityKey(
+        sourceStableIdentityKey: String,
+        providerSampleIdentity: ProviderNativeSampleIdentity
+    ) throws -> String {
+        try encode([
+            sourceStableIdentityKey,
+            providerSampleIdentity.identifier,
+        ]).base64EncodedString()
     }
 
     static func frameIdentityKey(sessionID: SessionID, elapsedSecond: Int64) -> String {
@@ -735,6 +816,23 @@ private extension TelemetryStore {
         else {
             throw TelemetryStoreError.corruptStoredRecord(model.observationID)
         }
+        let providerSampleIdentity: ProviderNativeSampleIdentity?
+        if let identifier = model.providerSampleIdentifier {
+            guard let identity = ProviderNativeSampleIdentity(identifier: identifier),
+                  model.nativeSampleIdentityKey == (try heartRateNativeSampleIdentityKey(
+                      sourceStableIdentityKey: source.stableIdentityKey,
+                      providerSampleIdentity: identity
+                  ))
+            else {
+                throw TelemetryStoreError.corruptStoredRecord(model.observationID)
+            }
+            providerSampleIdentity = identity
+        } else {
+            guard model.nativeSampleIdentityKey == nil else {
+                throw TelemetryStoreError.corruptStoredRecord(model.observationID)
+            }
+            providerSampleIdentity = nil
+        }
         return HeartRateObservation(
             recordID: try uuid(model.recordID, as: RecordIDTag.self),
             observationID: try uuid(model.observationID, as: ObservationIDTag.self),
@@ -743,7 +841,7 @@ private extension TelemetryStore {
             beatsPerMinute: bpm,
             arrivalOrder: arrivalOrder,
             providerSequence: model.providerSequence,
-            providerSampleIdentifier: model.providerSampleIdentifier,
+            providerSampleIdentity: providerSampleIdentity,
             timestamp: observationTimestamp(
                 measuredAt: model.measuredAt,
                 receivedAt: model.receivedAt,
@@ -833,7 +931,7 @@ private extension TelemetryStore {
         guard payload.kind == kind else {
             throw TelemetryStoreError.corruptStoredRecord(model.recordID)
         }
-        return WorkoutEvent(
+        let event = WorkoutEvent(
             recordID: try uuid(model.recordID, as: RecordIDTag.self),
             sessionID: try uuid(model.sessionID, as: SessionIDTag.self),
             timestamp: EventTimestamp(
@@ -843,14 +941,18 @@ private extension TelemetryStore {
                 recordedElapsed: ElapsedDuration(microseconds: model.recordedElapsedMicroseconds)
             ),
             sourceID: try model.sourceID.map { try uuid($0, as: SourceIDTag.self) },
-            decisionID: try model.decisionID.map { try uuid($0, as: DecisionIDTag.self) },
-            commandID: try model.commandID.map { try uuid($0, as: CommandIDTag.self) },
-            attemptID: try model.attemptID.map { try uuid($0, as: CommandAttemptIDTag.self) },
             payload: EventPayloadEnvelope(
                 schemaVersion: payloadVersion,
                 payload: payload
             )
         )
+        guard model.decisionID == event.decisionID?.description,
+              model.commandID == event.commandID?.description,
+              model.attemptID == event.attemptID?.description
+        else {
+            throw TelemetryStoreError.corruptStoredRecord(model.recordID)
+        }
+        return event
     }
 
     static func domainFrame(_ model: TelemetryWorkoutFrameV1) throws -> CanonicalFrame {

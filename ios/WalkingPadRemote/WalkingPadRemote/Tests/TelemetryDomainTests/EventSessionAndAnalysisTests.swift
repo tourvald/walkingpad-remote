@@ -16,28 +16,100 @@ final class EventSessionAndAnalysisTests: XCTestCase {
         let decisionID = DecisionID()
         let firstAttempt = CommandAttemptID()
         let secondAttempt = CommandAttemptID()
-        let cases: [CommandLifecycle] = [
-            .enqueued(kind: .setSpeed(CommandedSpeed(nativeValue: 50, nativeUnit: .controllerNative(code: "tenths")))),
-            .sendAttempt(attemptID: firstAttempt, attemptNumber: 1),
-            .acknowledged(attemptID: firstAttempt),
-            .timedOut(attemptID: firstAttempt),
-            .retryScheduled(
+        let cases: [(CommandLifecycle, CommandAttemptID?)] = [
+            (
+                .enqueued(kind: .setSpeed(CommandedSpeed(nativeValue: 50, nativeUnit: .controllerNative(code: "tenths")))),
+                nil
+            ),
+            (.sendAttempt(attemptID: firstAttempt, attemptNumber: 1), firstAttempt),
+            (.acknowledged(attemptID: firstAttempt), firstAttempt),
+            (.timedOut(attemptID: firstAttempt), firstAttempt),
+            (
+                .retryScheduled(
                 previousAttemptID: firstAttempt,
                 nextAttemptID: secondAttempt,
                 nextAttemptNumber: 2
+                ),
+                secondAttempt
             ),
-            .cancelled(reason: .sessionEnded),
-            .failed(attemptID: secondAttempt, reason: .transportUnavailable),
+            (.cancelled(reason: .sessionEnded), nil),
+            (.failed(attemptID: secondAttempt, reason: .transportUnavailable), secondAttempt),
+            (.failed(attemptID: nil, reason: .encodingFailed), nil),
         ]
 
-        for lifecycle in cases {
-            try assertCodableRoundTrip(
-                CommandLifecycleRecord(
+        for (offset, entry) in cases.enumerated() {
+            let event = makeEvent(
+                payload: .commandLifecycle(CommandLifecycleRecord(
                     commandID: commandID,
-                    decisionID: decisionID,
-                    lifecycle: lifecycle
-                )
+                    decisionID: offset == 0 ? nil : decisionID,
+                    lifecycle: entry.0
+                ))
             )
+            XCTAssertEqual(event.commandID, commandID)
+            XCTAssertEqual(event.decisionID, offset == 0 ? nil : decisionID)
+            XCTAssertEqual(event.attemptID, entry.1)
+            try assertCodableRoundTrip(event)
+        }
+    }
+
+    func testControlDecisionEventDerivesDecisionIDFromPayload() throws {
+        let decision = makeDecision()
+        let event = makeEvent(payload: .controlDecision(decision))
+
+        XCTAssertEqual(event.decisionID, decision.decisionID)
+        XCTAssertNil(event.commandID)
+        XCTAssertNil(event.attemptID)
+        try assertCodableRoundTrip(event)
+    }
+
+    func testWorkoutEventDecodingRejectsContradictoryCausalIDs() throws {
+        let decision = makeDecision()
+        let controlEvent = makeEvent(payload: .controlDecision(decision))
+        let commandID = CommandID()
+        let decisionID = DecisionID()
+        let previousAttemptID = CommandAttemptID()
+        let nextAttemptID = CommandAttemptID()
+        let retryEvent = makeEvent(
+            payload: .commandLifecycle(CommandLifecycleRecord(
+                commandID: commandID,
+                decisionID: decisionID,
+                lifecycle: .retryScheduled(
+                    previousAttemptID: previousAttemptID,
+                    nextAttemptID: nextAttemptID,
+                    nextAttemptNumber: 2
+                )
+            ))
+        )
+        let contradictions = [
+            WorkoutEventCodingFixture(
+                event: controlEvent,
+                decisionID: DecisionID(),
+                commandID: controlEvent.commandID,
+                attemptID: controlEvent.attemptID
+            ),
+            WorkoutEventCodingFixture(
+                event: retryEvent,
+                decisionID: retryEvent.decisionID,
+                commandID: CommandID(),
+                attemptID: retryEvent.attemptID
+            ),
+            WorkoutEventCodingFixture(
+                event: retryEvent,
+                decisionID: nil,
+                commandID: retryEvent.commandID,
+                attemptID: retryEvent.attemptID
+            ),
+            WorkoutEventCodingFixture(
+                event: retryEvent,
+                decisionID: retryEvent.decisionID,
+                commandID: retryEvent.commandID,
+                attemptID: previousAttemptID
+            ),
+        ]
+
+        for contradiction in contradictions {
+            let data = try JSONEncoder().encode(contradiction)
+            XCTAssertThrowsError(try JSONDecoder().decode(WorkoutEvent.self, from: data))
         }
     }
 
@@ -136,5 +208,48 @@ final class EventSessionAndAnalysisTests: XCTestCase {
             versions: TelemetryDomainFixtures.versions,
             configurationSnapshotID: TelemetryDomainFixtures.configurationID
         )
+    }
+
+    private func makeEvent(payload: WorkoutEventPayload) -> WorkoutEvent {
+        WorkoutEvent(
+            recordID: RecordID(),
+            sessionID: TelemetryDomainFixtures.sessionID,
+            timestamp: EventTimestamp(
+                occurredAt: TelemetryDomainFixtures.baseDate,
+                recordedAt: TelemetryDomainFixtures.baseDate.addingTimeInterval(0.01),
+                occurredElapsed: ElapsedDuration(microseconds: 1_000_000),
+                recordedElapsed: ElapsedDuration(microseconds: 1_010_000)
+            ),
+            payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
+        )
+    }
+}
+
+private struct WorkoutEventCodingFixture: Encodable {
+    let recordID: RecordID
+    let sessionID: SessionID
+    let kind: WorkoutEventKind
+    let timestamp: EventTimestamp
+    let sourceID: SourceID?
+    let decisionID: DecisionID?
+    let commandID: CommandID?
+    let attemptID: CommandAttemptID?
+    let payload: EventPayloadEnvelope
+
+    init(
+        event: WorkoutEvent,
+        decisionID: DecisionID?,
+        commandID: CommandID?,
+        attemptID: CommandAttemptID?
+    ) {
+        recordID = event.recordID
+        sessionID = event.sessionID
+        kind = event.kind
+        timestamp = event.timestamp
+        sourceID = event.sourceID
+        self.decisionID = decisionID
+        self.commandID = commandID
+        self.attemptID = attemptID
+        payload = event.payload
     }
 }

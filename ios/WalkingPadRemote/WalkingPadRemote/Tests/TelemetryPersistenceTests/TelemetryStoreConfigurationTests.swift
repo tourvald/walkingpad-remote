@@ -92,6 +92,57 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         XCTAssertEqual(sources.map(\.identity), [source])
     }
 
+    func testStableNativeHeartRateIdentityRemainsDeduplicatedAfterReopen() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telemetry-native-id-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = directory.appendingPathComponent("TelemetryV2.store")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let session = TelemetryPersistenceFixtures.session(seed: 17)
+        let source = TelemetryPersistenceFixtures.source(seed: 17)
+        let nativeIdentity = try XCTUnwrap(
+            ProviderNativeSampleIdentity(identifier: "native-reopen-sample")
+        )
+        let first = TelemetryPersistenceFixtures.heartRate(
+            seed: 17,
+            session: session,
+            source: source,
+            arrivalOrder: 1,
+            bpm: 119,
+            providerSampleIdentity: nativeIdentity
+        )
+        let redelivery = TelemetryPersistenceFixtures.heartRate(
+            seed: 18,
+            session: session,
+            source: source,
+            arrivalOrder: 2,
+            bpm: 119,
+            providerSampleIdentity: nativeIdentity
+        )
+
+        var writer: TelemetryStore? = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        try await writer?.insertSession(session)
+        try await writer?.insertSource(
+            source,
+            firstSeen: TelemetryPersistenceFixtures.baseDate,
+            lastSeen: TelemetryPersistenceFixtures.baseDate
+        )
+        try await writer?.insertHeartRate(first)
+        writer = nil
+
+        let reopened = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        do {
+            try await reopened.insertHeartRate(redelivery)
+            XCTFail("Expected stable native identity rejection after reopen")
+        } catch {
+            guard case TelemetryStoreError.duplicateStableIdentity = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        let stored = try await reopened.fetchHeartRate(sessionID: session.sessionID)
+        XCTAssertEqual(stored, [first])
+    }
+
     func testCorruptPersistedRelationshipFailsClosed() async throws {
         let schema = Schema(versionedSchema: TelemetrySchemaV1.self)
         let configuration = ModelConfiguration(
@@ -218,6 +269,88 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         }
     }
 
+    func testContradictoryPersistedEventCausalProjectionFailsClosed() async throws {
+        let schema = Schema(versionedSchema: TelemetrySchemaV1.self)
+        let configuration = ModelConfiguration(
+            "TelemetryCausalCorruptionTest",
+            schema: schema,
+            isStoredInMemoryOnly: true,
+            cloudKitDatabase: .none
+        )
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: TelemetryMigrationPlan.self,
+            configurations: [configuration]
+        )
+        let writer = TelemetryStore(modelContainer: container, onDiskStoreURL: nil)
+        let session = TelemetryPersistenceFixtures.session(seed: 20)
+        let decisionID = DecisionID()
+        let commandID = CommandID()
+        let previousAttemptID = CommandAttemptID()
+        let nextAttemptID = CommandAttemptID()
+        let event = WorkoutEvent(
+            recordID: RecordID(),
+            sessionID: session.sessionID,
+            timestamp: EventTimestamp(
+                occurredAt: TelemetryPersistenceFixtures.baseDate,
+                recordedAt: TelemetryPersistenceFixtures.baseDate.addingTimeInterval(0.01),
+                occurredElapsed: ElapsedDuration(microseconds: 1_000_000),
+                recordedElapsed: ElapsedDuration(microseconds: 1_010_000)
+            ),
+            payload: EventPayloadEnvelope(
+                schemaVersion: 1,
+                payload: .commandLifecycle(CommandLifecycleRecord(
+                    commandID: commandID,
+                    decisionID: decisionID,
+                    lifecycle: .retryScheduled(
+                        previousAttemptID: previousAttemptID,
+                        nextAttemptID: nextAttemptID,
+                        nextAttemptNumber: 2
+                    )
+                ))
+            )
+        )
+        try await writer.insertSession(session)
+        try await writer.insertEvent(event)
+
+        let corruptingContext = ModelContext(container)
+        let model = try XCTUnwrap(
+            corruptingContext.fetch(FetchDescriptor<TelemetryWorkoutEventV1>()).first
+        )
+
+        model.decisionID = nil
+        try corruptingContext.save()
+        await assertCorruptEventRead(
+            container: container,
+            sessionID: session.sessionID,
+            recordID: event.recordID
+        )
+
+        model.decisionID = decisionID.description
+        model.commandID = CommandID().description
+        try corruptingContext.save()
+        await assertCorruptEventRead(
+            container: container,
+            sessionID: session.sessionID,
+            recordID: event.recordID
+        )
+
+        model.commandID = commandID.description
+        model.attemptID = previousAttemptID.description
+        try corruptingContext.save()
+        await assertCorruptEventRead(
+            container: container,
+            sessionID: session.sessionID,
+            recordID: event.recordID
+        )
+
+        model.attemptID = nextAttemptID.description
+        try corruptingContext.save()
+        let validReader = TelemetryStore(modelContainer: container, onDiskStoreURL: nil)
+        let stored = try await validReader.fetchEvents(sessionID: session.sessionID)
+        XCTAssertEqual(stored, [event])
+    }
+
     func testMissingRelationshipsFailWithoutCreatingFallbackRecords() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = TelemetryPersistenceFixtures.session(seed: 9)
@@ -249,6 +382,23 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         let counts = try await store.counts()
         XCTAssertEqual(counts.heartRateSamples, 0)
         XCTAssertEqual(counts.sources, 0)
+    }
+
+    private func assertCorruptEventRead(
+        container: ModelContainer,
+        sessionID: SessionID,
+        recordID: RecordID
+    ) async {
+        let reader = TelemetryStore(modelContainer: container, onDiskStoreURL: nil)
+        do {
+            _ = try await reader.fetchEvents(sessionID: sessionID)
+            XCTFail("Expected contradictory causal projection failure")
+        } catch {
+            XCTAssertEqual(
+                error as? TelemetryStoreError,
+                .corruptStoredRecord(recordID.description)
+            )
+        }
     }
 
     private func assertRequiredFilePolicy(

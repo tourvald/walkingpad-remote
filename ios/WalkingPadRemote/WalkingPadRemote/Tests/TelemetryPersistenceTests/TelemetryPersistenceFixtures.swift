@@ -98,7 +98,9 @@ enum TelemetryPersistenceFixtures {
         session: WorkoutSessionRecord,
         source: SignalSourceIdentity,
         arrivalOrder: UInt64,
-        bpm: UInt16
+        bpm: UInt16,
+        providerSampleIdentity: ProviderNativeSampleIdentity? = nil,
+        timestamp: ObservationTimestamp? = nil
     ) -> HeartRateObservation {
         let elapsed = Int64(arrivalOrder) * 1_000_000
         return HeartRateObservation(
@@ -109,8 +111,8 @@ enum TelemetryPersistenceFixtures {
             beatsPerMinute: bpm,
             arrivalOrder: arrivalOrder,
             providerSequence: Int64(arrivalOrder),
-            providerSampleIdentifier: "hr-\(seed)",
-            timestamp: timestamp(elapsedMicroseconds: elapsed),
+            providerSampleIdentity: providerSampleIdentity,
+            timestamp: timestamp ?? self.timestamp(elapsedMicroseconds: elapsed),
             provenance: .reportedByProvider,
             freshness: freshness(elapsedMicroseconds: elapsed),
             quality: arrivalOrder == 1 ? [.measurementOutOfArrivalOrder] : [],

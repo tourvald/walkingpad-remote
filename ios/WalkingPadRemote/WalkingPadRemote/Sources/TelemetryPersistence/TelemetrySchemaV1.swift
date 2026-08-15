@@ -194,7 +194,8 @@ final class TelemetrySignalSourceV1 {
 final class TelemetryHeartRateSampleV1 {
     #Index<TelemetryHeartRateSampleV1>(
         [\.sessionID, \.receivedElapsedMicroseconds],
-        [\.sourceID, \.arrivalOrder]
+        [\.sourceID, \.arrivalOrder],
+        [\.nativeSampleIdentityKey]
     )
 
     @Attribute(.unique) public var observationID: String
@@ -205,6 +206,7 @@ final class TelemetryHeartRateSampleV1 {
     public var arrivalOrder: Int64
     public var providerSequence: Int64?
     public var providerSampleIdentifier: String?
+    public var nativeSampleIdentityKey: String?
     public var measuredAt: Date?
     public var receivedAt: Date
     public var recordedAt: Date
@@ -227,6 +229,7 @@ final class TelemetryHeartRateSampleV1 {
         arrivalOrder: Int64,
         providerSequence: Int64?,
         providerSampleIdentifier: String?,
+        nativeSampleIdentityKey: String?,
         measuredAt: Date?,
         receivedAt: Date,
         recordedAt: Date,
@@ -248,6 +251,7 @@ final class TelemetryHeartRateSampleV1 {
         self.arrivalOrder = arrivalOrder
         self.providerSequence = providerSequence
         self.providerSampleIdentifier = providerSampleIdentifier
+        self.nativeSampleIdentityKey = nativeSampleIdentityKey
         self.measuredAt = measuredAt
         self.receivedAt = receivedAt
         self.recordedAt = recordedAt
@@ -344,7 +348,12 @@ final class TelemetryTreadmillSampleV1 {
 
 @Model
 final class TelemetryWorkoutEventV1 {
-    #Index<TelemetryWorkoutEventV1>([\.sessionID, \.kindKey, \.occurredElapsedMicroseconds])
+    #Index<TelemetryWorkoutEventV1>(
+        [\.sessionID, \.kindKey, \.occurredElapsedMicroseconds],
+        [\.decisionID],
+        [\.commandID],
+        [\.attemptID]
+    )
 
     @Attribute(.unique) public var recordID: String
     public var sessionID: String

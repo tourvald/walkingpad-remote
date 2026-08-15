@@ -14,6 +14,34 @@ public enum ControlUseState: String, Codable, Hashable, Sendable {
     }
 }
 
+public struct ProviderNativeSampleIdentity: Codable, Hashable, Sendable {
+    public let identifier: String
+
+    public init?(identifier: String) {
+        guard !identifier.isEmpty else {
+            return nil
+        }
+        self.identifier = identifier
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let identifier = try container.decode(String.self)
+        guard !identifier.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "A provider-native sample identity must not be empty."
+            )
+        }
+        self.identifier = identifier
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(identifier)
+    }
+}
+
 public struct HeartRateObservation: Codable, Hashable, Sendable {
     public let recordID: RecordID
     public let observationID: ObservationID
@@ -22,7 +50,7 @@ public struct HeartRateObservation: Codable, Hashable, Sendable {
     public let beatsPerMinute: UInt16
     public let arrivalOrder: UInt64
     public let providerSequence: Int64?
-    public let providerSampleIdentifier: String?
+    public let providerSampleIdentity: ProviderNativeSampleIdentity?
     public let timestamp: ObservationTimestamp
     public let provenance: EvidenceProvenance
     public let freshness: EvidenceFreshness
@@ -37,7 +65,7 @@ public struct HeartRateObservation: Codable, Hashable, Sendable {
         beatsPerMinute: UInt16,
         arrivalOrder: UInt64,
         providerSequence: Int64?,
-        providerSampleIdentifier: String?,
+        providerSampleIdentity: ProviderNativeSampleIdentity?,
         timestamp: ObservationTimestamp,
         provenance: EvidenceProvenance,
         freshness: EvidenceFreshness,
@@ -51,7 +79,7 @@ public struct HeartRateObservation: Codable, Hashable, Sendable {
         self.beatsPerMinute = beatsPerMinute
         self.arrivalOrder = arrivalOrder
         self.providerSequence = providerSequence
-        self.providerSampleIdentifier = providerSampleIdentifier
+        self.providerSampleIdentity = providerSampleIdentity
         self.timestamp = timestamp
         self.provenance = provenance
         self.freshness = freshness

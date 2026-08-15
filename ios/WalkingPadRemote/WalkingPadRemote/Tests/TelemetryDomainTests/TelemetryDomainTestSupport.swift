@@ -65,7 +65,7 @@ enum TelemetryDomainFixtures {
         beatsPerMinute: 123,
         arrivalOrder: 7,
         providerSequence: 44,
-        providerSampleIdentifier: "provider-sample-44",
+        providerSampleIdentity: ProviderNativeSampleIdentity(identifier: "provider-sample-44"),
         timestamp: observationTimestamp,
         provenance: .reportedByProvider,
         freshness: freshness,

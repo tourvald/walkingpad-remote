@@ -53,6 +53,16 @@ missing, or earlier than a previously received sample. Sorting for display or
 analysis MUST NOT rewrite evidence order. Clock regressions, impossible ordering,
 and excessive receive delay MUST be quality-flagged.
 
+An exact provider redelivery is idempotent at the persistence boundary only when
+the provider supplies a non-empty stable native sample identifier. That identity
+MUST be scoped by the signal source's stable provider/local identity. A repeated
+native identity MUST NOT create a second scientific sample, even when recorder-
+local record and observation IDs differ. Provider sequence, BPM, timestamps, or
+value similarity MUST NOT substitute for native identity. When native identity
+is absent, otherwise identical observations remain separate evidence. This
+storage rule MUST NOT reorder, filter, or deduplicate the controller-facing HR
+stream.
+
 Analysis MUST integrate over timestamp intervals for which evidence is fresh.
 It MUST define gap and boundary behavior and MUST NOT treat a sample count as a
 duration in seconds.
@@ -104,6 +114,9 @@ observation(s) used -> decision -> command enqueue/send
   applicable.
 - ACK, timeout, cancellation, retry, and transport failure MUST be separate
   events referencing the command attempt they describe.
+- A retry-scheduled event's queryable primary attempt ID is the next scheduled
+  attempt; its typed payload MUST also retain the previous attempt ID so the
+  retry edge is not lost.
 - A later treadmill observation MAY reference the command as a candidate causal
   response only when the implementation has real correlation evidence. Mere
   temporal proximity MUST NOT be recorded as proven causation.
@@ -152,10 +165,12 @@ domain MUST represent at least:
 - recorder loss before the record;
 - estimated/derived provenance where applicable.
 
-Duplicate and out-of-order HR observations MUST be preserved and flagged. The
-controller-facing ordering and acceptance decision remain unchanged during V2
-normalization. A record MUST separately state whether it was accepted/used for
-control; quality flags alone MUST NOT reconstruct that decision.
+Duplicate-value, duplicate-sequence, and out-of-order HR observations MUST be
+preserved and flagged unless they are an exact provider redelivery proven by the
+same stable native sample identity described above. The controller-facing
+ordering and acceptance decision remain unchanged during V2 normalization. A
+record MUST separately state whether it was accepted/used for control; quality
+flags alone MUST NOT reconstruct that decision.
 
 Freshness MUST be evaluated from the original observation time role and the
 policy/version that consumed it. A stale value carried into a frame remains

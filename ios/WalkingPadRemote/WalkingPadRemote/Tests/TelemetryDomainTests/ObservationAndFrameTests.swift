@@ -13,6 +13,20 @@ final class ObservationAndFrameTests: XCTestCase {
         try assertCodableRoundTrip(observation)
     }
 
+    func testProviderNativeSampleIdentityRequiresAnExactNonEmptyValue() throws {
+        XCTAssertNil(ProviderNativeSampleIdentity(identifier: ""))
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(
+                ProviderNativeSampleIdentity.self,
+                from: Data("\"\"".utf8)
+            )
+        )
+        let identity = try XCTUnwrap(
+            ProviderNativeSampleIdentity(identifier: "provider-native-sample-1")
+        )
+        try assertCodableRoundTrip(identity)
+    }
+
     func testMissingFactualSpeedStaysUnavailableForUnknownNativeUnit() throws {
         let native = NativeTreadmillSpeed(value: 8, unit: .unknown)
         let factual = FactualSpeedKilometresPerHour.normalized(

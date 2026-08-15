@@ -313,6 +313,58 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
         case .recorderHealth: .recorderHealth
         }
     }
+
+    public var causalIDs: WorkoutEventCausalIDs {
+        switch self {
+        case let .controlDecision(decision):
+            WorkoutEventCausalIDs(
+                decisionID: decision.decisionID,
+                commandID: nil,
+                attemptID: nil
+            )
+        case let .commandLifecycle(record):
+            WorkoutEventCausalIDs(
+                decisionID: record.decisionID,
+                commandID: record.commandID,
+                attemptID: record.lifecycle.primaryAttemptID
+            )
+        default:
+            WorkoutEventCausalIDs(decisionID: nil, commandID: nil, attemptID: nil)
+        }
+    }
+}
+
+private extension CommandLifecycle {
+    var primaryAttemptID: CommandAttemptID? {
+        switch self {
+        case .enqueued, .cancelled:
+            nil
+        case let .sendAttempt(attemptID, _),
+             let .acknowledged(attemptID),
+             let .timedOut(attemptID):
+            attemptID
+        case let .retryScheduled(_, nextAttemptID, _):
+            nextAttemptID
+        case let .failed(attemptID, _):
+            attemptID
+        }
+    }
+}
+
+public struct WorkoutEventCausalIDs: Codable, Hashable, Sendable {
+    public let decisionID: DecisionID?
+    public let commandID: CommandID?
+    public let attemptID: CommandAttemptID?
+
+    public init(
+        decisionID: DecisionID?,
+        commandID: CommandID?,
+        attemptID: CommandAttemptID?
+    ) {
+        self.decisionID = decisionID
+        self.commandID = commandID
+        self.attemptID = attemptID
+    }
 }
 
 public enum WorkoutEventKind: String, Codable, Hashable, Sendable {
@@ -350,24 +402,71 @@ public struct WorkoutEvent: Codable, Hashable, Sendable {
     public let attemptID: CommandAttemptID?
     public let payload: EventPayloadEnvelope
 
+    private struct CodingRepresentation: Codable {
+        let recordID: RecordID
+        let sessionID: SessionID
+        let kind: WorkoutEventKind
+        let timestamp: EventTimestamp
+        let sourceID: SourceID?
+        let decisionID: DecisionID?
+        let commandID: CommandID?
+        let attemptID: CommandAttemptID?
+        let payload: EventPayloadEnvelope
+    }
+
     public init(
         recordID: RecordID,
         sessionID: SessionID,
         timestamp: EventTimestamp,
         sourceID: SourceID? = nil,
-        decisionID: DecisionID? = nil,
-        commandID: CommandID? = nil,
-        attemptID: CommandAttemptID? = nil,
         payload: EventPayloadEnvelope
     ) {
+        let causalIDs = payload.payload.causalIDs
         self.recordID = recordID
         self.sessionID = sessionID
         self.kind = payload.payload.kind
         self.timestamp = timestamp
         self.sourceID = sourceID
-        self.decisionID = decisionID
-        self.commandID = commandID
-        self.attemptID = attemptID
+        self.decisionID = causalIDs.decisionID
+        self.commandID = causalIDs.commandID
+        self.attemptID = causalIDs.attemptID
         self.payload = payload
+    }
+
+    public init(from decoder: Decoder) throws {
+        let representation = try CodingRepresentation(from: decoder)
+        self.init(
+            recordID: representation.recordID,
+            sessionID: representation.sessionID,
+            timestamp: representation.timestamp,
+            sourceID: representation.sourceID,
+            payload: representation.payload
+        )
+        guard representation.kind == kind,
+              representation.decisionID == decisionID,
+              representation.commandID == commandID,
+              representation.attemptID == attemptID
+        else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Workout event envelope contradicts its typed payload."
+                )
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try CodingRepresentation(
+            recordID: recordID,
+            sessionID: sessionID,
+            kind: kind,
+            timestamp: timestamp,
+            sourceID: sourceID,
+            decisionID: decisionID,
+            commandID: commandID,
+            attemptID: attemptID,
+            payload: payload
+        ).encode(to: encoder)
     }
 }

@@ -31,9 +31,38 @@ final class TelemetrySchemaAndBoundaryTests: XCTestCase {
         XCTAssertTrue(
             events.indices.contains(["binary", "sessionID", "kindKey", "occurredElapsedMicroseconds"])
         )
+        XCTAssertTrue(events.indices.contains(["binary", "decisionID"]))
+        XCTAssertTrue(events.indices.contains(["binary", "commandID"]))
+        XCTAssertTrue(events.indices.contains(["binary", "attemptID"]))
+
+        let heartRate = try XCTUnwrap(schema.entitiesByName["TelemetryHeartRateSampleV1"])
+        XCTAssertTrue(heartRate.indices.contains(["binary", "nativeSampleIdentityKey"]))
 
         let treadmill = try XCTUnwrap(schema.entitiesByName["TelemetryTreadmillSampleV1"])
         XCTAssertNotNil(treadmill.attributesByName["factualSpeedNormalizationRuleKey"])
+    }
+
+    func testInsertDuplicatePreflightsAreBoundedPredicates() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let packageRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let storeURL = packageRoot
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("TelemetryPersistence")
+            .appendingPathComponent("TelemetryStore.swift")
+        let source = try String(contentsOf: storeURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("requireAbsent"))
+        XCTAssertFalse(source.contains("modelContext.fetch(FetchDescriptor<Model>())"))
+        XCTAssertTrue(source.contains("private func rejectDuplicate<Model: PersistentModel>"))
+        XCTAssertTrue(source.contains("descriptor.fetchLimit = 1"))
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "try rejectDuplicate(").count - 1,
+            15,
+            "Every insert identity must use the bounded duplicate preflight."
+        )
     }
 
     func testStoreBoundaryDisablesAutosaveAndProductionSourcesDoNotInstantiateV2() async throws {
