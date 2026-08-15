@@ -5,7 +5,9 @@ Status: normative contract for the Telemetry V2 implementation queue.
 This document defines component ownership and dependency direction. The related
 [data contract](data-contract.md), [persistence and retention policy](persistence-and-retention.md),
 [rollout plan](rollout-and-migration.md), [performance budget](performance-budget.md),
-and [safety boundary](safety-boundary.md) are equally normative.
+[safety boundary](safety-boundary.md), and the Issue #27
+[recorder implementation note](recorder-ingress.md) describe the corresponding
+normative and concrete boundaries.
 
 `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` express requirement
 strength. A later issue MAY refine names and internal representation, but it
