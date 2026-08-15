@@ -4,29 +4,38 @@ Status: issue #26 hosted evidence report.
 
 ## Verdict
 
-`GO — AUTOMATED GATE ACCEPTABLE; DEVICE-ONLY ITEMS REQUIRE PM CARRY-OVER
-ACCEPTANCE`
+`BLOCKED FOR PM DECISION`
 
 The actual V1 SwiftData Foundation completed the deterministic hosted fast and
-full profiles without semantic, corruption, recovery, migration, isolation, or
-file-policy failure. The full profile persisted 4,522,003 records representing
-exactly 1,000 workout-hours. Hosted transaction and storage hypotheses were
-missed substantially, but measured throughput, bounded late-scale behavior,
-sub-200-ms representative queries, bounded memory, and successful reopen show
-no material architecture defect. The misses are product-planning evidence, not
-permission to weaken retention or scientific semantics.
+full profiles without semantic, corruption, recovery, migration, or isolation
+failure. The full profile persisted 4,522,003 records representing exactly
+1,000 workout-hours. Hosted transaction and storage hypotheses were missed
+substantially, but measured throughput, bounded late-scale behavior, sub-200-ms
+representative queries, bounded memory, and successful reopen do not expose a
+material scale defect.
+
+The gate is nevertheless blocked because one repository-wide run observed the
+actual WAL and SHM sidecars with `isExcludedFromBackup = false` immediately
+after a subsequent write. Later repetitions passed, so the failure is
+nondeterministic rather than a consistently broken helper. An observed failure
+of required automatic sidecar policy cannot be classified `PASS`, and changing
+production persistence lifecycle behavior is outside issue #26. PM must decide
+the narrow Foundation correction/investigation and require this host gate to be
+rerun. The other target misses remain product-planning evidence, not permission
+to weaken retention or scientific semantics.
 
 This gate evaluates the concrete, unwired Telemetry V2 Foundation merged by
 issue #39. It does not implement the recorder or authorize issue #27. Product
-work may proceed only after PM accepts both this automated evidence and every
-device-only carry-over item below.
+work must not proceed until the automated host-policy failure is corrected and
+this gate is rerun; PM must then also accept every device-only carry-over item.
 
 ## Tested revision and environment
 
 | Item | Value |
 | --- | --- |
 | Canonical base | `4c59ae0257d40c9e86df386ca9c56713e88f3270` |
-| Measured harness head | `c67f991d4568c776d9776f6100b03c15279c642b` |
+| Measured full-profile harness head | `c67f991d4568c776d9776f6100b03c15279c642b` |
+| Corrected recovery head | `6a0d8b2a57d1486a0312ab8861e2e38834b08311` |
 | Schema | actual production `TelemetrySchemaV1` (`1.0.0`) |
 | Harness | `swiftdata-gate-v1` |
 | Deterministic seed | `0x26_39_40_2026` (`164169261094`) |
@@ -169,7 +178,7 @@ volume shown above.
 | Command causal lookup | Exact command ID | 0.378 / 0.428 | 0.898 / 0.944 | 3 |
 | Attempt causal lookup | Exact attempt ID | 0.384 / 0.575 | 0.865 / 0.911 | 2 |
 | Analysis | Session plus analyzer version | 0.333 / 0.379 | 0.852 / 0.879 | 1 |
-| Comparable sessions | Indexed profile/recent fetch, decoded exact workout mode, limit 10 | 0.293 / 0.332 | 176.310 / 177.330 | 10 full |
+| Comparable sessions | Unbounded profile/recent fetch (250 full rows), decoded exact workout mode, output limit 10 | 0.293 / 0.332 | 176.310 / 177.330 | 10 full |
 | Export traversal | Complete session across all evidence classes | 25.283 single | 132.253 single | 4,522 full |
 
 `sqlite3 EXPLAIN QUERY PLAN` is used only as supplementary inspection. It is not
@@ -262,9 +271,11 @@ changing cadence, gaps, indexes, events, or retention semantics.
 ## Forced interruption and incomplete-session recovery
 
 `PASS` — a separate worker creates an on-disk V1 store, persists a known session,
-source, and 256 HR records, writes the committed-prefix count and deterministic
-identity hash, then creates an uncommitted in-memory tail and waits. The parent
-sends `SIGKILL`; this is not a graceful close.
+source, and 256 HR records, then stages one additional HR model in the actual
+autosave-disabled `ModelContext` without a transaction/save. Only after that
+real uncommitted tail exists does it write the committed-prefix count and
+deterministic identity hash marker and wait. The parent sends `SIGKILL`; this is
+not a graceful close.
 
 Reopen retains exactly the 256 committed records and the same identity hash, and
 does not contain the uncommitted tail. The session remains `running`, has no end
@@ -286,18 +297,19 @@ fallback is introduced.
 
 ## File policy and device boundary
 
-`PASS` for the host-level helper: after write, reopen, forced interruption, and
-migration, the primary store and all discovered WAL/SHM sidecars report
-`NSFileProtectionCompleteUntilFirstUserAuthentication` and
-`isExcludedFromBackup = true` where macOS exposes those resource attributes.
-The helper re-discovers and reapplies policy to recreated sidecars.
+`FAIL` for reliable host-level automatic policy. The full profile, focused
+reopen test, forced interruption, and migration usually report the primary
+store and all discovered WAL/SHM sidecars as
+`NSFileProtectionCompleteUntilFirstUserAuthentication` with
+`isExcludedFromBackup = true`; the helper re-discovers and reapplies policy.
+However, one actual complete-suite run observed both WAL and SHM backup
+exclusion values as `false` immediately after a subsequent write.
 
-One initial repository-wide test run transiently observed backup exclusion as
-`false` on WAL/SHM immediately after a subsequent write. The exact focused test
-then passed 20/20, and six consecutive complete suites passed without a code
-change; the full profile, migration, recovery, and reopen snapshots also passed.
-This did not establish a repeatable Foundation defect, but it remains a host
-sidecar-lifecycle race risk for PM/device follow-up rather than being omitted.
+The exact focused test then passed 20/20, and six consecutive complete suites
+passed without a code change. Those repetitions show that the helper often
+works; they do not erase the observed nondeterministic sidecar-lifecycle
+failure. This gate does not alter the accepted production file-policy mechanism
+to make it pass.
 
 This does not prove physical iOS behavior. The following items are explicitly
 carried to issue #37 and each remains `UNVERIFIED_ON_DEVICE`:
@@ -341,11 +353,11 @@ Each category has exactly one primary classification.
 | Comparable-session queries | `PASS` | Indexed recent-profile plus decoded mode p95 177.330 ms |
 | Memory | `PASS` | Streamed fixture, no runaway/OOM; conservative host high-water 524.688 MiB |
 | Store growth | `PASS` | Bounded 6.823 MiB/hour; significant non-blocking target miss documented |
-| WAL/SHM behavior | `PASS` | 3.701 MiB combined after write/reopen; attributes retained |
+| WAL/SHM size/checkpoint behavior | `PASS` | 3.701 MiB combined after write/reopen; file-policy reliability classified separately |
 | Interruption/reopen | `PASS` | External `SIGKILL`, committed count/hash preserved, tail absent |
 | Incomplete-session recovery | `PASS` | Harness-only transaction plus second reopen; no fabricated completion |
 | Migration viability | `PASS` | Actual V1 to test-only synthetic V2 plus repeated reopen |
-| Host file-policy application | `PASS` | Primary/WAL/SHM attributes at relevant hosted lifecycles |
+| Host file-policy application | `FAIL` | One run observed WAL/SHM backup exclusion lost after a write; later repetitions do not erase it |
 | Real-device file protection | `UNVERIFIED_ON_DEVICE` | Requires physical iPhone lock/lifecycle evidence in #37 |
 | Real-device backup exclusion | `UNVERIFIED_ON_DEVICE` | Requires physical iOS backup/restore evidence in #37 |
 | Designated-device performance | `UNVERIFIED_ON_DEVICE` | Hosted Mac numbers are not extrapolated to iPhone |
@@ -367,19 +379,19 @@ Each category has exactly one primary classification.
   buffer, retry, priority, loss-accounting, or batching policy.
 - Physical file protection, backup, performance, and Instruments evidence remain
   explicitly deferred to #37.
-- One hosted suite transiently observed WAL/SHM backup-exclusion loss after a
-  write; 20 focused and six full-suite repetitions passed unchanged. Treat this
-  as an unresolved lifecycle-race risk, especially in the real-device checks.
+- One hosted suite observed WAL/SHM backup-exclusion loss after a write; 20
+  focused and six full-suite repetitions passed unchanged. The nondeterministic
+  lifecycle failure is the automated blocker, not merely a device carry-over.
 
-The hosted evidence supports continuing with SwiftData and designing issue #27
-against measured drain/storage pressure. No corruption, committed-data loss,
-identity/provenance/causal corruption, migration loss, MainActor/control-path
-coupling, or operationally unusable scale behavior was found. A persistence
-technology switch is not justified by this evidence.
+The scale, query, recovery, and migration evidence supports retaining SwiftData;
+no corruption, committed-data loss, identity/provenance/causal corruption,
+migration loss, MainActor/control-path coupling, or operationally unusable scale
+behavior was found. A persistence technology switch is not justified.
 
-Issue #27 is technically supportable, but it is not authorized by this report.
-PM must first accept the gate, the substantial storage/latency hypothesis misses,
-and all five `UNVERIFIED_ON_DEVICE` carry-over items. Recorder design should
-remain bounded and observable, treat 128 as a provisional measured point rather
-than policy, and plan product capacity UX/metrics without reducing native or
-canonical evidence.
+Issue #27 is not technically supportable while the automated host file-policy
+category is `FAIL`. The narrow recommendation is to investigate when SwiftData
+recreates or mutates WAL/SHM after `ModelContext.transaction`, establish a
+deterministic post-write/reopen reapplication boundary without weakening
+protection or backup exclusion, and rerun #26. PM must also retain the
+substantial storage/latency target misses and all five `UNVERIFIED_ON_DEVICE`
+items. No recorder work is authorized by this blocked report.
