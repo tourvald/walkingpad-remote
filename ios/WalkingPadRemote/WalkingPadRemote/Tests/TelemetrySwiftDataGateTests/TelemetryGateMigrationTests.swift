@@ -54,14 +54,17 @@ final class TelemetryGateMigrationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let storeURL = root.appendingPathComponent("TelemetryV2.store")
         let expected = try await createV1Fixture(at: storeURL)
+        try assertDirectoryBackupBoundary(primaryStoreURL: storeURL, phase: "V1 fixture")
 
         let migrated = try migrateAndRead(at: storeURL, addMarker: true)
         XCTAssertEqual(migrated.counts, expected.counts)
         XCTAssertEqual(migrated.heartRateIdentityHash, expected.heartRateIdentityHash)
         XCTAssertEqual(migrated.markerCount, 1)
+        try assertDirectoryBackupBoundary(primaryStoreURL: storeURL, phase: "migration")
 
         let repeatedReopen = try migrateAndRead(at: storeURL, addMarker: false)
         XCTAssertEqual(repeatedReopen, migrated)
+        try assertDirectoryBackupBoundary(primaryStoreURL: storeURL, phase: "migration reopen")
 
         let policy = try TelemetryStoreFilePolicy.applyRequiredAttributes(
             primaryStoreURL: storeURL
@@ -129,6 +132,13 @@ final class TelemetryGateMigrationTests: XCTestCase {
         at storeURL: URL,
         addMarker: Bool
     ) throws -> TelemetrySyntheticMigrationEvidence {
+        _ = try TelemetryStoreFilePolicy.prepareStoreDirectory(
+            primaryStoreURL: storeURL
+        )
+        try assertDirectoryBackupBoundary(
+            primaryStoreURL: storeURL,
+            phase: "before migration open"
+        )
         let schema = Schema(versionedSchema: TelemetrySyntheticSchemaV2.self)
         let configuration = ModelConfiguration(
             "TelemetryV2SyntheticMigration",
@@ -153,6 +163,10 @@ final class TelemetryGateMigrationTests: XCTestCase {
                 )
             }
         }
+        try assertDirectoryBackupBoundary(
+            primaryStoreURL: storeURL,
+            phase: "after migration write"
+        )
         _ = try TelemetryStoreFilePolicy.applyRequiredAttributes(
             primaryStoreURL: storeURL
         )
@@ -192,5 +206,18 @@ final class TelemetryGateMigrationTests: XCTestCase {
             hasher.update(observation.observationID.description)
         }
         return hasher.lowercaseHexDigest
+    }
+
+    private func assertDirectoryBackupBoundary(
+        primaryStoreURL: URL,
+        phase: String
+    ) throws {
+        XCTAssertEqual(
+            try primaryStoreURL.deletingLastPathComponent()
+                .resourceValues(forKeys: [.isExcludedFromBackupKey])
+                .isExcludedFromBackup,
+            true,
+            phase
+        )
     }
 }

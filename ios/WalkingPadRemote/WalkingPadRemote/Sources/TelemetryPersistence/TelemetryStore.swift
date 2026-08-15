@@ -99,9 +99,8 @@ public enum TelemetryStoreFactory {
             )
         case let .onDisk(url):
             onDiskStoreURL = url
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
+            _ = try TelemetryStoreFilePolicy.prepareStoreDirectory(
+                primaryStoreURL: url
             )
             modelConfiguration = ModelConfiguration(
                 "TelemetryV2",

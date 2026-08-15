@@ -29,6 +29,31 @@ public struct TelemetryStoreFilePolicyResult: Sendable, Equatable {
 }
 
 public enum TelemetryStoreFilePolicy {
+    static func prepareStoreDirectory(
+        primaryStoreURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let directory = primaryStoreURL.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutableDirectory = directory
+        try mutableDirectory.setResourceValues(values)
+
+        let applied = try directory.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        guard applied.isExcludedFromBackup == true else {
+            throw CocoaError(
+                .fileWriteUnknown,
+                userInfo: [NSFilePathErrorKey: directory.path]
+            )
+        }
+        return directory
+    }
+
     public static func discoveredStoreFiles(
         primaryStoreURL: URL,
         fileManager: FileManager = .default

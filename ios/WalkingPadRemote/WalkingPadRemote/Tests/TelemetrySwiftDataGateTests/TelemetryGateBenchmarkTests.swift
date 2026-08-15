@@ -40,6 +40,7 @@ private struct GateStorageFile: Codable, Equatable {
 
 private struct GateStorageSnapshot: Codable, Equatable {
     let lifecycle: String
+    let directoryExcludedFromBackup: Bool?
     let files: [GateStorageFile]
 
     var primaryBytes: UInt64 {
@@ -340,15 +341,18 @@ final class TelemetryGateBenchmarkTests: XCTestCase {
             transactionLatencies,
             totalRecords: expected.totalPersistedRecords
         )
-        let filePolicyHostPass = (afterWrite.files + afterReopen.files).allSatisfy {
-            $0.protection == FileProtectionType.completeUntilFirstUserAuthentication.rawValue
-                && $0.excludedFromBackup == true
+        let filePolicyHostPass = [afterWrite, afterReopen].allSatisfy { snapshot in
+            snapshot.directoryExcludedFromBackup == true
+                && snapshot.files.allSatisfy {
+                    $0.protection
+                        == FileProtectionType.completeUntilFirstUserAuthentication.rawValue
+                }
         }
         XCTAssertTrue(filePolicyHostPass)
         XCTAssertFalse(full128Latencies.isEmpty)
 
         let summary = GateBenchmarkSummary(
-            harnessVersion: "swiftdata-gate-v1",
+            harnessVersion: "swiftdata-gate-v2-directory-boundary",
             profile: profile,
             deterministicSeed: generator.seed,
             representedWorkoutHours: profile.representedWorkoutHours,
@@ -571,6 +575,8 @@ final class TelemetryGateBenchmarkTests: XCTestCase {
         primaryStoreURL: URL,
         lifecycle: String
     ) throws -> GateStorageSnapshot {
+        let directoryValues = try primaryStoreURL.deletingLastPathComponent()
+            .resourceValues(forKeys: [.isExcludedFromBackupKey])
         let files = try TelemetryStoreFilePolicy.discoveredStoreFiles(
             primaryStoreURL: primaryStoreURL
         )
@@ -584,7 +590,11 @@ final class TelemetryGateBenchmarkTests: XCTestCase {
                 excludedFromBackup: resourceValues.isExcludedFromBackup
             )
         }
-        return GateStorageSnapshot(lifecycle: lifecycle, files: values)
+        return GateStorageSnapshot(
+            lifecycle: lifecycle,
+            directoryExcludedFromBackup: directoryValues.isExcludedFromBackup,
+            files: values
+        )
     }
 
     private func benchmarkRunRoot(
