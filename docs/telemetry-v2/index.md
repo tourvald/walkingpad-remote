@@ -12,7 +12,8 @@ is not a second architecture summary.
 2. [`safety-boundary.md`](safety-boundary.md) owns cross-Issue safety and
    one-way-authority invariants.
 3. [`data-contract.md`](data-contract.md) owns evidence, provenance, time,
-   identity, causal-association, frame, and analysis semantics.
+   identity, general causal-proof, frame, and analysis semantics. Protocol- and
+   runtime-specific association rules belong to their topic document.
 4. Topic documents below refine those canonical contracts for their named seam.
 5. Current code and executable regressions provide exact implemented names and
    evidence. They do not override a PM-approved behavior contract.
