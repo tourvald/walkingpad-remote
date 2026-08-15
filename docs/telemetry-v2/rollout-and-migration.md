@@ -11,9 +11,8 @@ closed. No implementation issue runs in parallel.
 | Stage | Issue | Required exit |
 | --- | --- | --- |
 | Contract | #23 | This repository-owned specification is accepted |
-| Typed domain | #24 | Persistence-independent types encode time, provenance, quality, and causality |
-| Store | #25 | Unwired versioned local SwiftData V1 store exists |
-| Architecture gate | #26 | Automated scale/recovery/protection evidence accepted; device-only items named |
+| Foundation | #39 | Phase A checkpoint proves the persistence-independent typed domain; Phase B then adds the unwired versioned local SwiftData V1 store in the same Draft PR |
+| Architecture gate | #26 | After #39, automated scale/recovery/protection evidence is accepted and device-only items are named |
 | Recorder | #27 | Constant-time ingress, bounded buffering, batching, and loss accounting |
 | HR truth | #28 | Native HR evidence normalized without changing controller arrival behavior |
 | Treadmill/command truth | #29 | Factual observations, estimates, desired values, and command lifecycle separated |
