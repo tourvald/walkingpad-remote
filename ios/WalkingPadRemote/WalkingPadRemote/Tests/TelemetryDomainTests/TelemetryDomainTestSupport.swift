@@ -73,6 +73,7 @@ enum TelemetryDomainFixtures {
         controlUse: .acceptedAndUsed
     )
 }
+
 extension XCTestCase {
     func assertCodableRoundTrip<T: Codable & Equatable>(
         _ value: T,

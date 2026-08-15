@@ -6,6 +6,7 @@ public enum CanonicalGapKind: String, Codable, Hashable, Sendable {
     case recorderOutageOrLoss
     case unknown
 }
+
 public struct CanonicalGapBoundary: Codable, Hashable, Sendable {
     public let missingSinceElapsedSecond: Int64
     public let kind: CanonicalGapKind

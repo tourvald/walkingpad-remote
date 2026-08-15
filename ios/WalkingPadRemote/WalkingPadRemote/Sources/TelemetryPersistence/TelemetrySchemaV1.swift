@@ -278,6 +278,7 @@ final class TelemetryTreadmillSampleV1 {
     public var nativeUnitKey: String
     public var nativeUnitPayload: Data
     public var factualKilometresPerHour: Double?
+    public var factualSpeedNormalizationRuleKey: String?
     public var deviceStateKey: String
     public var arrivalOrder: Int64
     public var measuredAt: Date?
@@ -301,6 +302,7 @@ final class TelemetryTreadmillSampleV1 {
         nativeUnitKey: String,
         nativeUnitPayload: Data,
         factualKilometresPerHour: Double?,
+        factualSpeedNormalizationRuleKey: String?,
         deviceStateKey: String,
         arrivalOrder: Int64,
         measuredAt: Date?,
@@ -323,6 +325,7 @@ final class TelemetryTreadmillSampleV1 {
         self.nativeUnitKey = nativeUnitKey
         self.nativeUnitPayload = nativeUnitPayload
         self.factualKilometresPerHour = factualKilometresPerHour
+        self.factualSpeedNormalizationRuleKey = factualSpeedNormalizationRuleKey
         self.deviceStateKey = deviceStateKey
         self.arrivalOrder = arrivalOrder
         self.measuredAt = measuredAt

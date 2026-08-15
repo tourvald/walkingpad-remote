@@ -9,6 +9,7 @@ public enum SignalProviderKind: Codable, Hashable, Sendable {
     case treadmillProtocol
     case other(String)
 }
+
 public struct ProviderSavingSource: Codable, Hashable, Sendable {
     public let bundleIdentifier: String?
     public let productType: String?

@@ -13,6 +13,7 @@ public struct VersionValue<Tag>: RawRepresentable, Codable, Hashable, Sendable,
         rawValue
     }
 }
+
 public enum TelemetrySchemaVersionTag: Sendable {}
 public enum AlgorithmVersionTag: Sendable {}
 public enum SafetyPolicyVersionTag: Sendable {}

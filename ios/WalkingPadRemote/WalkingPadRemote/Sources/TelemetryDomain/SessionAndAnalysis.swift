@@ -18,6 +18,7 @@ public struct RecorderHealthSummary: Codable, Hashable, Sendable {
         self.lastPersistedElapsed = lastPersistedElapsed
     }
 }
+
 public struct KnownTreadmillMetadata: Codable, Hashable, Sendable {
     public let stableLocalIdentifier: String?
     public let model: String?

@@ -145,7 +145,8 @@ enum TelemetryPersistenceFixtures {
         seed: UInt8,
         session: WorkoutSessionRecord,
         kind: WorkoutEventKind,
-        elapsed: Int64
+        elapsed: Int64,
+        sourceID: SourceID? = nil
     ) -> WorkoutEvent {
         let payload: WorkoutEventPayload = switch kind {
         case .sessionLifecycle:
@@ -162,6 +163,7 @@ enum TelemetryPersistenceFixtures {
                 occurredElapsed: ElapsedDuration(microseconds: elapsed),
                 recordedElapsed: ElapsedDuration(microseconds: elapsed + 10_000)
             ),
+            sourceID: sourceID,
             payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
         )
     }

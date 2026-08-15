@@ -31,6 +31,9 @@ final class TelemetrySchemaAndBoundaryTests: XCTestCase {
         XCTAssertTrue(
             events.indices.contains(["binary", "sessionID", "kindKey", "occurredElapsedMicroseconds"])
         )
+
+        let treadmill = try XCTUnwrap(schema.entitiesByName["TelemetryTreadmillSampleV1"])
+        XCTAssertNotNil(treadmill.attributesByName["factualSpeedNormalizationRuleKey"])
     }
 
     func testStoreBoundaryDisablesAutosaveAndProductionSourcesDoNotInstantiateV2() async throws {

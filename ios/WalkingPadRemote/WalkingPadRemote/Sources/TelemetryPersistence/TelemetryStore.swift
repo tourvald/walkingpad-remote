@@ -63,9 +63,11 @@ public enum TelemetryStoreFactory {
     public static func make(_ configuration: TelemetryStoreConfiguration) throws -> TelemetryStore {
         let schema = Schema(versionedSchema: TelemetrySchemaV1.self)
         let modelConfiguration: ModelConfiguration
+        let onDiskStoreURL: URL?
 
         switch configuration {
         case .inMemory:
+            onDiskStoreURL = nil
             modelConfiguration = ModelConfiguration(
                 "TelemetryV2InMemory",
                 schema: schema,
@@ -73,6 +75,7 @@ public enum TelemetryStoreFactory {
                 cloudKitDatabase: .none
             )
         case let .onDisk(url):
+            onDiskStoreURL = url
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
@@ -90,12 +93,29 @@ public enum TelemetryStoreFactory {
             migrationPlan: TelemetryMigrationPlan.self,
             configurations: [modelConfiguration]
         )
-        return TelemetryStore(modelContainer: container)
+        if let onDiskStoreURL {
+            _ = try TelemetryStoreFilePolicy.applyRequiredAttributes(
+                primaryStoreURL: onDiskStoreURL
+            )
+        }
+        return TelemetryStore(
+            modelContainer: container,
+            onDiskStoreURL: onDiskStoreURL
+        )
     }
 }
 
 @ModelActor
 public actor TelemetryStore {
+    private var onDiskStoreURL: URL?
+
+    init(modelContainer: ModelContainer, onDiskStoreURL: URL?) {
+        let modelContext = ModelContext(modelContainer)
+        modelExecutor = DefaultSerialModelExecutor(modelContext: modelContext)
+        self.modelContainer = modelContainer
+        self.onDiskStoreURL = onDiskStoreURL
+    }
+
     public func insertSession(_ record: WorkoutSessionRecord) throws {
         let sessionKey = record.sessionID.description
         let recordKey = record.recordID.description
@@ -239,6 +259,8 @@ public actor TelemetryStore {
                     nativeUnitKey: Self.nativeUnitKey(observation.nativeSpeed.unit),
                     nativeUnitPayload: nativeUnitPayload,
                     factualKilometresPerHour: observation.factualSpeed?.value,
+                    factualSpeedNormalizationRuleKey: observation.factualSpeed?
+                        .normalizationRule.rawValue,
                     deviceStateKey: observation.deviceState.rawValue,
                     arrivalOrder: arrivalOrder,
                     measuredAt: observation.timestamp.measuredAt,
@@ -477,6 +499,11 @@ public actor TelemetryStore {
     private func explicitTransaction(_ operation: () throws -> Void) throws {
         modelContext.autosaveEnabled = false
         try modelContext.transaction(block: operation)
+        if let onDiskStoreURL {
+            _ = try TelemetryStoreFilePolicy.applyRequiredAttributes(
+                primaryStoreURL: onDiskStoreURL
+            )
+        }
     }
 
     private func sessionModel(_ sessionID: SessionID) throws -> TelemetryWorkoutSessionV1 {
@@ -701,7 +728,10 @@ private extension TelemetryStore {
               let arrivalOrder = UInt64(exactly: model.arrivalOrder),
               let provenance = EvidenceProvenance(rawValue: model.provenanceKey),
               let controlUse = ControlUseState(rawValue: model.controlUseKey),
-              let source = model.source
+              let session = model.session,
+              session.sessionID == model.sessionID,
+              let source = model.source,
+              source.sourceID == model.sourceID
         else {
             throw TelemetryStoreError.corruptStoredRecord(model.observationID)
         }
@@ -733,8 +763,23 @@ private extension TelemetryStore {
         guard let arrivalOrder = UInt64(exactly: model.arrivalOrder),
               let provenance = EvidenceProvenance(rawValue: model.provenanceKey),
               let deviceState = TreadmillDeviceState(rawValue: model.deviceStateKey),
-              let source = model.source
+              let session = model.session,
+              session.sessionID == model.sessionID,
+              let source = model.source,
+              source.sourceID == model.sourceID
         else {
+            throw TelemetryStoreError.corruptStoredRecord(model.observationID)
+        }
+        let normalizationRule: FactualSpeedNormalizationRule?
+        switch (model.factualKilometresPerHour, model.factualSpeedNormalizationRuleKey) {
+        case (nil, nil):
+            normalizationRule = nil
+        case (.some, let ruleKey?):
+            guard let rule = FactualSpeedNormalizationRule(rawValue: ruleKey) else {
+                throw TelemetryStoreError.corruptStoredRecord(model.observationID)
+            }
+            normalizationRule = rule
+        default:
             throw TelemetryStoreError.corruptStoredRecord(model.observationID)
         }
         let observation = TreadmillObservation(
@@ -758,9 +803,12 @@ private extension TelemetryStore {
             ),
             provenance: provenance,
             freshness: try decode(EvidenceFreshness.self, from: model.freshnessPayload),
-            quality: try decode(QualityFlags.self, from: model.qualityPayload)
+            quality: try decode(QualityFlags.self, from: model.qualityPayload),
+            normalizationRule: normalizationRule ?? .nativeToKilometresPerHourV1
         )
-        guard observation.factualSpeed?.value == model.factualKilometresPerHour else {
+        guard observation.factualSpeed?.value == model.factualKilometresPerHour,
+              observation.factualSpeed?.normalizationRule == normalizationRule
+        else {
             throw TelemetryStoreError.corruptStoredRecord(model.observationID)
         }
         return observation
@@ -768,8 +816,17 @@ private extension TelemetryStore {
 
     static func domainEvent(_ model: TelemetryWorkoutEventV1) throws -> WorkoutEvent {
         guard let kind = WorkoutEventKind(rawValue: model.kindKey),
-              let payloadVersion = UInt16(exactly: model.payloadSchemaVersion)
+              let payloadVersion = UInt16(exactly: model.payloadSchemaVersion),
+              let session = model.session,
+              session.sessionID == model.sessionID
         else {
+            throw TelemetryStoreError.corruptStoredRecord(model.recordID)
+        }
+        if let sourceID = model.sourceID {
+            guard let source = model.source, source.sourceID == sourceID else {
+                throw TelemetryStoreError.corruptStoredRecord(model.recordID)
+            }
+        } else if model.source != nil {
             throw TelemetryStoreError.corruptStoredRecord(model.recordID)
         }
         let payload = try decode(WorkoutEventPayload.self, from: model.payload)
@@ -797,7 +854,10 @@ private extension TelemetryStore {
     }
 
     static func domainFrame(_ model: TelemetryWorkoutFrameV1) throws -> CanonicalFrame {
-        CanonicalFrame(
+        guard let session = model.session, session.sessionID == model.sessionID else {
+            throw TelemetryStoreError.corruptStoredRecord(model.recordID)
+        }
+        return CanonicalFrame(
             frameID: try uuid(model.frameID, as: FrameIDTag.self),
             recordID: try uuid(model.recordID, as: RecordIDTag.self),
             sessionID: try uuid(model.sessionID, as: SessionIDTag.self),
@@ -815,7 +875,9 @@ private extension TelemetryStore {
     static func domainAnalysis(_ model: TelemetryWorkoutAnalysisV1) throws -> WorkoutAnalysisResult {
         guard let hashAlgorithm = ContentHashAlgorithm(rawValue: model.evidenceHashAlgorithm),
               let qualityGrade = AnalysisQualityGrade(rawValue: model.qualityGradeKey),
-              let detailSchemaVersion = UInt16(exactly: model.detailSchemaVersion)
+              let detailSchemaVersion = UInt16(exactly: model.detailSchemaVersion),
+              let session = model.session,
+              session.sessionID == model.sessionID
         else {
             throw TelemetryStoreError.corruptStoredRecord(model.analysisID)
         }

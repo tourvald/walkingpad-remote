@@ -38,11 +38,13 @@ final class ObservationAndFrameTests: XCTestCase {
 
         XCTAssertEqual(metric?.value, 6.2)
         XCTAssertEqual(imperial?.value ?? 0, 6.437_376, accuracy: 0.000_001)
+        XCTAssertEqual(metric?.normalizationRule, .nativeToKilometresPerHourV1)
+        XCTAssertEqual(imperial?.normalizationRule, .nativeToKilometresPerHourV1)
     }
 
     func testFactualSpeedDecodingRejectsInvalidValue() throws {
         let invalid = Data(
-            #"{"value":-1,"provenance":"decodedDeviceReport"}"#.utf8
+            #"{"value":-1,"provenance":"decodedDeviceReport","normalizationRule":"nativeToKilometresPerHourV1"}"#.utf8
         )
 
         XCTAssertThrowsError(

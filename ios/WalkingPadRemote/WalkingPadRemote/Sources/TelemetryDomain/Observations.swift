@@ -77,18 +77,29 @@ public struct NativeTreadmillSpeed: Codable, Hashable, Sendable {
     }
 }
 
+public enum FactualSpeedNormalizationRule: String, Codable, Hashable, Sendable {
+    case nativeToKilometresPerHourV1
+}
+
 public struct FactualSpeedKilometresPerHour: Codable, Hashable, Sendable {
     public let value: Double
     public let provenance: EvidenceProvenance
+    public let normalizationRule: FactualSpeedNormalizationRule
 
-    private init(value: Double, provenance: EvidenceProvenance) {
+    private init(
+        value: Double,
+        provenance: EvidenceProvenance,
+        normalizationRule: FactualSpeedNormalizationRule
+    ) {
         self.value = value
         self.provenance = provenance
+        self.normalizationRule = normalizationRule
     }
 
     private enum CodingKeys: String, CodingKey {
         case value
         case provenance
+        case normalizationRule
     }
 
     public init(from decoder: Decoder) throws {
@@ -104,7 +115,11 @@ public struct FactualSpeedKilometresPerHour: Codable, Hashable, Sendable {
 
         self.init(
             value: value,
-            provenance: try container.decode(EvidenceProvenance.self, forKey: .provenance)
+            provenance: try container.decode(EvidenceProvenance.self, forKey: .provenance),
+            normalizationRule: try container.decode(
+                FactualSpeedNormalizationRule.self,
+                forKey: .normalizationRule
+            )
         )
     }
 
@@ -112,23 +127,36 @@ public struct FactualSpeedKilometresPerHour: Codable, Hashable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(value, forKey: .value)
         try container.encode(provenance, forKey: .provenance)
+        try container.encode(normalizationRule, forKey: .normalizationRule)
     }
 
     public static func normalized(
         from native: NativeTreadmillSpeed,
-        provenance: EvidenceProvenance
+        provenance: EvidenceProvenance,
+        normalizationRule: FactualSpeedNormalizationRule = .nativeToKilometresPerHourV1
     ) -> Self? {
         guard native.value.isFinite, native.value >= 0 else {
             return nil
         }
 
-        switch native.unit {
-        case .kilometresPerHour:
-            return Self(value: native.value, provenance: provenance)
-        case .milesPerHour:
-            return Self(value: native.value * 1.609_344, provenance: provenance)
-        case .controllerNative, .unknown:
-            return nil
+        switch normalizationRule {
+        case .nativeToKilometresPerHourV1:
+            switch native.unit {
+            case .kilometresPerHour:
+                return Self(
+                    value: native.value,
+                    provenance: provenance,
+                    normalizationRule: normalizationRule
+                )
+            case .milesPerHour:
+                return Self(
+                    value: native.value * 1.609_344,
+                    provenance: provenance,
+                    normalizationRule: normalizationRule
+                )
+            case .controllerNative, .unknown:
+                return nil
+            }
         }
     }
 }
@@ -197,7 +225,8 @@ public struct TreadmillObservation: Codable, Hashable, Sendable {
         timestamp: ObservationTimestamp,
         provenance: EvidenceProvenance,
         freshness: EvidenceFreshness,
-        quality: QualityFlags
+        quality: QualityFlags,
+        normalizationRule: FactualSpeedNormalizationRule = .nativeToKilometresPerHourV1
     ) {
         self.recordID = recordID
         self.observationID = observationID
@@ -206,7 +235,8 @@ public struct TreadmillObservation: Codable, Hashable, Sendable {
         self.nativeSpeed = nativeSpeed
         self.factualSpeed = FactualSpeedKilometresPerHour.normalized(
             from: nativeSpeed,
-            provenance: provenance
+            provenance: provenance,
+            normalizationRule: normalizationRule
         )
         self.deviceState = deviceState
         self.arrivalOrder = arrivalOrder
