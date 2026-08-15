@@ -112,14 +112,23 @@ observation(s) used -> decision -> command enqueue/send
   immutable configuration/safety-policy version under which it ran.
 - A command lifecycle event MUST reference its decision and command IDs when
   applicable.
-- ACK, timeout, cancellation, retry, and transport failure MUST be separate
-  events referencing the command attempt they describe.
+- ACK, timeout, write result, cancellation, retry, and transport failure MUST be
+  separate factual events. They reference a command attempt only when the
+  runtime or protocol proves that exact edge deterministically.
+- The accepted legacy global ACK/timeout/write-result callbacks do not prove an
+  attempt. Their association is `unresolvedByLegacyRuntime`, with `commandID`
+  and `attemptID` absent. Such an event MUST NOT complete or mutate a specific
+  attempt in evidence state.
+- A consumer MUST NOT infer association from latest/oldest/nearest command,
+  timing proximity, queue position, target or expected/modelled speed, packet
+  similarity, a canonical frame, or the global pending-ACK slot.
 - A retry-scheduled event's queryable primary attempt ID is the next scheduled
   attempt; its typed payload MUST also retain the previous attempt ID so the
   retry edge is not lost.
-- A later treadmill observation MAY reference the command as a candidate causal
-  response only when the implementation has real correlation evidence. Mere
-  temporal proximity MUST NOT be recorded as proven causation.
+- A later treadmill observation MAY reference the command as a causal response
+  only when independent deterministic evidence proves the edge. Otherwise its
+  command and attempt association remains nil/unknown; mere temporal proximity
+  MUST NOT be recorded as causation.
 - Absence of ACK or observed response remains absence, not success.
 
 ## Units
