@@ -377,9 +377,158 @@ final class TelemetryRecorderBehaviorTests: XCTestCase {
         XCTAssertEqual(snapshot.finalizations.map(\.lifecycleState), [.completed, .incomplete])
         XCTAssertEqual(
             snapshot.finalizations.last?.incompleteReason,
-            "recorder-persistence-failure"
+            "persistence-fake-finalize"
         )
         XCTAssertEqual(result.completeness, .failed)
+        XCTAssertEqual(recorder.operationalState.writerFailureCount, 1)
+    }
+
+    func testFailureRequestDuringSuspendedCompletionFinalizationWins() async {
+        let persistence = InMemoryTelemetryRecorderPersistence(
+            suspendNextFinalization: true
+        )
+        let session = TelemetryRecorderFixtures.session()
+        let recorder = TelemetryRecorder(
+            sessionHeader: session,
+            persistence: persistence,
+            scheduler: ManualTelemetryRecorderScheduler()
+        )
+        await persistence.waitForHeaders(1)
+
+        let finishTask = Task {
+            await recorder.finish(
+                endedAt: TelemetryRecorderFixtures.baseDate,
+                endedElapsed: .zero
+            )
+        }
+        await persistence.waitForFinalizeCalls(1)
+
+        XCTAssertTrue(recorder.requestFailure(reason: "test-finalization-race"))
+        XCTAssertEqual(recorder.operationalState.lifecycleState, .failing)
+        await persistence.resumeSuspendedFinalization()
+        let result = await finishTask.value
+
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.finalizeCalls, 2)
+        XCTAssertEqual(snapshot.finalizations.map(\.lifecycleState), [.completed, .incomplete])
+        XCTAssertEqual(snapshot.finalizations.last?.incompleteReason, "test-finalization-race")
+        XCTAssertEqual(result.completeness, .failed)
+        XCTAssertEqual(recorder.operationalState.lifecycleState, .failed)
+    }
+
+    func testCancellationRequestDuringSuspendedCompletionFinalizationWins() async {
+        let persistence = InMemoryTelemetryRecorderPersistence(
+            suspendNextFinalization: true
+        )
+        let session = TelemetryRecorderFixtures.session()
+        let recorder = TelemetryRecorder(
+            sessionHeader: session,
+            persistence: persistence,
+            scheduler: ManualTelemetryRecorderScheduler()
+        )
+        await persistence.waitForHeaders(1)
+
+        let finishTask = Task {
+            await recorder.finish(
+                endedAt: TelemetryRecorderFixtures.baseDate,
+                endedElapsed: .zero
+            )
+        }
+        await persistence.waitForFinalizeCalls(1)
+
+        XCTAssertTrue(recorder.requestCancellation())
+        XCTAssertEqual(recorder.operationalState.lifecycleState, .cancelling)
+        await persistence.resumeSuspendedFinalization()
+        let result = await finishTask.value
+
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.finalizeCalls, 2)
+        XCTAssertEqual(snapshot.finalizations.map(\.lifecycleState), [.completed, .cancelled])
+        XCTAssertEqual(snapshot.finalizations.last?.incompleteReason, "recorder-cancelled")
+        XCTAssertEqual(result.completeness, .cancelled)
+        XCTAssertEqual(recorder.operationalState.lifecycleState, .cancelled)
+    }
+
+    func testLatestIntentWinsAcrossSuspendedFailClosedFollowUp() async {
+        let persistence = InMemoryTelemetryRecorderPersistence(
+            suspendNextFinalization: true
+        )
+        let session = TelemetryRecorderFixtures.session()
+        let recorder = TelemetryRecorder(
+            sessionHeader: session,
+            persistence: persistence,
+            scheduler: ManualTelemetryRecorderScheduler()
+        )
+        await persistence.waitForHeaders(1)
+
+        let finishTask = Task {
+            await recorder.finish(
+                endedAt: TelemetryRecorderFixtures.baseDate,
+                endedElapsed: .zero
+            )
+        }
+        await persistence.waitForFinalizeCalls(1)
+        XCTAssertTrue(recorder.requestFailure(reason: "superseded-failure"))
+
+        await persistence.suspendNextFinalization()
+        await persistence.resumeSuspendedFinalization()
+        await persistence.waitForFinalizeCalls(2)
+        XCTAssertTrue(recorder.requestCancellation())
+        XCTAssertEqual(recorder.operationalState.lifecycleState, .cancelling)
+
+        await persistence.resumeSuspendedFinalization()
+        let result = await finishTask.value
+
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.finalizeCalls, 3)
+        XCTAssertEqual(
+            snapshot.finalizations.map(\.lifecycleState),
+            [.completed, .incomplete, .cancelled]
+        )
+        XCTAssertEqual(snapshot.finalizations.last?.incompleteReason, "recorder-cancelled")
+        XCTAssertEqual(result.completeness, .cancelled)
+        XCTAssertEqual(recorder.operationalState.lifecycleState, .cancelled)
+    }
+
+    func testLatestIntentSurvivesErrorFromSuspendedFailClosedFollowUp() async {
+        let persistence = InMemoryTelemetryRecorderPersistence(
+            finalizeBehaviors: [.success, .ambiguousAfterCommit, .success],
+            suspendNextFinalization: true
+        )
+        let session = TelemetryRecorderFixtures.session()
+        let recorder = TelemetryRecorder(
+            sessionHeader: session,
+            persistence: persistence,
+            scheduler: ManualTelemetryRecorderScheduler()
+        )
+        await persistence.waitForHeaders(1)
+
+        let finishTask = Task {
+            await recorder.finish(
+                endedAt: TelemetryRecorderFixtures.baseDate,
+                endedElapsed: .zero
+            )
+        }
+        await persistence.waitForFinalizeCalls(1)
+        XCTAssertTrue(recorder.requestFailure(reason: "superseded-failure"))
+
+        await persistence.suspendNextFinalization()
+        await persistence.resumeSuspendedFinalization()
+        await persistence.waitForFinalizeCalls(2)
+        XCTAssertTrue(recorder.requestCancellation())
+
+        await persistence.resumeSuspendedFinalization()
+        let result = await finishTask.value
+
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.finalizeCalls, 3)
+        XCTAssertEqual(
+            snapshot.finalizations.map(\.lifecycleState),
+            [.completed, .incomplete, .cancelled]
+        )
+        XCTAssertEqual(snapshot.finalizations.last?.incompleteReason, "recorder-cancelled")
+        XCTAssertEqual(result.completeness, .cancelled)
+        XCTAssertEqual(recorder.operationalState.lifecycleState, .cancelled)
         XCTAssertEqual(recorder.operationalState.writerFailureCount, 1)
     }
 

@@ -92,21 +92,26 @@ actor InMemoryTelemetryRecorderPersistence: TelemetryRecorderPersistence {
     private var beginBehaviors: [Behavior]
     private var finalizeBehaviors: [Behavior]
     private var unfinished: [WorkoutSessionRecord]
+    private var suspendsNextFinalization: Bool
+    private var suspendedFinalization: CheckedContinuation<Void, Never>?
     private var headerWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var batchWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var finalizationWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
     private var batchCallWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var finalizeCallWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
     init(
         batchBehaviors: [Behavior] = [],
         beginBehaviors: [Behavior] = [],
         finalizeBehaviors: [Behavior] = [],
-        unfinished: [WorkoutSessionRecord] = []
+        unfinished: [WorkoutSessionRecord] = [],
+        suspendNextFinalization: Bool = false
     ) {
         self.batchBehaviors = batchBehaviors
         self.beginBehaviors = beginBehaviors
         self.finalizeBehaviors = finalizeBehaviors
         self.unfinished = unfinished
+        suspendsNextFinalization = suspendNextFinalization
     }
 
     func beginSession(_ header: WorkoutSessionRecord) async throws {
@@ -148,7 +153,14 @@ actor InMemoryTelemetryRecorderPersistence: TelemetryRecorderPersistence {
 
     func finalizeSession(_ finalization: TelemetrySessionFinalization) async throws {
         finalizeCallCount += 1
+        resumeFinalizeCallWaiters()
         let behavior = nextBehavior(&finalizeBehaviors)
+        if suspendsNextFinalization {
+            suspendsNextFinalization = false
+            await withCheckedContinuation { continuation in
+                suspendedFinalization = continuation
+            }
+        }
         switch behavior {
         case .success:
             finalizations.append(finalization)
@@ -204,6 +216,28 @@ actor InMemoryTelemetryRecorderPersistence: TelemetryRecorderPersistence {
         }
     }
 
+    func waitForFinalizeCalls(_ count: Int) async {
+        guard finalizeCallCount < count else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            finalizeCallWaiters.append((count, continuation))
+        }
+    }
+
+    func resumeSuspendedFinalization() {
+        guard let continuation = suspendedFinalization else {
+            preconditionFailure("A finalization must be suspended before it can resume.")
+        }
+        suspendedFinalization = nil
+        continuation.resume()
+    }
+
+    func suspendNextFinalization() {
+        precondition(!suspendsNextFinalization)
+        suspendsNextFinalization = true
+    }
+
     func snapshot() -> (
         headers: [WorkoutSessionRecord],
         batches: [[SequencedTelemetryRecord]],
@@ -233,6 +267,10 @@ actor InMemoryTelemetryRecorderPersistence: TelemetryRecorderPersistence {
 
     private func resumeFinalizationWaiters() {
         resume(waiters: &finalizationWaiters, currentCount: finalizations.count)
+    }
+
+    private func resumeFinalizeCallWaiters() {
+        resume(waiters: &finalizeCallWaiters, currentCount: finalizeCallCount)
     }
 
     private func resume(

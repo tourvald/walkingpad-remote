@@ -124,6 +124,15 @@ public final class TelemetryRecorder: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    public func requestFailure(reason: String) -> Bool {
+        let accepted = core.requestFailure(reason: reason, completion: nil) == nil
+        if accepted {
+            core.wake()
+        }
+        return accepted
+    }
+
     public func cancel() async -> TelemetryFinishResult {
         await withCheckedContinuation { continuation in
             if let immediate = core.requestCancellation(
@@ -134,6 +143,15 @@ public final class TelemetryRecorder: @unchecked Sendable {
                 core.wake()
             }
         }
+    }
+
+    @discardableResult
+    public func requestCancellation() -> Bool {
+        let accepted = core.requestCancellation(completion: nil) == nil
+        if accepted {
+            core.wake()
+        }
+        return accepted
     }
 
     public static func recoverUnfinishedSessions(
@@ -177,6 +195,7 @@ private extension TelemetryRecorder {
     ) async {
         var iterator = stream.makeAsyncIterator()
 
+        let beginIntentGeneration = core.terminalIntentGenerationSnapshot()
         let beginResult = await attemptPersistence(
             core: core,
             scheduler: scheduler,
@@ -196,15 +215,22 @@ private extension TelemetryRecorder {
             continuation.finish()
             return
         case let .failure(error):
-            core.persistenceBecameTerminal(error: error, uncertainRecords: [])
-            core.completeTerminal(.failed)
+            core.persistenceBecameTerminalIfIntentUnchanged(
+                error: error,
+                uncertainRecords: [],
+                expectedGeneration: beginIntentGeneration
+            )
+            await terminateRequestedRecorder(
+                core: core,
+                persistence: persistence
+            )
             continuation.finish()
             return
         }
 
         while true {
             switch core.nextConsumerAction(now: scheduler.now()) {
-            case let .persist(batch):
+            case let .persist(batch, intentGeneration):
                 cancelTimer(core: core, scheduler: scheduler)
                 let startedAt = scheduler.now()
                 let result = await attemptPersistence(
@@ -224,12 +250,15 @@ private extension TelemetryRecorder {
                 case .aborted:
                     core.restoreUncertainBatchForAccounting(batch)
                 case let .failure(error):
-                    core.persistenceBecameTerminal(error: error, uncertainRecords: batch)
-                    await bestEffortIncompleteFinalization(
+                    core.persistenceBecameTerminalIfIntentUnchanged(
+                        error: error,
+                        uncertainRecords: batch,
+                        expectedGeneration: intentGeneration
+                    )
+                    await terminateRequestedRecorder(
                         core: core,
                         persistence: persistence
                     )
-                    core.completeTerminal(.failed)
                     continuation.finish()
                     return
                 }
@@ -251,7 +280,11 @@ private extension TelemetryRecorder {
                 continuation.finish()
                 return
 
-            case let .finalize(finalization, intendedCompleteness):
+            case let .finalize(
+                finalization,
+                intendedCompleteness,
+                intentGeneration
+            ):
                 cancelTimer(core: core, scheduler: scheduler)
                 let result = await attemptPersistence(
                     core: core,
@@ -262,19 +295,27 @@ private extension TelemetryRecorder {
                 }
                 switch result {
                 case .success:
-                    core.completeTerminal(intendedCompleteness)
+                    if !core.completeFinalizationIfUnchanged(intendedCompleteness) {
+                        await terminateRequestedRecorder(
+                            core: core,
+                            persistence: persistence
+                        )
+                    }
                 case .aborted:
                     await terminateRequestedRecorder(
                         core: core,
                         persistence: persistence
                     )
                 case let .failure(error):
-                    core.persistenceBecameTerminal(error: error, uncertainRecords: [])
-                    await bestEffortIncompleteFinalization(
+                    core.persistenceBecameTerminalIfIntentUnchanged(
+                        error: error,
+                        uncertainRecords: [],
+                        expectedGeneration: intentGeneration
+                    )
+                    await terminateRequestedRecorder(
                         core: core,
                         persistence: persistence
                     )
-                    core.completeTerminal(.failed)
                 }
                 continuation.finish()
                 return
@@ -360,26 +401,35 @@ private extension TelemetryRecorder {
         core: TelemetryRecorderCore,
         persistence: any TelemetryRecorderPersistence
     ) async {
-        let (finalization, intendedCompleteness) = core.prepareRequestedTermination()
-        var resultingCompleteness = intendedCompleteness
-        do {
-            try await persistence.finalizeSession(finalization)
-        } catch {
-            core.writerAttemptFailed()
-            core.persistenceBecameTerminal(error: error, uncertainRecords: [])
-            resultingCompleteness = .failed
-        }
-        core.completeTerminal(resultingCompleteness)
-    }
-
-    static func bestEffortIncompleteFinalization(
-        core: TelemetryRecorderCore,
-        persistence: any TelemetryRecorderPersistence
-    ) async {
-        do {
-            try await persistence.finalizeSession(core.failureFinalization())
-        } catch {
-            core.writerAttemptFailed()
+        while true {
+            let (finalization, intendedCompleteness, generation) = core
+                .prepareRequestedTermination()
+            do {
+                try await persistence.finalizeSession(finalization)
+            } catch {
+                core.writerAttemptFailed()
+                guard let failureGeneration = core
+                    .persistenceBecameTerminalIfIntentUnchanged(
+                        error: error,
+                        uncertainRecords: [],
+                        expectedGeneration: generation
+                    ) else {
+                    continue
+                }
+                if core.completeRequestedTerminationIfUnchanged(
+                    .failed,
+                    generation: failureGeneration
+                ) {
+                    return
+                }
+                continue
+            }
+            if core.completeRequestedTerminationIfUnchanged(
+                intendedCompleteness,
+                generation: generation
+            ) {
+                return
+            }
         }
     }
 
@@ -399,9 +449,13 @@ struct TelemetryRecorderTimerToken: Equatable, Sendable {
 }
 
 enum TelemetryRecorderConsumerAction: Sendable {
-    case persist([SequencedTelemetryRecord])
+    case persist([SequencedTelemetryRecord], intentGeneration: UInt64)
     case scheduleFlush(Duration)
     case terminateRequested
-    case finalize(TelemetrySessionFinalization, TelemetryRecorderCompleteness)
+    case finalize(
+        TelemetrySessionFinalization,
+        TelemetryRecorderCompleteness,
+        intentGeneration: UInt64
+    )
     case wait
 }

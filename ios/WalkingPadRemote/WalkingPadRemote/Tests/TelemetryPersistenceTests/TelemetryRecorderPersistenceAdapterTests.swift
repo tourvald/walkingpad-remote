@@ -119,6 +119,8 @@ final class TelemetryRecorderPersistenceAdapterTests: XCTestCase {
         XCTAssertNil(reopened.endedElapsed)
         XCTAssertEqual(reopened.incompleteReason, "test-recovery")
         XCTAssertEqual(reopened.recorderHealth, finalization.recorderHealth)
+        let unfinishedAfterFinalization = try await store.unfinishedSessions()
+        XCTAssertTrue(unfinishedAfterFinalization.isEmpty)
     }
 
     func testCancelledSessionIsTerminalAndExcludedFromRecoveryDiscovery() async throws {
@@ -149,25 +151,99 @@ final class TelemetryRecorderPersistenceAdapterTests: XCTestCase {
         XCTAssertFalse(unfinished.contains { $0.sessionID == session.sessionID })
     }
 
+    func testRecoveryTargetsOnlyNonterminalSessionsAndIsSemanticallyIdempotent() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let created = session(seed: 10, lifecycleState: .created)
+        let running = session(seed: 11, lifecycleState: .running)
+        let paused = session(seed: 12, lifecycleState: .paused)
+        let completed = session(seed: 13, lifecycleState: .completed)
+        let cancelled = session(
+            seed: 14,
+            lifecycleState: .cancelled,
+            incompleteReason: "original-cancelled"
+        )
+        let originalIncompleteHealth = RecorderHealthSummary(
+            isComplete: false,
+            lostCriticalRecordCount: 7,
+            lostNativeRecordCount: 9,
+            lastPersistedElapsed: ElapsedDuration(microseconds: 11_000)
+        )
+        let incomplete = session(
+            seed: 15,
+            lifecycleState: .incomplete,
+            incompleteReason: "original-incomplete-reason",
+            recorderHealth: originalIncompleteHealth
+        )
+        let allSessions = [created, running, paused, completed, cancelled, incomplete]
+        for record in allSessions {
+            try await store.beginSession(record)
+        }
+
+        let discoveredBeforeRecovery = try await store.unfinishedSessions()
+        XCTAssertEqual(
+            Set(discoveredBeforeRecovery.map(\.sessionID)),
+            Set([created.sessionID, running.sessionID, paused.sessionID])
+        )
+
+        let firstRecovery = try await TelemetryRecorder.recoverUnfinishedSessions(using: store)
+        let secondRecovery = try await TelemetryRecorder.recoverUnfinishedSessions(using: store)
+        XCTAssertEqual(
+            Set(firstRecovery.map(\.sessionID)),
+            Set([created.sessionID, running.sessionID, paused.sessionID])
+        )
+        XCTAssertTrue(secondRecovery.isEmpty)
+
+        let stored = Dictionary(
+            uniqueKeysWithValues: try await store.fetchSessions().map { ($0.sessionID, $0) }
+        )
+        for recoveredID in [created.sessionID, running.sessionID, paused.sessionID] {
+            XCTAssertEqual(stored[recoveredID]?.lifecycleState, .incomplete)
+            XCTAssertEqual(
+                stored[recoveredID]?.incompleteReason,
+                "recorder-recovered-unfinished-session"
+            )
+        }
+        XCTAssertEqual(stored[completed.sessionID]?.lifecycleState, .completed)
+        XCTAssertEqual(stored[cancelled.sessionID]?.lifecycleState, .cancelled)
+        XCTAssertEqual(stored[incomplete.sessionID]?.lifecycleState, .incomplete)
+        XCTAssertEqual(
+            stored[incomplete.sessionID]?.incompleteReason,
+            "original-incomplete-reason"
+        )
+        XCTAssertEqual(stored[incomplete.sessionID]?.recorderHealth, originalIncompleteHealth)
+    }
+
     private func runningSession(seed: UInt8) -> WorkoutSessionRecord {
+        session(seed: seed, lifecycleState: .running)
+    }
+
+    private func session(
+        seed: UInt8,
+        lifecycleState: SessionLifecycleState,
+        incompleteReason: String? = nil,
+        recorderHealth: RecorderHealthSummary? = nil
+    ) -> WorkoutSessionRecord {
         let base = TelemetryPersistenceFixtures.session(seed: seed)
+        let isCompleted = lifecycleState == .completed
         return WorkoutSessionRecord(
             recordID: base.recordID,
             sessionID: base.sessionID,
             profileLocalIdentifier: base.profileLocalIdentifier,
-            lifecycleState: .running,
+            lifecycleState: lifecycleState,
             workoutMode: base.workoutMode,
             startedAt: base.startedAt,
-            endedAt: nil,
-            endedElapsed: nil,
-            incompleteReason: nil,
+            endedAt: isCompleted
+                ? TelemetryPersistenceFixtures.baseDate.addingTimeInterval(1)
+                : nil,
+            endedElapsed: isCompleted ? ElapsedDuration(microseconds: 1_000_000) : nil,
+            incompleteReason: incompleteReason,
             appContext: base.appContext,
             versions: base.versions,
             configuration: base.configuration,
             healthKitWorkoutIdentifier: base.healthKitWorkoutIdentifier,
             treadmill: base.treadmill,
-            recorderHealth: RecorderHealthSummary(
-                isComplete: false,
+            recorderHealth: recorderHealth ?? RecorderHealthSummary(
+                isComplete: isCompleted,
                 lostCriticalRecordCount: 0,
                 lostNativeRecordCount: 0,
                 lastPersistedElapsed: nil

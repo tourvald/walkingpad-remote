@@ -653,9 +653,12 @@ public actor TelemetryStore {
     public func fetchUnfinishedRecorderSessions() throws -> [WorkoutSessionRecord] {
         let completed = SessionLifecycleState.completed.rawValue
         let cancelled = SessionLifecycleState.cancelled.rawValue
+        let incomplete = SessionLifecycleState.incomplete.rawValue
         let descriptor = FetchDescriptor<TelemetryWorkoutSessionV1>(
             predicate: #Predicate {
-                $0.lifecycleStateKey != completed && $0.lifecycleStateKey != cancelled
+                $0.lifecycleStateKey != completed
+                    && $0.lifecycleStateKey != cancelled
+                    && $0.lifecycleStateKey != incomplete
             },
             sortBy: [SortDescriptor(\TelemetryWorkoutSessionV1.startedAt)]
         )

@@ -105,17 +105,23 @@ persistence succeeded. Explicit failure, retry exhaustion, ambiguous commit,
 catastrophic pressure, and discarded or uncertain tail evidence cannot become a
 complete session. A persistence adapter must resolve an ambiguous final-state
 commit by reading back exact stored state; the SwiftData adapter does so. If an
-unresolved completion update still fails, the recorder makes one fail-closed,
-best-effort incomplete update and reports failure rather than success.
+unresolved completion update still fails, the recorder makes a fail-closed,
+best-effort terminal update and reports failure rather than success.
+Failure or cancellation accepted while completion finalization is in flight
+changes terminal intent under the recorder lock. A possibly committed completion
+is followed by an idempotent fail-closed incomplete or cancelled finalization;
+the recorder does not claim that the earlier transaction was rolled back.
 Cancellation accounts the queued or in-flight uncertain tail, persists the
 terminal `cancelled` lifecycle, does not fabricate success, and terminates the
 consumer.
 
-`unfinishedSessions()` exposes persisted sessions that never reached completed
-or cancelled state. `recoverUnfinishedSessions(using:)` marks them incomplete
-without inventing an end time, end elapsed value, or successful completion. The
-method is deliberately not connected to app launch in #27 and is not a claim of
-crash-proof delivery.
+`unfinishedSessions()` exposes only persisted `created`, `running`, or `paused`
+sessions. Persisted `completed`, `cancelled`, and `incomplete` states are terminal
+and excluded. `recoverUnfinishedSessions(using:)` marks genuinely unfinished
+sessions incomplete without inventing an end time, end elapsed value, or
+successful completion. Repeated recovery therefore preserves an existing
+incomplete reason and recorder-health summary. The method is deliberately not
+connected to app launch in #27 and is not a claim of crash-proof delivery.
 
 ## Privacy-safe operational state
 

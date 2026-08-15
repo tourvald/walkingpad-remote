@@ -15,6 +15,11 @@ final class TelemetryRecorderCore: @unchecked Sendable {
         case terminal(TelemetryRecorderCompleteness)
     }
 
+    private enum TerminalTransitionExpectation {
+        case finalizing(TelemetryRecorderCompleteness)
+        case requested(TelemetryRecorderCompleteness, generation: UInt64)
+    }
+
     private struct FlushWaiter {
         let targetSequence: UInt64?
         let completion: FlushCompletion
@@ -38,6 +43,7 @@ final class TelemetryRecorderCore: @unchecked Sendable {
     private var armedTimer: TelemetryRecorderTimerToken?
     private var readyRetryTimer: TelemetryRecorderTimerToken?
     private var knownLoss = false
+    private var terminalIntentGeneration: UInt64 = 0
 
     private var peakQueueDepth = 0
     private var coalescedFrameCount: UInt64 = 0
@@ -239,7 +245,7 @@ final class TelemetryRecorderCore: @unchecked Sendable {
 
     func requestFailure(
         reason: String,
-        completion: @escaping FinishCompletion
+        completion: FinishCompletion?
     ) -> TelemetryFinishResult? {
         lock.withLock {
             if case let .terminal(completeness) = phase {
@@ -248,10 +254,12 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                     lastCommittedRecorderSequence: lastCommittedSequence
                 )
             }
-            finishCompletions.append(completion)
+            if let completion {
+                finishCompletions.append(completion)
+            }
             switch phase {
             case .finalizing:
-                break
+                phase = .failing(reason: reason)
             case .failing, .cancelling:
                 phase = .failing(reason: reason)
             case .beginning, .active, .finishing:
@@ -259,6 +267,7 @@ final class TelemetryRecorderCore: @unchecked Sendable {
             case .terminal:
                 break
             }
+            terminalIntentGeneration &+= 1
             return nil
         }
     }
@@ -279,12 +288,13 @@ final class TelemetryRecorderCore: @unchecked Sendable {
             }
             switch phase {
             case .finalizing:
-                break
+                phase = .cancelling
             case .beginning, .active, .finishing, .failing, .cancelling:
                 phase = .cancelling
             case .terminal:
                 break
             }
+            terminalIntentGeneration &+= 1
             return nil
         }
     }
@@ -305,7 +315,10 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                 return .terminateRequested
             case let .finishing(endedAt, endedElapsed):
                 if !buffer.isEmpty {
-                    return .persist(buffer.drain(maximumCount: batchPolicy.maximumRecordCount))
+                    return .persist(
+                        buffer.drain(maximumCount: batchPolicy.maximumRecordCount),
+                        intentGeneration: terminalIntentGeneration
+                    )
                 }
                 let completeness: TelemetryRecorderCompleteness = knownLoss
                     ? .incomplete
@@ -318,7 +331,8 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                         endedElapsed: endedElapsed,
                         reason: knownLoss ? "recorder-loss" : nil
                     ),
-                    completeness
+                    completeness,
+                    intentGeneration: terminalIntentGeneration
                 )
             case .beginning:
                 return .wait
@@ -338,7 +352,10 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                     forcedFlushThrough = nil
                     return .wait
                 }
-                return .persist(buffer.drain(maximumCount: batchPolicy.maximumRecordCount))
+                return .persist(
+                    buffer.drain(maximumCount: batchPolicy.maximumRecordCount),
+                    intentGeneration: terminalIntentGeneration
+                )
             }
 
             guard let oldest = buffer.oldestEnqueueTime else {
@@ -401,15 +418,26 @@ final class TelemetryRecorderCore: @unchecked Sendable {
         }
     }
 
-    func persistenceBecameTerminal(
+    func terminalIntentGenerationSnapshot() -> UInt64 {
+        lock.withLock { terminalIntentGeneration }
+    }
+
+    @discardableResult
+    func persistenceBecameTerminalIfIntentUnchanged(
         error: Error,
-        uncertainRecords: [SequencedTelemetryRecord]
-    ) {
+        uncertainRecords: [SequencedTelemetryRecord],
+        expectedGeneration: UInt64
+    ) -> UInt64? {
         lock.withLock {
             accountUncertain(uncertainRecords)
             accountDiscarded(buffer.discardAll())
-            phase = .failing(reason: persistenceFailureReason(error))
             knownLoss = true
+            guard terminalIntentGeneration == expectedGeneration else {
+                return nil
+            }
+            phase = .failing(reason: persistenceFailureReason(error))
+            terminalIntentGeneration &+= 1
+            return terminalIntentGeneration
         }
     }
 
@@ -422,7 +450,8 @@ final class TelemetryRecorderCore: @unchecked Sendable {
 
     func prepareRequestedTermination() -> (
         TelemetrySessionFinalization,
-        TelemetryRecorderCompleteness
+        TelemetryRecorderCompleteness,
+        UInt64
     ) {
         lock.withLock {
             accountDiscarded(buffer.discardAll())
@@ -435,7 +464,8 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                         endedElapsed: nil,
                         reason: reason
                     ),
-                    .failed
+                    .failed,
+                    terminalIntentGeneration
                 )
             case .cancelling:
                 return (
@@ -445,7 +475,8 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                         endedElapsed: nil,
                         reason: "recorder-cancelled"
                     ),
-                    .cancelled
+                    .cancelled,
+                    terminalIntentGeneration
                 )
             case .beginning, .active, .finishing, .finalizing, .terminal:
                 return (
@@ -455,42 +486,65 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                         endedElapsed: nil,
                         reason: "recorder-terminated"
                     ),
-                    .failed
+                    .failed,
+                    terminalIntentGeneration
                 )
             }
         }
     }
 
-    func failureFinalization() -> TelemetrySessionFinalization {
-        lock.withLock {
-            finalization(
-                completeness: .failed,
-                endedAt: nil,
-                endedElapsed: nil,
-                reason: "recorder-persistence-failure"
-            )
-        }
+    func completeFinalizationIfUnchanged(
+        _ intendedCompleteness: TelemetryRecorderCompleteness
+    ) -> Bool {
+        transitionToTerminal(
+            intendedCompleteness,
+            expectation: .finalizing(intendedCompleteness)
+        )
     }
 
-    func completeTerminal(_ completeness: TelemetryRecorderCompleteness) {
+    func completeRequestedTerminationIfUnchanged(
+        _ intendedCompleteness: TelemetryRecorderCompleteness,
+        generation: UInt64
+    ) -> Bool {
+        transitionToTerminal(
+            intendedCompleteness,
+            expectation: .requested(intendedCompleteness, generation: generation)
+        )
+    }
+    private func transitionToTerminal(
+        _ completeness: TelemetryRecorderCompleteness,
+        expectation: TerminalTransitionExpectation
+    ) -> Bool {
         let flushes: [FlushWaiter]
         let finishes: [FinishCompletion]
         let flushResult: TelemetryFlushResult
         let finishResult: TelemetryFinishResult
-        (flushes, finishes, flushResult, finishResult) = lock.withLock {
+        let transition = lock.withLock { () -> (
+            [FlushWaiter],
+            [FinishCompletion],
+            TelemetryFlushResult,
+            TelemetryFinishResult
+        )? in
+            switch expectation {
+            case let .finalizing(expectedCompleteness):
+                guard case let .finalizing(currentCompleteness) = phase,
+                      currentCompleteness == expectedCompleteness
+                else {
+                    return nil
+                }
+            case let .requested(expectedCompleteness, expectedGeneration):
+                guard terminalIntentGeneration == expectedGeneration else {
+                    return nil
+                }
+                switch (expectedCompleteness, phase) {
+                case (.failed, .failing), (.cancelled, .cancelling):
+                    break
+                case (.complete, _), (.incomplete, _), (.failed, _), (.cancelled, _):
+                    return nil
+                }
+            }
             if case .terminal = phase {
-                return (
-                    [],
-                    [],
-                    TelemetryFlushResult(
-                        lastCommittedRecorderSequence: lastCommittedSequence,
-                        completeness: currentCompleteness
-                    ),
-                    TelemetryFinishResult(
-                        completeness: currentCompleteness,
-                        lastCommittedRecorderSequence: lastCommittedSequence
-                    )
-                )
+                return nil
             }
             phase = .terminal(completeness)
             let flushes = flushWaiters
@@ -510,12 +564,17 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                 )
             )
         }
+        guard let transition else {
+            return false
+        }
+        (flushes, finishes, flushResult, finishResult) = transition
         for waiter in flushes {
             waiter.completion(flushResult)
         }
         for completion in finishes {
             completion(finishResult)
         }
+        return true
     }
 
     func resumeSatisfiedFlushes() {
