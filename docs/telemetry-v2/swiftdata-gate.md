@@ -4,7 +4,7 @@ Status: issue #26 hosted evidence report.
 
 ## Verdict
 
-`BLOCKED FOR PM DECISION`
+`PASS` for the automated/hosted architecture gate.
 
 The actual V1 SwiftData Foundation completed the deterministic hosted fast and
 full profiles without semantic, corruption, recovery, migration, or isolation
@@ -14,20 +14,25 @@ substantially, but measured throughput, bounded late-scale behavior, sub-200-ms
 representative queries, bounded memory, and successful reopen do not expose a
 material scale defect.
 
-The gate is nevertheless blocked because one repository-wide run observed the
-actual WAL and SHM sidecars with `isExcludedFromBackup = false` immediately
-after a subsequent write. Later repetitions passed, so the failure is
-nondeterministic rather than a consistently broken helper. An observed failure
-of required automatic sidecar policy cannot be classified `PASS`, and changing
-production persistence lifecycle behavior is outside issue #26. PM must decide
-the narrow Foundation correction/investigation and require this host gate to be
-rerun. The other target misses remain product-planning evidence, not permission
-to weaken retention or scientific semantics.
+The first gate was correctly blocked by contradictory hosted backup-exclusion
+evidence. PM retained SwiftData and authorized one narrow correction: the
+dedicated `TelemetryV2` directory is now created, marked
+`isExcludedFromBackup = true`, and read-verified before `ModelContainer` opens
+or migrates its store. Discovered primary/WAL/SHM files continue to receive the
+existing protection and backup attributes as defense in depth, but transient
+child-file xattrs are no longer the sole semantic boundary.
+
+The corrected hosted tests deterministically preserve the directory exclusion
+through creation, writes, subsequent writes, reopen, child reset/recreation,
+and synthetic migration. No sleep, polling, retry, checkpoint, raw SQLite,
+private API, or background-timer workaround was introduced. The significant
+performance/storage target misses remain product-planning evidence, not
+permission to weaken retention or scientific semantics.
 
 This gate evaluates the concrete, unwired Telemetry V2 Foundation merged by
 issue #39. It does not implement the recorder or authorize issue #27. Product
-work must not proceed until the automated host-policy failure is corrected and
-this gate is rerun; PM must then also accept every device-only carry-over item.
+work remains blocked until PM accepts this corrected automated gate and every
+explicit device-only carry-over item.
 
 ## Tested revision and environment
 
@@ -36,8 +41,10 @@ this gate is rerun; PM must then also accept every device-only carry-over item.
 | Canonical base | `4c59ae0257d40c9e86df386ca9c56713e88f3270` |
 | Measured full-profile harness head | `c67f991d4568c776d9776f6100b03c15279c642b` |
 | Corrected recovery head | `6a0d8b2a57d1486a0312ab8861e2e38834b08311` |
+| Directory-policy correction code/test head | `aca3a1ff36a0a920fd9a0f2ee972b130274f5d94` |
 | Schema | actual production `TelemetrySchemaV1` (`1.0.0`) |
-| Harness | `swiftdata-gate-v1` |
+| Full-scale harness | `swiftdata-gate-v1` |
+| Correction fast harness | `swiftdata-gate-v2-directory-boundary` |
 | Deterministic seed | `0x26_39_40_2026` (`164169261094`) |
 | Machine | Apple M5, arm64, 10 logical CPUs, 16 GB RAM |
 | Host OS | macOS 27.0, build `26A5406e` |
@@ -59,7 +66,12 @@ used by the methodology are
 [`VersionedSchema`](https://developer.apple.com/documentation/swiftdata/versionedschema),
 and
 [`SchemaMigrationPlan`](https://developer.apple.com/documentation/swiftdata/schemamigrationplan).
-No private SwiftData API is a correctness dependency.
+The corrected file-policy boundary follows Apple's public
+[`Optimizing Your App's Data for iCloud Backup`](https://developer.apple.com/documentation/foundation/optimizing-your-app-s-data-for-icloud-backup)
+guidance to exclude a directory containing related files and the documented
+[`isExcludedFromBackupKey`](https://developer.apple.com/documentation/foundation/urlresourcekey/isexcludedfrombackupkey)
+warning that common file operations can reset a file's value. No private
+SwiftData or Foundation API is a correctness dependency.
 
 ## Harness and fixture
 
@@ -120,7 +132,7 @@ and hash. Its hash was `1cd21e9585942c0f`; the full hash was
 
 | Profile | Drain | Persisted/s | Transactions | Full 128-record transactions | p50 | p95 | p99 | Maximum | Unexpected failures |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Fast CI | 2.689 s | 1,134.5 | 32 | 22 | 113.110 ms | 124.442 ms | 128.693 ms | 128.693 ms | 0 |
+| Fast CI, corrected directory boundary | 2.689 s | 1,134.6 | 32 | 22 | 112.401 ms | 137.098 ms | 154.940 ms | 154.940 ms | 0 |
 | Full | 7,183.637 s | 629.5 | 36,323 | 35,319 | 196.478 ms | 298.440 ms | 391.737 ms | 2,895.726 ms | 0 |
 
 The full run attempted and rejected exactly 4,000 stable provider-native HR
@@ -200,10 +212,10 @@ context of 200 ms for a user-triggered history/filter operation.
 The conservative full-profile process high-water was 550,174,720 bytes
 (524.688 MiB). Because `ru_maxrss` is monotonic, generation, persistence, query,
 export, and final process endpoint fields all retain the same maximum and cannot
-attribute which earlier operation created it. The fast profile high-water was
-47,382,528 bytes (45.188 MiB). External progress observations during full
-persistence showed current RSS around 27-54 MiB; those observations are not
-treated as phase peaks or substituted for the in-harness high-water.
+attribute which earlier operation created it. The corrected fast profile
+high-water was 43,810,816 bytes (41.781 MiB). External progress observations
+during full persistence showed current RSS around 27-54 MiB; those observations
+are not treated as phase peaks or substituted for the in-harness high-water.
 
 The mechanism is `getrusage(RUSAGE_SELF).ru_maxrss`, which is a process-lifetime
 resident high-water mark on this macOS runner. It is sampled at generation,
@@ -297,19 +309,47 @@ fallback is introduced.
 
 ## File policy and device boundary
 
-`FAIL` for reliable host-level automatic policy. The full profile, focused
-reopen test, forced interruption, and migration usually report the primary
-store and all discovered WAL/SHM sidecars as
-`NSFileProtectionCompleteUntilFirstUserAuthentication` with
-`isExcludedFromBackup = true`; the helper re-discovers and reapplies policy.
-However, one actual complete-suite run observed both WAL and SHM backup
-exclusion values as `false` immediately after a subsequent write.
+`PASS` for the corrected hosted directory boundary and discovered-file defense.
+The two pre-correction failures remain part of the evidence and are distinct:
 
-The exact focused test then passed 20/20, and six consecutive complete suites
-passed without a code change. Those repetitions show that the helper often
-works; they do not erase the observed nondeterministic sidecar-lifecycle
-failure. This gate does not alter the accepted production file-policy mechanism
-to make it pass.
+- One earlier local complete-suite run observed
+  `TelemetryV2.store-wal` and `TelemetryV2.store-shm` with
+  `isExcludedFromBackup = false` after a subsequent write.
+- Exact-head CI run
+  [`31885551307`](https://github.com/tourvald/walkingpad-remote/actions/runs/31885551307)
+  observed `TelemetryV2.store` and `TelemetryV2.store-shm` with
+  `isExcludedFromBackup = false`. It did not report WAL+SHM.
+
+Those observations prove that a child-file xattr can be transient and cannot be
+the authoritative group boundary. They are not erased or relabeled. Under the
+PM-approved correction, factory setup marks and immediately read-verifies
+exactly `primaryStoreURL.deletingLastPathComponent()` before `ModelContainer`
+opens. The production transaction body and its existing post-transaction
+discovered-file policy call are unchanged.
+
+At correction code/test head
+`aca3a1ff36a0a920fd9a0f2ee972b130274f5d94`, deterministic regression coverage
+verified the directory through store creation, initial and subsequent writes,
+child-attribute reset, reopen, WAL removal/recreation, and synthetic V1-to-test
+V2 migration. The recreated child cannot remove its parent's exclusion.
+Discovered primary/WAL/SHM files still receive
+`NSFileProtectionCompleteUntilFirstUserAuthentication` and
+`isExcludedFromBackup = true` when the defense-in-depth helper applies them.
+
+Post-correction hosted verification included 20/20 fixed focused policy
+repetitions, two explicit fast-gate invocations, the complete Swift suite
+(187 tests reported across targets, one configured full-profile skip, zero
+failures), forced interruption/recovery, synthetic migration, boundary/isolation
+tests, Python entrypoint compilation, Xcode metadata, and an unsigned generic
+iOS/watchOS build. The corrected fast summary reported the directory exclusion
+as `true` after write and reopen, unchanged deterministic hash
+`1cd21e9585942c0f`, and `filePolicyHostPass = true`.
+
+The second 1,000-hour profile was not rerun. The correction adds one directory
+setup/readback before `ModelContainer`; it does not change `explicitTransaction`,
+record mapping, transaction boundaries, per-write child policy, or transaction
+timing. Per the binding PM decision, all full-scale results remain those
+measured on `c67f991d4568c776d9776f6100b03c15279c642b`.
 
 This does not prove physical iOS behavior. The following items are explicitly
 carried to issue #37 and each remains `UNVERIFIED_ON_DEVICE`:
@@ -357,7 +397,7 @@ Each category has exactly one primary classification.
 | Interruption/reopen | `PASS` | External `SIGKILL`, committed count/hash preserved, tail absent |
 | Incomplete-session recovery | `PASS` | Harness-only transaction plus second reopen; no fabricated completion |
 | Migration viability | `PASS` | Actual V1 to test-only synthetic V2 plus repeated reopen |
-| Host file-policy application | `FAIL` | One run observed WAL/SHM backup exclusion lost after a write; later repetitions do not erase it |
+| Host file-policy application | `PASS` | Dedicated directory excluded before open and stable through writes/reopen/migration/child recreation; discovered-file defense retained |
 | Real-device file protection | `UNVERIFIED_ON_DEVICE` | Requires physical iPhone lock/lifecycle evidence in #37 |
 | Real-device backup exclusion | `UNVERIFIED_ON_DEVICE` | Requires physical iOS backup/restore evidence in #37 |
 | Designated-device performance | `UNVERIFIED_ON_DEVICE` | Hosted Mac numbers are not extrapolated to iPhone |
@@ -379,19 +419,16 @@ Each category has exactly one primary classification.
   buffer, retry, priority, loss-accounting, or batching policy.
 - Physical file protection, backup, performance, and Instruments evidence remain
   explicitly deferred to #37.
-- One hosted suite observed WAL/SHM backup-exclusion loss after a write; 20
-  focused and six full-suite repetitions passed unchanged. The nondeterministic
-  lifecycle failure is the automated blocker, not merely a device carry-over.
+- Per-file backup exclusion may be reset by file operations, as both local and
+  exact-head CI evidence demonstrated. The dedicated directory is now the
+  authoritative hosted boundary; child-file attributes remain defense in depth.
 
 The scale, query, recovery, and migration evidence supports retaining SwiftData;
 no corruption, committed-data loss, identity/provenance/causal corruption,
 migration loss, MainActor/control-path coupling, or operationally unusable scale
 behavior was found. A persistence technology switch is not justified.
 
-Issue #27 is not technically supportable while the automated host file-policy
-category is `FAIL`. The narrow recommendation is to investigate when SwiftData
-recreates or mutates WAL/SHM after `ModelContext.transaction`, establish a
-deterministic post-write/reopen reapplication boundary without weakening
-protection or backup exclusion, and rerun #26. PM must also retain the
+The corrected automated evidence supports PM review while retaining SwiftData.
+Issue #27 remains blocked until PM accepts this gate. PM must also retain the
 substantial storage/latency target misses and all five `UNVERIFIED_ON_DEVICE`
-items. No recorder work is authorized by this blocked report.
+items. No recorder work is authorized by this report.
