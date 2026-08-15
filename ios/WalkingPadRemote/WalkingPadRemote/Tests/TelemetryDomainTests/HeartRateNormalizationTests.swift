@@ -342,7 +342,7 @@ final class HeartRateNormalizationTests: XCTestCase {
         )
     }
 
-    func testFixedLegacyTracePreservesControllerOrderAndSafetyOutcomes() throws {
+    func testFixedLegacyTracePreservesEveryDuplicateAndOutOfOrderDelivery() throws {
         let payloads: [[String: Any]] = [
             ["hr": 120.0, HeartRateWatchPayloadKey.providerSequence: Int64(2)],
             ["hr": 120.0, HeartRateWatchPayloadKey.providerSequence: Int64(2)],
@@ -360,17 +360,11 @@ final class HeartRateNormalizationTests: XCTestCase {
             HeartRateObservationalTee.deliver(
                 decoded.beatsPerMinute,
                 toLegacyController: { bpm in
-                    HeartRateLegacyControlSemantics.applyDelivery(
-                        bpm,
-                        now: { baseDate },
-                        updateCurrent: { current = $0 },
-                        updateLastKnown: { lastKnown = $0 },
-                        updateLastReceivedAt: { lastReceivedAt = $0 },
-                        recordPredictorInput: {
-                            predictorInputs.append($0)
-                            controllerDeliveries.append($0)
-                        }
-                    )
+                    current = bpm
+                    lastKnown = bpm
+                    lastReceivedAt = baseDate
+                    predictorInputs.append(bpm)
+                    controllerDeliveries.append(bpm)
                 },
                 observe: { .rejected }
             )
@@ -381,123 +375,6 @@ final class HeartRateNormalizationTests: XCTestCase {
         XCTAssertEqual(current, 121)
         XCTAssertEqual(lastKnown, 121)
         XCTAssertEqual(lastReceivedAt, baseDate)
-
-        XCTAssertTrue(
-            HeartRateLegacyControlSemantics.streamIsActive(
-                beatsPerMinute: current,
-                hasLastReceivedAt: lastReceivedAt != nil,
-                ageSeconds: 7,
-                staleThresholdSeconds: 7
-            )
-        )
-        XCTAssertFalse(
-            HeartRateLegacyControlSemantics.streamIsActive(
-                beatsPerMinute: current,
-                hasLastReceivedAt: lastReceivedAt != nil,
-                ageSeconds: 8,
-                staleThresholdSeconds: 7
-            )
-        )
-        XCTAssertTrue(
-            HeartRateControlStartEligibility.existingPrerequisitesAllowStart(
-                treadmillConnected: true,
-                watchReachable: true,
-                currentHeartRateVisible: true
-            )
-        )
-        XCTAssertFalse(
-            HeartRateControlStartEligibility.existingPrerequisitesAllowStart(
-                treadmillConnected: true,
-                watchReachable: false,
-                currentHeartRateVisible: true
-            )
-        )
-        XCTAssertTrue(
-            HeartRateLegacyControlSemantics.isWithinInitialGrace(
-                startedAt: baseDate,
-                now: baseDate.addingTimeInterval(14.999),
-                graceSeconds: 15
-            )
-        )
-        XCTAssertFalse(
-            HeartRateLegacyControlSemantics.isWithinInitialGrace(
-                startedAt: baseDate,
-                now: baseDate.addingTimeInterval(15),
-                graceSeconds: 15
-            )
-        )
-        XCTAssertEqual(
-            HeartRateLegacyControlSemantics.missingSignalSeconds(
-                lastReceivedAt: baseDate,
-                now: baseDate.addingTimeInterval(59.999),
-                noDataMaximumSeconds: 60
-            ),
-            59
-        )
-        XCTAssertEqual(
-            HeartRateLegacyControlSemantics.missingSignalSeconds(
-                lastReceivedAt: baseDate,
-                now: baseDate.addingTimeInterval(60),
-                noDataMaximumSeconds: 60
-            ),
-            60
-        )
-        XCTAssertEqual(
-            HeartRateLegacyControlSemantics.missingSignalSeconds(
-                lastReceivedAt: nil,
-                now: baseDate,
-                noDataMaximumSeconds: 60
-            ),
-            60
-        )
-        XCTAssertFalse(
-            HeartRateLegacyControlSemantics.shouldStopForMissingSignal(
-                missingSeconds: 59,
-                noDataMaximumSeconds: 60
-            )
-        )
-        XCTAssertTrue(
-            HeartRateLegacyControlSemantics.shouldStopForMissingSignal(
-                missingSeconds: 60,
-                noDataMaximumSeconds: 60
-            )
-        )
-    }
-
-    func testStartEligibilityHasNoTelemetryInputOrHealthDependency() {
-        enum TelemetryState: CaseIterable {
-            case healthy
-            case sinkAbsent
-            case degraded
-            case recorderFailed
-            case persistenceUnavailable
-            case metadataMalformed
-        }
-
-        for _ in TelemetryState.allCases {
-            XCTAssertTrue(
-                HeartRateControlStartEligibility.existingPrerequisitesAllowStart(
-                    treadmillConnected: true,
-                    watchReachable: true,
-                    currentHeartRateVisible: true
-                )
-            )
-        }
-
-        XCTAssertFalse(
-            HeartRateControlStartEligibility.existingPrerequisitesAllowStart(
-                treadmillConnected: false,
-                watchReachable: true,
-                currentHeartRateVisible: true
-            )
-        )
-        XCTAssertFalse(
-            HeartRateControlStartEligibility.existingPrerequisitesAllowStart(
-                treadmillConnected: true,
-                watchReachable: true,
-                currentHeartRateVisible: false
-            )
-        )
     }
 
     func testObservationalTeeDeliversLegacyValueBeforeEveryTelemetryDisposition() {

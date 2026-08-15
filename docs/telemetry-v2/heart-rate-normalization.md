@@ -114,11 +114,13 @@ freshness, sequence, or quality.
 
 ## Safety invariant and remaining integration
 
-Start HR Control remains governed only by the existing treadmill connection,
-Watch reachability, current/fresh HR visibility, and controller-units policy.
-Telemetry health, sink presence, recorder state, persistence availability,
-metadata quality, sequence anomalies, and canonicalization never participate in
-eligibility. Telemetry also does not start, stop, or change treadmill speed,
+The Start HR Control affordance is available when the treadmill is connected and
+current/fresh HR is visible. Watch reachability and controller-units readiness
+remain runtime authorization checks after a tap; they can still reject the start
+request before any automated motion. Telemetry health, sink presence, recorder
+state, persistence availability, metadata quality, sequence anomalies, and
+canonicalization participate in neither UI availability nor runtime
+authorization. Telemetry also does not start, stop, or change treadmill speed,
 staleness, grace, cooldown, manual stop, or units behavior.
 
 Issue #30 must supply a real Telemetry V2 session, bind the optional sink to the

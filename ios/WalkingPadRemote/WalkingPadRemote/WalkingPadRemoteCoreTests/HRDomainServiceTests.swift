@@ -2,6 +2,7 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class HRDomainServiceTests: XCTestCase {
+    private let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
     private let thresholds = HRDomainService.AdaptiveThresholdPercents(
         deadband: 3.0,
         downLevel2Start: 8.0,
@@ -125,5 +126,150 @@ final class HRDomainServiceTests: XCTestCase {
         )
 
         XCTAssertNil(target)
+    }
+
+    func testHeartRateStartAffordanceDependsOnlyOnConnectionAndCurrentHeartRate() {
+        enum TelemetryState: CaseIterable {
+            case sinkAbsent
+            case degraded
+            case failed
+            case metadataMalformed
+        }
+
+        for _ in TelemetryState.allCases {
+            XCTAssertTrue(
+                HRDomainService.heartRateStartAffordanceAvailable(
+                    treadmillConnected: true,
+                    currentHeartRateVisible: true
+                )
+            )
+        }
+
+        XCTAssertFalse(
+            HRDomainService.heartRateStartAffordanceAvailable(
+                treadmillConnected: false,
+                currentHeartRateVisible: true
+            )
+        )
+        XCTAssertFalse(
+            HRDomainService.heartRateStartAffordanceAvailable(
+                treadmillConnected: true,
+                currentHeartRateVisible: false
+            )
+        )
+    }
+
+    func testHeartRateAffordanceAndRuntimeAuthorizationRemainSeparate() {
+        XCTAssertTrue(
+            HRDomainService.heartRateStartAffordanceAvailable(
+                treadmillConnected: true,
+                currentHeartRateVisible: true
+            )
+        )
+        XCTAssertTrue(
+            HRDomainService.heartRateRuntimePrerequisitesAllowStart(
+                treadmillConnected: true,
+                watchReachable: true,
+                currentHeartRateVisible: true
+            )
+        )
+        XCTAssertFalse(
+            HRDomainService.heartRateRuntimePrerequisitesAllowStart(
+                treadmillConnected: true,
+                watchReachable: false,
+                currentHeartRateVisible: true
+            )
+        )
+    }
+
+    func testFixedHeartRateTracePreservesControllerOrderAndBoundaries() {
+        let inputs = [120, 120, 119, 121]
+        var current = 0
+        var lastKnown = 0
+        var lastReceivedAt: Date?
+        var predictorInputs: [Int] = []
+
+        for input in inputs {
+            HRDomainService.applyHeartRateDelivery(
+                input,
+                now: { baseDate },
+                updateCurrent: { current = $0 },
+                updateLastKnown: { lastKnown = $0 },
+                updateLastReceivedAt: { lastReceivedAt = $0 },
+                recordPredictorInput: { predictorInputs.append($0) }
+            )
+        }
+
+        XCTAssertEqual(predictorInputs, inputs)
+        XCTAssertEqual(current, 121)
+        XCTAssertEqual(lastKnown, 121)
+        XCTAssertEqual(lastReceivedAt, baseDate)
+
+        XCTAssertTrue(
+            HRDomainService.heartRateStreamIsActive(
+                beatsPerMinute: current,
+                hasLastReceivedAt: lastReceivedAt != nil,
+                ageSeconds: 7,
+                staleThresholdSeconds: 7
+            )
+        )
+        XCTAssertFalse(
+            HRDomainService.heartRateStreamIsActive(
+                beatsPerMinute: current,
+                hasLastReceivedAt: lastReceivedAt != nil,
+                ageSeconds: 8,
+                staleThresholdSeconds: 7
+            )
+        )
+        XCTAssertTrue(
+            HRDomainService.isWithinInitialHeartRateGrace(
+                startedAt: baseDate,
+                now: baseDate.addingTimeInterval(14.999),
+                graceSeconds: 15
+            )
+        )
+        XCTAssertFalse(
+            HRDomainService.isWithinInitialHeartRateGrace(
+                startedAt: baseDate,
+                now: baseDate.addingTimeInterval(15),
+                graceSeconds: 15
+            )
+        )
+        XCTAssertEqual(
+            HRDomainService.missingHeartRateSignalSeconds(
+                lastReceivedAt: baseDate,
+                now: baseDate.addingTimeInterval(59.999),
+                noDataMaximumSeconds: 60
+            ),
+            59
+        )
+        XCTAssertEqual(
+            HRDomainService.missingHeartRateSignalSeconds(
+                lastReceivedAt: baseDate,
+                now: baseDate.addingTimeInterval(60),
+                noDataMaximumSeconds: 60
+            ),
+            60
+        )
+        XCTAssertEqual(
+            HRDomainService.missingHeartRateSignalSeconds(
+                lastReceivedAt: nil,
+                now: baseDate,
+                noDataMaximumSeconds: 60
+            ),
+            60
+        )
+        XCTAssertFalse(
+            HRDomainService.shouldStopForMissingHeartRateSignal(
+                missingSeconds: 59,
+                noDataMaximumSeconds: 60
+            )
+        )
+        XCTAssertTrue(
+            HRDomainService.shouldStopForMissingHeartRateSignal(
+                missingSeconds: 60,
+                noDataMaximumSeconds: 60
+            )
+        )
     }
 }

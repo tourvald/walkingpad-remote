@@ -80,6 +80,33 @@ final class ControllerUnitsSafetyPolicyTests: XCTestCase {
         ))
     }
 
+    func testHeartRateAffordanceStaysAvailableWhileUnitsGateFailsClosed() {
+        XCTAssertTrue(
+            HRDomainService.heartRateStartAffordanceAvailable(
+                treadmillConnected: true,
+                currentHeartRateVisible: true
+            )
+        )
+        let runtimePrerequisitesAllowStart = HRDomainService
+            .heartRateRuntimePrerequisitesAllowStart(
+                treadmillConnected: true,
+                watchReachable: true,
+                currentHeartRateVisible: true
+            )
+        XCTAssertTrue(runtimePrerequisitesAllowStart)
+
+        XCTAssertFalse(
+            ControllerUnitsSafetyPolicy.allowsStart(
+                path: .hrControl,
+                existingGatesAllowStart: runtimePrerequisitesAllowStart,
+                state: notReadTruth(),
+                currentConnectionEpoch: epoch,
+                now: now,
+                requiresFreshMetricTruth: true
+            )
+        )
+    }
+
     func testNonLegacyProtocolsRemainSubjectOnlyToExistingGates() {
         XCTAssertTrue(ControllerUnitsSafetyPolicy.allowsStart(
             path: .hrControl,

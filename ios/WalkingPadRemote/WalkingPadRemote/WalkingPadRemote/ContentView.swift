@@ -947,11 +947,14 @@ private struct HRControlPanel: View {
         let hrStatusLine = debugPreview?.hrStatusLine ?? manager.hrStatusLine
         let canExtendHrSession = debugPreview?.canExtendHrSession ?? manager.canExtendHrSession
         let hrSessionMaxMinutes = debugPreview?.hrSessionMaxMinutes ?? manager.hrSessionMaxMinutes
-        let canStartHrControl = manager.isHrControlStartAllowed && manager.watchReachable && manager.hrStreamingActive
+        let canStartHrControl = manager.isHrControlStartAffordanceAvailable
         let headerTint: Color = isHrControlRunning ? .accentColor : (hrStreamingActive ? .green : .orange)
         let hrStartSubtitle: String = {
             if isPreviewMode {
                 return "Preview mode: команды на дорожку отключены"
+            }
+            if let blockReason = manager.hrControlStartBlockReasonText {
+                return blockReason
             }
             if canStartHrControl {
                 return "Автоподстройка скорости по пульсу и зоне"

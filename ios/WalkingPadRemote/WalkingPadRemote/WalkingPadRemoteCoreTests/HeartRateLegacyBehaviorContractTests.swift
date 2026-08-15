@@ -33,17 +33,17 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             "private func handleWatchPayload(_ payload: [String: Any])",
             in: managerSource
         )
-        let delivery = try functionBody(
-            "public static func applyDelivery(",
-            in: normalizationSource
-        )
 
         assertOrdered(
             [
-                "HeartRateLegacyControlSemantics.applyDelivery(",
+                "HRDomainService.applyHeartRateDelivery(",
                 "self.observeHeartRateDelivery(",
             ],
             in: body
+        )
+        let delivery = try functionBody(
+            "static func applyHeartRateDelivery(",
+            in: source(relativePath: "WalkingPadRemote/HRDomainService.swift")
         )
         assertOrdered(
             [
@@ -54,6 +54,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             ],
             in: delivery
         )
+        XCTAssertFalse(body.contains("HeartRateLegacyControlSemantics"))
         XCTAssertFalse(body.contains("dedup"))
         XCTAssertFalse(body.contains("sorted"))
         XCTAssertFalse(body.contains("debounce"))
@@ -86,31 +87,62 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
     }
 
-    func testStartEligibilityPreservesConnectionWatchFreshHeartRateAndUnitsGates() throws {
+    func testStartAffordanceIsSeparateFromRuntimeAuthorization() throws {
         let recompute = try functionBody(
             "private func recomputeHrStartAllowed()",
             in: managerSource
         )
         let start = try functionBody("func startHrControl()", in: managerSource)
+        let affordance = try functionBody(
+            "var isHrControlStartAffordanceAvailable: Bool",
+            in: managerSource
+        )
 
         for body in [recompute, start] {
-            XCTAssertTrue(
-                body.contains("HeartRateControlStartEligibility")
-            )
+            XCTAssertTrue(body.contains("HRDomainService"))
+            XCTAssertTrue(body.contains(".heartRateRuntimePrerequisitesAllowStart"))
             XCTAssertTrue(body.contains("controllerUnits"))
+            XCTAssertFalse(body.contains("HeartRateControlStartEligibility"))
+            XCTAssertFalse(body.contains("HeartRateLegacyControlSemantics"))
             XCTAssertFalse(body.contains("TelemetryRecorder"))
             XCTAssertFalse(body.contains("TelemetryPersistence"))
             XCTAssertFalse(body.contains("telemetry health"))
         }
 
+        XCTAssertTrue(affordance.contains("HRDomainService.heartRateStartAffordanceAvailable"))
+        XCTAssertTrue(affordance.contains("treadmillConnected: isConnected"))
+        XCTAssertTrue(affordance.contains("currentHeartRateVisible: hrStreamingActive"))
+        XCTAssertFalse(affordance.contains("watchReachable"))
+        XCTAssertFalse(affordance.contains("controllerUnits"))
+        XCTAssertFalse(affordance.contains("telemetry"))
+
         XCTAssertTrue(
+            contentViewSource.contains(
+                "let canStartHrControl = manager.isHrControlStartAffordanceAvailable"
+            )
+        )
+        XCTAssertFalse(
             contentViewSource.contains(
                 "manager.isHrControlStartAllowed && manager.watchReachable && manager.hrStreamingActive"
             )
         )
+        XCTAssertTrue(contentViewSource.contains("enabled: !isPreviewMode && canStartHrControl"))
+
+        assertOrdered(
+            [
+                ".heartRateRuntimePrerequisitesAllowStart",
+                "guard existingGatesAllowStart",
+                "let unitsDecision = controllerUnitsGateDecision()",
+                "guard unitsDecision.allowed",
+                "persistBlockedControllerUnitsStart(decision: unitsDecision)",
+                "retryControllerUnitsQueryAfterBlockedStart()",
+                "startWithSpeed",
+            ],
+            in: start
+        )
     }
 
-    func testStaleGraceAndMissingSignalBehaviorConstantsRemainExact() throws {
+    func testControlSafetyAuthorityIsOutsideTelemetryNormalization() throws {
         XCTAssertTrue(managerSource.contains("private let hrStartGraceSeconds: Int = 15"))
         XCTAssertTrue(managerSource.contains("private let hrNoDataMaxSeconds: Int = 60"))
         XCTAssertTrue(managerSource.contains("private let hrStaleThresholdSeconds: Int = 7"))
@@ -119,15 +151,30 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             "private func startHrStaleTimer()",
             in: managerSource
         )
-        XCTAssertTrue(
-            staleTimer.contains("HeartRateLegacyControlSemantics.streamIsActive(")
-        )
+        XCTAssertTrue(staleTimer.contains("HRDomainService.heartRateStreamIsActive("))
 
         let tick = try functionBody("private func tickTelemetry()", in: managerSource)
-        XCTAssertTrue(tick.contains("HeartRateLegacyControlSemantics.shouldStopForMissingSignal("))
-        XCTAssertTrue(tick.contains("HeartRateLegacyControlSemantics.isWithinInitialGrace("))
-        XCTAssertTrue(tick.contains("HeartRateLegacyControlSemantics"))
-        XCTAssertTrue(tick.contains(".missingSignalSeconds("))
+        XCTAssertTrue(tick.contains("HRDomainService.shouldStopForMissingHeartRateSignal("))
+        XCTAssertTrue(tick.contains("HRDomainService.isWithinInitialHeartRateGrace("))
+        XCTAssertTrue(tick.contains(".missingHeartRateSignalSeconds("))
+
+        let recompute = try functionBody(
+            "private func recomputeHrStartAllowed()",
+            in: managerSource
+        )
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        for body in [start, recompute, staleTimer, tick] {
+            XCTAssertFalse(body.contains("HeartRateLegacyControlSemantics"))
+            XCTAssertFalse(body.contains("HeartRateControlStartEligibility"))
+        }
+        XCTAssertFalse(normalizationSource.contains("HeartRateLegacyControlSemantics"))
+        XCTAssertFalse(normalizationSource.contains("HeartRateControlStartEligibility"))
+        XCTAssertFalse(normalizationSource.contains("heartRateStartAffordanceAvailable"))
+        XCTAssertFalse(normalizationSource.contains("heartRateRuntimePrerequisitesAllowStart"))
+        XCTAssertFalse(normalizationSource.contains("heartRateStreamIsActive"))
+        XCTAssertFalse(normalizationSource.contains("isWithinInitialHeartRateGrace"))
+        XCTAssertFalse(normalizationSource.contains("missingHeartRateSignalSeconds"))
+        XCTAssertFalse(normalizationSource.contains("shouldStopForMissingHeartRateSignal"))
     }
 
     func testWatchStartStopLifecycleRemainsOwnedByExistingCommands() throws {

@@ -870,6 +870,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var isHrControlRunning: Bool = false
     @Published var isHrControlStartAllowed: Bool = false
     @Published var hrControlStartBlockReasonText: String? = nil
+
+    var isHrControlStartAffordanceAvailable: Bool {
+        HRDomainService.heartRateStartAffordanceAvailable(
+            treadmillConnected: isConnected,
+            currentHeartRateVisible: hrStreamingActive
+        )
+    }
+
     @Published var hrNextDecisionSeconds: Int = 0
     @Published var hrRemainingSeconds: Int = 0
     @Published var hrCooldownRemainingSeconds: Int = 0
@@ -1011,7 +1019,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard isHrControlRunning else { return "idle" }
         if hrCooldownRemainingSeconds > 0 { return "cooldown" }
         if hrRemainingSeconds > 0 {
-            if HeartRateLegacyControlSemantics.isWithinInitialGrace(
+            if HRDomainService.isWithinInitialHeartRateGrace(
                 startedAt: hrControlStartedAt,
                 now: Date(),
                 graceSeconds: hrStartGraceSeconds
@@ -3309,8 +3317,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard !isHrControlRunning else { return }
         // Preserve the existing connection/watch/fresh-HR gates, then compose the
         // legacy WalkingPad units gate before any automated motion can start.
-        let existingGatesAllowStart = HeartRateControlStartEligibility
-            .existingPrerequisitesAllowStart(
+        let existingGatesAllowStart = HRDomainService
+            .heartRateRuntimePrerequisitesAllowStart(
                 treadmillConnected: isConnected,
                 watchReachable: watchReachable,
                 currentHeartRateVisible: hrStreamingActive
@@ -3438,8 +3446,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func recomputeHrStartAllowed() {
         let now = Date()
-        let existingGatesAllowStart = HeartRateControlStartEligibility
-            .existingPrerequisitesAllowStart(
+        let existingGatesAllowStart = HRDomainService
+            .heartRateRuntimePrerequisitesAllowStart(
                 treadmillConnected: isConnected,
                 watchReachable: watchReachable,
                 currentHeartRateVisible: hrStreamingActive
@@ -3455,7 +3463,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         isHrControlStartAllowed = allowed
         if !allowed {
-            let withinGrace = HeartRateLegacyControlSemantics.isWithinInitialGrace(
+            let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
                 startedAt: hrControlStartedAt,
                 now: Date(),
                 graceSeconds: hrStartGraceSeconds
@@ -3511,7 +3519,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             DispatchQueue.main.async {
                 self.hrDataStaleSeconds = hasLast ? secs : 0
-                let active = HeartRateLegacyControlSemantics.streamIsActive(
+                let active = HRDomainService.heartRateStreamIsActive(
                     beatsPerMinute: self.heartRateBPM,
                     hasLastReceivedAt: hasLast,
                     ageSeconds: secs,
@@ -3582,7 +3590,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
 
         if isHrControlRunning {
-            let withinGrace = HeartRateLegacyControlSemantics.isWithinInitialGrace(
+            let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
                 startedAt: hrControlStartedAt,
                 now: Date(),
                 graceSeconds: hrStartGraceSeconds
@@ -3653,13 +3661,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             hrDecisionDetails = "Ожидание данных пульса…"
                             return
                         }
-                        let missingSeconds = HeartRateLegacyControlSemantics
-                            .missingSignalSeconds(
+                        let missingSeconds = HRDomainService
+                            .missingHeartRateSignalSeconds(
                                 lastReceivedAt: hrLastValueAt,
                                 now: Date(),
                                 noDataMaximumSeconds: hrNoDataMaxSeconds
                             )
-                        if !HeartRateLegacyControlSemantics.shouldStopForMissingSignal(
+                        if !HRDomainService.shouldStopForMissingHeartRateSignal(
                             missingSeconds: missingSeconds,
                             noDataMaximumSeconds: hrNoDataMaxSeconds
                         ) {
@@ -5384,7 +5392,7 @@ extension BluetoothManager: WCSessionDelegate {
                 HeartRateObservationalTee.deliver(
                     decoded.beatsPerMinute,
                     toLegacyController: { bpm in
-                        HeartRateLegacyControlSemantics.applyDelivery(
+                        HRDomainService.applyHeartRateDelivery(
                             bpm,
                             now: Date.init,
                             updateCurrent: { self.heartRateBPM = $0 },
