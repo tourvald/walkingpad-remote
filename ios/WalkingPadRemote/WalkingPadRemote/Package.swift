@@ -3,17 +3,33 @@ import PackageDescription
 
 let package = Package(
     name: "WalkingPadRemoteCoreLogic",
+    // SwiftData #Index requires macOS 15; tools and language mode remain unchanged.
     platforms: [
-        .iOS(.v16),
-        .macOS(.v13)
+        .iOS("26.0"),
+        .macOS("15.0")
     ],
     products: [
         .library(
             name: "WalkingPadCoreLogic",
             targets: ["WalkingPadCoreLogic"]
+        ),
+        .library(
+            name: "TelemetryDomain",
+            targets: ["TelemetryDomain"]
+        ),
+        .library(
+            name: "TelemetryPersistence",
+            targets: ["TelemetryPersistence"]
         )
     ],
     targets: [
+        .target(
+            name: "TelemetryDomain"
+        ),
+        .target(
+            name: "TelemetryPersistence",
+            dependencies: ["TelemetryDomain"]
+        ),
         .target(
             name: "WalkingPadCoreLogic",
             path: "WalkingPadRemote",
@@ -59,6 +75,14 @@ let package = Package(
             name: "WalkingPadCoreLogicTests",
             dependencies: ["WalkingPadCoreLogic"],
             path: "WalkingPadRemoteCoreTests"
+        ),
+        .testTarget(
+            name: "TelemetryDomainTests",
+            dependencies: ["TelemetryDomain"]
+        ),
+        .testTarget(
+            name: "TelemetryPersistenceTests",
+            dependencies: ["TelemetryDomain", "TelemetryPersistence"]
         )
     ]
 )

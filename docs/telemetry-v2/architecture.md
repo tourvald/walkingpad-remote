@@ -31,10 +31,10 @@ This specification does not implement or authorize:
 
 ## Platform boundary
 
-The core product baseline for this Epic is iOS 26. Issue #24 MUST express that
+The core product baseline for this Epic is iOS 26. Issue #39 MUST express that
 package platform floor without silently changing the repository's
 `swift-tools-version: 5.10`, Swift language mode, or macOS test-host floor. If
-the actual toolchain cannot express and build the iOS 26 floor compatibly, #24
+the actual toolchain cannot express and build the iOS 26 floor compatibly, #39
 MUST stop for PM decision with the exact compiler/package error.
 
 ## Component graph
@@ -175,9 +175,8 @@ exports.
 
 | Issue | Contract-owned output |
 | --- | --- |
-| #24 | Pure typed domain, identifiers, timestamps, provenance, quality, events, and frames |
-| #25 | Versioned V1 schema and isolated local store |
-| #26 | Automated SwiftData scale, recovery, protection, and fallback gate |
+| #39 | Combined Foundation: pure typed domain first, then a versioned V1 schema and isolated local store after the domain checkpoint passes |
+| #26 | Automated SwiftData scale, recovery, protection, and fallback gate after #39 |
 | #27 | Constant-time ingress, bounded buffering, batching, and loss accounting |
 | #28 | HR normalization with unchanged controller arrival behavior |
 | #29 | Factual treadmill truth and command/estimate separation |

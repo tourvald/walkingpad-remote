@@ -32,6 +32,9 @@ and [`SchemaMigrationPlan`](https://developer.apple.com/documentation/swiftdata/
   source/sample identity, and analysis version MUST have measured index support.
 - Uniqueness MUST use real stable identity. Missing identity MUST NOT be replaced
   by fuzzy matching or lossy deduplication.
+- Exact native HR sample replay detection MUST use a bounded indexed lookup of
+  the optional source-scoped native identity. A missing identity remains `nil`
+  and MUST NOT be replaced by a sentinel uniqueness key.
 - The schema MUST use separate conceptual records from the
   [data contract](data-contract.md), not a universal nullable table.
 - Static configuration MUST be stored once per immutable snapshot and referenced,
