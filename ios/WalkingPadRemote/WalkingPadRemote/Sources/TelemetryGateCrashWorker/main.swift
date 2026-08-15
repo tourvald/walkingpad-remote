@@ -187,8 +187,11 @@ private enum TelemetryGateCrashWorker {
             try await store.insertHeartRate(RecoveryFixture.heartRate(index: index))
         }
 
-        // Allocate a deterministic uncommitted tail before telling the supervisor to kill us.
-        _ = RecoveryFixture.heartRate(index: arguments.committedHeartRateCount)
+        // Stage a deterministic model-context tail without a transaction/save. Autosave is
+        // disabled by the store, so the supervisor's SIGKILL must discard this real tail.
+        try await store.gateStageUncommittedHeartRate(
+            RecoveryFixture.heartRate(index: arguments.committedHeartRateCount)
+        )
         let marker = RecoveryMarker(
             sessionID: RecoveryFixture.sessionID.description,
             committedHeartRateCount: arguments.committedHeartRateCount,

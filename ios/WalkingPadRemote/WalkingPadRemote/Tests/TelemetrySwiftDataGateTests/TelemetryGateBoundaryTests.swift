@@ -26,6 +26,8 @@ final class TelemetryGateBoundaryTests: XCTestCase {
         )
         XCTAssertTrue(storeSource.contains("func insertGateBatch"))
         XCTAssertFalse(storeSource.contains("public func insertGateBatch"))
+        XCTAssertTrue(storeSource.contains("package func gateStageUncommittedHeartRate"))
+        XCTAssertFalse(storeSource.contains("public func gateStageUncommittedHeartRate"))
 
         let project = try String(
             contentsOf: packageRoot.appendingPathComponent(
@@ -50,6 +52,7 @@ final class TelemetryGateBoundaryTests: XCTestCase {
         }
         XCTAssertFalse(runtimeSources.contains("TelemetryGateCrashWorker"))
         XCTAssertFalse(runtimeSources.contains("insertGateBatch"))
+        XCTAssertFalse(runtimeSources.contains("gateStageUncommittedHeartRate"))
         XCTAssertFalse(runtimeSources.contains("TelemetryStoreFactory.make"))
     }
 }

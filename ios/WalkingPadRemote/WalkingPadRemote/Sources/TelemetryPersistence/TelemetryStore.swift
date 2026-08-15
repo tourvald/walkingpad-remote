@@ -623,6 +623,14 @@ public actor TelemetryStore {
         }
     }
 
+    /// Issue #26 crash-worker seam. The package-only worker stages a real model-context
+    /// tail while autosave is disabled, then the supervisor interrupts the process.
+    package func gateStageUncommittedHeartRate(_ observation: HeartRateObservation) throws {
+        explicitTransactionDepth += 1
+        defer { explicitTransactionDepth -= 1 }
+        try insertHeartRate(observation)
+    }
+
     func gateFetchRecentSessions(
         profileLocalIdentifier: String,
         limit: Int
