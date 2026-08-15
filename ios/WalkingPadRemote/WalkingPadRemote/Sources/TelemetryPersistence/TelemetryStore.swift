@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import TelemetryDomain
+import TelemetryRecorder
 
 public enum TelemetryStoreConfiguration: Sendable, Equatable {
     case inMemory
@@ -14,6 +15,7 @@ public enum TelemetryStoreError: Error, Equatable, Sendable {
     case conflictingStableIdentity(String)
     case invalidNumericValue(String)
     case corruptStoredRecord(String)
+    case nonMonotonicRecorderSequence
 }
 
 public struct StoredSignalSource: Codable, Hashable, Sendable {
@@ -587,6 +589,80 @@ public actor TelemetryStore {
 
     public func isAutosaveEnabled() -> Bool {
         modelContext.autosaveEnabled
+    }
+
+    public func insertRecorderBatch(_ records: [SequencedTelemetryRecord]) throws {
+        guard !records.isEmpty else {
+            return
+        }
+        var previousSequence: UInt64?
+        for record in records {
+            if let previousSequence,
+               record.recorderSequence <= previousSequence
+            {
+                throw TelemetryStoreError.nonMonotonicRecorderSequence
+            }
+            previousSequence = record.recorderSequence
+        }
+
+        try explicitTransaction {
+            for sequenced in records {
+                switch sequenced.record {
+                case let .source(source):
+                    try insertSource(
+                        source.identity,
+                        firstSeen: source.firstSeen,
+                        lastSeen: source.lastSeen
+                    )
+                case let .heartRate(observation):
+                    try insertHeartRate(observation)
+                case let .treadmill(observation):
+                    try insertTreadmill(observation)
+                case let .event(event):
+                    try insertEvent(event)
+                case let .frame(frame):
+                    try insertFrame(frame)
+                }
+            }
+        }
+    }
+
+    public func finalizeRecorderSession(_ finalization: TelemetrySessionFinalization) throws {
+        let session = try sessionModel(finalization.sessionID)
+        let lostCritical = try Self.int64(
+            finalization.recorderHealth.lostCriticalRecordCount,
+            field: "lostCriticalRecordCount"
+        )
+        let lostNative = try Self.int64(
+            finalization.recorderHealth.lostNativeRecordCount,
+            field: "lostNativeRecordCount"
+        )
+        try explicitTransaction {
+            session.lifecycleStateKey = finalization.lifecycleState.rawValue
+            session.endedAt = finalization.endedAt
+            session.endedElapsedMicroseconds = finalization.endedElapsed?.microseconds
+            session.incompleteReason = finalization.incompleteReason
+            session.recorderIsComplete = finalization.recorderHealth.isComplete
+            session.lostCriticalRecordCount = lostCritical
+            session.lostNativeRecordCount = lostNative
+            session.lastPersistedElapsedMicroseconds = finalization.recorderHealth
+                .lastPersistedElapsed?.microseconds
+        }
+    }
+
+    public func fetchUnfinishedRecorderSessions() throws -> [WorkoutSessionRecord] {
+        let completed = SessionLifecycleState.completed.rawValue
+        let cancelled = SessionLifecycleState.cancelled.rawValue
+        let incomplete = SessionLifecycleState.incomplete.rawValue
+        let descriptor = FetchDescriptor<TelemetryWorkoutSessionV1>(
+            predicate: #Predicate {
+                $0.lifecycleStateKey != completed
+                    && $0.lifecycleStateKey != cancelled
+                    && $0.lifecycleStateKey != incomplete
+            },
+            sortBy: [SortDescriptor(\TelemetryWorkoutSessionV1.startedAt)]
+        )
+        return try modelContext.fetch(descriptor).map(Self.domainSession)
     }
 
     /// Issue #26 testability seam. It exercises the existing insert validation and model
@@ -1208,5 +1284,63 @@ private extension TelemetryStore {
             receivedElapsed: ElapsedDuration(microseconds: receivedElapsed),
             recordedElapsed: ElapsedDuration(microseconds: recordedElapsed)
         )
+    }
+}
+
+extension TelemetryStore: TelemetryRecorderPersistence {
+    public func beginSession(_ header: WorkoutSessionRecord) async throws {
+        do {
+            try insertSession(header)
+        } catch {
+            throw TelemetryPersistenceOperationError.commitOutcomeUnknown(
+                code: "swiftdata-begin-session"
+            )
+        }
+    }
+
+    public func persistBatch(_ records: [SequencedTelemetryRecord]) async throws {
+        do {
+            try insertRecorderBatch(records)
+        } catch {
+            throw TelemetryPersistenceOperationError.commitOutcomeUnknown(
+                code: "swiftdata-batch"
+            )
+        }
+    }
+
+    public func finalizeSession(_ finalization: TelemetrySessionFinalization) async throws {
+        do {
+            try finalizeRecorderSession(finalization)
+        } catch {
+            if recorderFinalizationMatchesStoredState(finalization) {
+                return
+            }
+            throw TelemetryPersistenceOperationError.commitOutcomeUnknown(
+                code: "swiftdata-finalize-session"
+            )
+        }
+    }
+
+    public func unfinishedSessions() async throws -> [WorkoutSessionRecord] {
+        do {
+            return try fetchUnfinishedRecorderSessions()
+        } catch {
+            throw TelemetryPersistenceOperationError.terminal(
+                code: "swiftdata-unfinished-session-query"
+            )
+        }
+    }
+
+    private func recorderFinalizationMatchesStoredState(
+        _ finalization: TelemetrySessionFinalization
+    ) -> Bool {
+        guard let stored = try? Self.domainSession(sessionModel(finalization.sessionID)) else {
+            return false
+        }
+        return stored.lifecycleState == finalization.lifecycleState
+            && stored.endedAt == finalization.endedAt
+            && stored.endedElapsed == finalization.endedElapsed
+            && stored.incompleteReason == finalization.incompleteReason
+            && stored.recorderHealth == finalization.recorderHealth
     }
 }

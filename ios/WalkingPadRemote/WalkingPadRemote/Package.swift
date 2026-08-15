@@ -18,6 +18,10 @@ let package = Package(
             targets: ["TelemetryDomain"]
         ),
         .library(
+            name: "TelemetryRecorder",
+            targets: ["TelemetryRecorder"]
+        ),
+        .library(
             name: "TelemetryPersistence",
             targets: ["TelemetryPersistence"]
         )
@@ -27,8 +31,12 @@ let package = Package(
             name: "TelemetryDomain"
         ),
         .target(
-            name: "TelemetryPersistence",
+            name: "TelemetryRecorder",
             dependencies: ["TelemetryDomain"]
+        ),
+        .target(
+            name: "TelemetryPersistence",
+            dependencies: ["TelemetryDomain", "TelemetryRecorder"]
         ),
         .executableTarget(
             name: "TelemetryGateCrashWorker",
@@ -85,8 +93,12 @@ let package = Package(
             dependencies: ["TelemetryDomain"]
         ),
         .testTarget(
+            name: "TelemetryRecorderTests",
+            dependencies: ["TelemetryDomain", "TelemetryRecorder"]
+        ),
+        .testTarget(
             name: "TelemetryPersistenceTests",
-            dependencies: ["TelemetryDomain", "TelemetryPersistence"]
+            dependencies: ["TelemetryDomain", "TelemetryRecorder", "TelemetryPersistence"]
         ),
         .testTarget(
             name: "TelemetrySwiftDataGateTests",
