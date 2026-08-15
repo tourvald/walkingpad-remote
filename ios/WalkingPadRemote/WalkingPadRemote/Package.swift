@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "WalkingPadRemoteCoreLogic",
+    // SwiftData #Index requires macOS 15; tools and language mode remain unchanged.
     platforms: [
         .iOS("26.0"),
         .macOS("15.0")

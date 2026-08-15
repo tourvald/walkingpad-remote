@@ -214,6 +214,21 @@ public struct TreadmillObservation: Codable, Hashable, Sendable {
     public let freshness: EvidenceFreshness
     public let quality: QualityFlags
 
+    private struct CodingRepresentation: Codable {
+        let recordID: RecordID
+        let observationID: ObservationID
+        let sessionID: SessionID
+        let source: SignalSourceIdentity
+        let nativeSpeed: NativeTreadmillSpeed
+        let factualSpeed: FactualSpeedKilometresPerHour?
+        let deviceState: TreadmillDeviceState
+        let arrivalOrder: UInt64
+        let timestamp: ObservationTimestamp
+        let provenance: EvidenceProvenance
+        let freshness: EvidenceFreshness
+        let quality: QualityFlags
+    }
+
     public init(
         recordID: RecordID,
         observationID: ObservationID,
@@ -244,5 +259,49 @@ public struct TreadmillObservation: Codable, Hashable, Sendable {
         self.provenance = provenance
         self.freshness = freshness
         self.quality = quality
+    }
+
+    public init(from decoder: Decoder) throws {
+        let decoded = try CodingRepresentation(from: decoder)
+        self.init(
+            recordID: decoded.recordID,
+            observationID: decoded.observationID,
+            sessionID: decoded.sessionID,
+            source: decoded.source,
+            nativeSpeed: decoded.nativeSpeed,
+            deviceState: decoded.deviceState,
+            arrivalOrder: decoded.arrivalOrder,
+            timestamp: decoded.timestamp,
+            provenance: decoded.provenance,
+            freshness: decoded.freshness,
+            quality: decoded.quality,
+            normalizationRule: decoded.factualSpeed?.normalizationRule
+                ?? .nativeToKilometresPerHourV1
+        )
+        guard factualSpeed == decoded.factualSpeed else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Factual treadmill speed contradicts native evidence."
+                )
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try CodingRepresentation(
+            recordID: recordID,
+            observationID: observationID,
+            sessionID: sessionID,
+            source: source,
+            nativeSpeed: nativeSpeed,
+            factualSpeed: factualSpeed,
+            deviceState: deviceState,
+            arrivalOrder: arrivalOrder,
+            timestamp: timestamp,
+            provenance: provenance,
+            freshness: freshness,
+            quality: quality
+        ).encode(to: encoder)
     }
 }

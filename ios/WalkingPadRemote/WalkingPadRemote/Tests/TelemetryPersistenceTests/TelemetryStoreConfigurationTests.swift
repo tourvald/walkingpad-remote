@@ -43,25 +43,28 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         )
         try await writer?.insertHeartRate(heartRate)
 
-        let protectedFiles = try TelemetryStoreFilePolicy.discoveredStoreFiles(
-            primaryStoreURL: storeURL
-        )
-        XCTAssertTrue(
-            protectedFiles.map { $0.resolvingSymlinksInPath().path }
-                .contains(storeURL.resolvingSymlinksInPath().path),
-            "Expected primary store at \(storeURL.path); discovered \(protectedFiles.map(\.path))"
+        let protectedFiles = try assertRequiredFilePolicy(
+            primaryStoreURL: storeURL,
+            phase: "initial writes"
         )
         for url in protectedFiles {
-            let resourceValues = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
-            XCTAssertEqual(resourceValues.isExcludedFromBackup, true)
-            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-            XCTAssertNotNil(attributes[.protectionKey])
+            var resetValues = URLResourceValues()
+            resetValues.isExcludedFromBackup = false
+            var mutableURL = url
+            try mutableURL.setResourceValues(resetValues)
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.none],
+                ofItemAtPath: url.path
+            )
         }
+        _ = try TelemetryStoreFilePolicy.applyRequiredAttributes(
+            primaryStoreURL: storeURL
+        )
+        _ = try assertRequiredFilePolicy(
+            primaryStoreURL: storeURL,
+            phase: "explicit reapplication after file-attribute mutation"
+        )
 
-        var resetValues = URLResourceValues()
-        resetValues.isExcludedFromBackup = false
-        var mutableStoreURL = storeURL
-        try mutableStoreURL.setResourceValues(resetValues)
         try await writer?.insertEvent(
             TelemetryPersistenceFixtures.event(
                 seed: 8,
@@ -70,13 +73,17 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
                 elapsed: 2_000_000
             )
         )
-        XCTAssertEqual(
-            try storeURL.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup,
-            true
+        _ = try assertRequiredFilePolicy(
+            primaryStoreURL: storeURL,
+            phase: "automatic policy after subsequent write"
         )
         writer = nil
 
         let reader = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        _ = try assertRequiredFilePolicy(
+            primaryStoreURL: storeURL,
+            phase: "reopen"
+        )
         let sessions = try await reader.fetchSessions()
         let heartRates = try await reader.fetchHeartRate(sessionID: session.sessionID)
         let sources = try await reader.fetchSources()
@@ -242,5 +249,41 @@ final class TelemetryStoreConfigurationTests: XCTestCase {
         let counts = try await store.counts()
         XCTAssertEqual(counts.heartRateSamples, 0)
         XCTAssertEqual(counts.sources, 0)
+    }
+
+    private func assertRequiredFilePolicy(
+        primaryStoreURL: URL,
+        phase: String
+    ) throws -> [URL] {
+        let discovered = try TelemetryStoreFilePolicy.discoveredStoreFiles(
+            primaryStoreURL: primaryStoreURL
+        )
+        let primaryName = primaryStoreURL.lastPathComponent
+        let requiredNames: Set<String> = [
+            primaryName,
+            primaryName + "-shm",
+            primaryName + "-wal",
+        ]
+        let discoveredNames = Set(discovered.map(\.lastPathComponent))
+        XCTAssertTrue(
+            requiredNames.isSubset(of: discoveredNames),
+            "\(phase): expected primary, SHM, and WAL files; discovered \(discoveredNames.sorted())"
+        )
+
+        for url in discovered {
+            let resourceValues = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
+            XCTAssertEqual(
+                resourceValues.isExcludedFromBackup,
+                true,
+                "\(phase): \(url.lastPathComponent)"
+            )
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            XCTAssertEqual(
+                attributes[.protectionKey] as? FileProtectionType,
+                .completeUntilFirstUserAuthentication,
+                "\(phase): \(url.lastPathComponent)"
+            )
+        }
+        return discovered
     }
 }

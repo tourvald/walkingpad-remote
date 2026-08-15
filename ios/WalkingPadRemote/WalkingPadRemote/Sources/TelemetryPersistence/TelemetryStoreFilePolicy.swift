@@ -59,14 +59,15 @@ public enum TelemetryStoreFilePolicy {
             fileManager: fileManager
         )
         for url in discovered {
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            var mutableURL = url
-            try mutableURL.setResourceValues(values)
             try fileManager.setAttributes(
                 [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                 ofItemAtPath: url.path
             )
+            // Apply backup exclusion last because other file-attribute updates may reset it.
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var mutableURL = url
+            try mutableURL.setResourceValues(values)
         }
         return TelemetryStoreFilePolicyResult(
             protectedURLs: discovered,

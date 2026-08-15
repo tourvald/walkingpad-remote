@@ -52,6 +52,22 @@ final class ObservationAndFrameTests: XCTestCase {
         )
     }
 
+    func testTreadmillDecodingRejectsFactualSpeedForUnknownNativeUnit() throws {
+        let valid = makeTreadmill(
+            native: NativeTreadmillSpeed(value: 6.2, unit: .kilometresPerHour)
+        )
+        let encoded = try JSONEncoder().encode(valid)
+        let json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        XCTAssertTrue(json.contains("kilometresPerHour"))
+        let contradictory = Data(
+            json.replacingOccurrences(of: "kilometresPerHour", with: "unknown").utf8
+        )
+
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(TreadmillObservation.self, from: contradictory)
+        )
+    }
+
     func testDesiredCommandedAndEstimatedSpeedRemainSeparateTypes() throws {
         let desired = DesiredSpeedKilometresPerHour(value: 5.5)
         let commanded = CommandedSpeed(nativeValue: 55, nativeUnit: .controllerNative(code: "tenths"))
