@@ -1,9 +1,36 @@
 import CryptoKit
 import Dispatch
 import Foundation
+import TelemetryInstrumentation
 #if canImport(TelemetryDomain)
 import TelemetryDomain
 #endif
+
+public enum TelemetryV2PerformanceObservation {
+    public static func measureControlCycle<T>(
+        _ operation: () throws -> T
+    ) rethrows -> T {
+        try TelemetryPerformanceInstrumentation.system.measureControlCycle(operation)
+    }
+
+    public static func beginControlCycle()
+        -> TelemetryPerformanceInstrumentation.ControlInterval
+    {
+        TelemetryPerformanceInstrumentation.system.beginControlCycle()
+    }
+
+    public static func endControlCycle(
+        _ interval: TelemetryPerformanceInstrumentation.ControlInterval
+    ) {
+        TelemetryPerformanceInstrumentation.system.endControlCycle(interval)
+    }
+
+    /// Placeholder observation point for the future Issue #33 analyzer.
+    public static func emitPostWorkoutAnalysisPlaceholder() {
+        TelemetryPerformanceInstrumentation.system
+            .emitPostWorkoutAnalysisPlaceholder(result: .success)
+    }
+}
 #if canImport(TelemetryRecorder)
 import TelemetryRecorder
 #endif

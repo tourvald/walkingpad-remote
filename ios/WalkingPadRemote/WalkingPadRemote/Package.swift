@@ -18,6 +18,10 @@ let package = Package(
             targets: ["TelemetryDomain"]
         ),
         .library(
+            name: "TelemetryInstrumentation",
+            targets: ["TelemetryInstrumentation"]
+        ),
+        .library(
             name: "TelemetryRecorder",
             targets: ["TelemetryRecorder"]
         ),
@@ -28,6 +32,14 @@ let package = Package(
         .library(
             name: "TelemetryRuntime",
             targets: ["TelemetryRuntime"]
+        ),
+        .library(
+            name: "TelemetrySoak",
+            targets: ["TelemetrySoak"]
+        ),
+        .executable(
+            name: "telemetry-soak",
+            targets: ["TelemetrySoakCLI"]
         )
     ],
     targets: [
@@ -35,16 +47,40 @@ let package = Package(
             name: "TelemetryDomain"
         ),
         .target(
+            name: "TelemetryInstrumentation"
+        ),
+        .target(
             name: "TelemetryRecorder",
-            dependencies: ["TelemetryDomain"]
+            dependencies: ["TelemetryDomain", "TelemetryInstrumentation"]
         ),
         .target(
             name: "TelemetryPersistence",
-            dependencies: ["TelemetryDomain", "TelemetryRecorder"]
+            dependencies: [
+                "TelemetryDomain",
+                "TelemetryInstrumentation",
+                "TelemetryRecorder",
+            ]
         ),
         .target(
             name: "TelemetryRuntime",
-            dependencies: ["TelemetryDomain", "TelemetryRecorder"]
+            dependencies: [
+                "TelemetryDomain",
+                "TelemetryInstrumentation",
+                "TelemetryRecorder",
+            ]
+        ),
+        .target(
+            name: "TelemetrySoak",
+            dependencies: [
+                "TelemetryDomain",
+                "TelemetryInstrumentation",
+                "TelemetryPersistence",
+                "TelemetryRecorder",
+            ]
+        ),
+        .executableTarget(
+            name: "TelemetrySoakCLI",
+            dependencies: ["TelemetrySoak"]
         ),
         .executableTarget(
             name: "TelemetryGateCrashWorker",
@@ -109,6 +145,14 @@ let package = Package(
         .testTarget(
             name: "TelemetryRuntimeTests",
             dependencies: ["TelemetryDomain", "TelemetryRecorder", "TelemetryRuntime"]
+        ),
+        .testTarget(
+            name: "TelemetryInstrumentationTests",
+            dependencies: ["TelemetryInstrumentation"]
+        ),
+        .testTarget(
+            name: "TelemetrySoakTests",
+            dependencies: ["TelemetryRecorder", "TelemetrySoak"]
         ),
         .testTarget(
             name: "TelemetryPersistenceTests",

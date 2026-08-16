@@ -72,6 +72,33 @@ jobs:
         working-directory: ios/WalkingPadRemote/WalkingPadRemote
         run: swift test
 
+      - name: Run short deterministic Telemetry V2 soak
+        working-directory: ios/WalkingPadRemote/WalkingPadRemote
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/telemetry-soak-short.json"
+          swift run --quiet telemetry-soak \
+            --minutes 2 \
+            --hr-ms 1000 \
+            --treadmill-ms 1000 \
+            --burst-every-seconds 30 \
+            --burst-native-records 32 \
+            --flush-every-seconds 5 > "$report"
+          python3 - "$report" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as stream:
+              report = json.load(stream)
+          assert report["produced"] == report["persisted"]
+          assert report["lostCritical"] == 0
+          assert report["lostNative"] == 0
+          assert report["droppedFrames"] == 0
+          assert report["finalQueueDepth"] == 0
+          assert report["completeness"] == "complete"
+          assert report["controlOutputChecksum"]
+          PY
+
   xcode-metadata:
     name: Xcode Project Metadata (diagnostic only)
     runs-on: macos-26

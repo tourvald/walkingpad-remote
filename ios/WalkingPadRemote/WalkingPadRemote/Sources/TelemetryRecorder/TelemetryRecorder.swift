@@ -1,21 +1,27 @@
 import Foundation
 import TelemetryDomain
+import TelemetryInstrumentation
 
 public final class TelemetryIngress: @unchecked Sendable {
     private let core: TelemetryRecorderCore
     private let scheduler: any TelemetryRecorderScheduler
+    private let instrumentation: TelemetryPerformanceInstrumentation
 
     fileprivate init(
         core: TelemetryRecorderCore,
-        scheduler: any TelemetryRecorderScheduler
+        scheduler: any TelemetryRecorderScheduler,
+        instrumentation: TelemetryPerformanceInstrumentation
     ) {
         self.core = core
         self.scheduler = scheduler
+        self.instrumentation = instrumentation
     }
 
     @discardableResult
     public func yield(_ record: TelemetryPersistenceRecord) -> TelemetryYieldReceipt {
-        core.yield(record, at: scheduler.now())
+        instrumentation.measureIngress {
+            core.yield(record, at: scheduler.now())
+        }
     }
 }
 
@@ -24,6 +30,7 @@ public final class TelemetryRecorder: @unchecked Sendable {
 
     private let core: TelemetryRecorderCore
     private let scheduler: any TelemetryRecorderScheduler
+    private let instrumentation: TelemetryPerformanceInstrumentation
     private let continuation: AsyncStream<Void>.Continuation
     private let consumerTask: Task<Void, Never>
 
@@ -33,6 +40,7 @@ public final class TelemetryRecorder: @unchecked Sendable {
         bufferPolicy: TelemetryBufferPolicy = .initialDefault,
         batchPolicy: TelemetryBatchPolicy = .initialDefault,
         retryPolicy: TelemetryRetryPolicy = .initialDefault,
+        instrumentation: TelemetryPerformanceInstrumentation = .system,
         scheduler: any TelemetryRecorderScheduler = ContinuousTelemetryRecorderScheduler()
     ) {
         var capturedContinuation: AsyncStream<Void>.Continuation?
@@ -55,13 +63,19 @@ public final class TelemetryRecorder: @unchecked Sendable {
         )
         self.core = core
         self.scheduler = scheduler
+        self.instrumentation = instrumentation
         continuation = streamContinuation
-        ingress = TelemetryIngress(core: core, scheduler: scheduler)
+        ingress = TelemetryIngress(
+            core: core,
+            scheduler: scheduler,
+            instrumentation: instrumentation
+        )
         consumerTask = Task.detached(priority: .utility) {
             await Self.consume(
                 core: core,
                 persistence: persistence,
                 scheduler: scheduler,
+                instrumentation: instrumentation,
                 stream: stream,
                 continuation: streamContinuation
             )
@@ -98,7 +112,8 @@ public final class TelemetryRecorder: @unchecked Sendable {
         endedAt: Date,
         endedElapsed: ElapsedDuration
     ) async -> TelemetryFinishResult {
-        await withCheckedContinuation { continuation in
+        let interval = instrumentation.beginSessionLifecycle()
+        let result = await withCheckedContinuation { continuation in
             if let immediate = core.requestFinish(
                 endedAt: endedAt,
                 endedElapsed: endedElapsed,
@@ -109,6 +124,11 @@ public final class TelemetryRecorder: @unchecked Sendable {
                 core.wake()
             }
         }
+        instrumentation.endSessionLifecycle(
+            interval,
+            result: result.completeness.instrumentationResult
+        )
+        return result
     }
 
     public func fail(reason: String) async -> TelemetryFinishResult {
@@ -179,26 +199,34 @@ public final class TelemetryRecorder: @unchecked Sendable {
 
     public static func recoverUnfinishedSessions(
         using persistence: any TelemetryRecorderPersistence,
+        instrumentation: TelemetryPerformanceInstrumentation = .system,
         reason: String = "recorder-recovered-unfinished-session"
     ) async throws -> [WorkoutSessionRecord] {
-        let unfinished = try await persistence.unfinishedSessions()
-        for session in unfinished {
-            let finalization = TelemetrySessionFinalization(
-                sessionID: session.sessionID,
-                lifecycleState: .incomplete,
-                endedAt: nil,
-                endedElapsed: nil,
-                incompleteReason: reason,
-                recorderHealth: RecorderHealthSummary(
-                    isComplete: false,
-                    lostCriticalRecordCount: session.recorderHealth.lostCriticalRecordCount,
-                    lostNativeRecordCount: session.recorderHealth.lostNativeRecordCount,
-                    lastPersistedElapsed: session.recorderHealth.lastPersistedElapsed
+        let interval = instrumentation.beginSessionLifecycle()
+        do {
+            let unfinished = try await persistence.unfinishedSessions()
+            for session in unfinished {
+                let finalization = TelemetrySessionFinalization(
+                    sessionID: session.sessionID,
+                    lifecycleState: .incomplete,
+                    endedAt: nil,
+                    endedElapsed: nil,
+                    incompleteReason: reason,
+                    recorderHealth: RecorderHealthSummary(
+                        isComplete: false,
+                        lostCriticalRecordCount: session.recorderHealth.lostCriticalRecordCount,
+                        lostNativeRecordCount: session.recorderHealth.lostNativeRecordCount,
+                        lastPersistedElapsed: session.recorderHealth.lastPersistedElapsed
+                    )
                 )
-            )
-            try await persistence.finalizeSession(finalization)
+                try await persistence.finalizeSession(finalization)
+            }
+            instrumentation.endSessionLifecycle(interval, result: .success)
+            return unfinished
+        } catch {
+            instrumentation.endSessionLifecycle(interval, result: .failed)
+            throw error
         }
-        return unfinished
     }
 }
 
@@ -213,6 +241,7 @@ private extension TelemetryRecorder {
         core: TelemetryRecorderCore,
         persistence: any TelemetryRecorderPersistence,
         scheduler: any TelemetryRecorderScheduler,
+        instrumentation: TelemetryPerformanceInstrumentation,
         stream: AsyncStream<Void>,
         continuation: AsyncStream<Void>.Continuation
     ) async {
@@ -256,6 +285,9 @@ private extension TelemetryRecorder {
             case let .persist(batch, intentGeneration):
                 cancelTimer(core: core, scheduler: scheduler)
                 let startedAt = scheduler.now()
+                let interval = instrumentation.beginPersistenceBatch(
+                    recordCount: batch.count
+                )
                 let result = await attemptPersistence(
                     core: core,
                     scheduler: scheduler,
@@ -263,6 +295,10 @@ private extension TelemetryRecorder {
                 ) {
                     try await persistence.persistBatch(batch)
                 }
+                instrumentation.endPersistenceBatch(
+                    interval,
+                    result: result.instrumentationResult
+                )
                 switch result {
                 case .success:
                     core.batchCommitted(
@@ -458,6 +494,27 @@ private extension TelemetryRecorder {
 
     static func nonnegativeDuration(from start: Duration, to end: Duration) -> Duration {
         max(end - start, .zero)
+    }
+}
+
+private extension TelemetryRecorderCompleteness {
+    var instrumentationResult: TelemetryInstrumentationResult {
+        switch self {
+        case .complete: .success
+        case .incomplete: .incomplete
+        case .failed: .failed
+        case .cancelled: .cancelled
+        }
+    }
+}
+
+private extension TelemetryRecorder.PersistenceAttemptResult {
+    var instrumentationResult: TelemetryInstrumentationResult {
+        switch self {
+        case .success: .success
+        case .aborted: .cancelled
+        case .failure: .failed
+        }
     }
 }
 

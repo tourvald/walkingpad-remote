@@ -35,6 +35,7 @@ resolve a concrete remaining ambiguity.
 | SwiftData ownership, transactions, retention, protection, backup, or store failure | [`persistence-and-retention.md`](persistence-and-retention.md) |
 | Hosted SwiftData scale/crash evidence and device-only carry-over | [`swiftdata-gate.md`](swiftdata-gate.md) |
 | Performance targets, soak measurements, privacy-safe instrumentation, or tuning evidence | [`performance-budget.md`](performance-budget.md) |
+| Issue #31 host measurements, A/B recorder decision, signpost catalog, or soak commands | [`issue-31-performance-report.md`](issue-31-performance-report.md) |
 | Dual-write, parity, migration, cutover, physical gate, rollback, or retirement | [`rollout-and-migration.md`](rollout-and-migration.md) |
 
 ## Durable cross-Issue decisions
