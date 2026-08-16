@@ -1,29 +1,9 @@
 import Foundation
 
 enum HRDomainService {
-    struct AdaptiveStepSelection: Equatable {
+    struct AdaptiveStepSelection {
         let level: Int
         let stepKmh: Double
-    }
-
-    enum HeartRateControlAction: String, Equatable {
-        case hold
-        case inertiaHold
-        case setSpeed
-        case speedLimit
-    }
-
-    struct HeartRateControlDecision: Equatable {
-        let action: HeartRateControlAction
-        let predictedBpm: Int?
-        let effectiveBpm: Int
-        let diffBpm: Int
-        let absDiffPercent: Double
-        let deadbandBpm: Int
-        let direction: Double
-        let stepSelection: AdaptiveStepSelection
-        let stepKmh: Double
-        let nextSpeedKmh: Double
     }
 
     struct CooldownSpeedSnapshot: Equatable {
@@ -161,93 +141,6 @@ enum HRDomainService {
     static func stepForLevel(_ level: Int) -> Double {
         let normalized = max(1, min(4, level))
         return Double(normalized) * 0.1
-    }
-
-    static func heartRateControlDecision(
-        currentBpm: Int,
-        predictedBpm: Int?,
-        predictedValue: Double?,
-        trendBpmPerSecond: Double?,
-        targetBpm: Int,
-        predictMarginBpm: Int,
-        adaptiveStepEnabled: Bool,
-        fixedStepKmh: Double,
-        thresholds: AdaptiveThresholdPercents,
-        currentTargetSpeedKmh: Double,
-        speedBounds: TreadmillSpeedBoundsService.Bounds
-    ) -> HeartRateControlDecision {
-        let effectiveBpm = max(currentBpm, predictedBpm ?? currentBpm)
-        let diffBpm = effectiveBpm - targetBpm
-        let absDiff = abs(diffBpm)
-        let absDiffPercent = diffPercent(absDiff: absDiff, targetBpm: targetBpm)
-        let deadbandBpm = deadbandBpm(targetBpm: targetBpm, thresholds: thresholds)
-        let direction: Double = diffBpm > 0 ? -1.0 : 1.0
-        let stepSelection: AdaptiveStepSelection
-        if adaptiveStepEnabled {
-            stepSelection = stepFromDiff(
-                diffPercent: absDiffPercent,
-                isIncreasingSpeed: direction > 0,
-                thresholds: thresholds
-            )
-        } else {
-            stepSelection = AdaptiveStepSelection(
-                level: 4,
-                stepKmh: quantizeSpeedStep(max(0.1, min(2.0, fixedStepKmh)))
-            )
-        }
-        let stepKmh = quantizeSpeedStep(stepSelection.stepKmh)
-
-        if absDiff <= deadbandBpm {
-            return HeartRateControlDecision(
-                action: .hold,
-                predictedBpm: predictedBpm,
-                effectiveBpm: effectiveBpm,
-                diffBpm: diffBpm,
-                absDiffPercent: absDiffPercent,
-                deadbandBpm: deadbandBpm,
-                direction: direction,
-                stepSelection: stepSelection,
-                stepKmh: stepKmh,
-                nextSpeedKmh: currentTargetSpeedKmh
-            )
-        }
-
-        if direction > 0,
-           let trendBpmPerSecond,
-           trendBpmPerSecond > 0,
-           let predictedValue,
-           predictedValue >= Double(targetBpm - predictMarginBpm)
-        {
-            return HeartRateControlDecision(
-                action: .inertiaHold,
-                predictedBpm: predictedBpm,
-                effectiveBpm: effectiveBpm,
-                diffBpm: diffBpm,
-                absDiffPercent: absDiffPercent,
-                deadbandBpm: deadbandBpm,
-                direction: direction,
-                stepSelection: stepSelection,
-                stepKmh: stepKmh,
-                nextSpeedKmh: currentTargetSpeedKmh
-            )
-        }
-
-        let nextSpeedKmh = TreadmillSpeedBoundsService.clampRunningSpeed(
-            currentTargetSpeedKmh + direction * stepKmh,
-            bounds: speedBounds
-        )
-        return HeartRateControlDecision(
-            action: nextSpeedKmh != currentTargetSpeedKmh ? .setSpeed : .speedLimit,
-            predictedBpm: predictedBpm,
-            effectiveBpm: effectiveBpm,
-            diffBpm: diffBpm,
-            absDiffPercent: absDiffPercent,
-            deadbandBpm: deadbandBpm,
-            direction: direction,
-            stepSelection: stepSelection,
-            stepKmh: stepKmh,
-            nextSpeedKmh: nextSpeedKmh
-        )
     }
 
     static func cooldownPlan(

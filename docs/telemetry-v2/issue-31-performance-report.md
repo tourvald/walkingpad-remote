@@ -66,12 +66,16 @@ Throughput is persisted records divided by hosted wall time. Store footprint is
 the allocated size of the SQLite store and discovered sidecars before cleanup.
 Resident-memory samples are host RSS observations at simulated-minute
 boundaries; they are timing/toolchain dependent and are not deterministic
-device limits. The control replay passes the same deterministic inputs through
-the production pure HR-decision seam and `CooldownRuntimeEngine` used by the
-application. Both computations run through an injected enabled or disabled
-`TelemetryV2PerformanceObservation`; only a checksum of the complete in-memory
-outputs is retained. Replay inputs and outputs are not logged or persisted, and
-the checksum is independent of telemetry admission or persistence results.
+device limits. The control checksum combines a private harness-only HR
+reference assembled from the existing adaptive-step, deadband and speed-bound
+helpers with outputs from the existing `CooldownRuntimeEngine`. The HR
+reference is not called by `BluetoothManager` and is not a production control
+authority; the accepted inline HR formulas and branching remain the production
+authority. The reference and cooldown replay run through an injected enabled or
+disabled `TelemetryV2PerformanceObservation`; only a checksum of the complete
+in-memory outputs is retained. Replay inputs and outputs are not logged or
+persisted, and the checksum is independent of telemetry admission or
+persistence results.
 
 ## Same-workload A/B measurement
 
@@ -83,18 +87,18 @@ records in each run (7,292 total).
 | persisted critical / native / frames | 4 / 5,488 / 1,800 | 4 / 5,488 / 1,800 |
 | coalesced / dropped frames | 0 / 0 | 0 / 0 |
 | critical / native loss | 0 / 0 | 0 / 0 |
-| queue final / high-water | 0 / 129 | 0 / 250 |
+| queue final / high-water | 0 / 130 | 0 / 250 |
 | transactions | 60 | 30 |
-| transaction p50 / p95 | 195.877 / 294.682 ms | 474.176 / 627.210 ms |
-| transaction min / max | 92.356 / 344.789 ms | 269.074 / 650.528 ms |
-| throughput | 611.837 records/s | 519.224 records/s |
-| RSS start / peak / end | 18.625 / 36.719 / 36.719 MiB | 18.609 / 37.250 / 37.250 MiB |
+| transaction p50 / p95 | 193.669 / 293.988 ms | 473.433 / 621.640 ms |
+| transaction min / max | 88.923 / 325.062 ms | 259.857 / 626.857 ms |
+| throughput | 614.561 records/s | 526.369 records/s |
+| RSS start / peak / end | 18.469 / 36.500 / 36.500 MiB | 18.484 / 37.141 / 37.141 MiB |
 | final store | 8.070 MiB | 6.758 MiB |
-| hosted wall time | 11.918 s | 14.044 s |
+| hosted wall time | 11.865 s | 13.853 s |
 | completion | complete | complete |
-| control-output checksum | `4b1f6f68680d6bd5` | `4b1f6f68680d6bd5` |
+| control-output checksum | `c181098ace199327` | `c181098ace199327` |
 
-The candidate's p95 was 112.84% higher and throughput 15.14% lower. No loss or
+The candidate's p95 was 111.45% higher and throughput 14.35% lower. No loss or
 control divergence occurred, but the overall tradeoff does not support tuning.
 
 ## Accepted-default duration runs
@@ -104,15 +108,15 @@ control divergence occurred, but the overall tradeoff does not support tuning.
 | produced = persisted | 7,292 | 14,612 | 29,252 |
 | class counts (critical / native / frames) | 4 / 5,488 / 1,800 | 4 / 11,008 / 3,600 | 4 / 22,048 / 7,200 |
 | coalesced / dropped / critical loss / native loss | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
-| queue final / high-water | 0 / 129 | 0 / 183 | 0 / 129 |
+| queue final / high-water | 0 / 130 | 0 / 153 | 0 / 169 |
 | transactions | 60 | 120 | 240 |
-| transaction p50 / p95 | 195.877 / 294.682 ms | 312.678 / 570.369 ms | 745.888 / 1,266.982 ms |
-| transaction min / max | 92.356 / 344.789 ms | 93.874 / 621.660 ms | 90.139 / 1,338.957 ms |
-| throughput | 611.837 records/s | 379.909 records/s | 172.040 records/s |
-| RSS start / peak / end | 18.625 / 36.719 / 36.719 MiB | 18.609 / 46.828 / 46.828 MiB | 18.969 / 61.641 / 61.641 MiB |
+| transaction p50 / p95 | 193.669 / 293.988 ms | 299.962 / 482.513 ms | 514.502 / 1,009.076 ms |
+| transaction min / max | 88.923 / 325.062 ms | 88.616 / 549.528 ms | 90.767 / 1,192.621 ms |
+| throughput | 614.561 records/s | 409.513 records/s | 226.020 records/s |
+| RSS start / peak / end | 18.469 / 36.500 / 36.500 MiB | 18.406 / 46.688 / 46.688 MiB | 18.500 / 58.500 / 50.516 MiB |
 | final store | 8.070 MiB | 12.633 MiB | 25.070 MiB |
 | completion | complete | complete | complete |
-| control-output checksum | `4b1f6f68680d6bd5` | `344ab7846b74f9f0` | `d888a2cde82f7042` |
+| control-output checksum | `c181098ace199327` | `f0f8fe79d7be142e` | `d4c13818ae515288` |
 
 All queues drained and remained below the fixed 2,048-slot bound. The rising
 host RSS and transaction latency are recorded honestly as profiling targets;
@@ -126,10 +130,12 @@ neither candidate changes the schema or read projections. The existing
 SwiftData query gate remains authoritative; this decision is based on the
 integrated writer measurements that the candidate actually changes.
 
-The explicit two-minute instrumentation ON/OFF runs replayed the same production
-pure control seams and both produced checksum `2553c8b7f682ce1b`, with identical
-produced/persisted class counts and loss state. This is hosted control-isolation
-evidence for those seams, not physical-device or full callback-scheduling proof.
+The explicit two-minute instrumentation ON/OFF runs replayed the same private
+primitive-helper HR reference and existing cooldown engine and both produced
+checksum `ea1140aa71917a2a`, with identical produced/persisted class counts and
+loss state. This is hosted evidence that the observation wrapper does not alter
+those deterministic outputs; it is not a claim of a newly extracted production
+HR-decision seam, physical-device proof or full callback-scheduling proof.
 
 ## Commands
 

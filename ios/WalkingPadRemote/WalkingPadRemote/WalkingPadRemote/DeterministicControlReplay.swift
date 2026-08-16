@@ -4,9 +4,10 @@ public protocol ControlCycleObservation: Sendable {
     func measureControlCycle(_ operation: () -> Void)
 }
 
-/// Hosted deterministic replay of the pure HR-decision and cooldown seams used
-/// by the application. Only the checksum leaves this helper; replay inputs and
-/// outputs are never logged or persisted.
+/// Hosted deterministic replay for the non-hardware soak harness. Its private
+/// HR reference is assembled from existing primitive helpers and is not a
+/// production control authority. Only the checksum leaves this helper; replay
+/// inputs and outputs are never logged or persisted.
 public enum DeterministicControlReplay {
     public static func checksum(
         durationSeconds: Int,
@@ -17,17 +18,14 @@ public enum DeterministicControlReplay {
         var cooldownSpeedKmh = 6.0
 
         for elapsedSecond in 0..<max(1, durationSeconds) {
-            var heartRateDecision: HRDomainService.HeartRateControlDecision?
+            var heartRateReference: HarnessHeartRateReference?
             observation.measureControlCycle {
-                heartRateDecision = makeHeartRateDecision(
+                heartRateReference = makeHarnessHeartRateReference(
                     elapsedSecond: elapsedSecond
                 )
             }
-            if let heartRateDecision {
-                checksum = updateChecksum(
-                    checksum,
-                    bytes: String(reflecting: heartRateDecision).utf8
-                )
+            if let heartRateReference {
+                checksum = updateChecksum(checksum, reference: heartRateReference)
             }
 
             var cooldownOutput: CooldownRuntimeEngine.Output?
@@ -79,40 +77,98 @@ public enum DeterministicControlReplay {
         return String(format: "%016llx", checksum)
     }
 
-    private static func makeHeartRateDecision(
+    private struct HarnessHeartRateReference {
+        let predictedBpm: Int?
+        let effectiveBpm: Int
+        let diffBpm: Int
+        let diffPercent: Double
+        let deadbandBpm: Int
+        let stepLevel: Int
+        let stepKmh: Double
+        let speedBeforeKmh: Double
+        let speedAfterKmh: Double
+        let branch: String
+    }
+
+    private static func makeHarnessHeartRateReference(
         elapsedSecond: Int
-    ) -> HRDomainService.HeartRateControlDecision {
+    ) -> HarnessHeartRateReference {
         let currentBpm = 92 + (elapsedSecond * 7) % 48
         let trend: Double? = elapsedSecond.isMultiple(of: 5)
             ? 0.18
             : (elapsedSecond.isMultiple(of: 7) ? -0.12 : nil)
         let predictedValue = trend.map { Double(currentBpm) + $0 * 15.0 }
         let predictedBpm = predictedValue.map { Int(round($0)) }
-        let currentTarget = 0.5 + Double((elapsedSecond * 3) % 116) / 10.0
-        return HRDomainService.heartRateControlDecision(
-            currentBpm: currentBpm,
-            predictedBpm: predictedBpm,
-            predictedValue: predictedValue,
-            trendBpmPerSecond: trend,
+        let effectiveBpm = max(currentBpm, predictedBpm ?? currentBpm)
+        let diffBpm = effectiveBpm - 110
+        let diffPercent = HRDomainService.diffPercent(
+            absDiff: abs(diffBpm),
+            targetBpm: 110
+        )
+        let thresholds = HRDomainService.AdaptiveThresholdPercents(
+            deadband: 3.0,
+            downLevel2Start: 8.0,
+            downLevel3Start: 15.0,
+            downLevel4Start: 23.0,
+            upLevel2Start: 23.0,
+            upLevel3Start: 31.0,
+            upLevel4Start: 46.0
+        )
+        let deadbandBpm = HRDomainService.deadbandBpm(
             targetBpm: 110,
-            predictMarginBpm: 2,
-            adaptiveStepEnabled: !elapsedSecond.isMultiple(of: 11),
-            fixedStepKmh: 0.5,
-            thresholds: HRDomainService.AdaptiveThresholdPercents(
-                deadband: 3.0,
-                downLevel2Start: 8.0,
-                downLevel3Start: 15.0,
-                downLevel4Start: 23.0,
-                upLevel2Start: 23.0,
-                upLevel3Start: 31.0,
-                upLevel4Start: 46.0
-            ),
-            currentTargetSpeedKmh: currentTarget,
-            speedBounds: TreadmillSpeedBoundsService.normalized(
-                min: 0.5,
-                max: 12.0,
-                increment: 0.1
+            thresholds: thresholds
+        )
+        let direction = diffBpm > 0 ? -1.0 : 1.0
+        let adaptiveStepEnabled = !elapsedSecond.isMultiple(of: 11)
+        let stepSelection = adaptiveStepEnabled
+            ? HRDomainService.stepFromDiff(
+                diffPercent: diffPercent,
+                isIncreasingSpeed: direction > 0,
+                thresholds: thresholds
             )
+            : HRDomainService.AdaptiveStepSelection(
+                level: 4,
+                stepKmh: HRDomainService.quantizeSpeedStep(0.5)
+            )
+        let stepKmh = HRDomainService.quantizeSpeedStep(stepSelection.stepKmh)
+        let currentTarget = 0.5 + Double((elapsedSecond * 3) % 116) / 10.0
+        let speedBounds = TreadmillSpeedBoundsService.normalized(
+            min: 0.5,
+            max: 12.0,
+            increment: 0.1
+        )
+
+        let branch: String
+        let nextSpeed: Double
+        if abs(diffBpm) <= deadbandBpm {
+            branch = "hold"
+            nextSpeed = currentTarget
+        } else if direction > 0,
+                  let trend,
+                  trend > 0,
+                  let predictedValue,
+                  predictedValue >= 108.0 {
+            branch = "inertia_hold"
+            nextSpeed = currentTarget
+        } else {
+            nextSpeed = TreadmillSpeedBoundsService.clampRunningSpeed(
+                currentTarget + direction * stepKmh,
+                bounds: speedBounds
+            )
+            branch = nextSpeed == currentTarget ? "speed_limit" : "set_speed"
+        }
+
+        return HarnessHeartRateReference(
+            predictedBpm: predictedBpm,
+            effectiveBpm: effectiveBpm,
+            diffBpm: diffBpm,
+            diffPercent: diffPercent,
+            deadbandBpm: deadbandBpm,
+            stepLevel: stepSelection.level,
+            stepKmh: stepKmh,
+            speedBeforeKmh: currentTarget,
+            speedAfterKmh: nextSpeed,
+            branch: branch
         )
     }
 
@@ -145,5 +201,31 @@ public enum DeterministicControlReplay {
         result ^= 0xff
         result &*= 1_099_511_628_211
         return result
+    }
+
+    private static func updateChecksum(
+        _ checksum: UInt64,
+        reference: HarnessHeartRateReference
+    ) -> UInt64 {
+        var result = checksum
+
+        func append(_ value: UInt64) {
+            var littleEndian = value.littleEndian
+            withUnsafeBytes(of: &littleEndian) { bytes in
+                result = updateChecksum(result, bytes: bytes)
+            }
+        }
+
+        append(reference.predictedBpm == nil ? 0 : 1)
+        append(UInt64(bitPattern: Int64(reference.predictedBpm ?? 0)))
+        append(UInt64(bitPattern: Int64(reference.effectiveBpm)))
+        append(UInt64(bitPattern: Int64(reference.diffBpm)))
+        append(reference.diffPercent.bitPattern)
+        append(UInt64(bitPattern: Int64(reference.deadbandBpm)))
+        append(UInt64(bitPattern: Int64(reference.stepLevel)))
+        append(reference.stepKmh.bitPattern)
+        append(reference.speedBeforeKmh.bitPattern)
+        append(reference.speedAfterKmh.bitPattern)
+        return updateChecksum(result, bytes: reference.branch.utf8)
     }
 }

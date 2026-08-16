@@ -90,6 +90,19 @@ final class TelemetrySoakRunnerTests: XCTestCase {
         XCTAssertEqual(enabled.lostNative, disabled.lostNative)
     }
 
+    func testControlChecksumHasStableShortWorkloadVector() {
+        let checksum = DeterministicControlReplay.checksum(
+            durationSeconds: TelemetrySoakWorkload.shortCI.simulatedMinutes * 60,
+            observation: TestControlCycleObservation(
+                observation: TelemetryV2PerformanceObservation(
+                    instrumentation: TelemetryPerformanceInstrumentation(enabled: false)
+                )
+            )
+        )
+
+        XCTAssertEqual(checksum, "ea1140aa71917a2a")
+    }
+
     func testSameWorkloadComparisonCapturesFullEvidenceSet() async throws {
         let baseline = TelemetrySoakRecorderConfiguration.provisionalDefault
         let candidate = TelemetrySoakRecorderConfiguration(

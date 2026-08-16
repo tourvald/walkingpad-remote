@@ -20,6 +20,9 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
     private lazy var normalizationSource = source(
         relativePath: "Sources/TelemetryDomain/HeartRateNormalization.swift"
     )
+    private lazy var deterministicReplaySource = source(
+        relativePath: "WalkingPadRemote/DeterministicControlReplay.swift"
+    )
 
     func testLegacyWatchPayloadCarriesHeartRateValue() throws {
         let body = try functionBody(
@@ -81,10 +84,33 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "let trend = currentHrTrendBpmPerSecond()",
                 "let controlUseEvidence = makeHeartRateControlUseEvidence(",
                 "defer { observeHeartRateControlUse(controlUseEvidence) }",
-                "let controlDecision = HRDomainService.heartRateControlDecision(",
+                "let performanceInterval = telemetryPerformanceObservation",
+                ".beginControlCycle()",
+                "telemetryPerformanceObservation.endControlCycle(",
+                "let predictedValue = trend.map",
+                "let predictedBpm = predictedValue.map",
+                "let effectiveBpm = max(heartRateBPM",
+                "let diff = effectiveBpm - hrTargetBPM",
+                "let fixedStep = max(0.1, min(2.0, hrSpeedStepKmh))",
+                "let absDiff = abs(diff)",
+                "let adaptiveThresholds = adaptiveThresholdPercentsSnapshot()",
+                "let absDiffPercent = adaptiveDiffPercent(",
+                "let deadbandBpm = adaptiveDeadbandBpm(",
+                "let direction: Double = diff > 0 ? -1.0 : 1.0",
+                "let stepSelection: AdaptiveStepSelection",
+                "let step = quantizeSpeedStep(stepSelection.stepKmh)",
+                "let currentTarget = (deviceTargetSpeedKmh > 0.1)",
+                "if absDiff <= deadbandBpm",
+                "if direction > 0, let trend, trend > 0, let predictedValue",
+                "let threshold = Double(hrTargetBPM - hrPredictMarginBpm)",
+                "let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)",
+                "if nextSpeed != currentTarget",
             ],
             in: tick
         )
+        XCTAssertFalse(tick.contains("heartRateControlDecision"))
+        XCTAssertFalse(tick.contains("instrumentationEnabled"))
+        XCTAssertFalse(tick.contains("TelemetryPerformanceInstrumentation"))
         XCTAssertFalse(
             try functionBody(
                 "private func observeHeartRateDelivery(",
@@ -114,6 +140,8 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             XCTAssertFalse(body.contains("TelemetryPersistence"))
             XCTAssertFalse(body.contains("telemetry health"))
             XCTAssertFalse(body.contains("telemetryV2WriterHealthSnapshot"))
+            XCTAssertFalse(body.contains("telemetryPerformanceObservation"))
+            XCTAssertFalse(body.contains("TelemetryPerformanceInstrumentation"))
         }
 
         XCTAssertTrue(affordance.contains("HRDomainService.heartRateStartAffordanceAvailable"))
@@ -151,6 +179,49 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             ],
             in: start
         )
+    }
+
+    func testInstrumentationCannotAuthorizeControlStopCooldownOrWatchBehavior() throws {
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        let stop = try functionBody("func stopHrControl()", in: managerSource)
+        let stopBelt = try functionBody(
+            "private func stopBeltWithToggle(reason: String)",
+            in: managerSource
+        )
+        let sendWatch = try functionBody(
+            "private func sendWatchCommand(_ cmd: String)",
+            in: managerSource
+        )
+        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+
+        for body in [start, stop, stopBelt, sendWatch] {
+            XCTAssertFalse(body.contains("telemetryPerformanceObservation"))
+            XCTAssertFalse(body.contains("TelemetryPerformanceInstrumentation"))
+            XCTAssertFalse(body.contains("instrumentationEnabled"))
+        }
+        XCTAssertFalse(managerSource.contains("instrumentationEnabled"))
+        XCTAssertFalse(managerSource.contains("TelemetryPerformanceInstrumentation"))
+        XCTAssertFalse(watchSource.contains("TelemetryPerformanceInstrumentation"))
+        XCTAssertTrue(tick.contains("telemetryPerformanceObservation.measureControlCycle"))
+        XCTAssertTrue(tick.contains("CooldownRuntimeEngine.start("))
+        XCTAssertTrue(tick.contains("CooldownRuntimeEngine.tick("))
+        XCTAssertFalse(tick.contains("if telemetryPerformanceObservation"))
+        XCTAssertFalse(tick.contains("guard telemetryPerformanceObservation"))
+    }
+
+    func testDeterministicReplayIsHarnessOnlyAndNotProductionAuthority() {
+        XCTAssertFalse(managerSource.contains("DeterministicControlReplay"))
+        XCTAssertFalse(managerSource.contains("heartRateControlDecision"))
+        XCTAssertTrue(
+            deterministicReplaySource.contains("private struct HarnessHeartRateReference")
+        )
+        XCTAssertTrue(deterministicReplaySource.contains("HRDomainService.diffPercent("))
+        XCTAssertTrue(deterministicReplaySource.contains("HRDomainService.deadbandBpm("))
+        XCTAssertTrue(deterministicReplaySource.contains("HRDomainService.stepFromDiff("))
+        XCTAssertTrue(
+            deterministicReplaySource.contains("TreadmillSpeedBoundsService.clampRunningSpeed(")
+        )
+        XCTAssertFalse(deterministicReplaySource.contains("heartRateControlDecision"))
     }
 
     func testTelemetryV2WriterHealthIsWiredOnlyIntoDeveloperDiagnostics() throws {

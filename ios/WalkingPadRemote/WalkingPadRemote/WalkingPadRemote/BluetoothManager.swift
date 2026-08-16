@@ -4055,36 +4055,39 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     }
                     let predictedValue = trend.map { Double(heartRateBPM) + $0 * hrPredictSeconds }
                     let predictedBpm = predictedValue.map { Int(round($0)) }
-                    let adaptiveThresholds = adaptiveThresholdPercentsSnapshot()
-                    let currentTarget = (deviceTargetSpeedKmh > 0.1) ? deviceTargetSpeedKmh : clampRunningSpeedKmh(desiredSpeedKmh)
-                    let controlDecision = HRDomainService.heartRateControlDecision(
-                        currentBpm: heartRateBPM,
-                        predictedBpm: predictedBpm,
-                        predictedValue: predictedValue,
-                        trendBpmPerSecond: trend,
-                        targetBpm: hrTargetBPM,
-                        predictMarginBpm: hrPredictMarginBpm,
-                        adaptiveStepEnabled: hrAdaptiveStepEnabled,
-                        fixedStepKmh: hrSpeedStepKmh,
-                        thresholds: adaptiveThresholds,
-                        currentTargetSpeedKmh: currentTarget,
-                        speedBounds: treadmillSpeedBoundsSnapshot()
-                    )
-                    let diff = controlDecision.diffBpm
+                    let effectiveBpm = max(heartRateBPM, predictedBpm ?? heartRateBPM)
+                    let diff = effectiveBpm - hrTargetBPM
                     let decisionPrefix: String = {
                         if let predictedBpm, predictedBpm > heartRateBPM {
                             return "HR \(heartRateBPM) / прогноз \(predictedBpm) / цель \(hrTargetBPM) (Δ \(diff))"
                         }
                         return "HR \(heartRateBPM) / цель \(hrTargetBPM) (Δ \(diff))"
                     }()
-                    let absDiffPercent = controlDecision.absDiffPercent
-                    let deadbandBpm = controlDecision.deadbandBpm
+                    let fixedStep = max(0.1, min(2.0, hrSpeedStepKmh))
+                    let absDiff = abs(diff)
+                    let adaptiveThresholds = adaptiveThresholdPercentsSnapshot()
+                    let absDiffPercent = adaptiveDiffPercent(absDiff, targetBpm: hrTargetBPM)
+                    let deadbandBpm = adaptiveDeadbandBpm(targetBpm: hrTargetBPM, thresholds: adaptiveThresholds)
+                    let direction: Double = diff > 0 ? -1.0 : 1.0
                     let stepDirectionLabel = diff > 0 ? "DOWN" : (diff < 0 ? "UP" : "HOLD")
-                    let step = controlDecision.stepKmh
-                    let stepModeLabel = hrAdaptiveStepEnabled ? "L\(controlDecision.stepSelection.level)" : "FIXED"
+                    let isIncreasingSpeed = direction > 0
+                    let stepSelection: AdaptiveStepSelection = {
+                        if hrAdaptiveStepEnabled {
+                            return adaptiveStepFromDiff(
+                                diffPercent: absDiffPercent,
+                                isIncreasingSpeed: isIncreasingSpeed,
+                                thresholds: adaptiveThresholds
+                            )
+                        }
+                        return AdaptiveStepSelection(level: 4, stepKmh: quantizeSpeedStep(fixedStep))
+                    }()
+                    // KS-F0 accepts 0.1 km/h increments, so quantize before applying.
+                    let step = quantizeSpeedStep(stepSelection.stepKmh)
+                    let stepModeLabel = hrAdaptiveStepEnabled ? "L\(stepSelection.level)" : "FIXED"
                     let stepDebugLabel = "\(stepDirectionLabel)-\(stepModeLabel)"
 
-                    if controlDecision.action == .hold {
+                    let currentTarget = (deviceTargetSpeedKmh > 0.1) ? deviceTargetSpeedKmh : clampRunningSpeedKmh(desiredSpeedKmh)
+                    if absDiff <= deadbandBpm {
                         let holdModeLabel = hrAdaptiveStepEnabled ? "L0" : "FIXED"
                         recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_hold")
                         hrStatusLine = "HR‑контроль: цель удерживается"
@@ -4106,32 +4109,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         ])
                         return
                     }
-                    if controlDecision.action == .inertiaHold,
-                       let trend,
-                       let predictedValue
-                    {
-                        recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_inertia_hold")
-                        hrStatusLine = "HR‑контроль: инерция"
-                        let trendPerMin = trend * 60.0
-                        hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · тренд \(String(format: "%+.1f", trendPerMin)) bpm/мин · прогноз \(Int(round(predictedValue))) → без повышения"
-                        appendLog("HR decision: inertia hold target=\(String(format: "%.1f", currentTarget)) HR=\(heartRateBPM) diff=\(diff) trend=\(String(format: "%.2f", trend)) pred=\(Int(round(predictedValue))) stepTag=\(stepDebugLabel) step=\(String(format: "%.1f", step))")
-                        logTrainingEvent("hr_decision", fields: [
-                            "decision": "inertia_hold",
-                            "target_bpm": hrTargetBPM,
-                            "hr_bpm": heartRateBPM,
-                            "predicted_bpm": Int(round(predictedValue)),
-                            "trend_bpm_per_s": trend,
-                            "diff_bpm": diff,
-                            "diff_percent": absDiffPercent,
-                            "step_kmh": step,
-                            "step_tag": stepDebugLabel,
-                            "speed_before_kmh": currentTarget,
-                            "speed_after_kmh": currentTarget
-                        ])
-                        return
+                    if direction > 0, let trend, trend > 0, let predictedValue {
+                        let threshold = Double(hrTargetBPM - hrPredictMarginBpm)
+                        if predictedValue >= threshold {
+                            recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_inertia_hold")
+                            hrStatusLine = "HR‑контроль: инерция"
+                            let trendPerMin = trend * 60.0
+                            hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · тренд \(String(format: "%+.1f", trendPerMin)) bpm/мин · прогноз \(Int(round(predictedValue))) → без повышения"
+                            appendLog("HR decision: inertia hold target=\(String(format: "%.1f", currentTarget)) HR=\(heartRateBPM) diff=\(diff) trend=\(String(format: "%.2f", trend)) pred=\(Int(round(predictedValue))) stepTag=\(stepDebugLabel) step=\(String(format: "%.1f", step))")
+                            logTrainingEvent("hr_decision", fields: [
+                                "decision": "inertia_hold",
+                                "target_bpm": hrTargetBPM,
+                                "hr_bpm": heartRateBPM,
+                                "predicted_bpm": Int(round(predictedValue)),
+                                "trend_bpm_per_s": trend,
+                                "diff_bpm": diff,
+                                "diff_percent": absDiffPercent,
+                                "step_kmh": step,
+                                "step_tag": stepDebugLabel,
+                                "speed_before_kmh": currentTarget,
+                                "speed_after_kmh": currentTarget
+                            ])
+                            return
+                        }
                     }
-                    let nextSpeed = controlDecision.nextSpeedKmh
-                    if controlDecision.action == .setSpeed {
+                    let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)
+                    if nextSpeed != currentTarget {
                         let old = deviceTargetSpeedKmh
                         desiredSpeedKmh = nextSpeed
                         deviceTargetSpeedKmh = nextSpeed
