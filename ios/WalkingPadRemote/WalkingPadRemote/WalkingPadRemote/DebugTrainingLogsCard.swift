@@ -21,6 +21,8 @@ struct DebugTrainingLogsCard: View {
         let subtitle: String
         let profileMetrics: [Metric]
         let deviceMetrics: [Metric]
+        let writerHealthMetrics: [Metric]
+        let writerHealthDetailLines: [String]
         let rawExportOptions: [ExportOption]
         let rawExportSubtitle: String
         let canExportRaw: Bool
@@ -80,6 +82,21 @@ struct DebugTrainingLogsCard: View {
 
                 metricsSection(title: "Активный профиль", items: presentation.profileMetrics)
                 metricsSection(title: "Всё устройство", items: presentation.deviceMetrics)
+                metricsSection(
+                    title: "Telemetry V2 Writer",
+                    items: presentation.writerHealthMetrics
+                )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(
+                        Array(presentation.writerHealthDetailLines.enumerated()),
+                        id: \.offset
+                    ) { _, line in
+                        Text(line)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
 
                 LazyVGrid(columns: actionColumns, spacing: 10) {
                     Menu {

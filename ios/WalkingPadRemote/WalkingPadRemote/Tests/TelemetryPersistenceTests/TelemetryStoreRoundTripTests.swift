@@ -1,9 +1,183 @@
 import Foundation
 import TelemetryDomain
 import TelemetryPersistence
+import TelemetryRecorder
 import XCTest
 
 final class TelemetryStoreRoundTripTests: XCTestCase {
+    func testRecorderReusesExactGlobalSourceAcrossWorkoutSessions() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let source = TelemetryPersistenceFixtures.source(seed: 30, kind: .watchMediated)
+        let firstSeen = TelemetryPersistenceFixtures.baseDate
+        let laterSeen = firstSeen.addingTimeInterval(600)
+
+        try await store.insertRecorderBatch([
+            SequencedTelemetryRecord(
+                recorderSequence: 1,
+                record: .source(
+                    TelemetrySourceRecord(
+                        identity: source,
+                        firstSeen: firstSeen,
+                        lastSeen: firstSeen
+                    )
+                )
+            ),
+        ])
+        try await store.insertRecorderBatch([
+            SequencedTelemetryRecord(
+                recorderSequence: 1,
+                record: .source(
+                    TelemetrySourceRecord(
+                        identity: source,
+                        firstSeen: laterSeen,
+                        lastSeen: laterSeen
+                    )
+                )
+            ),
+        ])
+
+        let stored = try await store.fetchSources()
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored.first?.identity, source)
+        XCTAssertEqual(stored.first?.firstSeen, firstSeen)
+        XCTAssertEqual(stored.first?.lastSeen, laterSeen)
+    }
+
+    func testControllerNativeFactualTreadmillRoundTripsInMemoryAndOnDisk() async throws {
+        let session = TelemetryPersistenceFixtures.session(seed: 31)
+        let source = TelemetryPersistenceFixtures.source(seed: 31, kind: .treadmillProtocol)
+        let receivedAt = TelemetryPersistenceFixtures.baseDate.addingTimeInterval(1)
+        let recordedAt = receivedAt.addingTimeInterval(0.01)
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        var normalizer = TreadmillObservationNormalizer()
+        let evidence = normalizer.normalize(
+            .walkingPad(
+                speedRawTenths: 37,
+                rawState: 1,
+                deviceState: .moving,
+                checksumValid: true,
+                connectionEpoch: epoch,
+                receivedAt: receivedAt
+            ),
+            unitsTruth: .valid(
+                unit: .kilometresPerHour,
+                connectionEpoch: epoch,
+                observedAt: receivedAt.addingTimeInterval(-1)
+            ),
+            observationID: ObservationID(),
+            recordedAt: recordedAt
+        )
+        let observation = try XCTUnwrap(
+            TreadmillObservation(
+                recordID: RecordID(),
+                sessionID: session.sessionID,
+                source: source,
+                observedEvidence: evidence,
+                nativeUnit: .controllerNative(code: "walkingPad-tenths"),
+                timestamp: TelemetryPersistenceFixtures.timestamp(elapsedMicroseconds: 1_000_000),
+                freshness: TelemetryPersistenceFixtures.freshness(elapsedMicroseconds: 1_000_000),
+                quality: []
+            )
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(observation.factualSpeed).value,
+            3.7,
+            accuracy: 0.000_001
+        )
+
+        let inMemory = try TelemetryStoreFactory.make(.inMemory)
+        try await inMemory.insertSession(session)
+        try await inMemory.insertSource(source, firstSeen: receivedAt, lastSeen: receivedAt)
+        try await inMemory.insertTreadmill(observation)
+        let inMemoryObservations = try await inMemory.fetchTreadmill(
+            sessionID: session.sessionID
+        )
+        XCTAssertEqual(inMemoryObservations, [observation])
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telemetry-controller-native-\(UUID().uuidString)", isDirectory: true)
+        let storeURL = directory.appendingPathComponent("TelemetryV2.store")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var writer: TelemetryStore? = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        try await writer?.insertSession(session)
+        try await writer?.insertSource(source, firstSeen: receivedAt, lastSeen: receivedAt)
+        try await writer?.insertTreadmill(observation)
+        writer = nil
+
+        let reopened = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        let reopenedObservations = try await reopened.fetchTreadmill(
+            sessionID: session.sessionID
+        )
+        XCTAssertEqual(reopenedObservations, [observation])
+    }
+
+    func testUnknownTreadmillCausalityRemainsNilAfterPersistenceReplay() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = TelemetryPersistenceFixtures.session(seed: 30)
+        try await store.insertSession(session)
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let date = TelemetryPersistenceFixtures.baseDate
+        let payloads: [WorkoutEventPayload] = [
+            .treadmillEvidence(
+                .acknowledgement(
+                    .unresolved(
+                        protocolKind: .walkingPad,
+                        connectionEpoch: epoch,
+                        receivedAt: date,
+                        recordedAt: date
+                    )
+                )
+            ),
+            .treadmillEvidence(
+                .commandTimeout(
+                    LegacyCommandTimeoutObservation(
+                        protocolKind: .walkingPad,
+                        connectionEpoch: epoch,
+                        occurredAt: date
+                    )
+                )
+            ),
+            .treadmillEvidence(
+                .writeResult(
+                    LegacyWriteResultObservation(
+                        protocolKind: .walkingPad,
+                        connectionEpoch: epoch,
+                        occurredAt: date,
+                        status: .succeeded
+                    )
+                )
+            ),
+        ]
+        for (offset, payload) in payloads.enumerated() {
+            let elapsed = ElapsedDuration(microseconds: Int64(offset + 1) * 1_000_000)
+            try await store.insertEvent(
+                WorkoutEvent(
+                    recordID: RecordID(),
+                    sessionID: session.sessionID,
+                    timestamp: EventTimestamp(
+                        occurredAt: date.addingTimeInterval(TimeInterval(offset)),
+                        recordedAt: date.addingTimeInterval(TimeInterval(offset)),
+                        occurredElapsed: elapsed,
+                        recordedElapsed: elapsed
+                    ),
+                    sourceID: nil,
+                    payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
+                )
+            )
+        }
+
+        let replayed = try await store.fetchEvents(
+            sessionID: session.sessionID,
+            kind: .treadmillEvidence
+        )
+        XCTAssertEqual(replayed.count, 3)
+        for event in replayed {
+            XCTAssertNil(event.decisionID)
+            XCTAssertNil(event.commandID)
+            XCTAssertNil(event.attemptID)
+        }
+    }
+
     func testInsertFetchOrderAndFilterAllConceptualRecords() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let sharedConfiguration = TelemetryPersistenceFixtures.configuration(seed: 1)

@@ -1,7 +1,5 @@
 import Foundation
-#if SWIFT_PACKAGE
 import TelemetryDomain
-#endif
 
 /// Observational metadata that mirrors the legacy queue without participating in
 /// command equality, admission, ordering, coalescing, or transport decisions.

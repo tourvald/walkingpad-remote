@@ -3,6 +3,9 @@ import SwiftUI
 import Combine
 import CoreBluetooth
 import HealthKit
+import TelemetryDomain
+import TelemetryPersistence
+import TelemetryRuntime
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -196,6 +199,27 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         controllerUnitsFreshnessInterval: ControllerUnitsSafetyPolicy.freshnessInterval
     )
     private var treadmillTelemetrySink: (any TreadmillTelemetrySink)?
+    @Published private(set) var telemetryV2StatusText: String = "idle"
+    @Published private(set) var telemetryV2WriterHealthSnapshot: TelemetryV2WriterHealthSnapshot = .idle
+    private lazy var telemetryV2Coordinator = TelemetryV2RuntimeCoordinator(
+        persistenceFactory: {
+            let appIdentifier = Bundle.main.bundleIdentifier ?? "sw.WalkingPadRemote"
+            let storeURL = try TelemetryStoreLocation.applicationSupportStoreURL(
+                appIdentifier: appIdentifier
+            )
+            return try TelemetryStoreFactory.make(.onDisk(storeURL))
+        },
+        statusHandler: { [weak self] status in
+            Task { @MainActor [weak self] in
+                self?.telemetryV2StatusText = String(describing: status)
+            }
+        },
+        writerHealthHandler: { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                self?.telemetryV2WriterHealthSnapshot = snapshot
+            }
+        }
+    )
     private var latestTreadmillObservationEvidence: TreadmillObservationEvidence?
     private var treadmillCommandTelemetrySidecar = TreadmillCommandTelemetrySidecar()
     private var treadmillCommandAttemptNumbers: [CommandID: UInt16] = [:]
@@ -1184,10 +1208,41 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             if completionEffect.shouldStopBelt {
                 stopBeltWithToggle(reason: "hr_cooldown_done")
             }
+            if completionEffect.shouldStopSession {
+                endTelemetryV2Session(reason: completionEffect.structuredLogReason)
+            }
         }
     }
 
     private func logCooldownTelemetry(_ effect: CooldownRuntimeEngine.TelemetryEffect) {
+        defer {
+            let now = Date()
+            switch effect {
+            case let .start(telemetry):
+                _ = telemetryV2Coordinator.observeWorkoutPhase(.cooldown, occurredAt: now)
+                _ = telemetryV2Coordinator.observeEvent(
+                    .cooldown(
+                        CooldownEvent(
+                            lifecycle: .started,
+                            targetHeartRate: UInt16(exactly: telemetry.targetBpm)
+                        )
+                    ),
+                    occurredAt: now
+                )
+            case .complete:
+                _ = telemetryV2Coordinator.observeEvent(
+                    .cooldown(CooldownEvent(lifecycle: .completed)),
+                    occurredAt: now
+                )
+            case .insufficient:
+                _ = telemetryV2Coordinator.observeEvent(
+                    .cooldown(CooldownEvent(lifecycle: .insufficient)),
+                    occurredAt: now
+                )
+            case .speedSet, .state, .analysis:
+                break
+            }
+        }
         switch effect {
         case .start(let telemetry):
             appendLog(
@@ -1452,9 +1507,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
-    private func startTrainingStructuredLog(trigger: String) {
+    @discardableResult
+    private func startTrainingStructuredLog(trigger: String) -> UUID? {
         stopTrainingStructuredLog(reason: "restart_before_new_session")
-        guard let dir = trainingLogsDirectoryURL() else { return }
+        guard let dir = trainingLogsDirectoryURL() else { return nil }
         pruneTrainingLogs(in: dir)
 
         let sessionId = UUID().uuidString
@@ -1488,8 +1544,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "zone_bounds": [hrZone1Max, hrZone2Max, hrZone3Max, hrZone4Max]
             ].merging(controllerUnitsTelemetryFields(action: "session_start")) { current, _ in current })
             scheduleTrainingLogsInventoryRefresh()
+            return UUID(uuidString: sessionId)
         } catch {
             appendLog("Training log file open error: \(error.localizedDescription)")
+            return nil
         }
     }
 
@@ -1836,6 +1894,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         loadZonePlan()
         loadWorkoutHistory()
         refreshTrainingLogsInventory()
+        setHeartRateTelemetrySink(telemetryV2Coordinator)
+        setTreadmillTelemetrySink(telemetryV2Coordinator)
+        telemetryV2Coordinator.prepareStoreAndRecover()
 #if canImport(WatchConnectivity)
         startWatchConnectivity()
 #endif
@@ -2195,6 +2256,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.connectTimeoutWorkItem?.cancel()
             self.connectTimeoutWorkItem = nil
             self.manualModeSet = false
+            _ = self.telemetryV2Coordinator.observeEvent(
+                .connectionTransition(
+                    ConnectionTransition(
+                        previous: .connected,
+                        current: .disconnected,
+                        reason: "ble_disconnected"
+                    )
+                ),
+                occurredAt: Date()
+            )
+            self.endTelemetryV2Session(reason: "ble_disconnected")
         }
         if shouldBeScanning, central.state == .poweredOn {
             central.scanForPeripherals(withServices: supportedServiceUuids,
@@ -2249,6 +2321,19 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.resetSessionStats()
             self.stopTelemetry()
             self.isHrControlRunning = false
+            _ = self.telemetryV2Coordinator.observeEvent(
+                .connectionTransition(
+                    ConnectionTransition(
+                        previous: .connected,
+                        current: .disconnected,
+                        reason: userInitiated ? "disconnect_user" : "disconnect"
+                    )
+                ),
+                occurredAt: Date()
+            )
+            self.endTelemetryV2Session(
+                reason: userInitiated ? "disconnect_user" : "disconnect"
+            )
         }
     }
     func connectToKnownPeripheral(id: UUID) {
@@ -3593,7 +3678,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("HR start: target=\(hrTargetBPM) duration=\(hrDurationMinutes)m interval=\(hrDecisionIntervalSeconds)s \(adaptiveStepDescription)")
             // Reset all per-session counters before writing session_start telemetry snapshot.
             resetSessionStats()
-            startTrainingStructuredLog(trigger: "start_hr")
+            let legacySessionID = startTrainingStructuredLog(trigger: "start_hr")
             isHrControlRunning = true
             hrStatusLine = "HR‑контроль запущен"
             hrSessionTotalSeconds = max(60, hrDurationMinutes * 60)
@@ -3622,6 +3707,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "start_speed_kmh": speedKmh,
                 "device_target_kmh": deviceTargetSpeedKmh
             ].merging(controllerUnitsTelemetryFields(action: "hr_control_start")) { current, _ in current })
+            beginTelemetryV2Session(legacySessionID: legacySessionID)
             if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
                 hrControlStartedBelt = true
                 startWithSpeed(3.0)
@@ -3656,6 +3742,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrControlStartedBelt = false
         stopBeltWithToggle(reason: "hr")
         sendWatchCommand("stop_hr")
+        endTelemetryV2Session(reason: "manual_stop")
     }
 
     func clearHrFailureReports() { hrFailureReports.removeAll() }
@@ -3795,6 +3882,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func tickTelemetry() {
+        defer {
+            if isHrControlRunning {
+                _ = telemetryV2Coordinator.observeCurrentElapsedSecond()
+            }
+        }
         // Move actual speed towards desired speed
         let target = deviceTargetSpeedKmh
         let diff = target - speedKmh
@@ -3895,6 +3987,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         hrControlStartedBelt = false
                         sendWatchCommand("stop_hr")
                         stopBeltWithToggle(reason: "hr_no_connection")
+                        endTelemetryV2Session(reason: "hr_no_connection")
                         return
                     }
                     guard hrStreamingActive, heartRateBPM > 0 else {
@@ -3941,6 +4034,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         hrControlStartedBelt = false
                         sendWatchCommand("stop_hr")
                         stopBeltWithToggle(reason: "hr_no_signal")
+                        endTelemetryV2Session(reason: "hr_no_signal")
                         return
                     }
 
@@ -5278,6 +5372,70 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func setTreadmillTelemetrySink(_ sink: (any TreadmillTelemetrySink)?) {
         treadmillTelemetrySink = sink
+    }
+
+    private func beginTelemetryV2Session(legacySessionID: UUID?) {
+        guard isHrControlRunning, let startedAt = hrControlStartedAt else { return }
+        let sessionID = TelemetryV2SessionDescriptor.sessionID(
+            deterministicallyLinkedTo: legacySessionID
+        )
+#if canImport(UIKit)
+        let deviceModel: String? = UIDevice.current.model
+#else
+        let deviceModel: String? = nil
+#endif
+        let descriptor = TelemetryV2SessionDescriptor(
+            sessionID: sessionID,
+            deterministicLegacySessionID: legacySessionID,
+            startedAt: startedAt,
+            appContext: AppRuntimeContext(
+                appVersion: Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleShortVersionString"
+                ) as? String ?? "unknown",
+                buildNumber: Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleVersion"
+                ) as? String ?? "unknown",
+                operatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+                deviceModel: deviceModel
+            ),
+            configuration: TelemetryV2ConfigurationInput(
+                profileLocalIdentifier: activeUserProfile?.id.uuidString ?? "unknown",
+                workoutMode: .heartRateControlled,
+                targetHeartRate: hrTargetBPM,
+                durationMinutes: hrDurationMinutes,
+                decisionIntervalSeconds: hrDecisionIntervalSeconds,
+                adaptiveStepEnabled: hrAdaptiveStepEnabled,
+                maximumStepKilometresPerHour: hrSpeedStepKmh,
+                heartRateZones: [hrZone1Max, hrZone2Max, hrZone3Max, hrZone4Max],
+                cooldownTargetHeartRate: hrCooldownTargetBpm,
+                cooldownMinimumSpeedKilometresPerHour: hrCooldownMinSpeed,
+                cooldownMaximumMinutes: hrCooldownMaxMinutes,
+                heartRateProviderKind: "legacyWatchWorkoutStream",
+                heartRateProviderStableLocalKey: legacyWatchHeartRateSource.stableLocalKey,
+                treadmill: TelemetryV2TreadmillContext(
+                    stableLocalIdentifier: connectedPeripheralId?.uuidString,
+                    model: displayDeviceName ?? (deviceName.isEmpty ? nil : deviceName),
+                    protocolName: treadmillProtocol.rawValue,
+                    protocolVersion: nil,
+                    minimumSpeedKilometresPerHour: treadmillMinSpeedKmh,
+                    maximumSpeedKilometresPerHour: treadmillMaxSpeedKmh,
+                    speedIncrementKilometresPerHour: treadmillSpeedIncrementKmh
+                )
+            ),
+            versions: RuntimeVersionContext(
+                telemetrySchema: TelemetrySchemaVersion(rawValue: "1.0.0"),
+                algorithm: AlgorithmVersion(rawValue: "legacy-hr-control-2026-08"),
+                safetyPolicy: SafetyPolicyVersion(rawValue: "walkingpad-runtime-safety-2026-08"),
+                workoutProtocol: WorkoutProtocolVersion(rawValue: "hr-workout-v1")
+            ),
+            heartRateFreshnessLimitSeconds: TimeInterval(hrStaleThresholdSeconds),
+            treadmillFreshnessLimitSeconds: ControllerUnitsSafetyPolicy.freshnessInterval
+        )
+        telemetryV2Coordinator.beginSession(descriptor)
+    }
+
+    private func endTelemetryV2Session(reason: String) {
+        telemetryV2Coordinator.endSession(reason: reason)
     }
 
     private var treadmillTelemetryConnectionEpoch: TreadmillConnectionEpoch? {

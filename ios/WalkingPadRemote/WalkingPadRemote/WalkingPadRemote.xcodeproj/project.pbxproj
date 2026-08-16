@@ -7,14 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A28000012F80000000000001 /* HeartRateNormalization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A28000022F80000000000002 /* HeartRateNormalization.swift */; };
-		A29000012F90000000000001 /* TreadmillTruth.swift in Sources */ = {isa = PBXBuildFile; fileRef = A29000022F90000000000002 /* TreadmillTruth.swift */; };
-		A29100012F90000000000001 /* Identifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A29100022F90000000000002 /* Identifiers.swift */; };
-		A29200012F90000000000001 /* Observations.swift in Sources */ = {isa = PBXBuildFile; fileRef = A29200022F90000000000002 /* Observations.swift */; };
-		A29300012F90000000000001 /* Provenance.swift in Sources */ = {isa = PBXBuildFile; fileRef = A29300022F90000000000002 /* Provenance.swift */; };
-		A29400012F90000000000001 /* Time.swift in Sources */ = {isa = PBXBuildFile; fileRef = A29400022F90000000000002 /* Time.swift */; };
-		A29500012F90000000000001 /* Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A29500022F90000000000002 /* Configuration.swift */; };
-		A29600012F90000000000001 /* Events.swift in Sources */ = {isa = PBXBuildFile; fileRef = A29600022F90000000000002 /* Events.swift */; };
+		C30000012FA0000000000001 /* TelemetryDomain in Frameworks */ = {isa = PBXBuildFile; productRef = C30000022FA0000000000002 /* TelemetryDomain */; };
+		C30100012FA0000000000001 /* TelemetryPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = C30100022FA0000000000002 /* TelemetryPersistence */; };
+		C30200012FA0000000000001 /* TelemetryRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = C30200022FA0000000000002 /* TelemetryRuntime */; };
 		E31F57CB2F293B5600C6C470 /* WorkoutSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */; };
 		E31F57CD2F293B7100C6C470 /* TreadmillStatsPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */; };
 		E37051C22F233FC100D2FA22 /* WalkingPadRemoteWatch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = E37051B82F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -45,14 +40,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		A28000022F80000000000002 /* HeartRateNormalization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/HeartRateNormalization.swift; sourceTree = "<group>"; };
-		A29000022F90000000000002 /* TreadmillTruth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/TreadmillTruth.swift; sourceTree = "<group>"; };
-		A29100022F90000000000002 /* Identifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/Identifiers.swift; sourceTree = "<group>"; };
-		A29200022F90000000000002 /* Observations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/Observations.swift; sourceTree = "<group>"; };
-		A29300022F90000000000002 /* Provenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/Provenance.swift; sourceTree = "<group>"; };
-		A29400022F90000000000002 /* Time.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/Time.swift; sourceTree = "<group>"; };
-		A29500022F90000000000002 /* Configuration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/Configuration.swift; sourceTree = "<group>"; };
-		A29600022F90000000000002 /* Events.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/TelemetryDomain/Events.swift; sourceTree = "<group>"; };
 		E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutSessionController.swift; sourceTree = "<group>"; };
 		E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreadmillStatsPublisher.swift; sourceTree = "<group>"; };
 		E37051762F22AB0C00D2FA22 /* WalkingPadRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WalkingPadRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -77,6 +64,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C30000012FA0000000000001 /* TelemetryDomain in Frameworks */,
+				C30100012FA0000000000001 /* TelemetryPersistence in Frameworks */,
+				C30200012FA0000000000001 /* TelemetryRuntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -95,14 +85,6 @@
 			children = (
 				E37051782F22AB0C00D2FA22 /* WalkingPadRemote */,
 				E37051B92F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */,
-				A28000022F80000000000002 /* HeartRateNormalization.swift */,
-				A29000022F90000000000002 /* TreadmillTruth.swift */,
-				A29100022F90000000000002 /* Identifiers.swift */,
-				A29200022F90000000000002 /* Observations.swift */,
-				A29300022F90000000000002 /* Provenance.swift */,
-				A29400022F90000000000002 /* Time.swift */,
-				A29500022F90000000000002 /* Configuration.swift */,
-				A29600022F90000000000002 /* Events.swift */,
 				E37051772F22AB0C00D2FA22 /* Products */,
 				E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */,
 				E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */,
@@ -140,6 +122,9 @@
 			);
 			name = WalkingPadRemote;
 			packageProductDependencies = (
+				C30000022FA0000000000002 /* TelemetryDomain */,
+				C30100022FA0000000000002 /* TelemetryPersistence */,
+				C30200022FA0000000000002 /* TelemetryRuntime */,
 			);
 			productName = WalkingPadRemote;
 			productReference = E37051762F22AB0C00D2FA22 /* WalkingPadRemote.app */;
@@ -196,6 +181,9 @@
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E37051772F22AB0C00D2FA22 /* Products */;
+			packageReferences = (
+				C30300012FA0000000000001 /* XCLocalSwiftPackageReference "." */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -227,14 +215,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A28000012F80000000000001 /* HeartRateNormalization.swift in Sources */,
-				A29000012F90000000000001 /* TreadmillTruth.swift in Sources */,
-				A29100012F90000000000001 /* Identifiers.swift in Sources */,
-				A29200012F90000000000001 /* Observations.swift in Sources */,
-				A29300012F90000000000001 /* Provenance.swift in Sources */,
-				A29400012F90000000000001 /* Time.swift in Sources */,
-				A29500012F90000000000001 /* Configuration.swift in Sources */,
-				A29600012F90000000000001 /* Events.swift in Sources */,
 				E31F57CB2F293B5600C6C470 /* WorkoutSessionController.swift in Sources */,
 				E31F57CD2F293B7100C6C470 /* TreadmillStatsPublisher.swift in Sources */,
 			);
@@ -256,6 +236,31 @@
 			targetProxy = E37051C02F233FC100D2FA22 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		C30300012FA0000000000001 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C30000022FA0000000000002 /* TelemetryDomain */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C30300012FA0000000000001 /* XCLocalSwiftPackageReference "." */;
+			productName = TelemetryDomain;
+		};
+		C30100022FA0000000000002 /* TelemetryPersistence */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C30300012FA0000000000001 /* XCLocalSwiftPackageReference "." */;
+			productName = TelemetryPersistence;
+		};
+		C30200022FA0000000000002 /* TelemetryRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C30300012FA0000000000001 /* XCLocalSwiftPackageReference "." */;
+			productName = TelemetryRuntime;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		E370517F2F22AB0F00D2FA22 /* Debug */ = {

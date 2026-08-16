@@ -53,6 +53,5 @@ final class TelemetryGateBoundaryTests: XCTestCase {
         XCTAssertFalse(runtimeSources.contains("TelemetryGateCrashWorker"))
         XCTAssertFalse(runtimeSources.contains("insertGateBatch"))
         XCTAssertFalse(runtimeSources.contains("gateStageUncommittedHeartRate"))
-        XCTAssertFalse(runtimeSources.contains("TelemetryStoreFactory.make"))
     }
 }

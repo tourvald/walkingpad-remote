@@ -36,14 +36,22 @@ final class TelemetryRecorderBoundaryTests: XCTestCase {
         XCTAssertEqual(recorder.components(separatedBy: "Task.detached").count - 1, 1)
     }
 
-    func testProductionApplicationSourcesDoNotWireRecorder() throws {
+    func testProductionApplicationWiresRecorderOnlyThroughRuntimeCoordinator() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let runtimeSources = try swiftSources(in: root.appendingPathComponent("WalkingPadRemote"))
+        let coordinator = try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/TelemetryRuntime/TelemetryV2RuntimeCoordinator.swift"
+            ),
+            encoding: .utf8
+        )
 
         XCTAssertFalse(runtimeSources.contains("import TelemetryRecorder"))
         XCTAssertFalse(runtimeSources.contains("TelemetryIngress"))
         XCTAssertFalse(runtimeSources.contains("TelemetryRecorder("))
-        XCTAssertFalse(runtimeSources.contains("TelemetryStoreFactory.make"))
+        XCTAssertTrue(runtimeSources.contains("TelemetryV2RuntimeCoordinator("))
+        XCTAssertTrue(coordinator.contains("let recorder = TelemetryRecorder("))
+        XCTAssertTrue(coordinator.contains("Task.detached(priority: .utility)"))
     }
 
     func testPackageDependencyDirectionKeepsRecorderAboveDomainAndBelowPersistence() throws {

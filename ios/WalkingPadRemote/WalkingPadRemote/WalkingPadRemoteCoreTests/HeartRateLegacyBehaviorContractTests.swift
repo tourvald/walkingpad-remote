@@ -8,6 +8,12 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
     private lazy var contentViewSource = source(
         relativePath: "WalkingPadRemote/ContentView.swift"
     )
+    private lazy var trainingLogsCardSource = source(
+        relativePath: "WalkingPadRemote/DebugTrainingLogsCard.swift"
+    )
+    private lazy var telemetryRuntimeSource = source(
+        relativePath: "Sources/TelemetryRuntime/TelemetryV2RuntimeCoordinator.swift"
+    )
     private lazy var watchSource = source(
         relativePath: "WalkingPadRemoteWatch Watch App/WatchHeartRateManager.swift"
     )
@@ -107,6 +113,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             XCTAssertFalse(body.contains("TelemetryRecorder"))
             XCTAssertFalse(body.contains("TelemetryPersistence"))
             XCTAssertFalse(body.contains("telemetry health"))
+            XCTAssertFalse(body.contains("telemetryV2WriterHealthSnapshot"))
         }
 
         XCTAssertTrue(affordance.contains("HRDomainService.heartRateStartAffordanceAvailable"))
@@ -115,6 +122,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(affordance.contains("watchReachable"))
         XCTAssertFalse(affordance.contains("controllerUnits"))
         XCTAssertFalse(affordance.contains("telemetry"))
+        XCTAssertFalse(affordance.contains("telemetryV2WriterHealthSnapshot"))
 
         XCTAssertTrue(
             contentViewSource.contains(
@@ -136,10 +144,204 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "guard unitsDecision.allowed",
                 "persistBlockedControllerUnitsStart(decision: unitsDecision)",
                 "retryControllerUnitsQueryAfterBlockedStart()",
+                "let legacySessionID = startTrainingStructuredLog(trigger: \"start_hr\")",
+                "isHrControlRunning = true",
+                "beginTelemetryV2Session(legacySessionID: legacySessionID)",
                 "startWithSpeed",
             ],
             in: start
         )
+    }
+
+    func testTelemetryV2WriterHealthIsWiredOnlyIntoDeveloperDiagnostics() throws {
+        let metrics = try functionBody(
+            "private var telemetryV2WriterHealthMetrics",
+            in: contentViewSource
+        )
+        let details = try functionBody(
+            "private var telemetryV2WriterHealthDetailLines",
+            in: contentViewSource
+        )
+        let presentation = try functionBody(
+            "private var trainingLogsCardPresentation",
+            in: contentViewSource
+        )
+        let cardBody = try functionBody("var body: some View", in: trainingLogsCardSource)
+
+        XCTAssertTrue(metrics.contains("manager.telemetryV2WriterHealthSnapshot"))
+        XCTAssertTrue(metrics.contains("snapshot.queueDepth"))
+        XCTAssertTrue(metrics.contains("snapshot.lostCriticalCount"))
+        XCTAssertTrue(metrics.contains("snapshot.writerFailureCount"))
+        XCTAssertTrue(metrics.contains("snapshot.successfulFlushCount"))
+        XCTAssertTrue(details.contains("mostRecentFlushDuration"))
+        XCTAssertTrue(presentation.contains("writerHealthMetrics: telemetryV2WriterHealthMetrics"))
+        XCTAssertTrue(
+            presentation.contains("writerHealthDetailLines: telemetryV2WriterHealthDetailLines")
+        )
+        XCTAssertTrue(cardBody.contains("Telemetry V2 Writer"))
+        XCTAssertTrue(cardBody.contains("presentation.writerHealthMetrics"))
+        XCTAssertTrue(cardBody.contains("presentation.writerHealthDetailLines"))
+    }
+
+    func testTelemetryV2WriterHealthDiagnosticSurfaceExcludesPrivateWorkoutData() throws {
+        let snapshot = try functionBody(
+            "public struct TelemetryV2WriterHealthSnapshot",
+            in: telemetryRuntimeSource
+        )
+        let metrics = try functionBody(
+            "private var telemetryV2WriterHealthMetrics",
+            in: contentViewSource
+        )
+        let details = try functionBody(
+            "private var telemetryV2WriterHealthDetailLines",
+            in: contentViewSource
+        )
+        let diagnosticSurface = snapshot + metrics + details
+
+        for forbidden in [
+            "beatsPerMinute", "heartRate", "speed", "profileLocalIdentifier",
+            "stableLocalIdentifier", "sessionID", "rawBLE", "rawPayload",
+            "healthPayload", "workoutExport",
+        ] {
+            XCTAssertFalse(
+                diagnosticSurface.contains(forbidden),
+                "Writer-health diagnostic surface contains \(forbidden)"
+            )
+        }
+
+        let recompute = try functionBody(
+            "private func recomputeHrStartAllowed()",
+            in: managerSource
+        )
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        let affordance = try functionBody(
+            "var isHrControlStartAffordanceAvailable: Bool",
+            in: managerSource
+        )
+        for controlPath in [recompute, start, affordance] {
+            XCTAssertFalse(controlPath.contains("telemetryV2WriterHealthSnapshot"))
+            XCTAssertFalse(controlPath.contains("writerHealthSnapshot"))
+        }
+    }
+
+    func testTelemetryV2LifecycleHooksCannotPerformPersistenceOnControlPaths() throws {
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        let begin = try functionBody(
+            "private func beginTelemetryV2Session(legacySessionID: UUID?)",
+            in: managerSource
+        )
+        let end = try functionBody(
+            "private func endTelemetryV2Session(reason: String)",
+            in: managerSource
+        )
+        let forbidden = [
+            "TelemetryStore",
+            "TelemetryRecorder",
+            "FileManager",
+            "FileHandle",
+            "trainingLogQueue.sync",
+            "await ",
+            ".finish(",
+            ".finalize",
+        ]
+        for body in [start, begin, end] {
+            for token in forbidden {
+                XCTAssertFalse(body.contains(token), "Control path contains \(token)")
+            }
+        }
+        XCTAssertTrue(begin.contains("telemetryV2Coordinator.beginSession(descriptor)"))
+        XCTAssertTrue(end.contains("telemetryV2Coordinator.endSession(reason: reason)"))
+        XCTAssertFalse(start.contains("telemetryV2Status"))
+    }
+
+    func testTelemetryV2FinalizationIsAfterExistingProductStopEffects() throws {
+        let manual = try functionBody("func stopHrControl()", in: managerSource)
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason: \"manual_stop\")",
+                "isHrControlRunning = false",
+                "stopBeltWithToggle(reason: \"hr\")",
+                "sendWatchCommand(\"stop_hr\")",
+                "endTelemetryV2Session(reason: \"manual_stop\")",
+            ],
+            in: manual
+        )
+
+        let cooldown = try functionBody(
+            "private func executeCooldownEffect(",
+            in: managerSource
+        )
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason: completionEffect.structuredLogReason)",
+                "sendWatchCommand(\"stop_hr\")",
+                "stopBeltWithToggle(reason: \"hr_cooldown_done\")",
+                "endTelemetryV2Session(reason: completionEffect.structuredLogReason)",
+            ],
+            in: cooldown
+        )
+
+        let disconnect = try functionBody(
+            "private func disconnect(userInitiated: Bool = false)",
+            in: managerSource
+        )
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason:",
+                "central.cancelPeripheralConnection(p)",
+                "self.stopTelemetry()",
+                "self.isHrControlRunning = false",
+                "self.endTelemetryV2Session(",
+            ],
+            in: disconnect
+        )
+    }
+
+    func testTelemetryV2LifecycleRaceCannotBranchProductOrLegacyOutputs() throws {
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        let stop = try functionBody("func stopHrControl()", in: managerSource)
+        let begin = try functionBody(
+            "private func beginTelemetryV2Session(legacySessionID: UUID?)",
+            in: managerSource
+        )
+        let end = try functionBody(
+            "private func endTelemetryV2Session(reason: String)",
+            in: managerSource
+        )
+
+        for productPath in [start, stop] {
+            for forbiddenBranch in [
+                "if telemetryV2",
+                "guard telemetryV2",
+                "telemetryV2Status",
+                "telemetryV2Coordinator.status",
+            ] {
+                XCTAssertFalse(productPath.contains(forbiddenBranch))
+            }
+        }
+        assertOrdered(
+            [
+                "let legacySessionID = startTrainingStructuredLog(trigger: \"start_hr\")",
+                "isHrControlRunning = true",
+                "beginTelemetryV2Session(legacySessionID: legacySessionID)",
+                "startWithSpeed",
+            ],
+            in: start
+        )
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason: \"manual_stop\")",
+                "isHrControlRunning = false",
+                "stopBeltWithToggle(reason: \"hr\")",
+                "sendWatchCommand(\"stop_hr\")",
+                "endTelemetryV2Session(reason: \"manual_stop\")",
+            ],
+            in: stop
+        )
+        XCTAssertTrue(begin.contains("telemetryV2Coordinator.beginSession(descriptor)"))
+        XCTAssertTrue(end.contains("telemetryV2Coordinator.endSession(reason: reason)"))
+        XCTAssertFalse(begin.contains("return telemetryV2Coordinator"))
+        XCTAssertFalse(end.contains("return telemetryV2Coordinator"))
     }
 
     func testControlSafetyAuthorityIsOutsideTelemetryNormalization() throws {

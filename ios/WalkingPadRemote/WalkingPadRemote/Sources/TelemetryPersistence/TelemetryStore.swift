@@ -609,7 +609,7 @@ public actor TelemetryStore {
             for sequenced in records {
                 switch sequenced.record {
                 case let .source(source):
-                    try insertSource(
+                    try reuseOrInsertRecorderSource(
                         source.identity,
                         firstSeen: source.firstSeen,
                         lastSeen: source.lastSeen
@@ -851,6 +851,46 @@ public actor TelemetryStore {
             throw TelemetryStoreError.missingSource(sourceID)
         }
         return model
+    }
+
+    private func reuseOrInsertRecorderSource(
+        _ source: SignalSourceIdentity,
+        firstSeen: Date,
+        lastSeen: Date
+    ) throws {
+        let sourceKey = source.id.description
+        let stableIdentityKey = try Self.sourceStableIdentityKey(source)
+        let providerKindPayload = try Self.encode(source.providerKind)
+        let savingSourcePayload = try source.savingSource.map(Self.encode)
+        let knownDevicePayload = try source.knownDevice.map(Self.encode)
+        var idDescriptor = FetchDescriptor<TelemetrySignalSourceV1>(
+            predicate: #Predicate { $0.sourceID == sourceKey }
+        )
+        idDescriptor.fetchLimit = 1
+        var stableDescriptor = FetchDescriptor<TelemetrySignalSourceV1>(
+            predicate: #Predicate { $0.stableIdentityKey == stableIdentityKey }
+        )
+        stableDescriptor.fetchLimit = 1
+        let byID = try modelContext.fetch(idDescriptor).first
+        let byStableIdentity = try modelContext.fetch(stableDescriptor).first
+
+        guard byID != nil || byStableIdentity != nil else {
+            try insertSource(source, firstSeen: firstSeen, lastSeen: lastSeen)
+            return
+        }
+        guard let existing = byID,
+              let stableExisting = byStableIdentity,
+              existing.sourceID == stableExisting.sourceID,
+              existing.providerKindKey == Self.providerKindKey(source.providerKind),
+              existing.providerKindPayload == providerKindPayload,
+              existing.stableLocalKey == source.stableLocalKey,
+              existing.savingSourcePayload == savingSourcePayload,
+              existing.knownDevicePayload == knownDevicePayload
+        else {
+            throw TelemetryStoreError.conflictingStableIdentity(stableIdentityKey)
+        }
+        existing.firstSeen = min(existing.firstSeen, firstSeen)
+        existing.lastSeen = max(existing.lastSeen, lastSeen)
     }
 
     private func configurationModel(
@@ -1133,8 +1173,8 @@ private extension TelemetryStore {
         default:
             throw TelemetryStoreError.corruptStoredRecord(model.observationID)
         }
-        let observation = TreadmillObservation(
-            recordID: try uuid(model.recordID, as: RecordIDTag.self),
+        guard let observation = TreadmillObservation(
+            restoringRecordID: try uuid(model.recordID, as: RecordIDTag.self),
             observationID: try uuid(model.observationID, as: ObservationIDTag.self),
             sessionID: try uuid(model.sessionID, as: SessionIDTag.self),
             source: try domainSource(source).identity,
@@ -1142,6 +1182,8 @@ private extension TelemetryStore {
                 value: model.nativeValue,
                 unit: try decode(TreadmillNativeSpeedUnit.self, from: model.nativeUnitPayload)
             ),
+            factualKilometresPerHour: model.factualKilometresPerHour,
+            factualNormalizationRule: normalizationRule,
             deviceState: deviceState,
             arrivalOrder: arrivalOrder,
             timestamp: observationTimestamp(
@@ -1154,12 +1196,8 @@ private extension TelemetryStore {
             ),
             provenance: provenance,
             freshness: try decode(EvidenceFreshness.self, from: model.freshnessPayload),
-            quality: try decode(QualityFlags.self, from: model.qualityPayload),
-            normalizationRule: normalizationRule ?? .nativeToKilometresPerHourV1
-        )
-        guard observation.factualSpeed?.value == model.factualKilometresPerHour,
-              observation.factualSpeed?.normalizationRule == normalizationRule
-        else {
+            quality: try decode(QualityFlags.self, from: model.qualityPayload)
+        ) else {
             throw TelemetryStoreError.corruptStoredRecord(model.observationID)
         }
         return observation
