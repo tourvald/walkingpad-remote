@@ -256,7 +256,8 @@ final class TelemetryRecorderCore: @unchecked Sendable {
         endedElapsed: ElapsedDuration,
         reason: String,
         lostCriticalRecordCount: UInt64,
-        lostNativeRecordCount: UInt64
+        lostNativeRecordCount: UInt64,
+        droppedFrameCount: UInt64
     ) -> TelemetryFinishResult? {
         lock.withLock {
             if case let .terminal(completeness) = phase {
@@ -267,6 +268,7 @@ final class TelemetryRecorderCore: @unchecked Sendable {
             }
             add(lostCriticalRecordCount, to: &lostCriticalCount)
             add(lostNativeRecordCount, to: &lostNativeCount)
+            add(droppedFrameCount, to: &self.droppedFrameCount)
             knownLoss = true
             switch phase {
             case .beginning, .active:

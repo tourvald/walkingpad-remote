@@ -139,14 +139,16 @@ public final class TelemetryRecorder: @unchecked Sendable {
         endedElapsed: ElapsedDuration,
         reason: String,
         lostCriticalRecordCount: UInt64,
-        lostNativeRecordCount: UInt64
+        lostNativeRecordCount: UInt64,
+        droppedFrameCount: UInt64
     ) -> Bool {
         let accepted = core.requestIncomplete(
             endedAt: endedAt,
             endedElapsed: endedElapsed,
             reason: reason,
             lostCriticalRecordCount: lostCriticalRecordCount,
-            lostNativeRecordCount: lostNativeRecordCount
+            lostNativeRecordCount: lostNativeRecordCount,
+            droppedFrameCount: droppedFrameCount
         ) == nil
         if accepted {
             core.wake()

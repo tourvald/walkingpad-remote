@@ -247,25 +247,63 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 (1, 0)
             }
         }
+
+        func sourceID(for descriptor: TelemetryV2SessionDescriptor) -> SourceID? {
+            let stableKey: String?
+            switch self {
+            case let .heartRate(result):
+                stableKey = "hr:\(result.delivery.source.stableLocalKey)"
+            case let .sourceLifecycle(evidence):
+                stableKey = "hr:\(evidence.source.stableLocalKey)"
+            case .controlUse:
+                stableKey = "hr:\(descriptor.configuration.heartRateProviderStableLocalKey)"
+            case let .treadmill(evidence):
+                guard let stableDevice = descriptor.configuration.treadmill.stableLocalIdentifier,
+                      !stableDevice.isEmpty else { return nil }
+                stableKey = "treadmill:\(stableDevice):\(evidence.protocolKind.rawValue)"
+            case .event, .workoutPhase:
+                stableKey = nil
+            }
+            return stableKey.map {
+                SourceID(
+                    rawValue: TelemetryV2SessionDescriptor.deterministicUUID(key: $0)
+                )
+            }
+        }
     }
 
     fileprivate struct PendingLossSummary: Sendable {
         var lostCriticalRecordCount: UInt64 = 0
         var lostNativeRecordCount: UInt64 = 0
+        var droppedFrameCount: UInt64 = 0
         var firstCriticalAffectedElapsed: ElapsedDuration?
         var lastCriticalAffectedElapsed: ElapsedDuration?
         var firstNativeAffectedElapsed: ElapsedDuration?
         var lastNativeAffectedElapsed: ElapsedDuration?
+        var firstBulkFrameAffectedElapsed: ElapsedDuration?
+        var lastBulkFrameAffectedElapsed: ElapsedDuration?
 
         var hasLoss: Bool {
-            lostCriticalRecordCount > 0 || lostNativeRecordCount > 0
+            lostCriticalRecordCount > 0
+                || lostNativeRecordCount > 0
+                || droppedFrameCount > 0
         }
 
-        mutating func record(_ evidence: PendingEvidence, at elapsed: ElapsedDuration) {
+        mutating func recordDroppedFrame(at elapsed: ElapsedDuration) {
+            droppedFrameCount = Self.saturatedSum(droppedFrameCount, 1)
+            firstBulkFrameAffectedElapsed = firstBulkFrameAffectedElapsed ?? elapsed
+            lastBulkFrameAffectedElapsed = elapsed
+        }
+
+        mutating func record(
+            _ evidence: PendingEvidence,
+            at elapsed: ElapsedDuration,
+            losesSourceRecord: Bool
+        ) {
             let counts = evidence.lostRecordCounts
             lostCriticalRecordCount = Self.saturatedSum(
                 lostCriticalRecordCount,
-                counts.critical
+                Self.saturatedSum(counts.critical, losesSourceRecord ? 1 : 0)
             )
             lostNativeRecordCount = Self.saturatedSum(
                 lostNativeRecordCount,
@@ -294,6 +332,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         var isStarting: Bool
         var evidence: [PendingEvidence]
         var lossSummary: PendingLossSummary
+        var lastObservedFrameSecond: Int64?
+        var seenSourceIDs: Set<SourceID>
     }
 
     private static let pendingEvidenceCapacity = 256
@@ -360,7 +400,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 startedMonotonic: runtimeClock.now(),
                 isStarting: false,
                 evidence: [],
-                lossSummary: PendingLossSummary()
+                lossSummary: PendingLossSummary(),
+                lastObservedFrameSecond: nil,
+                seenSourceIDs: []
             )
             setStatusLocked(.starting)
             return (previous, true)
@@ -394,7 +436,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
 
     @discardableResult
     public func observeCurrentElapsedSecond() -> TelemetryYieldDisposition? {
-        guard let session = currentActiveSession() else { return nil }
+        guard let session = currentActiveSession() else {
+            return recordPendingFrameDrop()
+        }
         let disposition = session.observeCurrentElapsedSecond()
         refreshStatus(from: session)
         return disposition
@@ -599,17 +643,41 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         withLock {
             guard var pending = pendingSession else { return nil }
             guard pending.evidence.count < Self.pendingEvidenceCapacity else {
+                let sourceID = evidence.sourceID(for: pending.descriptor)
+                let losesSourceRecord = sourceID.map {
+                    pending.seenSourceIDs.insert($0).inserted
+                } ?? false
                 pending.lossSummary.record(
                     evidence,
-                    at: Self.elapsedDuration(runtimeClock.now() - pending.startedMonotonic)
+                    at: Self.elapsedDuration(runtimeClock.now() - pending.startedMonotonic),
+                    losesSourceRecord: losesSourceRecord
                 )
                 pendingSession = pending
                 setStatusLocked(.incomplete("pre-recorder-staging-overflow"))
                 return evidence.lostRecordCounts.critical > 0 ? .lostCritical : .lostNative
             }
             pending.evidence.append(evidence)
+            if let sourceID = evidence.sourceID(for: pending.descriptor) {
+                pending.seenSourceIDs.insert(sourceID)
+            }
             pendingSession = pending
             return .enqueued
+        }
+    }
+
+    private func recordPendingFrameDrop() -> TelemetryYieldDisposition? {
+        withLock {
+            guard var pending = pendingSession else { return nil }
+            let elapsed = Self.elapsedDuration(runtimeClock.now() - pending.startedMonotonic)
+            let currentSecond = max(0, elapsed.microseconds / 1_000_000)
+            guard pending.lastObservedFrameSecond != currentSecond else {
+                return .coalescedFrame
+            }
+            pending.lastObservedFrameSecond = currentSecond
+            pending.lossSummary.recordDroppedFrame(at: elapsed)
+            pendingSession = pending
+            setStatusLocked(.incomplete("pre-recorder-staging-overflow"))
+            return .droppedFrame
         }
     }
 
@@ -780,12 +848,29 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
                 sourceID: nil
             )
         }
+        if summary.droppedFrameCount > 0 {
+            _ = yieldEvent(
+                .recorderHealth(
+                    RecorderHealthEvent(
+                        kind: .loss,
+                        affectedRecordClass: "bulkFrame",
+                        count: summary.droppedFrameCount,
+                        firstAffectedElapsed: summary.firstBulkFrameAffectedElapsed,
+                        lastAffectedElapsed: summary.lastBulkFrameAffectedElapsed,
+                        detailCode: "pre-recorder-staging-overflow"
+                    )
+                ),
+                occurredAt: occurredAt,
+                sourceID: nil
+            )
+        }
         _ = recorder.requestIncomplete(
             endedAt: occurredAt,
             endedElapsed: elapsed(),
             reason: "pre-recorder-staging-overflow",
             lostCriticalRecordCount: summary.lostCriticalRecordCount,
-            lostNativeRecordCount: summary.lostNativeRecordCount
+            lostNativeRecordCount: summary.lostNativeRecordCount,
+            droppedFrameCount: summary.droppedFrameCount
         )
     }
 

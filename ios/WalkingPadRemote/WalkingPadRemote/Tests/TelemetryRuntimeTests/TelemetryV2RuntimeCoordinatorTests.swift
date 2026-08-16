@@ -264,22 +264,27 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             },
             runtimeClock: clock
         )
-        let evidence = TreadmillTelemetryEvidence.unassociatedWrite(
-            UnassociatedLegacyWriteObservation(
-                protocolKind: .walkingPad,
-                connectionEpoch: TreadmillConnectionEpoch(rawValue: UUID()),
-                sentAt: clock.nowDate(),
-                writeType: .withoutResponse
-            )
+        let criticalEvent = WorkoutEventPayload.manualStop(
+            ManualStopEvent(reason: "staging-pressure")
         )
 
         coordinator.beginSession(Self.descriptor())
+        let frameDropBegan = ContinuousClock.now
+        XCTAssertEqual(coordinator.observeCurrentElapsedSecond(), .droppedFrame)
+        XCTAssertLessThan(frameDropBegan.duration(to: .now), .milliseconds(50))
+        XCTAssertEqual(coordinator.observeCurrentElapsedSecond(), .coalescedFrame)
         for _ in 0..<256 {
-            XCTAssertEqual(coordinator.observeTreadmillEvidence(evidence), .accepted)
+            XCTAssertEqual(
+                coordinator.observeEvent(criticalEvent, occurredAt: clock.nowDate()),
+                .enqueued
+            )
         }
         clock.advance(by: .seconds(2))
         let firstDropBegan = ContinuousClock.now
-        XCTAssertEqual(coordinator.observeTreadmillEvidence(evidence), .degraded)
+        XCTAssertEqual(
+            coordinator.observeEvent(criticalEvent, occurredAt: clock.nowDate()),
+            .lostCritical
+        )
         XCTAssertLessThan(firstDropBegan.duration(to: .now), .milliseconds(50))
 
         clock.advance(by: .seconds(3))
@@ -316,30 +321,61 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(finalization.lifecycleState, .incomplete)
         XCTAssertEqual(finalization.incompleteReason, "pre-recorder-staging-overflow")
         XCTAssertFalse(finalization.recorderHealth.isComplete)
-        XCTAssertEqual(finalization.recorderHealth.lostCriticalRecordCount, 2)
+        XCTAssertEqual(finalization.recorderHealth.lostCriticalRecordCount, 3)
         XCTAssertEqual(finalization.recorderHealth.lostNativeRecordCount, 1)
         let acceptedPrefix = snapshot.records.compactMap { record -> WorkoutEvent? in
             guard case let .event(event) = record,
-                  event.kind == .treadmillEvidence else { return nil }
+                  event.kind == .manualStop else { return nil }
             return event
         }
         XCTAssertEqual(acceptedPrefix.count, 256)
+        XCTAssertTrue(
+            zip(snapshot.recorderSequences, snapshot.recorderSequences.dropFirst())
+                .allSatisfy(<)
+        )
         let lossEvents = snapshot.records.compactMap { record -> RecorderHealthEvent? in
             guard case let .event(event) = record,
                   case let .recorderHealth(health) = event.payload.payload,
                   health.kind == .loss else { return nil }
             return health
         }
-        XCTAssertEqual(lossEvents.map(\.affectedRecordClass), ["critical", "native"])
-        XCTAssertEqual(lossEvents.map(\.count), [2, 1])
+        XCTAssertEqual(
+            lossEvents.map(\.affectedRecordClass),
+            ["critical", "native", "bulkFrame"]
+        )
+        XCTAssertEqual(lossEvents.map(\.count), [3, 1, 1])
         XCTAssertEqual(
             lossEvents.map(\.firstAffectedElapsed),
-            [ElapsedDuration(microseconds: 2_000_000), ElapsedDuration(microseconds: 5_000_000)]
+            [
+                ElapsedDuration(microseconds: 2_000_000),
+                ElapsedDuration(microseconds: 5_000_000),
+                ElapsedDuration(microseconds: 0),
+            ]
         )
         XCTAssertEqual(
             lossEvents.map(\.lastAffectedElapsed),
-            [ElapsedDuration(microseconds: 5_000_000), ElapsedDuration(microseconds: 5_000_000)]
+            [
+                ElapsedDuration(microseconds: 5_000_000),
+                ElapsedDuration(microseconds: 5_000_000),
+                ElapsedDuration(microseconds: 0),
+            ]
         )
+        let lastAcceptedPrefixIndex = try XCTUnwrap(
+            snapshot.records.lastIndex { record in
+                guard case let .event(event) = record else { return false }
+                return event.kind == .manualStop
+            }
+        )
+        let firstLossIndex = try XCTUnwrap(
+            snapshot.records.firstIndex { record in
+                guard case let .event(event) = record,
+                      case let .recorderHealth(health) = event.payload.payload else {
+                    return false
+                }
+                return health.kind == .loss
+            }
+        )
+        XCTAssertLessThan(lastAcceptedPrefixIndex, firstLossIndex)
         if case .incomplete("pre-recorder-staging-overflow") = coordinator.status {
             // The telemetry failure is visible and does not require product-path coordination.
         } else {
@@ -471,12 +507,14 @@ private actor RuntimePersistence: TelemetryRecorderPersistence {
     struct Snapshot: Sendable {
         let headers: [WorkoutSessionRecord]
         let records: [TelemetryPersistenceRecord]
+        let recorderSequences: [UInt64]
         let finalizations: [TelemetrySessionFinalization]
         let beginCallCount: Int
     }
 
     private(set) var headers: [WorkoutSessionRecord] = []
     private(set) var records: [TelemetryPersistenceRecord] = []
+    private(set) var recorderSequences: [UInt64] = []
     private(set) var finalizations: [TelemetrySessionFinalization] = []
     private(set) var beginCallCount = 0
     private(set) var finalizeCallCount = 0
@@ -507,6 +545,7 @@ private actor RuntimePersistence: TelemetryRecorderPersistence {
 
     func persistBatch(_ records: [SequencedTelemetryRecord]) async throws {
         self.records.append(contentsOf: records.map(\.record))
+        recorderSequences.append(contentsOf: records.map(\.recorderSequence))
     }
 
     func finalizeSession(_ finalization: TelemetrySessionFinalization) async throws {
@@ -539,6 +578,7 @@ private actor RuntimePersistence: TelemetryRecorderPersistence {
         Snapshot(
             headers: headers,
             records: records,
+            recorderSequences: recorderSequences,
             finalizations: finalizations,
             beginCallCount: beginCallCount
         )
