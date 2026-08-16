@@ -256,15 +256,19 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
     func testPendingEvidenceOverflowDurablyFailsOnlyTelemetrySession() async throws {
         let persistence = RuntimePersistence()
         let factoryGate = DispatchSemaphore(value: 0)
-        let coordinator = TelemetryV2RuntimeCoordinator {
-            factoryGate.wait()
-            return persistence
-        }
+        let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 25_000))
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: {
+                factoryGate.wait()
+                return persistence
+            },
+            runtimeClock: clock
+        )
         let evidence = TreadmillTelemetryEvidence.unassociatedWrite(
             UnassociatedLegacyWriteObservation(
                 protocolKind: .walkingPad,
                 connectionEpoch: TreadmillConnectionEpoch(rawValue: UUID()),
-                sentAt: Date(),
+                sentAt: clock.nowDate(),
                 writeType: .withoutResponse
             )
         )
@@ -273,7 +277,37 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         for _ in 0..<256 {
             XCTAssertEqual(coordinator.observeTreadmillEvidence(evidence), .accepted)
         }
+        clock.advance(by: .seconds(2))
+        let firstDropBegan = ContinuousClock.now
         XCTAssertEqual(coordinator.observeTreadmillEvidence(evidence), .degraded)
+        XCTAssertLessThan(firstDropBegan.duration(to: .now), .milliseconds(50))
+
+        clock.advance(by: .seconds(3))
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        var normalizer = TreadmillObservationNormalizer()
+        let observation = normalizer.normalize(
+            .walkingPad(
+                speedRawTenths: 37,
+                rawState: 1,
+                deviceState: .moving,
+                checksumValid: true,
+                connectionEpoch: epoch,
+                receivedAt: clock.nowDate()
+            ),
+            unitsTruth: .valid(
+                unit: .kilometresPerHour,
+                connectionEpoch: epoch,
+                observedAt: clock.nowDate().addingTimeInterval(-1)
+            ),
+            observationID: ObservationID(),
+            recordedAt: clock.nowDate()
+        )
+        let secondDropBegan = ContinuousClock.now
+        XCTAssertEqual(
+            coordinator.observeTreadmillEvidence(.observation(observation)),
+            .degraded
+        )
+        XCTAssertLessThan(secondDropBegan.duration(to: .now), .milliseconds(50))
 
         factoryGate.signal()
         try await eventually { await persistence.finalizations.count == 1 }
@@ -282,6 +316,30 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(finalization.lifecycleState, .incomplete)
         XCTAssertEqual(finalization.incompleteReason, "pre-recorder-staging-overflow")
         XCTAssertFalse(finalization.recorderHealth.isComplete)
+        XCTAssertEqual(finalization.recorderHealth.lostCriticalRecordCount, 2)
+        XCTAssertEqual(finalization.recorderHealth.lostNativeRecordCount, 1)
+        let acceptedPrefix = snapshot.records.compactMap { record -> WorkoutEvent? in
+            guard case let .event(event) = record,
+                  event.kind == .treadmillEvidence else { return nil }
+            return event
+        }
+        XCTAssertEqual(acceptedPrefix.count, 256)
+        let lossEvents = snapshot.records.compactMap { record -> RecorderHealthEvent? in
+            guard case let .event(event) = record,
+                  case let .recorderHealth(health) = event.payload.payload,
+                  health.kind == .loss else { return nil }
+            return health
+        }
+        XCTAssertEqual(lossEvents.map(\.affectedRecordClass), ["critical", "native"])
+        XCTAssertEqual(lossEvents.map(\.count), [2, 1])
+        XCTAssertEqual(
+            lossEvents.map(\.firstAffectedElapsed),
+            [ElapsedDuration(microseconds: 2_000_000), ElapsedDuration(microseconds: 5_000_000)]
+        )
+        XCTAssertEqual(
+            lossEvents.map(\.lastAffectedElapsed),
+            [ElapsedDuration(microseconds: 5_000_000), ElapsedDuration(microseconds: 5_000_000)]
+        )
         if case .incomplete("pre-recorder-staging-overflow") = coordinator.status {
             // The telemetry failure is visible and does not require product-path coordination.
         } else {

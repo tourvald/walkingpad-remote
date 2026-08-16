@@ -230,6 +230,61 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         case treadmill(TreadmillTelemetryEvidence)
         case event(WorkoutEventPayload, Date)
         case workoutPhase(WorkoutPhase, Date)
+
+        var lostRecordCounts: (critical: UInt64, native: UInt64) {
+            switch self {
+            case let .heartRate(result):
+                (1, result.canonicalObservation == nil ? 0 : 1)
+            case let .treadmill(evidence):
+                if case let .observation(observation) = evidence,
+                   observation.nativeSpeed != nil
+                {
+                    (1, 1)
+                } else {
+                    (1, 0)
+                }
+            case .sourceLifecycle, .controlUse, .event, .workoutPhase:
+                (1, 0)
+            }
+        }
+    }
+
+    fileprivate struct PendingLossSummary: Sendable {
+        var lostCriticalRecordCount: UInt64 = 0
+        var lostNativeRecordCount: UInt64 = 0
+        var firstCriticalAffectedElapsed: ElapsedDuration?
+        var lastCriticalAffectedElapsed: ElapsedDuration?
+        var firstNativeAffectedElapsed: ElapsedDuration?
+        var lastNativeAffectedElapsed: ElapsedDuration?
+
+        var hasLoss: Bool {
+            lostCriticalRecordCount > 0 || lostNativeRecordCount > 0
+        }
+
+        mutating func record(_ evidence: PendingEvidence, at elapsed: ElapsedDuration) {
+            let counts = evidence.lostRecordCounts
+            lostCriticalRecordCount = Self.saturatedSum(
+                lostCriticalRecordCount,
+                counts.critical
+            )
+            lostNativeRecordCount = Self.saturatedSum(
+                lostNativeRecordCount,
+                counts.native
+            )
+            if counts.critical > 0 {
+                firstCriticalAffectedElapsed = firstCriticalAffectedElapsed ?? elapsed
+                lastCriticalAffectedElapsed = elapsed
+            }
+            if counts.native > 0 {
+                firstNativeAffectedElapsed = firstNativeAffectedElapsed ?? elapsed
+                lastNativeAffectedElapsed = elapsed
+            }
+        }
+
+        private static func saturatedSum(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+            let result = lhs.addingReportingOverflow(rhs)
+            return result.overflow ? UInt64.max : result.partialValue
+        }
     }
 
     private struct PendingSession {
@@ -238,7 +293,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         let startedMonotonic: Duration
         var isStarting: Bool
         var evidence: [PendingEvidence]
-        var droppedEvidenceCount: UInt64
+        var lossSummary: PendingLossSummary
     }
 
     private static let pendingEvidenceCapacity = 256
@@ -305,7 +360,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 startedMonotonic: runtimeClock.now(),
                 isStarting: false,
                 evidence: [],
-                droppedEvidenceCount: 0
+                lossSummary: PendingLossSummary()
             )
             setStatusLocked(.starting)
             return (previous, true)
@@ -478,7 +533,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private func install(_ session: TelemetryV2ActiveSession, generation: UInt64) {
         session.activate()
         while true {
-            let next: ([PendingEvidence], UInt64)? = withLock {
+            let next: ([PendingEvidence], PendingLossSummary)? = withLock {
                 guard self.generation == generation,
                       var pending = pendingSession,
                       pending.generation == generation else { return nil }
@@ -486,24 +541,24 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                     pendingSession = nil
                     activeSession = session
                     setStatusLocked(
-                        pending.droppedEvidenceCount == 0
+                        !pending.lossSummary.hasLoss
                             ? .active(.complete)
                             : .incomplete("pre-recorder-staging-overflow")
                     )
-                    return ([], pending.droppedEvidenceCount)
+                    return ([], pending.lossSummary)
                 }
                 let evidence = pending.evidence
                 pending.evidence.removeAll(keepingCapacity: true)
                 pendingSession = pending
-                return (evidence, pending.droppedEvidenceCount)
+                return (evidence, pending.lossSummary)
             }
             guard let next else {
                 session.requestCancellation()
                 return
             }
             if next.0.isEmpty {
-                if next.1 > 0 {
-                    session.emitStagingLoss(count: next.1)
+                if next.1.hasLoss {
+                    session.emitStagingLoss(next.1)
                 }
                 refreshStatus(from: session)
                 return
@@ -544,10 +599,13 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         withLock {
             guard var pending = pendingSession else { return nil }
             guard pending.evidence.count < Self.pendingEvidenceCapacity else {
-                pending.droppedEvidenceCount &+= 1
+                pending.lossSummary.record(
+                    evidence,
+                    at: Self.elapsedDuration(runtimeClock.now() - pending.startedMonotonic)
+                )
                 pendingSession = pending
                 setStatusLocked(.incomplete("pre-recorder-staging-overflow"))
-                return .lostNative
+                return evidence.lostRecordCounts.critical > 0 ? .lostCritical : .lostNative
             }
             pending.evidence.append(evidence)
             pendingSession = pending
@@ -611,6 +669,17 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private static func errorCode(_ error: Error) -> String {
         String(describing: type(of: error))
     }
+
+    private static func elapsedDuration(_ duration: Duration) -> ElapsedDuration {
+        let components = duration.components
+        let seconds = components.seconds.multipliedReportingOverflow(by: 1_000_000)
+        guard !seconds.overflow else { return ElapsedDuration(microseconds: Int64.max) }
+        let fractional = components.attoseconds / 1_000_000_000_000
+        let total = seconds.partialValue.addingReportingOverflow(fractional)
+        return ElapsedDuration(
+            microseconds: total.overflow ? Int64.max : max(0, total.partialValue)
+        )
+    }
 }
 
 private final class TelemetryV2ActiveSession: @unchecked Sendable {
@@ -626,7 +695,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     private var firstMissingFrameSecond: Int64?
     private var currentWorkoutPhase: WorkoutPhase?
     private var ending = false
-    private var stagingLostEvidenceCount: UInt64 = 0
+    private var stagingLossSummary = TelemetryV2RuntimeCoordinator.PendingLossSummary()
 
     init(
         descriptor: TelemetryV2SessionDescriptor,
@@ -645,7 +714,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     }
 
     var hasStagingLoss: Bool {
-        withLock { stagingLostEvidenceCount > 0 }
+        withLock { stagingLossSummary.hasLoss }
     }
 
     func activate() {
@@ -676,21 +745,48 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         }
     }
 
-    func emitStagingLoss(count: UInt64) {
-        withLock { stagingLostEvidenceCount = count }
-        _ = yieldEvent(
-            .recorderHealth(
-                RecorderHealthEvent(
-                    kind: .loss,
-                    affectedRecordClass: "native-evidence",
-                    count: count,
-                    detailCode: "pre-recorder-staging-overflow"
-                )
-            ),
-            occurredAt: runtimeClock.nowDate(),
-            sourceID: nil
+    func emitStagingLoss(_ summary: TelemetryV2RuntimeCoordinator.PendingLossSummary) {
+        withLock { stagingLossSummary = summary }
+        let occurredAt = runtimeClock.nowDate()
+        if summary.lostCriticalRecordCount > 0 {
+            _ = yieldEvent(
+                .recorderHealth(
+                    RecorderHealthEvent(
+                        kind: .loss,
+                        affectedRecordClass: "critical",
+                        count: summary.lostCriticalRecordCount,
+                        firstAffectedElapsed: summary.firstCriticalAffectedElapsed,
+                        lastAffectedElapsed: summary.lastCriticalAffectedElapsed,
+                        detailCode: "pre-recorder-staging-overflow"
+                    )
+                ),
+                occurredAt: occurredAt,
+                sourceID: nil
+            )
+        }
+        if summary.lostNativeRecordCount > 0 {
+            _ = yieldEvent(
+                .recorderHealth(
+                    RecorderHealthEvent(
+                        kind: .loss,
+                        affectedRecordClass: "native",
+                        count: summary.lostNativeRecordCount,
+                        firstAffectedElapsed: summary.firstNativeAffectedElapsed,
+                        lastAffectedElapsed: summary.lastNativeAffectedElapsed,
+                        detailCode: "pre-recorder-staging-overflow"
+                    )
+                ),
+                occurredAt: occurredAt,
+                sourceID: nil
+            )
+        }
+        _ = recorder.requestIncomplete(
+            endedAt: occurredAt,
+            endedElapsed: elapsed(),
+            reason: "pre-recorder-staging-overflow",
+            lostCriticalRecordCount: summary.lostCriticalRecordCount,
+            lostNativeRecordCount: summary.lostNativeRecordCount
         )
-        _ = recorder.requestFailure(reason: "pre-recorder-staging-overflow")
     }
 
     func requestCancellation() {

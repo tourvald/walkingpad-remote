@@ -8,7 +8,11 @@ final class TelemetryRecorderCore: @unchecked Sendable {
     private enum Phase {
         case beginning
         case active
-        case finishing(endedAt: Date, endedElapsed: ElapsedDuration)
+        case finishing(
+            endedAt: Date,
+            endedElapsed: ElapsedDuration,
+            incompleteReason: String?
+        )
         case finalizing(TelemetryRecorderCompleteness)
         case failing(reason: String)
         case cancelling
@@ -234,9 +238,51 @@ final class TelemetryRecorderCore: @unchecked Sendable {
             finishCompletions.append(completion)
             switch phase {
             case .beginning, .active:
-                phase = .finishing(endedAt: endedAt, endedElapsed: endedElapsed)
+                phase = .finishing(
+                    endedAt: endedAt,
+                    endedElapsed: endedElapsed,
+                    incompleteReason: nil
+                )
                 forcedFlushThrough = laterSequence(forcedFlushThrough, lastAcceptedSequence)
             case .finishing, .finalizing, .failing, .cancelling, .terminal:
+                break
+            }
+            return nil
+        }
+    }
+
+    func requestIncomplete(
+        endedAt: Date,
+        endedElapsed: ElapsedDuration,
+        reason: String,
+        lostCriticalRecordCount: UInt64,
+        lostNativeRecordCount: UInt64
+    ) -> TelemetryFinishResult? {
+        lock.withLock {
+            if case let .terminal(completeness) = phase {
+                return TelemetryFinishResult(
+                    completeness: completeness,
+                    lastCommittedRecorderSequence: lastCommittedSequence
+                )
+            }
+            add(lostCriticalRecordCount, to: &lostCriticalCount)
+            add(lostNativeRecordCount, to: &lostNativeCount)
+            knownLoss = true
+            switch phase {
+            case .beginning, .active:
+                phase = .finishing(
+                    endedAt: endedAt,
+                    endedElapsed: endedElapsed,
+                    incompleteReason: reason
+                )
+                forcedFlushThrough = laterSequence(forcedFlushThrough, lastAcceptedSequence)
+            case let .finishing(existingEndedAt, existingEndedElapsed, existingReason):
+                phase = .finishing(
+                    endedAt: existingEndedAt,
+                    endedElapsed: existingEndedElapsed,
+                    incompleteReason: existingReason ?? reason
+                )
+            case .finalizing, .failing, .cancelling, .terminal:
                 break
             }
             return nil
@@ -313,7 +359,7 @@ final class TelemetryRecorderCore: @unchecked Sendable {
             switch phase {
             case .failing, .cancelling:
                 return .terminateRequested
-            case let .finishing(endedAt, endedElapsed):
+            case let .finishing(endedAt, endedElapsed, incompleteReason):
                 if !buffer.isEmpty {
                     return .persist(
                         buffer.drain(maximumCount: batchPolicy.maximumRecordCount),
@@ -329,7 +375,7 @@ final class TelemetryRecorderCore: @unchecked Sendable {
                         completeness: completeness,
                         endedAt: endedAt,
                         endedElapsed: endedElapsed,
-                        reason: knownLoss ? "recorder-loss" : nil
+                        reason: knownLoss ? (incompleteReason ?? "recorder-loss") : nil
                     ),
                     completeness,
                     intentGeneration: terminalIntentGeneration
@@ -824,6 +870,11 @@ private extension TelemetryRecorderCore {
         }
         let converted = UInt64(amount)
         let (sum, overflow) = value.addingReportingOverflow(converted)
+        value = overflow ? UInt64.max : sum
+    }
+
+    func add(_ amount: UInt64, to value: inout UInt64) {
+        let (sum, overflow) = value.addingReportingOverflow(amount)
         value = overflow ? UInt64.max : sum
     }
 }

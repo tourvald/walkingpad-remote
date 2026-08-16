@@ -133,6 +133,27 @@ public final class TelemetryRecorder: @unchecked Sendable {
         return accepted
     }
 
+    @discardableResult
+    public func requestIncomplete(
+        endedAt: Date,
+        endedElapsed: ElapsedDuration,
+        reason: String,
+        lostCriticalRecordCount: UInt64,
+        lostNativeRecordCount: UInt64
+    ) -> Bool {
+        let accepted = core.requestIncomplete(
+            endedAt: endedAt,
+            endedElapsed: endedElapsed,
+            reason: reason,
+            lostCriticalRecordCount: lostCriticalRecordCount,
+            lostNativeRecordCount: lostNativeRecordCount
+        ) == nil
+        if accepted {
+            core.wake()
+        }
+        return accepted
+    }
+
     public func cancel() async -> TelemetryFinishResult {
         await withCheckedContinuation { continuation in
             if let immediate = core.requestCancellation(

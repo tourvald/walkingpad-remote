@@ -279,17 +279,23 @@ public struct RecorderHealthEvent: Codable, Hashable, Sendable {
     public let kind: RecorderHealthKind
     public let affectedRecordClass: String?
     public let count: UInt64?
+    public let firstAffectedElapsed: ElapsedDuration?
+    public let lastAffectedElapsed: ElapsedDuration?
     public let detailCode: String?
 
     public init(
         kind: RecorderHealthKind,
         affectedRecordClass: String? = nil,
         count: UInt64? = nil,
+        firstAffectedElapsed: ElapsedDuration? = nil,
+        lastAffectedElapsed: ElapsedDuration? = nil,
         detailCode: String? = nil
     ) {
         self.kind = kind
         self.affectedRecordClass = affectedRecordClass
         self.count = count
+        self.firstAffectedElapsed = firstAffectedElapsed
+        self.lastAffectedElapsed = lastAffectedElapsed
         self.detailCode = detailCode
     }
 }

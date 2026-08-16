@@ -124,6 +124,19 @@ public struct FactualSpeedKilometresPerHour: Codable, Hashable, Sendable {
         self.normalizationRule = normalizationRule
     }
 
+    fileprivate init?(
+        restoringValue value: Double,
+        provenance: EvidenceProvenance,
+        normalizationRule: FactualSpeedNormalizationRule
+    ) {
+        guard value.isFinite, value >= 0 else { return nil }
+        self.init(
+            value: value,
+            provenance: provenance,
+            normalizationRule: normalizationRule
+        )
+    }
+
     private enum CodingKeys: String, CodingKey {
         case value
         case provenance
@@ -356,24 +369,63 @@ public struct TreadmillObservation: Codable, Hashable, Sendable {
         self.quality = quality
     }
 
+    package init?(
+        restoringRecordID recordID: RecordID,
+        observationID: ObservationID,
+        sessionID: SessionID,
+        source: SignalSourceIdentity,
+        nativeSpeed: NativeTreadmillSpeed,
+        factualKilometresPerHour: Double?,
+        factualNormalizationRule: FactualSpeedNormalizationRule?,
+        deviceState: TreadmillDeviceState,
+        arrivalOrder: UInt64,
+        timestamp: ObservationTimestamp,
+        provenance: EvidenceProvenance,
+        freshness: EvidenceFreshness,
+        quality: QualityFlags
+    ) {
+        let factualSpeed: FactualSpeedKilometresPerHour?
+        switch (factualKilometresPerHour, factualNormalizationRule) {
+        case (nil, nil):
+            factualSpeed = nil
+        case let (value?, rule?):
+            guard let restored = FactualSpeedKilometresPerHour(
+                restoringValue: value,
+                provenance: provenance,
+                normalizationRule: rule
+            ) else { return nil }
+            factualSpeed = restored
+        default:
+            return nil
+        }
+        guard Self.factualSpeedIsConsistent(
+            factualSpeed,
+            with: nativeSpeed,
+            provenance: provenance
+        ) else { return nil }
+        self.init(
+            recordID: recordID,
+            observationID: observationID,
+            sessionID: sessionID,
+            source: source,
+            nativeSpeed: nativeSpeed,
+            factualSpeed: factualSpeed,
+            deviceState: deviceState,
+            arrivalOrder: arrivalOrder,
+            timestamp: timestamp,
+            provenance: provenance,
+            freshness: freshness,
+            quality: quality
+        )
+    }
+
     public init(from decoder: Decoder) throws {
         let decoded = try CodingRepresentation(from: decoder)
-        let deterministicallyNormalized = FactualSpeedKilometresPerHour.normalized(
-            from: decoded.nativeSpeed,
-            provenance: decoded.provenance,
-            normalizationRule: decoded.factualSpeed?.normalizationRule
-                ?? .nativeToKilometresPerHourV1
-        )
-        let factualSpeedIsConsistent: Bool
-        switch decoded.nativeSpeed.unit {
-        case .controllerNative:
-            factualSpeedIsConsistent = true
-        case .unknown:
-            factualSpeedIsConsistent = decoded.factualSpeed == nil
-        case .kilometresPerHour, .milesPerHour:
-            factualSpeedIsConsistent = deterministicallyNormalized == decoded.factualSpeed
-        }
-        guard factualSpeedIsConsistent else {
+        guard Self.factualSpeedIsConsistent(
+            decoded.factualSpeed,
+            with: decoded.nativeSpeed,
+            provenance: decoded.provenance
+        ) else {
             throw DecodingError.dataCorrupted(
                 DecodingError.Context(
                     codingPath: decoder.codingPath,
@@ -395,6 +447,26 @@ public struct TreadmillObservation: Codable, Hashable, Sendable {
             freshness: decoded.freshness,
             quality: decoded.quality
         )
+    }
+
+    private static func factualSpeedIsConsistent(
+        _ factualSpeed: FactualSpeedKilometresPerHour?,
+        with nativeSpeed: NativeTreadmillSpeed,
+        provenance: EvidenceProvenance
+    ) -> Bool {
+        switch nativeSpeed.unit {
+        case .controllerNative:
+            return true
+        case .unknown:
+            return factualSpeed == nil
+        case .kilometresPerHour, .milesPerHour:
+            return FactualSpeedKilometresPerHour.normalized(
+                from: nativeSpeed,
+                provenance: provenance,
+                normalizationRule: factualSpeed?.normalizationRule
+                    ?? .nativeToKilometresPerHourV1
+            ) == factualSpeed
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
