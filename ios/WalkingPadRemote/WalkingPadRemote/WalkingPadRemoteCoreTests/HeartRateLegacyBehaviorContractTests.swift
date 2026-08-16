@@ -218,6 +218,53 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
     }
 
+    func testTelemetryV2LifecycleRaceCannotBranchProductOrLegacyOutputs() throws {
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        let stop = try functionBody("func stopHrControl()", in: managerSource)
+        let begin = try functionBody(
+            "private func beginTelemetryV2Session(legacySessionID: UUID?)",
+            in: managerSource
+        )
+        let end = try functionBody(
+            "private func endTelemetryV2Session(reason: String)",
+            in: managerSource
+        )
+
+        for productPath in [start, stop] {
+            for forbiddenBranch in [
+                "if telemetryV2",
+                "guard telemetryV2",
+                "telemetryV2Status",
+                "telemetryV2Coordinator.status",
+            ] {
+                XCTAssertFalse(productPath.contains(forbiddenBranch))
+            }
+        }
+        assertOrdered(
+            [
+                "let legacySessionID = startTrainingStructuredLog(trigger: \"start_hr\")",
+                "isHrControlRunning = true",
+                "beginTelemetryV2Session(legacySessionID: legacySessionID)",
+                "startWithSpeed",
+            ],
+            in: start
+        )
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason: \"manual_stop\")",
+                "isHrControlRunning = false",
+                "stopBeltWithToggle(reason: \"hr\")",
+                "sendWatchCommand(\"stop_hr\")",
+                "endTelemetryV2Session(reason: \"manual_stop\")",
+            ],
+            in: stop
+        )
+        XCTAssertTrue(begin.contains("telemetryV2Coordinator.beginSession(descriptor)"))
+        XCTAssertTrue(end.contains("telemetryV2Coordinator.endSession(reason: reason)"))
+        XCTAssertFalse(begin.contains("return telemetryV2Coordinator"))
+        XCTAssertFalse(end.contains("return telemetryV2Coordinator"))
+    }
+
     func testControlSafetyAuthorityIsOutsideTelemetryNormalization() throws {
         XCTAssertTrue(managerSource.contains("private let hrStartGraceSeconds: Int = 15"))
         XCTAssertTrue(managerSource.contains("private let hrNoDataMaxSeconds: Int = 60"))

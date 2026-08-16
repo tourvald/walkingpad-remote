@@ -37,6 +37,209 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.status, .incomplete("ended-before-recorder-ready"))
     }
 
+    func testFinalizeWinsPublishedInstallWithStagingLossAndCannotComplete() async throws {
+        let persistence = RuntimePersistence(suspendFinalize: true)
+        let factoryGate = DispatchSemaphore(value: 0)
+        let installationPublished = DispatchSemaphore(value: 0)
+        let allowInstallationCompletion = DispatchSemaphore(value: 0)
+        let legacyID = UUID(uuidString: "10000000-0000-0000-0000-000000000031")!
+        let descriptor = Self.descriptor(legacySessionID: legacyID)
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: {
+                factoryGate.wait()
+                return persistence
+            },
+            installationDidPublishForTesting: { sessionID in
+                guard sessionID == descriptor.sessionID else { return }
+                installationPublished.signal()
+                allowInstallationCompletion.wait()
+            }
+        )
+
+        coordinator.beginSession(descriptor)
+        XCTAssertEqual(coordinator.observeCurrentElapsedSecond(), .droppedFrame)
+        factoryGate.signal()
+        XCTAssertEqual(installationPublished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(coordinator.activeSessionIDForTesting, descriptor.sessionID)
+
+        let stopBegan = ContinuousClock.now
+        DispatchQueue.concurrentPerform(iterations: 2) { _ in
+            coordinator.endSession(reason: "manual_stop")
+        }
+        XCTAssertLessThan(stopBegan.duration(to: .now), .milliseconds(50))
+        XCTAssertNil(coordinator.activeSessionIDForTesting)
+        XCTAssertNil(
+            coordinator.observeEvent(
+                .manualStop(ManualStopEvent(reason: "after-stop")),
+                occurredAt: Date()
+            )
+        )
+
+        allowInstallationCompletion.signal()
+        try await eventually { await persistence.finalizeCallCount == 1 }
+        await persistence.resumeFinalize()
+        try await eventually { await persistence.finalizations.count == 1 }
+        try await eventually {
+            if case .incomplete = coordinator.status { return true }
+            return false
+        }
+
+        let snapshot = await persistence.snapshot()
+        let finalization = try XCTUnwrap(snapshot.finalizations.first)
+        XCTAssertEqual(finalization.sessionID, descriptor.sessionID)
+        XCTAssertEqual(finalization.lifecycleState, .incomplete)
+        XCTAssertEqual(finalization.incompleteReason, "pre-recorder-staging-overflow")
+        XCTAssertFalse(finalization.recorderHealth.isComplete)
+        XCTAssertEqual(snapshot.finalizeCallCount, 1)
+        XCTAssertTrue(
+            snapshot.records.contains { record in
+                guard case let .event(event) = record,
+                      event.sessionID == descriptor.sessionID,
+                      case let .recorderHealth(health) = event.payload.payload else {
+                    return false
+                }
+                return health.kind == .loss && health.affectedRecordClass == "bulkFrame"
+            }
+        )
+        coordinator.endSession(reason: "repeated-stop")
+        let repeatedFinalizeCallCount = await persistence.finalizeCallCount
+        XCTAssertEqual(repeatedFinalizeCallCount, 1)
+        XCTAssertNil(coordinator.activeSessionIDForTesting)
+    }
+
+    func testDelayedSessionAInstallationCannotAttachToOrMutateSessionB() async throws {
+        let persistence = RuntimePersistence()
+        let factoryGate = DispatchSemaphore(value: 0)
+        let sessionAPublished = DispatchSemaphore(value: 0)
+        let allowSessionACompletion = DispatchSemaphore(value: 0)
+        let sessionA = Self.descriptor(
+            legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000032")!
+        )
+        let sessionB = Self.descriptor(
+            legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000033")!
+        )
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: {
+                factoryGate.wait()
+                return persistence
+            },
+            installationDidPublishForTesting: { sessionID in
+                guard sessionID == sessionA.sessionID else { return }
+                sessionAPublished.signal()
+                allowSessionACompletion.wait()
+            }
+        )
+
+        coordinator.beginSession(sessionA)
+        XCTAssertEqual(coordinator.observeCurrentElapsedSecond(), .droppedFrame)
+        factoryGate.signal()
+        XCTAssertEqual(sessionAPublished.wait(timeout: .now() + 1), .success)
+        coordinator.endSession(reason: "session-a-stop")
+        XCTAssertNil(coordinator.activeSessionIDForTesting)
+
+        coordinator.beginSession(sessionB)
+        try await eventually { coordinator.activeSessionIDForTesting == sessionB.sessionID }
+        XCTAssertEqual(
+            coordinator.observeEvent(
+                .cooldown(CooldownEvent(lifecycle: .started, targetHeartRate: 100)),
+                occurredAt: Date()
+            ),
+            .enqueued
+        )
+
+        allowSessionACompletion.signal()
+        try await eventually {
+            await persistence.finalizations.contains { $0.sessionID == sessionA.sessionID }
+        }
+        XCTAssertEqual(coordinator.activeSessionIDForTesting, sessionB.sessionID)
+        if case .active = coordinator.status {
+            // Stale completion from A cannot replace B's active state.
+        } else {
+            XCTFail("Session B must remain active after session A finalizes")
+        }
+
+        coordinator.endSession(reason: "session-b-stop")
+        try await eventually { await persistence.finalizations.count == 2 }
+        let snapshot = await persistence.snapshot()
+        let finalizations = Dictionary(
+            uniqueKeysWithValues: snapshot.finalizations.map { ($0.sessionID, $0) }
+        )
+        XCTAssertEqual(finalizations[sessionA.sessionID]?.lifecycleState, .incomplete)
+        XCTAssertEqual(
+            finalizations[sessionA.sessionID]?.incompleteReason,
+            "pre-recorder-staging-overflow"
+        )
+        XCTAssertEqual(finalizations[sessionB.sessionID]?.lifecycleState, .completed)
+        XCTAssertTrue(
+            snapshot.records.contains { record in
+                guard case let .event(event) = record,
+                      event.sessionID == sessionB.sessionID else { return false }
+                if case .cooldown = event.payload.payload { return true }
+                return false
+            }
+        )
+        XCTAssertFalse(
+            snapshot.records.contains { record in
+                guard case let .event(event) = record,
+                      event.sessionID == sessionB.sessionID,
+                      case let .recorderHealth(health) = event.payload.payload else {
+                    return false
+                }
+                return health.detailCode == "pre-recorder-staging-overflow"
+            }
+        )
+        XCTAssertNil(coordinator.activeSessionIDForTesting)
+    }
+
+    func testSupersedingSessionCancelsDelayedInstallWithoutReplacingNewSession() async throws {
+        let persistence = RuntimePersistence()
+        let sessionAPublished = DispatchSemaphore(value: 0)
+        let allowSessionACompletion = DispatchSemaphore(value: 0)
+        let sessionA = Self.descriptor(
+            legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000034")!
+        )
+        let sessionB = Self.descriptor(
+            legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000035")!
+        )
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: { persistence },
+            installationDidPublishForTesting: { sessionID in
+                guard sessionID == sessionA.sessionID else { return }
+                sessionAPublished.signal()
+                allowSessionACompletion.wait()
+            }
+        )
+
+        coordinator.beginSession(sessionA)
+        XCTAssertEqual(sessionAPublished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(coordinator.activeSessionIDForTesting, sessionA.sessionID)
+
+        coordinator.beginSession(sessionB)
+        try await eventually { coordinator.activeSessionIDForTesting == sessionB.sessionID }
+        allowSessionACompletion.signal()
+        try await eventually {
+            await persistence.finalizations.contains {
+                $0.sessionID == sessionA.sessionID && $0.lifecycleState == .cancelled
+            }
+        }
+        XCTAssertEqual(coordinator.activeSessionIDForTesting, sessionB.sessionID)
+        if case .active = coordinator.status {
+            // Cancellation of A is generation-scoped and cannot replace B's state.
+        } else {
+            XCTFail("Session B must remain active after session A cancellation")
+        }
+
+        coordinator.endSession(reason: "session-b-stop")
+        try await eventually {
+            await persistence.finalizations.contains {
+                $0.sessionID == sessionB.sessionID && $0.lifecycleState == .completed
+            }
+        }
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.finalizations.count, 2)
+        XCTAssertNil(coordinator.activeSessionIDForTesting)
+    }
+
     func testDelayedHeaderAndFinalizationNeverBlockProductLifecycle() async throws {
         let persistence = RuntimePersistence(suspendBegin: true, suspendFinalize: true)
         let coordinator = TelemetryV2RuntimeCoordinator { persistence }
@@ -510,6 +713,7 @@ private actor RuntimePersistence: TelemetryRecorderPersistence {
         let recorderSequences: [UInt64]
         let finalizations: [TelemetrySessionFinalization]
         let beginCallCount: Int
+        let finalizeCallCount: Int
     }
 
     private(set) var headers: [WorkoutSessionRecord] = []
@@ -580,7 +784,8 @@ private actor RuntimePersistence: TelemetryRecorderPersistence {
             records: records,
             recorderSequences: recorderSequences,
             finalizations: finalizations,
-            beginCallCount: beginCallCount
+            beginCallCount: beginCallCount,
+            finalizeCallCount: finalizeCallCount
         )
     }
 }

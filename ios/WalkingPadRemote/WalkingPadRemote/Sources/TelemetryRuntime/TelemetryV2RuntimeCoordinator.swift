@@ -336,27 +336,60 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         var seenSourceIDs: Set<SourceID>
     }
 
+    private struct ActiveSession {
+        let generation: UInt64
+        let session: TelemetryV2ActiveSession
+    }
+
     private static let pendingEvidenceCapacity = 256
     private let lock = NSLock()
     private let persistenceFactory: PersistenceFactory
     private let statusHandler: StatusHandler?
     private let runtimeClock: any TelemetryV2RuntimeClock
+    private let installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?
     private var persistence: (any TelemetryRecorderPersistence)?
     private var preparationStarted = false
     private var preparationFailed = false
     private var generation: UInt64 = 0
     private var pendingSession: PendingSession?
-    private var activeSession: TelemetryV2ActiveSession?
+    private var activeSession: ActiveSession?
     private var storedStatus: TelemetryV2RuntimeStatus = .idle
 
-    public init(
+    public convenience init(
         persistenceFactory: @escaping PersistenceFactory,
         runtimeClock: any TelemetryV2RuntimeClock = ContinuousTelemetryV2RuntimeClock(),
         statusHandler: StatusHandler? = nil
     ) {
+        self.init(
+            persistenceFactory: persistenceFactory,
+            runtimeClock: runtimeClock,
+            statusHandler: statusHandler,
+            installationDidPublishForTesting: nil
+        )
+    }
+
+    init(
+        persistenceFactory: @escaping PersistenceFactory,
+        runtimeClock: any TelemetryV2RuntimeClock = ContinuousTelemetryV2RuntimeClock(),
+        statusHandler: StatusHandler? = nil,
+        installationDidPublishForTesting: @escaping @Sendable (SessionID) -> Void
+    ) {
         self.persistenceFactory = persistenceFactory
         self.runtimeClock = runtimeClock
         self.statusHandler = statusHandler
+        self.installationDidPublishForTesting = installationDidPublishForTesting
+    }
+
+    private init(
+        persistenceFactory: @escaping PersistenceFactory,
+        runtimeClock: any TelemetryV2RuntimeClock,
+        statusHandler: StatusHandler?,
+        installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?
+    ) {
+        self.persistenceFactory = persistenceFactory
+        self.runtimeClock = runtimeClock
+        self.statusHandler = statusHandler
+        self.installationDidPublishForTesting = installationDidPublishForTesting
     }
 
     public var status: TelemetryV2RuntimeStatus {
@@ -387,7 +420,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     public func beginSession(_ descriptor: TelemetryV2SessionDescriptor) {
         let state: (TelemetryV2ActiveSession?, Bool) = withLock {
             generation &+= 1
-            let previous = activeSession
+            let previous = activeSession?.session
             activeSession = nil
             guard !preparationFailed else {
                 pendingSession = nil
@@ -420,7 +453,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             }
             generation &+= 1
             pendingSession = nil
-            let session = activeSession
+            let session = activeSession?.session
             activeSession = nil
             setStatusLocked(session == nil ? .incomplete("ended-before-recorder-ready") : .finishing)
             return (session, generation, true)
@@ -583,7 +616,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                       pending.generation == generation else { return nil }
                 if pending.evidence.isEmpty {
                     pendingSession = nil
-                    activeSession = session
+                    activeSession = ActiveSession(generation: generation, session: session)
                     setStatusLocked(
                         !pending.lossSummary.hasLoss
                             ? .active(.complete)
@@ -601,9 +634,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 return
             }
             if next.0.isEmpty {
-                if next.1.hasLoss {
-                    session.emitStagingLoss(next.1)
-                }
+                installationDidPublishForTesting?(session.sessionID)
+                session.completeInstallation(stagingLoss: next.1)
                 refreshStatus(from: session)
                 return
             }
@@ -634,7 +666,17 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     }
 
     private func currentActiveSession() -> TelemetryV2ActiveSession? {
-        withLock { activeSession }
+        withLock {
+            guard activeSession?.generation == generation else { return nil }
+            return activeSession?.session
+        }
+    }
+
+    var activeSessionIDForTesting: SessionID? {
+        withLock {
+            guard activeSession?.generation == generation else { return nil }
+            return activeSession?.session.sessionID
+        }
     }
 
     private func bufferDisposition(
@@ -684,7 +726,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private func refreshStatus(from session: TelemetryV2ActiveSession) {
         let operationalState = session.operationalState
         withLock {
-            guard activeSession === session else { return }
+            guard activeSession?.generation == generation,
+                  activeSession?.session === session else { return }
             if session.hasStagingLoss {
                 setStatusLocked(.incomplete("pre-recorder-staging-overflow"))
                 return
@@ -751,6 +794,12 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
 }
 
 private final class TelemetryV2ActiveSession: @unchecked Sendable {
+    private enum InstallationState {
+        case installing
+        case installed
+        case invalidated
+    }
+
     private let descriptor: TelemetryV2SessionDescriptor
     private let recorder: TelemetryRecorder
     private let runtimeClock: any TelemetryV2RuntimeClock
@@ -764,6 +813,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     private var currentWorkoutPhase: WorkoutPhase?
     private var ending = false
     private var stagingLossSummary = TelemetryV2RuntimeCoordinator.PendingLossSummary()
+    private var installationState = InstallationState.installing
+    private var installationWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         descriptor: TelemetryV2SessionDescriptor,
@@ -779,6 +830,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
 
     var operationalState: TelemetryRecorderOperationalState {
         recorder.operationalState
+    }
+
+    var sessionID: SessionID {
+        descriptor.sessionID
     }
 
     var hasStagingLoss: Bool {
@@ -813,7 +868,30 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         }
     }
 
-    func emitStagingLoss(_ summary: TelemetryV2RuntimeCoordinator.PendingLossSummary) {
+    func completeInstallation(
+        stagingLoss summary: TelemetryV2RuntimeCoordinator.PendingLossSummary
+    ) {
+        let canComplete: Bool = withLock {
+            if case .installing = installationState { return true }
+            return false
+        }
+        guard canComplete else { return }
+        if summary.hasLoss {
+            emitStagingLoss(summary)
+        }
+        let waiters: [CheckedContinuation<Void, Never>] = withLock {
+            guard case .installing = installationState else { return [] }
+            installationState = .installed
+            let waiters = installationWaiters
+            installationWaiters.removeAll(keepingCapacity: false)
+            return waiters
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    private func emitStagingLoss(
+        _ summary: TelemetryV2RuntimeCoordinator.PendingLossSummary
+    ) {
         withLock { stagingLossSummary = summary }
         let occurredAt = runtimeClock.nowDate()
         if summary.lostCriticalRecordCount > 0 {
@@ -875,7 +953,14 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     }
 
     func requestCancellation() {
+        let waiters: [CheckedContinuation<Void, Never>] = withLock {
+            installationState = .invalidated
+            let waiters = installationWaiters
+            installationWaiters.removeAll(keepingCapacity: false)
+            return waiters
+        }
         _ = recorder.requestCancellation()
+        waiters.forEach { $0.resume() }
     }
 
     func emitSessionEnd(reason: String) {
@@ -902,7 +987,30 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     }
 
     func finish() async -> TelemetryFinishResult {
-        await recorder.finish(endedAt: runtimeClock.nowDate(), endedElapsed: elapsed())
+        // Product stop schedules this work detached. Only the recorder task waits so
+        // staging loss/incomplete intent wins before persistence can finalize.
+        await waitForInstallationResolution()
+        return await recorder.finish(
+            endedAt: runtimeClock.nowDate(),
+            endedElapsed: elapsed()
+        )
+    }
+
+    private func waitForInstallationResolution() async {
+        await withCheckedContinuation { continuation in
+            let resumeImmediately: Bool = withLock {
+                switch installationState {
+                case .installing:
+                    installationWaiters.append(continuation)
+                    return false
+                case .installed, .invalidated:
+                    return true
+                }
+            }
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
     }
 
     func observeHeartRate(_ result: HeartRateNormalizationResult) -> TelemetryYieldDisposition {
