@@ -27,10 +27,29 @@ public enum TelemetryV2WriterLifecycle: String, Equatable, Sendable {
     case incomplete
 }
 
+public enum TelemetryV2WriterRecorderLifecycle: String, Equatable, Sendable {
+    case beginning
+    case active
+    case finishing
+    case failing
+    case cancelling
+    case complete
+    case incomplete
+    case failed
+    case cancelled
+}
+
+public enum TelemetryV2WriterCompleteness: String, Equatable, Sendable {
+    case complete
+    case incomplete
+    case failed
+    case cancelled
+}
+
 public struct TelemetryV2WriterHealthSnapshot: Equatable, Sendable {
     public let runtimeLifecycle: TelemetryV2WriterLifecycle
-    public let recorderLifecycle: TelemetryRecorderLifecycleState?
-    public let completeness: TelemetryRecorderCompleteness?
+    public let recorderLifecycle: TelemetryV2WriterRecorderLifecycle?
+    public let completeness: TelemetryV2WriterCompleteness?
     public let queueDepth: Int
     public let peakQueueDepth: Int
     public let coalescedFrameCount: UInt64
@@ -68,11 +87,32 @@ public struct TelemetryV2WriterHealthSnapshot: Equatable, Sendable {
         case .incomplete:
             runtimeLifecycle = .incomplete
         }
-        recorderLifecycle = operationalState?.lifecycleState
+        switch operationalState?.lifecycleState {
+        case .beginning: recorderLifecycle = .beginning
+        case .active: recorderLifecycle = .active
+        case .finishing: recorderLifecycle = .finishing
+        case .failing: recorderLifecycle = .failing
+        case .cancelling: recorderLifecycle = .cancelling
+        case .complete: recorderLifecycle = .complete
+        case .incomplete: recorderLifecycle = .incomplete
+        case .failed: recorderLifecycle = .failed
+        case .cancelled: recorderLifecycle = .cancelled
+        case nil: recorderLifecycle = nil
+        }
         if let operationalState {
-            completeness = operationalState.completeness
+            switch operationalState.completeness {
+            case .complete: completeness = .complete
+            case .incomplete: completeness = .incomplete
+            case .failed: completeness = .failed
+            case .cancelled: completeness = .cancelled
+            }
         } else if case let .active(runtimeCompleteness) = runtimeStatus {
-            completeness = runtimeCompleteness
+            switch runtimeCompleteness {
+            case .complete: completeness = .complete
+            case .incomplete: completeness = .incomplete
+            case .failed: completeness = .failed
+            case .cancelled: completeness = .cancelled
+            }
         } else {
             completeness = nil
         }

@@ -1,7 +1,4 @@
 import SwiftUI
-#if canImport(TelemetryRecorder)
-import TelemetryRecorder
-#endif
 #if canImport(TelemetryRuntime)
 import TelemetryRuntime
 #endif
