@@ -60,17 +60,30 @@ final class TelemetryRecorderBoundaryTests: XCTestCase {
             contentsOf: root.appendingPathComponent("Package.swift"),
             encoding: .utf8
         )
-        XCTAssertTrue(
-            manifest.contains(
-                ".target(\n            name: \"TelemetryRecorder\",\n            dependencies: [\"TelemetryDomain\"]"
+        let recorderStart = try XCTUnwrap(
+            manifest.range(
+                of: ".target(\n            name: \"TelemetryRecorder\","
             )
         )
-        XCTAssertTrue(
-            manifest.contains(
-                "name: \"TelemetryPersistence\",\n            dependencies: [\"TelemetryDomain\", \"TelemetryRecorder\"]"
+        let persistenceStart = try XCTUnwrap(
+            manifest.range(
+                of: ".target(\n            name: \"TelemetryPersistence\","
             )
         )
-        XCTAssertFalse(manifest.contains("name: \"TelemetryRecorder\",\n            dependencies: [\"TelemetryPersistence\"]"))
+        let runtimeStart = try XCTUnwrap(
+            manifest.range(
+                of: ".target(\n            name: \"TelemetryRuntime\","
+            )
+        )
+        let recorder = manifest[recorderStart.lowerBound..<persistenceStart.lowerBound]
+        let persistence = manifest[persistenceStart.lowerBound..<runtimeStart.lowerBound]
+
+        XCTAssertTrue(recorder.contains("\"TelemetryDomain\""))
+        XCTAssertTrue(recorder.contains("\"TelemetryInstrumentation\""))
+        XCTAssertFalse(recorder.contains("\"TelemetryPersistence\""))
+        XCTAssertTrue(persistence.contains("\"TelemetryDomain\""))
+        XCTAssertTrue(persistence.contains("\"TelemetryInstrumentation\""))
+        XCTAssertTrue(persistence.contains("\"TelemetryRecorder\""))
     }
 
     func testPersistenceAdapterIsNotMainActorBound() throws {

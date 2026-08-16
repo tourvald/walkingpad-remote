@@ -1,0 +1,160 @@
+# Issue #31 performance instrumentation and soak report
+
+Status: hosted integration evidence for Issue #31. This report does not qualify
+physical-device behavior and does not replace gate #37.
+
+## Accepted configuration
+
+The provisional Issue #27 recorder defaults remain accepted without tuning:
+
+- total buffer: `2048`;
+- critical reserve: `256`;
+- native reserve from bulk frames: `512`;
+- batch trigger: `128 records OR 5 seconds`;
+- pre-commit retry: one retry after `250 ms` only for an explicitly known
+  pre-commit failure.
+
+A same-workload `256`-record batch candidate halved transaction count but more
+than doubled p95 transaction latency, reduced throughput, and increased peak
+resident memory. Its smaller observed store footprint did not outweigh those
+costs. Both configurations preserved every produced record and the identical
+control-output checksum. The evidence therefore does not justify changing the
+accepted starting defaults.
+
+## Instruments catalog and privacy boundary
+
+The `com.tourvald.walkingpad.telemetry-v2` subsystem exposes these static
+categories and names:
+
+| Category | Static signpost name | Observation point |
+| --- | --- | --- |
+| `ControlObservation` | `ControlCycleComputation` | existing HR control computation, after its existing runtime gates |
+| `RecorderIngress` | `TelemetryIngressEnqueue` | synchronous bounded ingress call |
+| `Persistence` | `PersistenceBatchTransaction` | one consumer batch persistence operation |
+| `SessionLifecycle` | `SessionFinishOrRecovery` | recorder finish or unfinished-session recovery |
+| `PostWorkoutAnalysis` | `PostWorkoutAnalysisPlaceholder` | hook reserved for #33; no analyzer runs in #31 |
+| `IntegratedSoak` | `IntegratedSimulatedSoak` | one simulated hosted soak |
+
+Only aggregate record counts, simulated duration, and coarse result classes are
+accepted by the instrumentation API. It has no parameter for HR values, speed
+trajectories, profile, device, session or HealthKit identifiers, raw BLE,
+health payloads, or exports. Disabled instrumentation uses
+`OSSignposter.disabled`. The implementation uses the iOS-15-era `OSSignposter`
+API and is valid at the unchanged iOS 26 deployment floor.
+
+MetricKit was not added. `MXMetricManager` delivers delayed daily aggregates,
+which does not improve the deterministic per-run A/B evidence here. The iOS 27+
+`MetricManager` API remains a future migration option only after a separately
+approved platform-floor decision; it is not linked into the iOS 26 target.
+
+## Method
+
+Measurements were taken from exact base `4442210a45ff8bc875926f5cdf24719133cb5cb7`
+plus the Issue #31 worktree changes on 2026-08-16. Host: Apple M5 arm64,
+macOS 27.0 `26A5406e`, Xcode 27.0 `27A5194q`, Swift 6.4 debug package build.
+
+The deterministic fixture uses one on-disk SwiftData store, one recorder and
+one persistence consumer. It emits native HR and treadmill records every
+simulated second, one observed canonical frame per second, and a bounded burst
+of 32 additional native records every 30 seconds. It explicitly flushes once
+per simulated minute for the long evidence runs so the record-count trigger is
+exercised. It never backfills or duplicates a canonical frame and never invokes
+production transport.
+
+Transaction percentiles use nearest-rank selection over successful batch calls.
+Throughput is persisted records divided by hosted wall time. Store footprint is
+the allocated size of the SQLite store and discovered sidecars before cleanup.
+Resident-memory samples are host RSS observations at simulated-minute
+boundaries; they are timing/toolchain dependent and are not deterministic
+device limits. The control checksum combines a private harness-only HR
+reference assembled from the existing adaptive-step, deadband and speed-bound
+helpers with outputs from the existing `CooldownRuntimeEngine`. The HR
+reference is not called by `BluetoothManager` and is not a production control
+authority; the accepted inline HR formulas and branching remain the production
+authority. The reference and cooldown replay run through an injected enabled or
+disabled `TelemetryV2PerformanceObservation`; only a checksum of the complete
+in-memory outputs is retained. Replay inputs and outputs are not logged or
+persisted, and the checksum is independent of telemetry admission or
+persistence results.
+
+## Same-workload A/B measurement
+
+The 30-minute workload produced 4 critical, 5,488 native and 1,800 frame
+records in each run (7,292 total).
+
+| Measurement | Default `128` | Candidate `256` |
+| --- | ---: | ---: |
+| persisted critical / native / frames | 4 / 5,488 / 1,800 | 4 / 5,488 / 1,800 |
+| coalesced / dropped frames | 0 / 0 | 0 / 0 |
+| critical / native loss | 0 / 0 | 0 / 0 |
+| queue final / high-water | 0 / 130 | 0 / 250 |
+| transactions | 60 | 30 |
+| transaction p50 / p95 | 193.669 / 293.988 ms | 473.433 / 621.640 ms |
+| transaction min / max | 88.923 / 325.062 ms | 259.857 / 626.857 ms |
+| throughput | 614.561 records/s | 526.369 records/s |
+| RSS start / peak / end | 18.469 / 36.500 / 36.500 MiB | 18.484 / 37.141 / 37.141 MiB |
+| final store | 8.070 MiB | 6.758 MiB |
+| hosted wall time | 11.865 s | 13.853 s |
+| completion | complete | complete |
+| control-output checksum | `c181098ace199327` | `c181098ace199327` |
+
+The candidate's p95 was 111.45% higher and throughput 14.35% lower. No loss or
+control divergence occurred, but the overall tradeoff does not support tuning.
+
+## Accepted-default duration runs
+
+| Measurement | 30 minutes | 60 minutes | 120 minutes |
+| --- | ---: | ---: | ---: |
+| produced = persisted | 7,292 | 14,612 | 29,252 |
+| class counts (critical / native / frames) | 4 / 5,488 / 1,800 | 4 / 11,008 / 3,600 | 4 / 22,048 / 7,200 |
+| coalesced / dropped / critical loss / native loss | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+| queue final / high-water | 0 / 130 | 0 / 153 | 0 / 169 |
+| transactions | 60 | 120 | 240 |
+| transaction p50 / p95 | 193.669 / 293.988 ms | 299.962 / 482.513 ms | 514.502 / 1,009.076 ms |
+| transaction min / max | 88.923 / 325.062 ms | 88.616 / 549.528 ms | 90.767 / 1,192.621 ms |
+| throughput | 614.561 records/s | 409.513 records/s | 226.020 records/s |
+| RSS start / peak / end | 18.469 / 36.500 / 36.500 MiB | 18.406 / 46.688 / 46.688 MiB | 18.500 / 58.500 / 50.516 MiB |
+| final store | 8.070 MiB | 12.633 MiB | 25.070 MiB |
+| completion | complete | complete | complete |
+| control-output checksum | `c181098ace199327` | `f0f8fe79d7be142e` | `d4c13818ae515288` |
+
+All queues drained and remained below the fixed 2,048-slot bound. The rising
+host RSS and transaction latency are recorded honestly as profiling targets;
+the three finite workloads do not establish a mathematical unbounded-memory
+failure. They also do not qualify device memory, energy, or the historical
+50-ms/1-MB/h/2-MB/h hypotheses. Those remain targets rather than automatic
+rejection gates.
+
+Query usability was not used to choose between these two batch counts because
+neither candidate changes the schema or read projections. The existing
+SwiftData query gate remains authoritative; this decision is based on the
+integrated writer measurements that the candidate actually changes.
+
+The explicit two-minute instrumentation ON/OFF runs replayed the same private
+primitive-helper HR reference and existing cooldown engine and both produced
+checksum `ea1140aa71917a2a`, with identical produced/persisted class counts and
+loss state. This is hosted evidence that the observation wrapper does not alter
+those deterministic outputs; it is not a claim of a newly extracted production
+HR-decision seam, physical-device proof or full callback-scheduling proof.
+
+## Commands
+
+Run from `ios/WalkingPadRemote/WalkingPadRemote`:
+
+```sh
+swift run telemetry-soak --minutes 30 --hr-ms 1000 --treadmill-ms 1000 --burst-every-seconds 30 --burst-native-records 32 --flush-every-seconds 60
+swift run telemetry-soak --minutes 60 --hr-ms 1000 --treadmill-ms 1000 --burst-every-seconds 30 --burst-native-records 32 --flush-every-seconds 60
+swift run telemetry-soak --minutes 120 --hr-ms 1000 --treadmill-ms 1000 --burst-every-seconds 30 --burst-native-records 32 --flush-every-seconds 60
+```
+
+Run the documented A/B candidate or instrumentation-isolation variant with:
+
+```sh
+swift run telemetry-soak --minutes 30 --hr-ms 1000 --treadmill-ms 1000 --burst-every-seconds 30 --burst-native-records 32 --flush-every-seconds 60 --batch-count 256
+swift run telemetry-soak --minutes 2 --instrumentation-off
+```
+
+CI runs the stable two-minute profile explicitly and asserts exact
+produced/persisted equality, zero native/critical/frame loss, a drained queue,
+complete finalization, and a non-empty control-output checksum. Package tests
+also compare instrumentation enabled and disabled checksums for equality.

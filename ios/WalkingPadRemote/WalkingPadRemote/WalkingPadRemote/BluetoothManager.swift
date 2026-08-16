@@ -15,6 +15,8 @@ import WatchConnectivity
 
 // Minimal stub to satisfy references in the UI. Replace with real implementation.
 final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+    private let telemetryPerformanceObservation = TelemetryV2PerformanceObservation()
+
     // CoreBluetooth
     private var central: CBCentralManager?
     private let healthStore = HKHealthStore()
@@ -4044,6 +4046,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         occurredAt: Date()
                     )
                     defer { observeHeartRateControlUse(controlUseEvidence) }
+                    let performanceInterval = telemetryPerformanceObservation
+                        .beginControlCycle()
+                    defer {
+                        telemetryPerformanceObservation.endControlCycle(
+                            performanceInterval
+                        )
+                    }
                     let predictedValue = trend.map { Double(heartRateBPM) + $0 * hrPredictSeconds }
                     let predictedBpm = predictedValue.map { Int(round($0)) }
                     let effectiveBpm = max(heartRateBPM, predictedBpm ?? heartRateBPM)
@@ -4179,30 +4188,34 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 }
             } else if cooldownRuntimeState == nil {
                 hrNextDecisionSeconds = 0
-                let output = CooldownRuntimeEngine.start(
-                    config: currentCooldownConfig(),
-                    input: CooldownRuntimeEngine.StartInput(
-                        currentBpm: heartRateBPM > 0 ? heartRateBPM : lastKnownHeartRateBPM,
-                        deviceTargetSpeedKmh: deviceTargetSpeedKmh,
-                        actualSpeedKmh: speedKmh,
-                        sessionAggregates: currentCooldownSessionAggregates()
+                let output = telemetryPerformanceObservation.measureControlCycle {
+                    CooldownRuntimeEngine.start(
+                        config: currentCooldownConfig(),
+                        input: CooldownRuntimeEngine.StartInput(
+                            currentBpm: heartRateBPM > 0 ? heartRateBPM : lastKnownHeartRateBPM,
+                            deviceTargetSpeedKmh: deviceTargetSpeedKmh,
+                            actualSpeedKmh: speedKmh,
+                            sessionAggregates: currentCooldownSessionAggregates()
+                        )
                     )
-                )
+                }
                 let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
                 applyCooldownOutput(output, sessionElapsedSeconds: elapsed)
             } else if let cooldownState = cooldownRuntimeState {
                 hrNextDecisionSeconds = 0
-                let output = CooldownRuntimeEngine.tick(
-                    state: cooldownState,
-                    config: currentCooldownConfig(),
-                    input: CooldownRuntimeEngine.TickInput(
-                        hrBpm: heartRateBPM,
-                        decisionBpm: heartRateBPM > 0 ? heartRateBPM : hrCooldownTargetBpm,
-                        hrAvailable: heartRateBPM > 0,
-                        speedSnapshot: currentCooldownSpeedSnapshot(),
-                        sessionAggregates: currentCooldownSessionAggregates()
+                let output = telemetryPerformanceObservation.measureControlCycle {
+                    CooldownRuntimeEngine.tick(
+                        state: cooldownState,
+                        config: currentCooldownConfig(),
+                        input: CooldownRuntimeEngine.TickInput(
+                            hrBpm: heartRateBPM,
+                            decisionBpm: heartRateBPM > 0 ? heartRateBPM : hrCooldownTargetBpm,
+                            hrAvailable: heartRateBPM > 0,
+                            speedSnapshot: currentCooldownSpeedSnapshot(),
+                            sessionAggregates: currentCooldownSessionAggregates()
+                        )
                     )
-                )
+                }
                 let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
                 applyCooldownOutput(output, sessionElapsedSeconds: elapsed)
             }
