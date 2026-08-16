@@ -81,7 +81,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "let trend = currentHrTrendBpmPerSecond()",
                 "let controlUseEvidence = makeHeartRateControlUseEvidence(",
                 "defer { observeHeartRateControlUse(controlUseEvidence) }",
-                "let effectiveBpm = max(heartRateBPM",
+                "let controlDecision = HRDomainService.heartRateControlDecision(",
             ],
             in: tick
         )

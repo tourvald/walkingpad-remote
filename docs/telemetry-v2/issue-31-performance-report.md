@@ -66,8 +66,12 @@ Throughput is persisted records divided by hosted wall time. Store footprint is
 the allocated size of the SQLite store and discovered sidecars before cleanup.
 Resident-memory samples are host RSS observations at simulated-minute
 boundaries; they are timing/toolchain dependent and are not deterministic
-device limits. The checksum covers deterministic simulated control outputs and
-is computed independently of telemetry admission or persistence results.
+device limits. The control replay passes the same deterministic inputs through
+the production pure HR-decision seam and `CooldownRuntimeEngine` used by the
+application. Both computations run through an injected enabled or disabled
+`TelemetryV2PerformanceObservation`; only a checksum of the complete in-memory
+outputs is retained. Replay inputs and outputs are not logged or persisted, and
+the checksum is independent of telemetry admission or persistence results.
 
 ## Same-workload A/B measurement
 
@@ -79,18 +83,18 @@ records in each run (7,292 total).
 | persisted critical / native / frames | 4 / 5,488 / 1,800 | 4 / 5,488 / 1,800 |
 | coalesced / dropped frames | 0 / 0 | 0 / 0 |
 | critical / native loss | 0 / 0 | 0 / 0 |
-| queue final / high-water | 0 / 250 | 0 / 250 |
+| queue final / high-water | 0 / 129 | 0 / 250 |
 | transactions | 60 | 30 |
-| transaction p50 / p95 | 193.789 / 299.750 ms | 475.126 / 637.253 ms |
-| transaction min / max | 90.681 / 310.910 ms | 259.146 / 637.440 ms |
-| throughput | 620.615 records/s | 523.755 records/s |
-| RSS start / peak / end | 17.312 / 32.422 / 32.422 MiB | 17.266 / 36.891 / 36.891 MiB |
+| transaction p50 / p95 | 195.877 / 294.682 ms | 474.176 / 627.210 ms |
+| transaction min / max | 92.356 / 344.789 ms | 269.074 / 650.528 ms |
+| throughput | 611.837 records/s | 519.224 records/s |
+| RSS start / peak / end | 18.625 / 36.719 / 36.719 MiB | 18.609 / 37.250 / 37.250 MiB |
 | final store | 8.070 MiB | 6.758 MiB |
-| hosted wall time | 11.750 s | 13.923 s |
+| hosted wall time | 11.918 s | 14.044 s |
 | completion | complete | complete |
-| control-output checksum | `8de307efccdb1215` | `8de307efccdb1215` |
+| control-output checksum | `4b1f6f68680d6bd5` | `4b1f6f68680d6bd5` |
 
-The candidate's p95 was 112.59% higher and throughput 15.61% lower. No loss or
+The candidate's p95 was 112.84% higher and throughput 15.14% lower. No loss or
 control divergence occurred, but the overall tradeoff does not support tuning.
 
 ## Accepted-default duration runs
@@ -100,14 +104,15 @@ control divergence occurred, but the overall tradeoff does not support tuning.
 | produced = persisted | 7,292 | 14,612 | 29,252 |
 | class counts (critical / native / frames) | 4 / 5,488 / 1,800 | 4 / 11,008 / 3,600 | 4 / 22,048 / 7,200 |
 | coalesced / dropped / critical loss / native loss | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
-| queue final / high-water | 0 / 250 | 0 / 250 | 0 / 250 |
+| queue final / high-water | 0 / 129 | 0 / 183 | 0 / 129 |
 | transactions | 60 | 120 | 240 |
-| transaction p50 / p95 | 193.789 / 299.750 ms | 298.214 / 521.253 ms | 603.308 / 1,374.559 ms |
-| throughput | 620.615 records/s | 393.272 records/s | 183.421 records/s |
-| RSS start / peak / end | 17.312 / 32.422 / 32.422 MiB | 17.250 / 40.609 / 40.609 MiB | 17.312 / 63.562 / 62.469 MiB |
-| final store | 8.070 MiB | 12.570 MiB | 25.070 MiB |
+| transaction p50 / p95 | 195.877 / 294.682 ms | 312.678 / 570.369 ms | 745.888 / 1,266.982 ms |
+| transaction min / max | 92.356 / 344.789 ms | 93.874 / 621.660 ms | 90.139 / 1,338.957 ms |
+| throughput | 611.837 records/s | 379.909 records/s | 172.040 records/s |
+| RSS start / peak / end | 18.625 / 36.719 / 36.719 MiB | 18.609 / 46.828 / 46.828 MiB | 18.969 / 61.641 / 61.641 MiB |
+| final store | 8.070 MiB | 12.633 MiB | 25.070 MiB |
 | completion | complete | complete | complete |
-| control-output checksum | `8de307efccdb1215` | `b0046852a4935e49` | `9fa985bcf9a856a0` |
+| control-output checksum | `4b1f6f68680d6bd5` | `344ab7846b74f9f0` | `d888a2cde82f7042` |
 
 All queues drained and remained below the fixed 2,048-slot bound. The rising
 host RSS and transaction latency are recorded honestly as profiling targets;
@@ -121,9 +126,10 @@ neither candidate changes the schema or read projections. The existing
 SwiftData query gate remains authoritative; this decision is based on the
 integrated writer measurements that the candidate actually changes.
 
-The explicit two-minute instrumentation ON/OFF runs both produced checksum
-`c007ebaa72a51ac4`, with identical produced/persisted class counts and loss
-state. This is hosted control-isolation evidence, not physical-device proof.
+The explicit two-minute instrumentation ON/OFF runs replayed the same production
+pure control seams and both produced checksum `2553c8b7f682ce1b`, with identical
+produced/persisted class counts and loss state. This is hosted control-isolation
+evidence for those seams, not physical-device or full callback-scheduling proof.
 
 ## Commands
 

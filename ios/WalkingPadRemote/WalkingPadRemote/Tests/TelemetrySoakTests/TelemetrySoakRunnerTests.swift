@@ -1,6 +1,17 @@
 import XCTest
+import TelemetryInstrumentation
 import TelemetryRecorder
+import TelemetryRuntime
+import WalkingPadCoreLogic
 @testable import TelemetrySoak
+
+private struct TestControlCycleObservation: ControlCycleObservation {
+    let observation: TelemetryV2PerformanceObservation
+
+    func measureControlCycle(_ operation: () -> Void) {
+        observation.measureControlCycle(operation)
+    }
+}
 
 final class TelemetrySoakRunnerTests: XCTestCase {
     func testProvisionalConfigurationMatchesRecorderDefaults() {
@@ -49,7 +60,17 @@ final class TelemetrySoakRunnerTests: XCTestCase {
         XCTAssertGreaterThan(report.transactionLatency.p95Nanoseconds, 0)
         XCTAssertGreaterThan(report.throughputRecordsPerSecond, 0)
         XCTAssertGreaterThan(report.finalStoreBytes, 0)
-        XCTAssertFalse(report.controlOutputChecksum.isEmpty)
+        XCTAssertEqual(
+            report.controlOutputChecksum,
+            DeterministicControlReplay.checksum(
+                durationSeconds: TelemetrySoakWorkload.shortCI.simulatedMinutes * 60,
+                observation: TestControlCycleObservation(
+                    observation: TelemetryV2PerformanceObservation(
+                        instrumentation: TelemetryPerformanceInstrumentation(enabled: true)
+                    )
+                )
+            )
+        )
     }
 
     func testInstrumentationOnAndOffHaveIdenticalControlOutput() async throws {

@@ -3,6 +3,8 @@ import TelemetryDomain
 import TelemetryInstrumentation
 import TelemetryPersistence
 import TelemetryRecorder
+import TelemetryRuntime
+import WalkingPadCoreLogic
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -47,10 +49,17 @@ public enum TelemetrySoakRunner {
 
         let wallClock = ContinuousClock()
         let wallStart = wallClock.now
+        let controlOutputChecksum = DeterministicControlReplay.checksum(
+            durationSeconds: workload.simulatedMinutes * 60,
+            observation: SoakControlCycleObservation(
+                observation: TelemetryV2PerformanceObservation(
+                    instrumentation: instrumentation
+                )
+            )
+        )
         var produced = TelemetrySoakClassCounts()
         var heartRateIndex: UInt64 = 0
         var treadmillIndex: UInt64 = 0
-        var checksum: UInt64 = 14_695_981_039_346_656_037
         var memorySamples: [TelemetrySoakMemorySample] = []
         appendMemorySample(minute: 0, to: &memorySamples)
 
@@ -102,10 +111,6 @@ public enum TelemetrySoakRunner {
             if elapsedMilliseconds % 1_000 == 0 {
                 let elapsedSecond = elapsedMilliseconds / 1_000
                 yield(fixture.frame(elapsedSecond: elapsedSecond))
-                let controlOutput = instrumentation.measureControlCycle {
-                    deterministicControlOutput(elapsedSecond: elapsedSecond)
-                }
-                checksum = updateChecksum(checksum, value: controlOutput)
             }
 
             if let burst = workload.burst,
@@ -199,7 +204,7 @@ public enum TelemetrySoakRunner {
             memorySamples: memorySamples,
             finalStoreBytes: try allocatedStoreBytes(in: temporaryDirectory),
             completeness: finish.completeness.rawValue,
-            controlOutputChecksum: String(format: "%016llx", checksum),
+            controlOutputChecksum: controlOutputChecksum,
             wallDurationNanoseconds: wallNanoseconds
         )
         instrumentation.endIntegratedSoak(
@@ -229,6 +234,14 @@ public enum TelemetrySoakRunner {
             baseline: baselineReport,
             candidate: candidateReport
         )
+    }
+}
+
+private struct SoakControlCycleObservation: ControlCycleObservation {
+    let observation: TelemetryV2PerformanceObservation
+
+    func measureControlCycle(_ operation: () -> Void) {
+        observation.measureControlCycle(operation)
     }
 }
 
@@ -290,23 +303,6 @@ private func greatestCommonDivisor(_ lhs: Int, _ rhs: Int) -> Int {
         (first, second) = (second, first % second)
     }
     return max(first, 1)
-}
-
-private func deterministicControlOutput(elapsedSecond: Int) -> UInt64 {
-    let phase = UInt64((elapsedSecond / 30) % 4)
-    let direction = UInt64(elapsedSecond % 11)
-    return (phase << 48) | (direction << 32) | UInt64(elapsedSecond)
-}
-
-private func updateChecksum(_ checksum: UInt64, value: UInt64) -> UInt64 {
-    var result = checksum
-    var remaining = value
-    for _ in 0..<8 {
-        result ^= remaining & 0xff
-        result &*= 1_099_511_628_211
-        remaining >>= 8
-    }
-    return result
 }
 
 private func durationNanoseconds(_ duration: Duration) -> UInt64 {

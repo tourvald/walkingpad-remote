@@ -76,6 +76,8 @@ let package = Package(
                 "TelemetryInstrumentation",
                 "TelemetryPersistence",
                 "TelemetryRecorder",
+                "TelemetryRuntime",
+                "WalkingPadCoreLogic",
             ]
         ),
         .executableTarget(
@@ -111,6 +113,7 @@ let package = Package(
                 "BLETransportCodec.swift",
                 "ControllerUnitsSafetyPolicy.swift",
                 "CooldownRuntimeEngine.swift",
+                "DeterministicControlReplay.swift",
                 "HRDomainService.swift",
                 "HRSettingsDefaults.swift",
                 "StopObservationService.swift",
@@ -152,7 +155,13 @@ let package = Package(
         ),
         .testTarget(
             name: "TelemetrySoakTests",
-            dependencies: ["TelemetryRecorder", "TelemetrySoak"]
+            dependencies: [
+                "TelemetryInstrumentation",
+                "TelemetryRecorder",
+                "TelemetryRuntime",
+                "TelemetrySoak",
+                "WalkingPadCoreLogic",
+            ]
         ),
         .testTarget(
             name: "TelemetryPersistenceTests",

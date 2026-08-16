@@ -6,28 +6,34 @@ import TelemetryInstrumentation
 import TelemetryDomain
 #endif
 
-public enum TelemetryV2PerformanceObservation {
-    public static func measureControlCycle<T>(
+public struct TelemetryV2PerformanceObservation: Sendable {
+    private let instrumentation: TelemetryPerformanceInstrumentation
+
+    public init(instrumentation: TelemetryPerformanceInstrumentation = .system) {
+        self.instrumentation = instrumentation
+    }
+
+    public func measureControlCycle<T>(
         _ operation: () throws -> T
     ) rethrows -> T {
-        try TelemetryPerformanceInstrumentation.system.measureControlCycle(operation)
+        try instrumentation.measureControlCycle(operation)
     }
 
-    public static func beginControlCycle()
+    public func beginControlCycle()
         -> TelemetryPerformanceInstrumentation.ControlInterval
     {
-        TelemetryPerformanceInstrumentation.system.beginControlCycle()
+        instrumentation.beginControlCycle()
     }
 
-    public static func endControlCycle(
+    public func endControlCycle(
         _ interval: TelemetryPerformanceInstrumentation.ControlInterval
     ) {
-        TelemetryPerformanceInstrumentation.system.endControlCycle(interval)
+        instrumentation.endControlCycle(interval)
     }
 
     /// Placeholder observation point for the future Issue #33 analyzer.
-    public static func emitPostWorkoutAnalysisPlaceholder() {
-        TelemetryPerformanceInstrumentation.system
+    public func emitPostWorkoutAnalysisPlaceholder() {
+        instrumentation
             .emitPostWorkoutAnalysisPlaceholder(result: .success)
     }
 }

@@ -672,6 +672,21 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         }
     }
 
+    func testPerformanceObservationInjectionDoesNotChangeControlOutput() {
+        let inputs = Array(0..<1_000)
+        let enabled = TelemetryV2PerformanceObservation(instrumentation: .system)
+        let disabled = TelemetryV2PerformanceObservation(instrumentation: .disabled)
+
+        let enabledOutput = enabled.measureControlCycle {
+            inputs.map { ($0 &* 31) ^ 0x55 }
+        }
+        let disabledOutput = disabled.measureControlCycle {
+            inputs.map { ($0 &* 31) ^ 0x55 }
+        }
+
+        XCTAssertEqual(enabledOutput, disabledOutput)
+    }
+
     private static func descriptor(
         legacySessionID: UUID? = UUID(uuidString: "10000000-0000-0000-0000-000000000030"),
         startedAt: Date = Date(timeIntervalSince1970: 1_000)
