@@ -1,4 +1,10 @@
 import SwiftUI
+#if canImport(TelemetryRecorder)
+import TelemetryRecorder
+#endif
+#if canImport(TelemetryRuntime)
+import TelemetryRuntime
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -2772,6 +2778,33 @@ private struct DebugView: View {
         }
     }
 
+    private var telemetryV2WriterHealthMetrics: [DebugTrainingLogsCard.Presentation.Metric] {
+        let snapshot = manager.telemetryV2WriterHealthSnapshot
+        let lifecycle = [
+            snapshot.runtimeLifecycle.rawValue,
+            snapshot.recorderLifecycle?.rawValue,
+            snapshot.completeness?.rawValue,
+        ].compactMap { $0 }.joined(separator: " / ")
+
+        return [
+            .init(id: "v2_lifecycle", title: "State", value: lifecycle, tint: .accentColor),
+            .init(id: "v2_queue", title: "Queue / peak", value: "\(snapshot.queueDepth) / \(snapshot.peakQueueDepth)", tint: .blue),
+            .init(id: "v2_frames", title: "Frame C / D", value: "\(snapshot.coalescedFrameCount) / \(snapshot.droppedFrameCount)", tint: .secondary),
+            .init(id: "v2_loss", title: "Loss N / C", value: "\(snapshot.lostNativeCount) / \(snapshot.lostCriticalCount)", tint: .orange),
+            .init(id: "v2_writer", title: "Fail / retry", value: "\(snapshot.writerFailureCount) / \(snapshot.retryCount)", tint: .red),
+            .init(id: "v2_flush", title: "Flush / seq", value: "\(snapshot.successfulFlushCount) / \(snapshot.lastCommittedRecorderSequence.map(String.init) ?? "—")", tint: .green),
+        ]
+    }
+
+    private var telemetryV2WriterHealthDetailLines: [String] {
+        let duration = manager.telemetryV2WriterHealthSnapshot.mostRecentFlushDuration
+        guard let duration else { return ["Latest flush: —"] }
+        let components = duration.components
+        let milliseconds = (Double(components.seconds) * 1_000)
+            + (Double(components.attoseconds) / 1_000_000_000_000_000)
+        return ["Latest flush: \(String(format: "%.1f", milliseconds)) ms"]
+    }
+
     private var trainingLogsCardPresentation: DebugTrainingLogsCard.Presentation {
         let inventory = manager.trainingLogsInventory
         let lastLogName = manager.lastTrainingLogPath.isEmpty
@@ -2815,6 +2848,8 @@ private struct DebugView: View {
                 .init(id: "device_completed", title: "Все тр.", value: "\(inventory.completedWorkoutFiles)", tint: .secondary),
                 .init(id: "device_size", title: "Память", value: formattedByteCount(inventory.totalBytes), tint: .secondary)
             ],
+            writerHealthMetrics: telemetryV2WriterHealthMetrics,
+            writerHealthDetailLines: telemetryV2WriterHealthDetailLines,
             rawExportOptions: rawExportOptions,
             rawExportSubtitle: inventory.matchingProfileSessionFiles > 0
                 ? "\(inventory.matchingProfileSessionFiles) raw сессий доступно"

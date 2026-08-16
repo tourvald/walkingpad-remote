@@ -17,6 +17,79 @@ public enum TelemetryV2RuntimeStatus: Equatable, Sendable {
     case incomplete(String)
 }
 
+public enum TelemetryV2WriterLifecycle: String, Equatable, Sendable {
+    case idle
+    case preparing
+    case starting
+    case active
+    case finishing
+    case unavailable
+    case incomplete
+}
+
+public struct TelemetryV2WriterHealthSnapshot: Equatable, Sendable {
+    public let runtimeLifecycle: TelemetryV2WriterLifecycle
+    public let recorderLifecycle: TelemetryRecorderLifecycleState?
+    public let completeness: TelemetryRecorderCompleteness?
+    public let queueDepth: Int
+    public let peakQueueDepth: Int
+    public let coalescedFrameCount: UInt64
+    public let droppedFrameCount: UInt64
+    public let lostNativeCount: UInt64
+    public let lostCriticalCount: UInt64
+    public let writerFailureCount: UInt64
+    public let retryCount: UInt64
+    public let successfulFlushCount: UInt64
+    public let lastCommittedRecorderSequence: UInt64?
+    public let mostRecentFlushDuration: Duration?
+
+    public static let idle = TelemetryV2WriterHealthSnapshot(
+        runtimeStatus: .idle,
+        operationalState: nil
+    )
+
+    init(
+        runtimeStatus: TelemetryV2RuntimeStatus,
+        operationalState: TelemetryRecorderOperationalState?
+    ) {
+        switch runtimeStatus {
+        case .idle:
+            runtimeLifecycle = .idle
+        case .preparing:
+            runtimeLifecycle = .preparing
+        case .starting:
+            runtimeLifecycle = .starting
+        case .active:
+            runtimeLifecycle = .active
+        case .finishing:
+            runtimeLifecycle = .finishing
+        case .unavailable:
+            runtimeLifecycle = .unavailable
+        case .incomplete:
+            runtimeLifecycle = .incomplete
+        }
+        recorderLifecycle = operationalState?.lifecycleState
+        if let operationalState {
+            completeness = operationalState.completeness
+        } else if case let .active(runtimeCompleteness) = runtimeStatus {
+            completeness = runtimeCompleteness
+        } else {
+            completeness = nil
+        }
+        queueDepth = operationalState?.queueDepth ?? 0
+        peakQueueDepth = operationalState?.peakQueueDepth ?? 0
+        coalescedFrameCount = operationalState?.coalescedFrameCount ?? 0
+        droppedFrameCount = operationalState?.droppedFrameCount ?? 0
+        lostNativeCount = operationalState?.lostNativeCount ?? 0
+        lostCriticalCount = operationalState?.lostCriticalCount ?? 0
+        writerFailureCount = operationalState?.writerFailureCount ?? 0
+        retryCount = operationalState?.retryCount ?? 0
+        successfulFlushCount = operationalState?.successfulFlushCount ?? 0
+        lastCommittedRecorderSequence = operationalState?.lastCommittedRecorderSequence
+        mostRecentFlushDuration = operationalState?.mostRecentFlushDuration
+    }
+}
+
 public protocol TelemetryV2RuntimeClock: AnyObject, Sendable {
     func nowDate() -> Date
     func now() -> Duration
@@ -222,6 +295,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
 {
     public typealias PersistenceFactory = @Sendable () throws -> any TelemetryRecorderPersistence
     public typealias StatusHandler = @Sendable (TelemetryV2RuntimeStatus) -> Void
+    public typealias WriterHealthHandler = @Sendable (TelemetryV2WriterHealthSnapshot) -> Void
 
     fileprivate enum PendingEvidence: Sendable {
         case heartRate(HeartRateNormalizationResult)
@@ -345,6 +419,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private let lock = NSLock()
     private let persistenceFactory: PersistenceFactory
     private let statusHandler: StatusHandler?
+    private let writerHealthHandler: WriterHealthHandler?
     private let runtimeClock: any TelemetryV2RuntimeClock
     private let installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?
     private var persistence: (any TelemetryRecorderPersistence)?
@@ -354,16 +429,20 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private var pendingSession: PendingSession?
     private var activeSession: ActiveSession?
     private var storedStatus: TelemetryV2RuntimeStatus = .idle
+    private var storedOperationalState: TelemetryRecorderOperationalState?
+    private var storedWriterHealthSnapshot: TelemetryV2WriterHealthSnapshot = .idle
 
     public convenience init(
         persistenceFactory: @escaping PersistenceFactory,
         runtimeClock: any TelemetryV2RuntimeClock = ContinuousTelemetryV2RuntimeClock(),
-        statusHandler: StatusHandler? = nil
+        statusHandler: StatusHandler? = nil,
+        writerHealthHandler: WriterHealthHandler? = nil
     ) {
         self.init(
             persistenceFactory: persistenceFactory,
             runtimeClock: runtimeClock,
             statusHandler: statusHandler,
+            writerHealthHandler: writerHealthHandler,
             installationDidPublishForTesting: nil
         )
     }
@@ -372,11 +451,13 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         persistenceFactory: @escaping PersistenceFactory,
         runtimeClock: any TelemetryV2RuntimeClock = ContinuousTelemetryV2RuntimeClock(),
         statusHandler: StatusHandler? = nil,
+        writerHealthHandler: WriterHealthHandler? = nil,
         installationDidPublishForTesting: @escaping @Sendable (SessionID) -> Void
     ) {
         self.persistenceFactory = persistenceFactory
         self.runtimeClock = runtimeClock
         self.statusHandler = statusHandler
+        self.writerHealthHandler = writerHealthHandler
         self.installationDidPublishForTesting = installationDidPublishForTesting
     }
 
@@ -384,16 +465,22 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         persistenceFactory: @escaping PersistenceFactory,
         runtimeClock: any TelemetryV2RuntimeClock,
         statusHandler: StatusHandler?,
+        writerHealthHandler: WriterHealthHandler?,
         installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?
     ) {
         self.persistenceFactory = persistenceFactory
         self.runtimeClock = runtimeClock
         self.statusHandler = statusHandler
+        self.writerHealthHandler = writerHealthHandler
         self.installationDidPublishForTesting = installationDidPublishForTesting
     }
 
     public var status: TelemetryV2RuntimeStatus {
         withLock { storedStatus }
+    }
+
+    public var writerHealthSnapshot: TelemetryV2WriterHealthSnapshot {
+        withLock { storedWriterHealthSnapshot }
     }
 
     public func prepareStoreAndRecover() {
@@ -422,6 +509,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             generation &+= 1
             let previous = activeSession?.session
             activeSession = nil
+            storedOperationalState = nil
             guard !preparationFailed else {
                 pendingSession = nil
                 setStatusLocked(.unavailable("store-unavailable"))
@@ -463,7 +551,11 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         session.emitSessionEnd(reason: reason)
         Task.detached(priority: .utility) { [weak self] in
             let result = await session.finish()
-            self?.sessionFinished(result, generation: ending.1)
+            self?.sessionFinished(
+                result,
+                operationalState: session.operationalState,
+                generation: ending.1
+            )
         }
     }
 
@@ -573,6 +665,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         withLock {
             preparationFailed = true
             pendingSession = nil
+            storedOperationalState = nil
             setStatusLocked(.unavailable("store-or-recovery-failed:\(Self.errorCode(error))"))
         }
     }
@@ -649,13 +742,19 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         withLock {
             guard self.generation == generation else { return }
             pendingSession = nil
+            storedOperationalState = nil
             setStatusLocked(.unavailable("session-start-failed:\(Self.errorCode(error))"))
         }
     }
 
-    private func sessionFinished(_ result: TelemetryFinishResult, generation: UInt64) {
+    private func sessionFinished(
+        _ result: TelemetryFinishResult,
+        operationalState: TelemetryRecorderOperationalState,
+        generation: UInt64
+    ) {
         withLock {
             guard self.generation == generation else { return }
+            storedOperationalState = operationalState
             switch result.completeness {
             case .complete:
                 setStatusLocked(.idle)
@@ -728,6 +827,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         withLock {
             guard activeSession?.generation == generation,
                   activeSession?.session === session else { return }
+            storedOperationalState = operationalState
             if session.hasStagingLoss {
                 setStatusLocked(.incomplete("pre-recorder-staging-overflow"))
                 return
@@ -742,9 +842,21 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     }
 
     private func setStatusLocked(_ status: TelemetryV2RuntimeStatus) {
-        guard storedStatus != status else { return }
+        let statusChanged = storedStatus != status
         storedStatus = status
-        if let statusHandler {
+        let writerHealthSnapshot = TelemetryV2WriterHealthSnapshot(
+            runtimeStatus: status,
+            operationalState: storedOperationalState
+        )
+        if writerHealthSnapshot != storedWriterHealthSnapshot {
+            storedWriterHealthSnapshot = writerHealthSnapshot
+            if let writerHealthHandler {
+                DispatchQueue.main.async {
+                    writerHealthHandler(writerHealthSnapshot)
+                }
+            }
+        }
+        if statusChanged, let statusHandler {
             DispatchQueue.main.async {
                 statusHandler(status)
             }

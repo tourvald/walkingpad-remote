@@ -200,6 +200,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     )
     private var treadmillTelemetrySink: (any TreadmillTelemetrySink)?
     @Published private(set) var telemetryV2StatusText: String = "idle"
+    @Published private(set) var telemetryV2WriterHealthSnapshot: TelemetryV2WriterHealthSnapshot = .idle
     private lazy var telemetryV2Coordinator = TelemetryV2RuntimeCoordinator(
         persistenceFactory: {
             let appIdentifier = Bundle.main.bundleIdentifier ?? "sw.WalkingPadRemote"
@@ -211,6 +212,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         statusHandler: { [weak self] status in
             Task { @MainActor [weak self] in
                 self?.telemetryV2StatusText = String(describing: status)
+            }
+        },
+        writerHealthHandler: { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                self?.telemetryV2WriterHealthSnapshot = snapshot
             }
         }
     )

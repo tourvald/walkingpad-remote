@@ -8,6 +8,12 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
     private lazy var contentViewSource = source(
         relativePath: "WalkingPadRemote/ContentView.swift"
     )
+    private lazy var trainingLogsCardSource = source(
+        relativePath: "WalkingPadRemote/DebugTrainingLogsCard.swift"
+    )
+    private lazy var telemetryRuntimeSource = source(
+        relativePath: "Sources/TelemetryRuntime/TelemetryV2RuntimeCoordinator.swift"
+    )
     private lazy var watchSource = source(
         relativePath: "WalkingPadRemoteWatch Watch App/WatchHeartRateManager.swift"
     )
@@ -107,6 +113,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             XCTAssertFalse(body.contains("TelemetryRecorder"))
             XCTAssertFalse(body.contains("TelemetryPersistence"))
             XCTAssertFalse(body.contains("telemetry health"))
+            XCTAssertFalse(body.contains("telemetryV2WriterHealthSnapshot"))
         }
 
         XCTAssertTrue(affordance.contains("HRDomainService.heartRateStartAffordanceAvailable"))
@@ -115,6 +122,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(affordance.contains("watchReachable"))
         XCTAssertFalse(affordance.contains("controllerUnits"))
         XCTAssertFalse(affordance.contains("telemetry"))
+        XCTAssertFalse(affordance.contains("telemetryV2WriterHealthSnapshot"))
 
         XCTAssertTrue(
             contentViewSource.contains(
@@ -143,6 +151,77 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             ],
             in: start
         )
+    }
+
+    func testTelemetryV2WriterHealthIsWiredOnlyIntoDeveloperDiagnostics() throws {
+        let metrics = try functionBody(
+            "private var telemetryV2WriterHealthMetrics",
+            in: contentViewSource
+        )
+        let details = try functionBody(
+            "private var telemetryV2WriterHealthDetailLines",
+            in: contentViewSource
+        )
+        let presentation = try functionBody(
+            "private var trainingLogsCardPresentation",
+            in: contentViewSource
+        )
+        let cardBody = try functionBody("var body: some View", in: trainingLogsCardSource)
+
+        XCTAssertTrue(metrics.contains("manager.telemetryV2WriterHealthSnapshot"))
+        XCTAssertTrue(metrics.contains("snapshot.queueDepth"))
+        XCTAssertTrue(metrics.contains("snapshot.lostCriticalCount"))
+        XCTAssertTrue(metrics.contains("snapshot.writerFailureCount"))
+        XCTAssertTrue(metrics.contains("snapshot.successfulFlushCount"))
+        XCTAssertTrue(details.contains("mostRecentFlushDuration"))
+        XCTAssertTrue(presentation.contains("writerHealthMetrics: telemetryV2WriterHealthMetrics"))
+        XCTAssertTrue(
+            presentation.contains("writerHealthDetailLines: telemetryV2WriterHealthDetailLines")
+        )
+        XCTAssertTrue(cardBody.contains("Telemetry V2 Writer"))
+        XCTAssertTrue(cardBody.contains("presentation.writerHealthMetrics"))
+        XCTAssertTrue(cardBody.contains("presentation.writerHealthDetailLines"))
+    }
+
+    func testTelemetryV2WriterHealthDiagnosticSurfaceExcludesPrivateWorkoutData() throws {
+        let snapshot = try functionBody(
+            "public struct TelemetryV2WriterHealthSnapshot",
+            in: telemetryRuntimeSource
+        )
+        let metrics = try functionBody(
+            "private var telemetryV2WriterHealthMetrics",
+            in: contentViewSource
+        )
+        let details = try functionBody(
+            "private var telemetryV2WriterHealthDetailLines",
+            in: contentViewSource
+        )
+        let diagnosticSurface = snapshot + metrics + details
+
+        for forbidden in [
+            "beatsPerMinute", "heartRate", "speed", "profileLocalIdentifier",
+            "stableLocalIdentifier", "sessionID", "rawBLE", "rawPayload",
+            "healthPayload", "workoutExport",
+        ] {
+            XCTAssertFalse(
+                diagnosticSurface.contains(forbidden),
+                "Writer-health diagnostic surface contains \(forbidden)"
+            )
+        }
+
+        let recompute = try functionBody(
+            "private func recomputeHrStartAllowed()",
+            in: managerSource
+        )
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        let affordance = try functionBody(
+            "var isHrControlStartAffordanceAvailable: Bool",
+            in: managerSource
+        )
+        for controlPath in [recompute, start, affordance] {
+            XCTAssertFalse(controlPath.contains("telemetryV2WriterHealthSnapshot"))
+            XCTAssertFalse(controlPath.contains("writerHealthSnapshot"))
+        }
     }
 
     func testTelemetryV2LifecycleHooksCannotPerformPersistenceOnControlPaths() throws {

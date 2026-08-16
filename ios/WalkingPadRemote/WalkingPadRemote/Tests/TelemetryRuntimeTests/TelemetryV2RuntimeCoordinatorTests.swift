@@ -7,6 +7,49 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
+    func testWriterHealthSnapshotMapsOnlyTypedOperationalDiagnostics() {
+        let snapshot = TelemetryV2WriterHealthSnapshot(
+            runtimeStatus: .active(.incomplete),
+            operationalState: TelemetryRecorderOperationalState(
+                queueDepth: 1,
+                peakQueueDepth: 2,
+                coalescedFrameCount: 3,
+                droppedFrameCount: 4,
+                lostNativeCount: 5,
+                lostCriticalCount: 6,
+                writerFailureCount: 7,
+                retryCount: 8,
+                successfulFlushCount: 9,
+                lastCommittedRecorderSequence: 10,
+                mostRecentFlushDuration: .milliseconds(11),
+                lifecycleState: .active,
+                completeness: .incomplete
+            )
+        )
+
+        XCTAssertEqual(snapshot.runtimeLifecycle, .active)
+        XCTAssertEqual(snapshot.recorderLifecycle, .active)
+        XCTAssertEqual(snapshot.completeness, .incomplete)
+        XCTAssertEqual(snapshot.queueDepth, 1)
+        XCTAssertEqual(snapshot.peakQueueDepth, 2)
+        XCTAssertEqual(snapshot.coalescedFrameCount, 3)
+        XCTAssertEqual(snapshot.droppedFrameCount, 4)
+        XCTAssertEqual(snapshot.lostNativeCount, 5)
+        XCTAssertEqual(snapshot.lostCriticalCount, 6)
+        XCTAssertEqual(snapshot.writerFailureCount, 7)
+        XCTAssertEqual(snapshot.retryCount, 8)
+        XCTAssertEqual(snapshot.successfulFlushCount, 9)
+        XCTAssertEqual(snapshot.lastCommittedRecorderSequence, 10)
+        XCTAssertEqual(snapshot.mostRecentFlushDuration, .milliseconds(11))
+
+        let labels = Set(Mirror(reflecting: snapshot).children.compactMap(\.label))
+        XCTAssertFalse(labels.contains("beatsPerMinute"))
+        XCTAssertFalse(labels.contains("profileLocalIdentifier"))
+        XCTAssertFalse(labels.contains("stableLocalIdentifier"))
+        XCTAssertFalse(labels.contains("sessionID"))
+        XCTAssertFalse(labels.contains("rawPayload"))
+    }
+
     func testStoreConstructionAndImmediateStopNeverBlockOrResurrectSession() async throws {
         let persistence = RuntimePersistence()
         let factoryGate = DispatchSemaphore(value: 0)
