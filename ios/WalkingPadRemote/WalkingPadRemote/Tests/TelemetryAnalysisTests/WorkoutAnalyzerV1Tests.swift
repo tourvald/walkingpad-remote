@@ -353,6 +353,31 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         })
     }
 
+    func testDuplicateTypedEnqueueWithNilDecisionCannotClaimDecisionMetrics() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+                    + fixture.causalEdgeEvents(
+                        proven: true,
+                        duplicateCommandEnqueuedWithoutDecision: true
+                    )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
+        XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 1)
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+    }
+
     func testDuplicateCausalAttemptEvidenceIsMalformedAndNeverExceedsCoverage() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
@@ -1102,7 +1127,8 @@ private struct AnalysisFixture {
         duplicateAcknowledgement: Bool = false,
         firstDecisionConnectionEpoch: TreadmillConnectionEpoch? = nil,
         duplicateDecisionID: Bool = false,
-        mismatchedSendDecision: Bool = false
+        mismatchedSendDecision: Bool = false,
+        duplicateCommandEnqueuedWithoutDecision: Bool = false
     ) -> [WorkoutEvent] {
         let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
         let firstEpoch = firstDecisionConnectionEpoch ?? epoch
@@ -1285,6 +1311,29 @@ private struct AnalysisFixture {
                     ordinal: 39,
                     seconds: 13,
                     payload: .treadmillEvidence(.acknowledgement(acknowledgement))
+                )
+            )
+        }
+        if duplicateCommandEnqueuedWithoutDecision {
+            events.append(
+                event(
+                    ordinal: 40,
+                    seconds: 11.001,
+                    payload: .treadmillEvidence(.commandEnqueued(
+                        TreadmillCommandEnqueuedEvidence(
+                            commandID: commandID,
+                            decisionID: nil,
+                            kind: .setSpeed(CommandedSpeed(
+                                nativeValue: 400,
+                                nativeUnit: .controllerNative(
+                                    code: "ftms_hundredths_kmh"
+                                )
+                            )),
+                            protocolKind: .ftms,
+                            connectionEpoch: epoch,
+                            enqueuedAt: baseDate.addingTimeInterval(11.001)
+                        )
+                    ))
                 )
             )
         }

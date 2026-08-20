@@ -599,9 +599,10 @@ private extension WorkoutAnalyzerV1 {
             var decisions: [DecisionID: DesiredDecision] = [:]
             var invalidDecisionIDs: Set<DecisionID> = []
             var duplicateDecisionRecordCount = 0
+            var seenCommandScopes: Set<ScopedCommandIdentity> = []
             var commandToDecision: [ScopedCommandIdentity: DecisionID] = [:]
             var invalidCommandDecisionScopes: Set<ScopedCommandIdentity> = []
-            var duplicateCommandLinkRecordCount = 0
+            var duplicateCommandRecordCount = 0
 
             func recordSend(_ send: SendAttempt) {
                 if sends[send.attemptID] != nil {
@@ -648,13 +649,13 @@ private extension WorkoutAnalyzerV1 {
                             connectionEpoch: command.connectionEpoch
                         )
                         commands.insert(identity)
+                        guard seenCommandScopes.insert(identity).inserted else {
+                            invalidCommandDecisionScopes.insert(identity)
+                            duplicateCommandRecordCount += 1
+                            break
+                        }
                         if let decisionID = command.decisionID {
-                            if commandToDecision[identity] != nil {
-                                invalidCommandDecisionScopes.insert(identity)
-                                duplicateCommandLinkRecordCount += 1
-                            } else {
-                                commandToDecision[identity] = decisionID
-                            }
+                            commandToDecision[identity] = decisionID
                         }
                     case let .sendAttempt(attempt):
                         recordSend(SendAttempt(
@@ -709,11 +710,12 @@ private extension WorkoutAnalyzerV1 {
                     && !invalidDecisionIDs.contains(decisionID)
                     && decisionEpochs[decisionID] == identity.connectionEpoch
             }
-            let invalidCommandDecisionLinkCount = duplicateCommandLinkRecordCount
+            let invalidCommandDecisionLinkCount = duplicateCommandRecordCount
                 + commandToDecision.filter { identity, decisionID in
-                    invalidCommandDecisionScopes.contains(identity)
-                        || invalidDecisionIDs.contains(decisionID)
+                    !invalidCommandDecisionScopes.contains(identity)
+                        && (invalidDecisionIDs.contains(decisionID)
                         || decisionEpochs[decisionID] != identity.connectionEpoch
+                        )
                 }.count
             var mismatchedSendDecisionCount = 0
             for send in sends.values {
