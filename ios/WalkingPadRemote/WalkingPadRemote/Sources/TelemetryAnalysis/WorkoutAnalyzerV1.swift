@@ -923,7 +923,8 @@ private extension WorkoutAnalyzerV1 {
                 )
             }
             var invalidRetryOrderAttemptIDs: Set<CommandAttemptID> = []
-            for attempts in validSendsByCommand.values {
+            var invalidRetryOrderScopes: Set<ScopedCommandIdentity> = []
+            for (identity, attempts) in validSendsByCommand {
                 let ordered = attempts.sorted {
                     if $0.attemptNumber != $1.attemptNumber {
                         return $0.attemptNumber < $1.attemptNumber
@@ -941,9 +942,15 @@ private extension WorkoutAnalyzerV1 {
                 }
                 if hasInvalidOrder {
                     invalidRetryOrderAttemptIDs.formUnion(attempts.map(\.attemptID))
+                    invalidRetryOrderScopes.insert(identity)
                 }
             }
             invalidAttemptIDs.formUnion(invalidRetryOrderAttemptIDs)
+            invalidCommandDecisionScopes.formUnion(duplicateAttemptNumberScopes)
+            invalidCommandDecisionScopes.formUnion(invalidRetryOrderScopes)
+            let finalCommandDecisionIDs = validCommandDecisionIDs.filter {
+                !invalidCommandDecisionScopes.contains($0.key)
+            }
             commandIDs = commands.subtracting(invalidCommandDecisionScopes)
             sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
             let duplicateAcknowledgementKeys = duplicateEdgeIdentities(sortedAcknowledgements)
@@ -989,7 +996,7 @@ private extension WorkoutAnalyzerV1 {
                     !isValidEdge($0, duplicateResponseKeys)
                 }.count
             desiredDecisions = Array(Dictionary(
-                validCommandDecisionIDs.compactMap { identity, decisionID -> (
+                finalCommandDecisionIDs.compactMap { identity, decisionID -> (
                     ScopedDecisionIdentity,
                     ScopedDesiredDecision
                 )? in
@@ -1012,7 +1019,7 @@ private extension WorkoutAnalyzerV1 {
                 },
                 uniquingKeysWith: { first, _ in first }
             ).values).sorted(by: scopedDecisionOrder)
-            commandDecisionIDs = validCommandDecisionIDs
+            commandDecisionIDs = finalCommandDecisionIDs
         }
 
         var acknowledgementCoverage: CausalAssociationCoverage {

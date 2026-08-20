@@ -835,6 +835,8 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         ))
 
         XCTAssertNil(detail.control.retryAttemptLatencySeconds.value)
+        XCTAssertEqual(detail.control.commandCount, 1)
+        XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
         XCTAssertEqual(detail.quality.commandAcknowledgement.eligibleEdgeCount, 0)
         XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
         XCTAssertEqual(detail.quality.commandFactualResponse.eligibleEdgeCount, 0)
@@ -873,6 +875,8 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         ))
 
         XCTAssertNil(detail.control.retryAttemptLatencySeconds.value)
+        XCTAssertEqual(detail.control.commandCount, 1)
+        XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
         XCTAssertEqual(detail.quality.commandAcknowledgement.eligibleEdgeCount, 0)
         XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
         XCTAssertEqual(detail.quality.commandFactualResponse.eligibleEdgeCount, 0)
@@ -941,6 +945,8 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         ))
 
         XCTAssertNil(detail.control.retryAttemptLatencySeconds.value)
+        XCTAssertEqual(detail.control.commandCount, 1)
+        XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
         XCTAssertEqual(detail.quality.commandAcknowledgement.eligibleEdgeCount, 0)
         XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
         XCTAssertTrue(detail.quality.issues.contains {
