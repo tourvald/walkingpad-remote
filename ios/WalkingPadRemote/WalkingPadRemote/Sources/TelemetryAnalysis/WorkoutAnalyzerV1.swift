@@ -651,6 +651,7 @@ private extension WorkoutAnalyzerV1 {
             var acknowledgements: [ProvenEdge] = []
             var responses: [ProvenEdge] = []
             var invalidAttemptIDs: Set<CommandAttemptID> = []
+            var duplicateSendScopes: Set<ScopedCommandIdentity> = []
             var duplicateSendRecordCount = 0
             var unsupportedGenericCausalRecordCount = 0
             var unknownAcknowledgements = 0
@@ -666,8 +667,15 @@ private extension WorkoutAnalyzerV1 {
             var missingCommandDecisionLinkCount = 0
 
             func recordSend(_ send: SendAttempt) {
-                if sends[send.attemptID] != nil {
+                if let existing = sends[send.attemptID] {
                     invalidAttemptIDs.insert(send.attemptID)
+                    for value in [existing, send] {
+                        duplicateSendScopes.insert(ScopedCommandIdentity(
+                            commandID: value.commandID,
+                            protocolKind: value.protocolKind,
+                            connectionEpoch: value.connectionEpoch
+                        ))
+                    }
                     duplicateSendRecordCount += 1
                 } else {
                     sends[send.attemptID] = send
@@ -883,6 +891,8 @@ private extension WorkoutAnalyzerV1 {
                 + duplicateSpeedDecisionBindingCount
                 + invalidDecisionLinkScopes.count
             var invalidTypedSendCount = 0
+            var invalidTypedSendScopes: Set<ScopedCommandIdentity> = []
+            invalidCommandDecisionScopes.formUnion(duplicateSendScopes)
             for send in sends.values {
                 let identity = ScopedCommandIdentity(
                     commandID: send.commandID,
@@ -891,11 +901,13 @@ private extension WorkoutAnalyzerV1 {
                 )
                 if invalidCommandDecisionScopes.contains(identity) {
                     invalidAttemptIDs.insert(send.attemptID)
+                    invalidTypedSendScopes.insert(identity)
                     invalidTypedSendCount += 1
                     continue
                 }
                 guard let enqueue = commandEnqueues[identity] else {
                     invalidAttemptIDs.insert(send.attemptID)
+                    invalidTypedSendScopes.insert(identity)
                     invalidTypedSendCount += 1
                     continue
                 }
@@ -910,9 +922,18 @@ private extension WorkoutAnalyzerV1 {
                         && validCommandDecisionIDs[identity] == nil)
                 if invalidTypedChain {
                     invalidAttemptIDs.insert(send.attemptID)
+                    invalidTypedSendScopes.insert(identity)
                     invalidTypedSendCount += 1
                 }
             }
+            invalidCommandDecisionScopes.formUnion(invalidTypedSendScopes)
+            invalidAttemptIDs.formUnion(sends.values.filter { send in
+                invalidTypedSendScopes.contains(ScopedCommandIdentity(
+                    commandID: send.commandID,
+                    protocolKind: send.protocolKind,
+                    connectionEpoch: send.connectionEpoch
+                ))
+            }.map(\.attemptID))
             let validSendsByCommand = Dictionary(grouping: sends.values.filter {
                 !invalidAttemptIDs.contains($0.attemptID)
             }) { send in
@@ -948,14 +969,9 @@ private extension WorkoutAnalyzerV1 {
             invalidAttemptIDs.formUnion(invalidRetryOrderAttemptIDs)
             invalidCommandDecisionScopes.formUnion(duplicateAttemptNumberScopes)
             invalidCommandDecisionScopes.formUnion(invalidRetryOrderScopes)
-            let finalCommandDecisionIDs = validCommandDecisionIDs.filter {
-                !invalidCommandDecisionScopes.contains($0.key)
-            }
-            commandIDs = commands.subtracting(invalidCommandDecisionScopes)
-            sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
             let duplicateAcknowledgementKeys = duplicateEdgeIdentities(sortedAcknowledgements)
             let duplicateResponseKeys = duplicateEdgeIdentities(sortedResponses)
-            let isValidEdge: (ProvenEdge, Set<ProvenEdgeIdentity>) -> Bool = {
+            let isStructurallyValidEdge: (ProvenEdge, Set<ProvenEdgeIdentity>) -> Bool = {
                 edge, duplicateKeys in
                 let identity = ProvenEdgeIdentity(
                     commandID: edge.commandID,
@@ -973,6 +989,45 @@ private extension WorkoutAnalyzerV1 {
                       ) else { return false }
                 return send.protocolKind == edge.protocolKind
                     && send.connectionEpoch == edge.connectionEpoch
+            }
+            let invalidAcknowledgements = sortedAcknowledgements.filter {
+                !isStructurallyValidEdge($0, duplicateAcknowledgementKeys)
+            }
+            let invalidResponses = sortedResponses.filter {
+                !isStructurallyValidEdge($0, duplicateResponseKeys)
+            }
+            var invalidEdgeScopes: Set<ScopedCommandIdentity> = []
+            for edge in invalidAcknowledgements + invalidResponses {
+                invalidEdgeScopes.insert(ScopedCommandIdentity(
+                    commandID: edge.commandID,
+                    protocolKind: edge.protocolKind,
+                    connectionEpoch: edge.connectionEpoch
+                ))
+                if let send = sends[edge.attemptID] {
+                    invalidEdgeScopes.insert(ScopedCommandIdentity(
+                        commandID: send.commandID,
+                        protocolKind: send.protocolKind,
+                        connectionEpoch: send.connectionEpoch
+                    ))
+                }
+            }
+            invalidCommandDecisionScopes.formUnion(invalidEdgeScopes)
+            invalidAttemptIDs.formUnion(sends.values.filter { send in
+                invalidEdgeScopes.contains(ScopedCommandIdentity(
+                    commandID: send.commandID,
+                    protocolKind: send.protocolKind,
+                    connectionEpoch: send.connectionEpoch
+                ))
+            }.map(\.attemptID))
+            let finalCommandDecisionIDs = validCommandDecisionIDs.filter {
+                !invalidCommandDecisionScopes.contains($0.key)
+            }
+            commandIDs = commands.subtracting(invalidCommandDecisionScopes)
+            sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
+            let isValidEdge: (ProvenEdge, Set<ProvenEdgeIdentity>) -> Bool = {
+                edge, duplicateKeys in
+                isStructurallyValidEdge(edge, duplicateKeys)
+                    && !invalidAttemptIDs.contains(edge.attemptID)
             }
             provenAcknowledgements = sortedAcknowledgements.filter {
                 isValidEdge($0, duplicateAcknowledgementKeys)

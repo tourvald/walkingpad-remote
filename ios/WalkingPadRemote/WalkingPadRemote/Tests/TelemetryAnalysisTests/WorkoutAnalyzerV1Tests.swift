@@ -642,18 +642,20 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertNil(duplicateSend.quality.commandFactualResponse.latencySeconds.value)
         XCTAssertNil(duplicateSend.control.eventAlignedHeartRateResponse.value)
 
-        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.eligibleEdgeCount, 1)
+        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.eligibleEdgeCount, 0)
         XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.provenEdgeCount, 0)
-        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.coverageRatio, 0)
+        XCTAssertNil(duplicateResponse.quality.commandFactualResponse.coverageRatio)
         XCTAssertNil(duplicateResponse.quality.commandFactualResponse.latencySeconds.value)
         XCTAssertNil(duplicateResponse.control.eventAlignedHeartRateResponse.value)
 
-        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.eligibleEdgeCount, 1)
+        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.eligibleEdgeCount, 0)
         XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.provenEdgeCount, 0)
-        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.coverageRatio, 0)
+        XCTAssertNil(duplicateAcknowledgement.quality.commandAcknowledgement.coverageRatio)
         XCTAssertNil(duplicateAcknowledgement.quality.commandAcknowledgement.latencySeconds.value)
 
         for detail in [duplicateSend, duplicateResponse, duplicateAcknowledgement] {
+            XCTAssertEqual(detail.control.commandCount, 1)
+            XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
             for coverage in [
                 detail.quality.commandAcknowledgement,
                 detail.quality.commandFactualResponse,
