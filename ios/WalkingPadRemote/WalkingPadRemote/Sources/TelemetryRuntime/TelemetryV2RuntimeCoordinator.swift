@@ -582,6 +582,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 let persistence = try factory()
                 _ = try await TelemetryRecorder.recoverUnfinishedSessions(using: persistence)
                 self?.storePrepared(persistence)
+                if let analyzer = persistence as? any TelemetryPostWorkoutAnalysisCapability {
+                    _ = await analyzer.resumePendingWorkoutAnalyses()
+                }
             } catch {
                 self?.storePreparationFailed(error)
             }
@@ -640,6 +643,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 operationalState: session.operationalState,
                 generation: ending.1
             )
+            if let analyzer = self?.postWorkoutAnalysisCapability() {
+                _ = await analyzer.analyzeTerminalWorkout(sessionID: session.sessionID)
+            }
         }
     }
 
@@ -878,6 +884,14 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         withLock {
             guard activeSession?.generation == generation else { return nil }
             return activeSession?.session
+        }
+    }
+
+    private func postWorkoutAnalysisCapability()
+        -> (any TelemetryPostWorkoutAnalysisCapability)?
+    {
+        withLock {
+            persistence as? any TelemetryPostWorkoutAnalysisCapability
         }
     }
 

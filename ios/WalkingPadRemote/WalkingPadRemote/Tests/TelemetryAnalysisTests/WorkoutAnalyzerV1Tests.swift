@@ -1,0 +1,857 @@
+import Foundation
+import XCTest
+@testable import TelemetryAnalysis
+@testable import TelemetryDomain
+
+final class WorkoutAnalyzerV1Tests: XCTestCase {
+    func testIrregularCadenceUsesFreshTimestampDurationInsteadOfSampleWeighting() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 20)
+        let input = fixture.input(
+            heartRate: [
+                fixture.heartRate(ordinal: 1, seconds: 0, bpm: 80),
+                fixture.heartRate(ordinal: 2, seconds: 1, bpm: 120),
+                fixture.heartRate(ordinal: 3, seconds: 10, bpm: 100),
+            ],
+            events: fixture.phaseEvents(mainAt: 0, finishedAt: 20)
+        )
+
+        let result = try WorkoutAnalyzerV1.analyze(
+            input,
+            generatedAt: fixture.baseDate.addingTimeInterval(30)
+        )
+        let detail = try decodeDetail(result)
+
+        XCTAssertEqual(result.keyMetrics.averageHeartRate!, 108, accuracy: 0.000_001)
+        XCTAssertNotEqual(result.keyMetrics.averageHeartRate!, 100, accuracy: 0.000_001)
+        XCTAssertEqual(detail.quality.heartRateCoverage.coveredSeconds, 15, accuracy: 0.000_001)
+        XCTAssertEqual(detail.quality.heartRateCoverage.uncoveredSeconds, 5, accuracy: 0.000_001)
+        XCTAssertEqual(detail.quality.heartRateGapCount, 2)
+        XCTAssertEqual(detail.quality.maximumHeartRateGapSeconds!, 3, accuracy: 0.000_001)
+        XCTAssertEqual(detail.quality.heartRateCadenceSeconds.value!.mean, 5, accuracy: 0.000_001)
+        XCTAssertEqual(
+            detail.control.heartRateError.value!.meanAbsoluteErrorBeatsPerMinute,
+            10.666_666_666_7,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testQualityClassesRemainDistinctForLossAmbiguityCoverageAndMalformedEvidence() throws {
+        let fixture = AnalysisFixture(
+            sessionSeconds: 30,
+            lifecycle: .incomplete,
+            recorderComplete: false,
+            lostNative: 2,
+            incompleteReason: "recorder-tail-loss"
+        )
+        let sourceB = fixture.source(ordinal: 2, kind: .bluetooth)
+        let epoch = TreadmillConnectionEpoch(rawValue: fixture.uuid(90))
+        let acknowledgement = LegacyAcknowledgementObservation.unresolved(
+            protocolKind: .walkingPad,
+            connectionEpoch: epoch,
+            receivedAt: fixture.baseDate.addingTimeInterval(4),
+            recordedAt: fixture.baseDate.addingTimeInterval(4)
+        )
+        let input = fixture.input(
+            heartRate: [
+                fixture.heartRate(
+                    ordinal: 1,
+                    seconds: 0,
+                    bpm: 100,
+                    quality: [.duplicateProviderSequence]
+                ),
+                fixture.heartRate(
+                    ordinal: 2,
+                    seconds: 5,
+                    bpm: 105,
+                    source: sourceB,
+                    quality: [.measurementOutOfArrivalOrder]
+                ),
+                fixture.heartRate(
+                    ordinal: 3,
+                    seconds: 10,
+                    bpm: 110,
+                    quality: [.invalidNativeValue]
+                ),
+            ],
+            treadmill: [
+                fixture.treadmill(
+                    ordinal: 1,
+                    seconds: 0,
+                    speed: 4,
+                    factual: false,
+                    quality: [.unknownFreshness]
+                ),
+            ],
+            events: fixture.phaseEvents(mainAt: 0, finishedAt: 30) + [
+                fixture.event(
+                    ordinal: 20,
+                    seconds: 4,
+                    payload: .treadmillEvidence(.acknowledgement(acknowledgement))
+                ),
+            ]
+        )
+
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            input,
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        let categories = Set(detail.quality.issues.map(\.category))
+
+        XCTAssertTrue(categories.contains(.recorderEvidenceLoss))
+        XCTAssertTrue(categories.contains(.protocolRuntimeCausalAmbiguity))
+        XCTAssertTrue(categories.contains(.sourceCoverageUnavailable))
+        XCTAssertTrue(categories.contains(.malformedCorruptEvidence))
+        XCTAssertTrue(detail.quality.incompleteSession)
+        XCTAssertTrue(detail.quality.recorderLoss)
+        XCTAssertEqual(detail.quality.duplicateEvidenceCount, 1)
+        XCTAssertGreaterThanOrEqual(detail.quality.outOfOrderEvidenceCount, 1)
+        XCTAssertEqual(detail.quality.sourceSwitchCount, 2)
+        XCTAssertEqual(detail.quality.treadmillFactualCoverage.coveredSeconds, 0)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.unknownAssociationCount, 1)
+    }
+
+    func testProvenAndUnknownEdgesChangeOnlyCausalMetrics() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let treadmill = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.treadmill(
+                ordinal: $0.offset + 1,
+                seconds: Double($0.element),
+                speed: 4,
+                factual: true
+            )
+        }
+        let common = fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+        let provenDetail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                treadmill: treadmill,
+                events: common + fixture.causalEdgeEvents(proven: true)
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        let unknownDetail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                treadmill: treadmill,
+                events: common + fixture.causalEdgeEvents(proven: false)
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertEqual(
+            provenDetail.quality.commandAcknowledgement.latencySeconds.value!.mean,
+            1,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            provenDetail.quality.commandFactualResponse.latencySeconds.value!.mean,
+            3,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            provenDetail.control.eventAlignedHeartRateResponse.value?
+                .provenFactualResponseEventCount,
+            1
+        )
+        XCTAssertEqual(
+            provenDetail.control.eventAlignedHeartRateResponse.value?
+                .responseBeatsPerMinute.mean,
+            0
+        )
+        XCTAssertNil(
+            provenDetail.control.eventAlignedHeartRateResponse.value?.standardError
+        )
+        XCTAssertEqual(provenDetail.control.eventAlignedHeartRateResponse.confidence, .low)
+        XCTAssertNil(unknownDetail.quality.commandAcknowledgement.latencySeconds.value)
+        XCTAssertNil(unknownDetail.quality.commandFactualResponse.latencySeconds.value)
+        XCTAssertNil(unknownDetail.control.eventAlignedHeartRateResponse.value)
+        XCTAssertEqual(unknownDetail.quality.commandAcknowledgement.unknownAssociationCount, 1)
+        XCTAssertGreaterThanOrEqual(
+            unknownDetail.quality.commandFactualResponse.unknownAssociationCount,
+            1
+        )
+        XCTAssertEqual(
+            provenDetail.quality.heartRateCoverage,
+            unknownDetail.quality.heartRateCoverage
+        )
+        XCTAssertEqual(
+            provenDetail.quality.treadmillFactualCoverage,
+            unknownDetail.quality.treadmillFactualCoverage
+        )
+        XCTAssertEqual(provenDetail.control.heartRateError, unknownDetail.control.heartRateError)
+        XCTAssertEqual(provenDetail.control.zoneDurations, unknownDetail.control.zoneDurations)
+    }
+
+    func testMalformedProvenResponseEdgesCannotProduceCausalMetrics() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let treadmill = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.treadmill(
+                ordinal: $0.offset + 1,
+                seconds: Double($0.element),
+                speed: 4,
+                factual: true
+            )
+        }
+        let common = fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+        let missingSend = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                treadmill: treadmill,
+                events: common + fixture.causalEdgeEvents(proven: true, includeSend: false)
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        let responseBeforeSend = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                treadmill: treadmill,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    responseEventSeconds: 11.5
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertEqual(missingSend.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertNil(missingSend.quality.commandFactualResponse.latencySeconds.value)
+        XCTAssertNil(missingSend.control.eventAlignedHeartRateResponse.value)
+        XCTAssertTrue(missingSend.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+
+        XCTAssertEqual(responseBeforeSend.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertNil(responseBeforeSend.quality.commandFactualResponse.latencySeconds.value)
+        XCTAssertNil(responseBeforeSend.control.eventAlignedHeartRateResponse.value)
+        XCTAssertTrue(responseBeforeSend.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+    }
+
+    func testStableFactualSpeedDriftAndCommandDomainSpeedDeltasAreVersionedMetrics() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 120)
+        let heartRate = stride(from: 0, through: 115, by: 5).enumerated().map {
+            fixture.heartRate(
+                ordinal: $0.offset + 1,
+                seconds: Double($0.element),
+                bpm: UInt16(80 + (2 * $0.offset))
+            )
+        }
+        let treadmill = stride(from: 0, through: 115, by: 5).enumerated().map {
+            fixture.treadmill(
+                ordinal: $0.offset + 1,
+                seconds: Double($0.element),
+                speed: 4,
+                factual: true
+            )
+        }
+        let decisions = fixture.speedDecisionEvents(speeds: [3, 4, 3.5], at: [0, 20, 40])
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                treadmill: treadmill,
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 120) + decisions
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(130)
+        ))
+
+        XCTAssertNotNil(detail.control.stableSpeedHeartRateDrift.value)
+        XCTAssertGreaterThan(
+            detail.control.stableSpeedHeartRateDrift.value!.slopeBeatsPerMinutePerMinute,
+            0
+        )
+        XCTAssertEqual(detail.control.speedDeltaKilometresPerHour.value?.count, 2)
+        XCTAssertEqual(detail.control.speedDeltaKilometresPerHour.value?.minimum, -0.5)
+        XCTAssertEqual(detail.control.speedDeltaKilometresPerHour.value?.maximum, 1)
+        XCTAssertGreaterThan(detail.control.overshoot.value!.durationSeconds, 0)
+        XCTAssertGreaterThan(detail.control.undershoot.value!.durationSeconds, 0)
+    }
+
+    func testCooldownRecoveryUsesNamedTimestampWindowsAndReportsMissingCoverage() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 150)
+        let completeHeartRate = stride(from: 0, through: 150, by: 5).enumerated().map { item in
+            let seconds = Double(item.element)
+            let bpm = seconds < 20 ? 120 : 140 - Int((seconds - 20) / 5)
+            return fixture.heartRate(
+                ordinal: item.offset + 1,
+                seconds: seconds,
+                bpm: UInt16(max(90, bpm))
+            )
+        }
+        let treadmill = stride(from: 0, through: 145, by: 5).enumerated().map { item in
+            fixture.treadmill(
+                ordinal: item.offset + 1,
+                seconds: Double(item.element),
+                speed: item.element >= 60 ? 2 : 3,
+                factual: true
+            )
+        }
+        let events = fixture.cooldownEvents(start: 20, end: 150, target: 120)
+        let complete = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(heartRate: completeHeartRate, treadmill: treadmill, events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(160)
+        )).control.cooldown
+
+        XCTAssertEqual(complete.hrr10.value!, 2, accuracy: 0.000_001)
+        XCTAssertEqual(complete.hrr30.value!, 6, accuracy: 0.000_001)
+        XCTAssertEqual(complete.hrr60.value!, 12, accuracy: 0.000_001)
+        XCTAssertEqual(complete.hrr120.value!, 24, accuracy: 0.000_001)
+        XCTAssertLessThan(complete.recoverySlopeBeatsPerMinutePerMinute.value!, 0)
+        XCTAssertGreaterThan(complete.minimumFactualSpeedSeconds.value!, 0)
+        XCTAssertEqual(complete.finishReason.value, "completed")
+        XCTAssertNil(complete.timeoutBlocker.value)
+
+        let missingWindow = completeHeartRate.filter {
+            let time = $0.timestamp.effectiveElapsed.seconds
+            return !(75...85).contains(time)
+        }
+        let missing = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(heartRate: missingWindow, treadmill: treadmill, events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(160)
+        )).control.cooldown
+        XCTAssertNil(missing.hrr60.value)
+        XCTAssertEqual(missing.hrr60.confidence, .unavailable)
+        XCTAssertNotNil(missing.hrr10.value)
+    }
+
+    func testUncoveredStateMetricsAreUnavailableInsteadOfFabricatedZero() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 40)
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                events: fixture.cooldownEvents(start: 10, end: 40, target: 120)
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(50)
+        ))
+
+        XCTAssertTrue(detail.control.zoneDurations.isEmpty)
+        XCTAssertNil(detail.control.overshoot.value)
+        XCTAssertNil(detail.control.undershoot.value)
+        XCTAssertNil(detail.control.cooldown.heartRateBelowTargetSeconds.value)
+        XCTAssertNil(detail.control.cooldown.minimumFactualSpeedSeconds.value)
+        XCTAssertNil(detail.control.cooldown.targetAndMinimumSpeedSeconds.value)
+        XCTAssertNil(detail.control.cooldown.targetAndMinimumSpeedMaximumStreakSeconds.value)
+    }
+
+    func testEvidenceHashAndLogicalRecomputeAreDeterministicAcrossInputOrdering() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 20)
+        let heartRate = [
+            fixture.heartRate(ordinal: 1, seconds: 0, bpm: 100),
+            fixture.heartRate(ordinal: 2, seconds: 5, bpm: 105),
+            fixture.heartRate(ordinal: 3, seconds: 10, bpm: 110),
+        ]
+        let events = fixture.phaseEvents(mainAt: 0, finishedAt: 20)
+        let first = try WorkoutAnalyzerV1.analyze(
+            fixture.input(heartRate: heartRate, events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(30)
+        )
+        let second = try WorkoutAnalyzerV1.analyze(
+            fixture.input(heartRate: heartRate.reversed(), events: events.reversed()),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        )
+
+        XCTAssertEqual(first.evidenceHash, second.evidenceHash)
+        XCTAssertEqual(first.analysisID, second.analysisID)
+        XCTAssertEqual(first.recordID, second.recordID)
+        XCTAssertEqual(first.logicalResult, second.logicalResult)
+        XCTAssertNotEqual(first.generatedAt, second.generatedAt)
+    }
+
+    func testCanonicalFrameCannotBridgeNativeObservationGap() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 20)
+        let heartRate = fixture.heartRate(ordinal: 1, seconds: 0, bpm: 100)
+        let events = fixture.phaseEvents(mainAt: 0, finishedAt: 20)
+        let withoutFrame = try WorkoutAnalyzerV1.analyze(
+            fixture.input(heartRate: [heartRate], events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(30)
+        )
+        let withFrame = try WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: [heartRate],
+                events: events,
+                frames: [fixture.staleFrame(heartRate: heartRate, seconds: 15)]
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(30)
+        )
+        let withoutDetail = try decodeDetail(withoutFrame)
+        let withDetail = try decodeDetail(withFrame)
+
+        XCTAssertEqual(withoutDetail.quality.heartRateCoverage.coveredSeconds, 7)
+        XCTAssertEqual(withDetail.quality.heartRateCoverage.coveredSeconds, 7)
+        XCTAssertEqual(withoutFrame.keyMetrics, withFrame.keyMetrics)
+        XCTAssertEqual(withoutDetail.control, withDetail.control)
+        XCTAssertNotEqual(withoutFrame.evidenceHash, withFrame.evidenceHash)
+    }
+
+    func testSourceTransitionEndsPriorHeartRateHold() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 20)
+        let sourceB = fixture.source(ordinal: 2, kind: .bluetooth)
+        let events = fixture.phaseEvents(mainAt: 0, finishedAt: 20) + [
+            fixture.event(
+                ordinal: 90,
+                seconds: 5,
+                payload: .sourceTransition(SourceTransition(
+                    previousSourceID: fixture.primarySource.id,
+                    currentSourceID: sourceB.id,
+                    reason: "fixture-switch"
+                ))
+            ),
+        ]
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: [
+                    fixture.heartRate(ordinal: 1, seconds: 0, bpm: 100),
+                    fixture.heartRate(
+                        ordinal: 2,
+                        seconds: 10,
+                        bpm: 110,
+                        source: sourceB
+                    ),
+                ],
+                events: events
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(30)
+        ))
+
+        XCTAssertEqual(detail.quality.heartRateCoverage.coveredSeconds, 12)
+        XCTAssertEqual(detail.quality.heartRateCoverage.uncoveredSeconds, 8)
+        XCTAssertEqual(detail.quality.sourceSwitchCount, 1)
+    }
+
+    private func decodeDetail(_ result: WorkoutAnalysisResult) throws -> WorkoutAnalysisDetailV1 {
+        XCTAssertEqual(result.detailSchemaVersion, WorkoutAnalysisDetailV1.schemaVersion)
+        return try JSONDecoder().decode(
+            WorkoutAnalysisDetailV1.self,
+            from: result.versionedDetailPayload
+        )
+    }
+}
+
+private struct AnalysisFixture {
+    let baseDate = Date(timeIntervalSince1970: 1_900_000_000)
+    let session: WorkoutSessionRecord
+    let primarySource: SignalSourceIdentity
+    let treadmillSource: SignalSourceIdentity
+
+    init(
+        sessionSeconds: Double,
+        lifecycle: SessionLifecycleState = .completed,
+        recorderComplete: Bool = true,
+        lostNative: UInt64 = 0,
+        incompleteReason: String? = nil
+    ) {
+        let sessionID = SessionID(rawValue: Self.uuid(1))
+        primarySource = SignalSourceIdentity(
+            id: SourceID(rawValue: Self.uuid(2)),
+            providerKind: .watchMediated,
+            stableLocalKey: "fixture-watch"
+        )
+        treadmillSource = SignalSourceIdentity(
+            id: SourceID(rawValue: Self.uuid(3)),
+            providerKind: .treadmillProtocol,
+            stableLocalKey: "fixture-treadmill"
+        )
+        let configurationPayload = Data(#"{"targetHeartRate":100,"heartRateZones":[90,110,130,150],"cooldownTargetHeartRate":120,"cooldownMinimumSpeedKilometresPerHour":2.0}"#.utf8)
+        session = WorkoutSessionRecord(
+            recordID: RecordID(rawValue: Self.uuid(4)),
+            sessionID: sessionID,
+            profileLocalIdentifier: "fixture-profile",
+            lifecycleState: lifecycle,
+            workoutMode: .heartRateControlled,
+            startedAt: baseDate,
+            endedAt: baseDate.addingTimeInterval(sessionSeconds),
+            endedElapsed: Self.elapsed(sessionSeconds),
+            incompleteReason: incompleteReason,
+            appContext: AppRuntimeContext(
+                appVersion: "1",
+                buildNumber: "1",
+                operatingSystemVersion: "test"
+            ),
+            versions: RuntimeVersionContext(
+                telemetrySchema: TelemetrySchemaVersion(rawValue: "1.0.0"),
+                algorithm: AlgorithmVersion(rawValue: "fixture-algorithm"),
+                safetyPolicy: SafetyPolicyVersion(rawValue: "fixture-safety"),
+                workoutProtocol: WorkoutProtocolVersion(rawValue: "fixture-workout")
+            ),
+            configuration: ImmutableConfigurationSnapshot(
+                id: ConfigurationSnapshotID(rawValue: Self.uuid(5)),
+                formatVersion: 1,
+                format: .canonicalJSON,
+                canonicalPayload: configurationPayload,
+                contentHash: ContentHash(
+                    algorithm: .sha256,
+                    lowercaseHexDigest: String(repeating: "a", count: 64)
+                )
+            ),
+            healthKitWorkoutIdentifier: nil,
+            treadmill: KnownTreadmillMetadata(model: "fixture", protocolName: "ftms"),
+            recorderHealth: RecorderHealthSummary(
+                isComplete: recorderComplete,
+                lostCriticalRecordCount: 0,
+                lostNativeRecordCount: lostNative,
+                lastPersistedElapsed: Self.elapsed(sessionSeconds)
+            )
+        )
+    }
+
+    func input<H: Sequence, T: Sequence, E: Sequence, F: Sequence>(
+        heartRate: H = [HeartRateObservation](),
+        treadmill: T = [TreadmillObservation](),
+        events: E,
+        frames: F = [CanonicalFrame]()
+    ) -> WorkoutAnalysisInput where
+        H.Element == HeartRateObservation,
+        T.Element == TreadmillObservation,
+        E.Element == WorkoutEvent,
+        F.Element == CanonicalFrame
+    {
+        WorkoutAnalysisInput(
+            session: session,
+            heartRate: Array(heartRate),
+            treadmill: Array(treadmill),
+            events: Array(events),
+            frames: Array(frames)
+        )
+    }
+
+    func source(ordinal: Int, kind: SignalProviderKind) -> SignalSourceIdentity {
+        SignalSourceIdentity(
+            id: SourceID(rawValue: uuid(100 + ordinal)),
+            providerKind: kind,
+            stableLocalKey: "fixture-source-\(ordinal)"
+        )
+    }
+
+    func heartRate(
+        ordinal: Int,
+        seconds: Double,
+        bpm: UInt16,
+        source: SignalSourceIdentity? = nil,
+        quality: QualityFlags = [],
+        measuredElapsedAvailable: Bool = true
+    ) -> HeartRateObservation {
+        HeartRateObservation(
+            recordID: RecordID(rawValue: uuid(1_000 + ordinal)),
+            observationID: ObservationID(rawValue: uuid(2_000 + ordinal)),
+            sessionID: session.sessionID,
+            source: source ?? primarySource,
+            beatsPerMinute: bpm,
+            arrivalOrder: UInt64(ordinal),
+            providerSequence: Int64(ordinal),
+            providerSampleIdentity: nil,
+            timestamp: timestamp(seconds: seconds, measuredElapsedAvailable: measuredElapsedAvailable),
+            provenance: .reportedByProvider,
+            freshness: freshness(seconds: seconds),
+            quality: quality,
+            controlUse: .acceptedNotUsed
+        )
+    }
+
+    func treadmill(
+        ordinal: Int,
+        seconds: Double,
+        speed: Double,
+        factual: Bool,
+        quality: QualityFlags = []
+    ) -> TreadmillObservation {
+        TreadmillObservation(
+            recordID: RecordID(rawValue: uuid(3_000 + ordinal)),
+            observationID: ObservationID(rawValue: uuid(4_000 + ordinal)),
+            sessionID: session.sessionID,
+            source: treadmillSource,
+            nativeSpeed: NativeTreadmillSpeed(
+                value: speed,
+                unit: factual ? .kilometresPerHour : .unknown
+            ),
+            deviceState: .moving,
+            arrivalOrder: UInt64(ordinal),
+            timestamp: timestamp(seconds: seconds),
+            provenance: .decodedDeviceReport,
+            freshness: freshness(seconds: seconds),
+            quality: quality
+        )
+    }
+
+    func phaseEvents(mainAt: Double, finishedAt: Double) -> [WorkoutEvent] {
+        [
+            event(
+                ordinal: 1,
+                seconds: mainAt,
+                payload: .workoutPhase(WorkoutPhaseTransition(previous: nil, current: .main))
+            ),
+            event(
+                ordinal: 2,
+                seconds: finishedAt,
+                payload: .workoutPhase(WorkoutPhaseTransition(previous: .main, current: .finished))
+            ),
+        ]
+    }
+
+    func cooldownEvents(start: Double, end: Double, target: UInt16) -> [WorkoutEvent] {
+        [
+            event(
+                ordinal: 1,
+                seconds: 0,
+                payload: .workoutPhase(WorkoutPhaseTransition(previous: nil, current: .main))
+            ),
+            event(
+                ordinal: 2,
+                seconds: start,
+                payload: .workoutPhase(WorkoutPhaseTransition(previous: .main, current: .cooldown))
+            ),
+            event(
+                ordinal: 3,
+                seconds: start,
+                payload: .cooldown(CooldownEvent(lifecycle: .started, targetHeartRate: target))
+            ),
+            event(
+                ordinal: 4,
+                seconds: end - 0.001,
+                payload: .cooldown(CooldownEvent(lifecycle: .completed, targetHeartRate: target))
+            ),
+            event(
+                ordinal: 5,
+                seconds: end,
+                payload: .workoutPhase(WorkoutPhaseTransition(previous: .cooldown, current: .finished))
+            ),
+        ]
+    }
+
+    func speedDecisionEvents(speeds: [Double], at times: [Double]) -> [WorkoutEvent] {
+        zip(speeds, times).enumerated().map { index, row in
+            event(
+                ordinal: 100 + index,
+                seconds: row.1,
+                payload: .treadmillEvidence(.decision(
+                    TreadmillControlDecisionEvidence(
+                        decisionID: DecisionID(rawValue: uuid(5_000 + index)),
+                        source: .heartRateControl,
+                        intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: row.0)),
+                        heartRateInputs: [],
+                        occurredAt: baseDate.addingTimeInterval(row.1),
+                        connectionEpoch: TreadmillConnectionEpoch(rawValue: uuid(90))
+                    )
+                ))
+            )
+        }
+    }
+
+    func causalEdgeEvents(
+        proven: Bool,
+        includeSend: Bool = true,
+        responseEventSeconds: Double = 15
+    ) -> [WorkoutEvent] {
+        let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
+        let firstDecisionID = DecisionID(rawValue: uuid(5_100))
+        let decisionID = DecisionID(rawValue: uuid(5_101))
+        let commandID = CommandID(rawValue: uuid(5_102))
+        let attemptID = CommandAttemptID(rawValue: uuid(5_103))
+        let send = TreadmillCommandSendAttemptEvidence(
+            commandID: commandID,
+            decisionID: decisionID,
+            attemptID: attemptID,
+            attemptNumber: 1,
+            protocolKind: .ftms,
+            connectionEpoch: epoch,
+            sentAt: baseDate.addingTimeInterval(12),
+            writeType: .withResponse
+        )
+        var normalizer = TreadmillObservationNormalizer()
+        let unassociatedResponse = normalizer.normalize(
+            .ftms(
+                speedRawHundredthsKmh: 400,
+                rawState: 1,
+                deviceState: .moving,
+                connectionEpoch: epoch,
+                receivedAt: baseDate.addingTimeInterval(15)
+            ),
+            unitsTruth: nil,
+            observationID: ObservationID(rawValue: uuid(5_104)),
+            recordedAt: baseDate.addingTimeInterval(15)
+        )
+        let acknowledgement: LegacyAcknowledgementObservation
+        let response: TreadmillObservationEvidence
+        if proven {
+            acknowledgement = LegacyAcknowledgementObservation.deterministicallyAssociated(
+                protocolKind: .ftms,
+                connectionEpoch: epoch,
+                receivedAt: baseDate.addingTimeInterval(13),
+                recordedAt: baseDate.addingTimeInterval(13),
+                sendAttempt: send,
+                proof: TreadmillDeterministicAcknowledgementProof(evidenceKey: uuid(5_105))
+            )!
+            response = TreadmillObservationEvidence.deterministicallyAssociated(
+                unassociatedResponse,
+                sendAttempt: send,
+                proof: TreadmillDeterministicResponseProof(evidenceKey: uuid(5_106))
+            )!
+        } else {
+            acknowledgement = .unresolved(
+                protocolKind: .ftms,
+                connectionEpoch: epoch,
+                receivedAt: baseDate.addingTimeInterval(13),
+                recordedAt: baseDate.addingTimeInterval(13)
+            )
+            response = unassociatedResponse
+        }
+        var events = [
+            event(
+                ordinal: 30,
+                seconds: 0,
+                payload: .treadmillEvidence(.decision(
+                    TreadmillControlDecisionEvidence(
+                        decisionID: firstDecisionID,
+                        source: .heartRateControl,
+                        intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: 3)),
+                        heartRateInputs: [],
+                        occurredAt: baseDate,
+                        connectionEpoch: epoch
+                    )
+                ))
+            ),
+            event(
+                ordinal: 31,
+                seconds: 10,
+                payload: .treadmillEvidence(.decision(
+                    TreadmillControlDecisionEvidence(
+                        decisionID: decisionID,
+                        source: .heartRateControl,
+                        intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: 4)),
+                        heartRateInputs: [],
+                        occurredAt: baseDate.addingTimeInterval(10),
+                        connectionEpoch: epoch
+                    )
+                ))
+            ),
+            event(
+                ordinal: 32,
+                seconds: 11,
+                payload: .treadmillEvidence(.commandEnqueued(
+                    TreadmillCommandEnqueuedEvidence(
+                        commandID: commandID,
+                        decisionID: decisionID,
+                        kind: .setSpeed(CommandedSpeed(
+                            nativeValue: 400,
+                            nativeUnit: .controllerNative(code: "ftms_hundredths_kmh")
+                        )),
+                        protocolKind: .ftms,
+                        connectionEpoch: epoch,
+                        enqueuedAt: baseDate.addingTimeInterval(11)
+                    )
+                ))
+            ),
+            event(
+                ordinal: 34,
+                seconds: 13,
+                payload: .treadmillEvidence(.acknowledgement(acknowledgement))
+            ),
+            event(
+                ordinal: 35,
+                seconds: responseEventSeconds,
+                payload: .treadmillEvidence(.observation(response))
+            ),
+        ]
+        if includeSend {
+            events.append(
+                event(ordinal: 33, seconds: 12, payload: .treadmillEvidence(.sendAttempt(send)))
+            )
+        }
+        return events
+    }
+
+    func event(
+        ordinal: Int,
+        seconds: Double,
+        payload: WorkoutEventPayload
+    ) -> WorkoutEvent {
+        WorkoutEvent(
+            recordID: RecordID(rawValue: uuid(6_000 + ordinal)),
+            sessionID: session.sessionID,
+            timestamp: EventTimestamp(
+                occurredAt: baseDate.addingTimeInterval(seconds),
+                recordedAt: baseDate.addingTimeInterval(seconds + 0.001),
+                occurredElapsed: elapsed(seconds),
+                recordedElapsed: elapsed(seconds + 0.001)
+            ),
+            payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
+        )
+    }
+
+    func staleFrame(
+        heartRate: HeartRateObservation,
+        seconds: Int64
+    ) -> CanonicalFrame {
+        CanonicalFrame(
+            frameID: FrameID(rawValue: uuid(7_000 + Int(seconds))),
+            recordID: RecordID(rawValue: uuid(8_000 + Int(seconds))),
+            sessionID: session.sessionID,
+            canonicalElapsedSecond: seconds,
+            materializedAt: RecordTimestamp(
+                recordedAt: baseDate.addingTimeInterval(Double(seconds)),
+                elapsed: elapsed(Double(seconds))
+            ),
+            heartRateEvidence: HeartRateFrameEvidence(
+                observationID: heartRate.observationID,
+                recordID: heartRate.recordID,
+                sourceID: heartRate.source.id,
+                beatsPerMinute: heartRate.beatsPerMinute,
+                measuredAt: heartRate.timestamp.measuredAt,
+                receivedAt: heartRate.timestamp.receivedAt,
+                evidenceElapsed: heartRate.timestamp.effectiveElapsed,
+                ageAtMaterialization: elapsed(Double(seconds)),
+                freshness: .stale,
+                provenance: heartRate.provenance
+            ),
+            treadmillEvidence: nil,
+            precedingGap: CanonicalGapBoundary(
+                missingSinceElapsedSecond: 7,
+                kind: .noObservation
+            )
+        )
+    }
+
+    func timestamp(
+        seconds: Double,
+        measuredElapsedAvailable: Bool = true
+    ) -> ObservationTimestamp {
+        ObservationTimestamp(
+            measuredAt: measuredElapsedAvailable ? baseDate.addingTimeInterval(seconds) : nil,
+            receivedAt: baseDate.addingTimeInterval(seconds + 0.05),
+            recordedAt: baseDate.addingTimeInterval(seconds + 0.06),
+            measuredElapsed: measuredElapsedAvailable ? elapsed(seconds) : nil,
+            receivedElapsed: elapsed(seconds + 0.05),
+            recordedElapsed: elapsed(seconds + 0.06)
+        )
+    }
+
+    func freshness(seconds: Double) -> EvidenceFreshness {
+        EvidenceFreshness(
+            state: .fresh,
+            evaluatedAt: RecordTimestamp(
+                recordedAt: baseDate.addingTimeInterval(seconds + 0.06),
+                elapsed: elapsed(seconds + 0.06)
+            ),
+            age: elapsed(0.06),
+            policyVersion: session.versions.safetyPolicy
+        )
+    }
+
+    func uuid(_ ordinal: Int) -> UUID { Self.uuid(ordinal) }
+
+    private static func uuid(_ ordinal: Int) -> UUID {
+        UUID(uuidString: String(format: "90000000-0000-0000-0000-%012d", ordinal))!
+    }
+
+    private func elapsed(_ seconds: Double) -> ElapsedDuration {
+        Self.elapsed(seconds)
+    }
+
+    private static func elapsed(_ seconds: Double) -> ElapsedDuration {
+        ElapsedDuration(microseconds: Int64((seconds * 1_000_000).rounded()))
+    }
+}

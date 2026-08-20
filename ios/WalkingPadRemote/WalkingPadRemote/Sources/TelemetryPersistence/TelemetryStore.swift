@@ -16,6 +16,7 @@ public enum TelemetryStoreError: Error, Equatable, Sendable {
     case invalidNumericValue(String)
     case corruptStoredRecord(String)
     case nonMonotonicRecorderSequence
+    case conflictingAnalysis(String)
 }
 
 public struct StoredSignalSource: Codable, Hashable, Sendable {

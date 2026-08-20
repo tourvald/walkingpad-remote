@@ -38,6 +38,7 @@ resolve a concrete remaining ambiguity.
 | Issue #31 host measurements, A/B recorder decision, signpost catalog, or soak commands | [`issue-31-performance-report.md`](issue-31-performance-report.md) |
 | Dual-write, parity, migration, cutover, physical gate, rollback, or retirement | [`rollout-and-migration.md`](rollout-and-migration.md) |
 | Issue #32 parity categories, read-only inputs, report schema, or deterministic replay scenarios | [`issue-32-parity-validator.md`](issue-32-parity-validator.md) |
+| Issue #33 Analyzer V1 inputs, timestamp holds, metrics, quality grading, causal coverage, or recompute lifecycle | [`issue-33-post-workout-analysis.md`](issue-33-post-workout-analysis.md) |
 
 ## Durable cross-Issue decisions
 

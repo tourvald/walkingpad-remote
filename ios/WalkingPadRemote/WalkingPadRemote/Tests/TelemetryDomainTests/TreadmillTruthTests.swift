@@ -308,6 +308,63 @@ final class TreadmillTruthTests: XCTestCase {
         XCTAssertEqual(second.arrivalOrder, 2)
     }
 
+    func testFactualResponseAssociationRequiresOpaqueProofAndMatchingConnectionEpoch() throws {
+        let epoch = connectionEpoch(9)
+        var normalizer = TreadmillObservationNormalizer()
+        let observation = normalizer.normalize(
+            .ftms(
+                speedRawHundredthsKmh: 420,
+                rawState: nil,
+                deviceState: .moving,
+                connectionEpoch: epoch,
+                receivedAt: receivedAt
+            ),
+            unitsTruth: nil,
+            observationID: observationID(60),
+            recordedAt: recordedAt
+        )
+        let commandID = CommandID(rawValue: uuid(61))
+        let attemptID = CommandAttemptID(rawValue: uuid(62))
+        let attempt = TreadmillCommandSendAttemptEvidence(
+            commandID: commandID,
+            decisionID: nil,
+            attemptID: attemptID,
+            attemptNumber: 1,
+            protocolKind: .ftms,
+            connectionEpoch: epoch,
+            sentAt: receivedAt.addingTimeInterval(-1),
+            writeType: .withResponse
+        )
+        let proof = TreadmillDeterministicResponseProof(evidenceKey: uuid(63))
+
+        XCTAssertEqual(observation.responseAssociation, .unassociated)
+        let associated = try XCTUnwrap(
+            TreadmillObservationEvidence.deterministicallyAssociated(
+                observation,
+                sendAttempt: attempt,
+                proof: proof
+            )
+        )
+        XCTAssertEqual(associated.commandID, commandID)
+        XCTAssertEqual(associated.attemptID, attemptID)
+
+        let wrongEpochAttempt = TreadmillCommandSendAttemptEvidence(
+            commandID: commandID,
+            decisionID: nil,
+            attemptID: attemptID,
+            attemptNumber: 1,
+            protocolKind: .ftms,
+            connectionEpoch: connectionEpoch(10),
+            sentAt: receivedAt.addingTimeInterval(-1),
+            writeType: .withResponse
+        )
+        XCTAssertNil(TreadmillObservationEvidence.deterministicallyAssociated(
+            observation,
+            sendAttempt: wrongEpochAttempt,
+            proof: proof
+        ))
+    }
+
     private func connectionEpoch(_ value: UInt8) -> TreadmillConnectionEpoch {
         TreadmillConnectionEpoch(rawValue: uuid(value))
     }

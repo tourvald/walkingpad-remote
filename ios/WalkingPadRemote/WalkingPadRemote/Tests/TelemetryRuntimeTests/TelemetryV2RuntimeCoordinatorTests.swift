@@ -80,6 +80,37 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.status, .incomplete("ended-before-recorder-ready"))
     }
 
+    func testPostWorkoutAnalysisCannotDelayStopCompletionOrNextSession() async throws {
+        let persistence = RuntimePersistence(suspendAnalysis: true)
+        let coordinator = TelemetryV2RuntimeCoordinator {
+            persistence
+        }
+        let sessionA = Self.descriptor(
+            legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000081")!
+        )
+        let sessionB = Self.descriptor(
+            legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000082")!
+        )
+
+        coordinator.beginSession(sessionA)
+        try await eventually { coordinator.activeSessionIDForTesting == sessionA.sessionID }
+        coordinator.endSession(reason: "session-a-stop")
+        try await eventually { await persistence.finalizations.count == 1 }
+        try await eventually { await persistence.analysisSessionIDs.count == 1 }
+        XCTAssertEqual(coordinator.status, .idle)
+
+        coordinator.beginSession(sessionB)
+        try await eventually { coordinator.activeSessionIDForTesting == sessionB.sessionID }
+        XCTAssertEqual(coordinator.activeSessionIDForTesting, sessionB.sessionID)
+
+        await persistence.resumeAnalysis()
+        coordinator.endSession(reason: "session-b-stop")
+        try await eventually { await persistence.finalizations.count == 2 }
+        try await eventually { await persistence.analysisSessionIDs.count == 2 }
+        XCTAssertEqual(coordinator.status, .idle)
+        await persistence.resumeAnalysis()
+    }
+
     func testFinalizeWinsPublishedInstallWithStagingLossAndCannotComplete() async throws {
         let persistence = RuntimePersistence(suspendFinalize: true)
         let factoryGate = DispatchSemaphore(value: 0)
@@ -1075,7 +1106,10 @@ private final class ManualRuntimeClock: TelemetryV2RuntimeClock, @unchecked Send
     }
 }
 
-private actor RuntimePersistence: TelemetryRecorderPersistence {
+private actor RuntimePersistence:
+    TelemetryRecorderPersistence,
+    TelemetryPostWorkoutAnalysisCapability
+{
     struct Snapshot: Sendable {
         let headers: [WorkoutSessionRecord]
         let records: [TelemetryPersistenceRecord]
@@ -1094,17 +1128,22 @@ private actor RuntimePersistence: TelemetryRecorderPersistence {
     private(set) var unfinishedCallCount = 0
     private let suspendBegin: Bool
     private let suspendFinalize: Bool
+    private let suspendAnalysis: Bool
     private let finalizeFailure: Bool
     private var beginContinuation: CheckedContinuation<Void, Never>?
     private var finalizeContinuation: CheckedContinuation<Void, Never>?
+    private var analysisContinuation: CheckedContinuation<Void, Never>?
+    private(set) var analysisSessionIDs: [SessionID] = []
 
     init(
         suspendBegin: Bool = false,
         suspendFinalize: Bool = false,
+        suspendAnalysis: Bool = false,
         finalizeFailure: Bool = false
     ) {
         self.suspendBegin = suspendBegin
         self.suspendFinalize = suspendFinalize
+        self.suspendAnalysis = suspendAnalysis
         self.finalizeFailure = finalizeFailure
     }
 
@@ -1137,6 +1176,20 @@ private actor RuntimePersistence: TelemetryRecorderPersistence {
         return []
     }
 
+    func analyzeTerminalWorkout(
+        sessionID: SessionID
+    ) async -> PostWorkoutAnalysisTriggerResult {
+        analysisSessionIDs.append(sessionID)
+        if suspendAnalysis {
+            await withCheckedContinuation { analysisContinuation = $0 }
+        }
+        return .inserted
+    }
+
+    func resumePendingWorkoutAnalyses() async -> [PostWorkoutAnalysisTriggerResult] {
+        []
+    }
+
     func resumeBegin() {
         beginContinuation?.resume()
         beginContinuation = nil
@@ -1145,6 +1198,11 @@ private actor RuntimePersistence: TelemetryRecorderPersistence {
     func resumeFinalize() {
         finalizeContinuation?.resume()
         finalizeContinuation = nil
+    }
+
+    func resumeAnalysis() {
+        analysisContinuation?.resume()
+        analysisContinuation = nil
     }
 
     func snapshot() -> Snapshot {

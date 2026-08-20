@@ -22,6 +22,10 @@ let package = Package(
             targets: ["TelemetryInstrumentation"]
         ),
         .library(
+            name: "TelemetryAnalysis",
+            targets: ["TelemetryAnalysis"]
+        ),
+        .library(
             name: "TelemetryRecorder",
             targets: ["TelemetryRecorder"]
         ),
@@ -54,6 +58,10 @@ let package = Package(
             name: "TelemetryInstrumentation"
         ),
         .target(
+            name: "TelemetryAnalysis",
+            dependencies: ["TelemetryDomain"]
+        ),
+        .target(
             name: "TelemetryRecorder",
             dependencies: ["TelemetryDomain", "TelemetryInstrumentation"]
         ),
@@ -61,6 +69,7 @@ let package = Package(
             name: "TelemetryPersistence",
             dependencies: [
                 "TelemetryDomain",
+                "TelemetryAnalysis",
                 "TelemetryInstrumentation",
                 "TelemetryRecorder",
             ]
@@ -154,6 +163,10 @@ let package = Package(
             dependencies: ["TelemetryDomain"]
         ),
         .testTarget(
+            name: "TelemetryAnalysisTests",
+            dependencies: ["TelemetryAnalysis", "TelemetryDomain"]
+        ),
+        .testTarget(
             name: "TelemetryRecorderTests",
             dependencies: ["TelemetryDomain", "TelemetryRecorder"]
         ),
@@ -186,7 +199,12 @@ let package = Package(
         ),
         .testTarget(
             name: "TelemetryPersistenceTests",
-            dependencies: ["TelemetryDomain", "TelemetryRecorder", "TelemetryPersistence"]
+            dependencies: [
+                "TelemetryAnalysis",
+                "TelemetryDomain",
+                "TelemetryRecorder",
+                "TelemetryPersistence",
+            ]
         ),
         .testTarget(
             name: "TelemetrySwiftDataGateTests",

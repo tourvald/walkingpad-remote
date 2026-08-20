@@ -165,6 +165,17 @@ public enum TreadmillObservedResponseAssociation: Codable, Hashable, Sendable {
     }
 }
 
+/// An opaque capability supplied only by a decoder that has independently
+/// proven a factual-response-to-attempt edge. Current production protocols
+/// create none.
+public struct TreadmillDeterministicResponseProof: Hashable, Sendable {
+    private let evidenceKey: UUID
+
+    init(evidenceKey: UUID) {
+        self.evidenceKey = evidenceKey
+    }
+}
+
 public struct TreadmillProviderObservation: Codable, Hashable, Sendable {
     public let protocolKind: TreadmillProtocolKind
     public let connectionEpoch: TreadmillConnectionEpoch
@@ -312,6 +323,37 @@ public struct TreadmillObservationEvidence: Codable, Hashable, Sendable {
 
     public var attemptID: CommandAttemptID? {
         responseAssociation.attemptID
+    }
+
+    public static func deterministicallyAssociated(
+        _ observation: Self,
+        sendAttempt: TreadmillCommandSendAttemptEvidence,
+        proof: TreadmillDeterministicResponseProof
+    ) -> Self? {
+        _ = proof
+        guard observation.connectionEpoch == sendAttempt.connectionEpoch else {
+            return nil
+        }
+        return Self(
+            observationID: observation.observationID,
+            protocolKind: observation.protocolKind,
+            connectionEpoch: observation.connectionEpoch,
+            nativeSpeed: observation.nativeSpeed,
+            factualSpeed: observation.factualSpeed,
+            rawDeviceState: observation.rawDeviceState,
+            deviceState: observation.deviceState,
+            measuredAt: observation.measuredAt,
+            receivedAt: observation.receivedAt,
+            recordedAt: observation.recordedAt,
+            arrivalOrder: observation.arrivalOrder,
+            freshness: observation.freshness,
+            quality: observation.quality,
+            provenance: observation.provenance,
+            responseAssociation: .deterministicallyCorrelated(
+                commandID: sendAttempt.commandID,
+                attemptID: sendAttempt.attemptID
+            )
+        )
     }
 }
 
