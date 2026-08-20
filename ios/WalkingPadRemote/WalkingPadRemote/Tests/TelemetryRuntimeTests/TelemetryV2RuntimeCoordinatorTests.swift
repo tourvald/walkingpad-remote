@@ -903,8 +903,10 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         switch (decision.action, decision.reason) {
         case (.enqueueSpeed, _): return "setSpeed"
         case (.noCommand, .withinTarget): return "hold"
-        case (.noCommand, .inertiaHold): return "inertiaHold"
-        case (.noCommand, .speedLimit): return "speedLimit"
+        case let (.noCommand, .other(value)) where value == "inertiaHold":
+            return "inertiaHold"
+        case let (.noCommand, .other(value)) where value == "speedLimit":
+            return "speedLimit"
         default: return nil
         }
     }
@@ -1004,8 +1006,8 @@ private struct Issue50ProductionDecisionFixture {
         let reasons: [ControlDecisionReason] = [
             .belowTarget,
             .withinTarget,
-            .inertiaHold,
-            .speedLimit,
+            .heartRateInertiaHold,
+            .heartRateSpeedLimit,
         ]
         let rows = legacyOutcomes.indices.map { index in
             let ordinal = index + 1

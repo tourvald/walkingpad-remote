@@ -141,7 +141,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "reason: .withinTarget",
                 "if direction > 0, let trend, trend > 0, let predictedValue",
                 "\"decision\": \"inertia_hold\"",
-                "reason: .inertiaHold",
+                "reason: .heartRateInertiaHold",
                 "let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)",
                 "if nextSpeed != currentTarget",
                 "let telemetryDecision = makeTreadmillDecision(",
@@ -150,7 +150,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "\"decision\": \"set\"",
                 "action: .enqueueSpeed(",
                 "\"decision\": \"limit\"",
-                "reason: .speedLimit",
+                "reason: .heartRateSpeedLimit",
             ],
             in: tick
         )

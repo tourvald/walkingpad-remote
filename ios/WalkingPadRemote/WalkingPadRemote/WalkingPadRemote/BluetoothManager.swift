@@ -4138,7 +4138,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             ])
                             observeSemanticHeartRateDecision(
                                 action: .noCommand,
-                                reason: .inertiaHold,
+                                reason: .heartRateInertiaHold,
                                 heartRateInputs: controlUseEvidence?.inputs ?? [],
                                 occurredAt: Date()
                             )
@@ -4206,7 +4206,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         ])
                         observeSemanticHeartRateDecision(
                             action: .noCommand,
-                            reason: .speedLimit,
+                            reason: .heartRateSpeedLimit,
                             heartRateInputs: controlUseEvidence?.inputs ?? [],
                             occurredAt: Date()
                         )
