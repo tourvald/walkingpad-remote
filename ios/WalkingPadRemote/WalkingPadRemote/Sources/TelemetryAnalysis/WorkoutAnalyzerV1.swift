@@ -538,6 +538,11 @@ private extension WorkoutAnalyzerV1 {
         let connectionEpoch: TreadmillConnectionEpoch?
     }
 
+    struct ProvenEdgeIdentity: Hashable {
+        let commandID: CommandID
+        let attemptID: CommandAttemptID
+    }
+
     struct DesiredDecision: Hashable {
         let decisionID: DecisionID
         let time: Double
@@ -558,12 +563,23 @@ private extension WorkoutAnalyzerV1 {
         init(events: [WorkoutEvent]) {
             var commands: Set<CommandID> = []
             var sends: [CommandAttemptID: SendAttempt] = [:]
-            var acknowledgements: Set<ProvenEdge> = []
-            var responses: Set<ProvenEdge> = []
+            var acknowledgements: [ProvenEdge] = []
+            var responses: [ProvenEdge] = []
+            var invalidAttemptIDs: Set<CommandAttemptID> = []
+            var duplicateSendRecordCount = 0
             var unknownAcknowledgements = 0
             var unknownResponses = 0
             var decisions: [DecisionID: DesiredDecision] = [:]
             var commandToDecision: [CommandID: DecisionID] = [:]
+
+            func recordSend(_ send: SendAttempt) {
+                if sends[send.attemptID] != nil {
+                    invalidAttemptIDs.insert(send.attemptID)
+                    duplicateSendRecordCount += 1
+                } else {
+                    sends[send.attemptID] = send
+                }
+            }
 
             for event in events.sorted(by: eventEvidenceOrder) {
                 let time = seconds(event.timestamp.occurredElapsed)
@@ -576,16 +592,16 @@ private extension WorkoutAnalyzerV1 {
                             commandToDecision[record.commandID] = decisionID
                         }
                     case let .sendAttempt(attemptID, attemptNumber):
-                        sends[attemptID] = SendAttempt(
+                        recordSend(SendAttempt(
                             commandID: record.commandID,
                             attemptID: attemptID,
                             attemptNumber: attemptNumber,
                             time: time,
                             protocolKind: nil,
                             connectionEpoch: nil
-                        )
+                        ))
                     case let .acknowledged(attemptID):
-                        acknowledgements.insert(ProvenEdge(
+                        acknowledgements.append(ProvenEdge(
                             commandID: record.commandID,
                             attemptID: attemptID,
                             time: time,
@@ -618,20 +634,20 @@ private extension WorkoutAnalyzerV1 {
                             commandToDecision[command.commandID] = decisionID
                         }
                     case let .sendAttempt(attempt):
-                        sends[attempt.attemptID] = SendAttempt(
+                        recordSend(SendAttempt(
                             commandID: attempt.commandID,
                             attemptID: attempt.attemptID,
                             attemptNumber: attempt.attemptNumber,
                             time: time,
                             protocolKind: attempt.protocolKind,
                             connectionEpoch: attempt.connectionEpoch
-                        )
+                        ))
                     case let .acknowledgement(acknowledgement):
                         switch acknowledgement.association {
                         case .unresolvedByLegacyRuntime:
                             unknownAcknowledgements += 1
                         case let .deterministicallyCorrelated(commandID, attemptID):
-                            acknowledgements.insert(ProvenEdge(
+                            acknowledgements.append(ProvenEdge(
                                 commandID: commandID,
                                 attemptID: attemptID,
                                 time: time,
@@ -645,7 +661,7 @@ private extension WorkoutAnalyzerV1 {
                         case .unassociated:
                             unknownResponses += 1
                         case let .deterministicallyCorrelated(commandID, attemptID):
-                            responses.insert(ProvenEdge(
+                            responses.append(ProvenEdge(
                                 commandID: commandID,
                                 attemptID: attemptID,
                                 time: time,
@@ -663,10 +679,19 @@ private extension WorkoutAnalyzerV1 {
                 }
             }
             commandIDs = commands
-            sendsByAttempt = sends
+            sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
             let sortedAcknowledgements = acknowledgements.sorted(by: edgeOrder)
             let sortedResponses = responses.sorted(by: edgeOrder)
-            let isValidEdge: (ProvenEdge) -> Bool = { edge in
+            let duplicateAcknowledgementKeys = duplicateEdgeIdentities(sortedAcknowledgements)
+            let duplicateResponseKeys = duplicateEdgeIdentities(sortedResponses)
+            let isValidEdge: (ProvenEdge, Set<ProvenEdgeIdentity>) -> Bool = {
+                edge, duplicateKeys in
+                let identity = ProvenEdgeIdentity(
+                    commandID: edge.commandID,
+                    attemptID: edge.attemptID
+                )
+                guard !invalidAttemptIDs.contains(edge.attemptID),
+                      !duplicateKeys.contains(identity) else { return false }
                 guard let send = sends[edge.attemptID] else { return false }
                 guard send.commandID == edge.commandID,
                       edge.time >= send.time else { return false }
@@ -684,13 +709,21 @@ private extension WorkoutAnalyzerV1 {
                     return false
                 }
             }
-            provenAcknowledgements = sortedAcknowledgements.filter(isValidEdge)
-            provenFactualResponses = sortedResponses.filter(isValidEdge)
+            provenAcknowledgements = sortedAcknowledgements.filter {
+                isValidEdge($0, duplicateAcknowledgementKeys)
+            }
+            provenFactualResponses = sortedResponses.filter {
+                isValidEdge($0, duplicateResponseKeys)
+            }
             unknownAcknowledgementCount = unknownAcknowledgements
             unknownFactualResponseCount = unknownResponses
-            invalidCausalEdgeCount = (sortedAcknowledgements + sortedResponses)
-                .filter { !isValidEdge($0) }
-                .count
+            invalidCausalEdgeCount = duplicateSendRecordCount
+                + sortedAcknowledgements.filter {
+                    !isValidEdge($0, duplicateAcknowledgementKeys)
+                }.count
+                + sortedResponses.filter {
+                    !isValidEdge($0, duplicateResponseKeys)
+                }.count
             desiredDecisions = decisions.values.sorted {
                 if $0.time != $1.time { return $0.time < $1.time }
                 return $0.decisionID.description < $1.decisionID.description
@@ -933,6 +966,11 @@ private extension WorkoutAnalyzerV1 {
                 var codes: [String] = []
                 if coverage.uncoveredSeconds > 0 { codes.append("heart-rate-uncovered-time") }
                 if speedCoverage.uncoveredSeconds > 0 { codes.append("factual-treadmill-uncovered-time") }
+                if recorderLoss { codes.append("recorder-loss") }
+                if !configurationAvailable { codes.append("configuration-payload-unavailable") }
+                if malformedCount > 0 {
+                    codes.append("malformed-or-invalid-native-evidence")
+                }
                 return PhaseQualitySummary(
                     phase: phaseKey(interval.phase),
                     durationSeconds: duration,
@@ -1431,10 +1469,12 @@ private extension WorkoutAnalyzerV1 {
             ])
         let finishReason = events.compactMap {
             event -> (time: Double, recordID: String, lifecycle: String)? in
+            let time = seconds(event.timestamp.occurredElapsed)
             guard case let .cooldown(cooldown) = event.payload.payload,
-                  range.contains(seconds(event.timestamp.occurredElapsed)) else { return nil }
+                  time >= range.lowerBound,
+                  time <= range.upperBound else { return nil }
             return (
-                seconds(event.timestamp.occurredElapsed),
+                time,
                 event.recordID.description,
                 cooldown.lifecycle.rawValue
             )
@@ -1605,6 +1645,16 @@ private extension WorkoutAnalyzerV1 {
             return lhs.commandID.description < rhs.commandID.description
         }
         return lhs.attemptID.description < rhs.attemptID.description
+    }
+
+    static func duplicateEdgeIdentities(
+        _ edges: [ProvenEdge]
+    ) -> Set<ProvenEdgeIdentity> {
+        Set(Dictionary(grouping: edges) { edge in
+            ProvenEdgeIdentity(commandID: edge.commandID, attemptID: edge.attemptID)
+        }.compactMap { identity, matches in
+            matches.count > 1 ? identity : nil
+        })
     }
 
     static func isUsableHeartRate(_ observation: HeartRateObservation) -> Bool {

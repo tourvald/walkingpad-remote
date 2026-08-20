@@ -363,6 +363,22 @@ final class TreadmillTruthTests: XCTestCase {
             sendAttempt: wrongEpochAttempt,
             proof: proof
         ))
+
+        let wrongProtocolAttempt = TreadmillCommandSendAttemptEvidence(
+            commandID: commandID,
+            decisionID: nil,
+            attemptID: attemptID,
+            attemptNumber: 1,
+            protocolKind: .fitShow,
+            connectionEpoch: epoch,
+            sentAt: receivedAt.addingTimeInterval(-1),
+            writeType: .withResponse
+        )
+        XCTAssertNil(TreadmillObservationEvidence.deterministicallyAssociated(
+            observation,
+            sendAttempt: wrongProtocolAttempt,
+            proof: proof
+        ))
     }
 
     private func connectionEpoch(_ value: UInt8) -> TreadmillConnectionEpoch {

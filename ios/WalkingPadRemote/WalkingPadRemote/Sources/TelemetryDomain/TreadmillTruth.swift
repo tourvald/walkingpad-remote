@@ -331,7 +331,8 @@ public struct TreadmillObservationEvidence: Codable, Hashable, Sendable {
         proof: TreadmillDeterministicResponseProof
     ) -> Self? {
         _ = proof
-        guard observation.connectionEpoch == sendAttempt.connectionEpoch else {
+        guard observation.protocolKind == sendAttempt.protocolKind,
+              observation.connectionEpoch == sendAttempt.connectionEpoch else {
             return nil
         }
         return Self(

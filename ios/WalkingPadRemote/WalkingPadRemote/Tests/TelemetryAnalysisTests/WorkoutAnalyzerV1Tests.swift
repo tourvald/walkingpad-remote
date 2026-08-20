@@ -108,6 +108,10 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertEqual(detail.quality.sourceSwitchCount, 2)
         XCTAssertEqual(detail.quality.treadmillFactualCoverage.coveredSeconds, 0)
         XCTAssertEqual(detail.quality.commandAcknowledgement.unknownAssociationCount, 1)
+        XCTAssertTrue(detail.quality.phases.allSatisfy {
+            $0.exclusionCodes.contains("recorder-loss")
+                && $0.exclusionCodes.contains("malformed-or-invalid-native-evidence")
+        })
     }
 
     func testProvenAndUnknownEdgesChangeOnlyCausalMetrics() throws {
@@ -285,6 +289,75 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         }
     }
 
+    func testDuplicateCausalAttemptEvidenceIsMalformedAndNeverExceedsCoverage() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let common = fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+        let duplicateSend = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    duplicateSend: true
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        let duplicateResponse = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    duplicateResponse: true
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        let duplicateAcknowledgement = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    duplicateAcknowledgement: true
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertEqual(duplicateSend.quality.commandAcknowledgement.provenEdgeCount, 0)
+        XCTAssertEqual(duplicateSend.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertNil(duplicateSend.quality.commandAcknowledgement.latencySeconds.value)
+        XCTAssertNil(duplicateSend.quality.commandFactualResponse.latencySeconds.value)
+        XCTAssertNil(duplicateSend.control.eventAlignedHeartRateResponse.value)
+
+        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.eligibleEdgeCount, 1)
+        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.coverageRatio, 0)
+        XCTAssertNil(duplicateResponse.quality.commandFactualResponse.latencySeconds.value)
+        XCTAssertNil(duplicateResponse.control.eventAlignedHeartRateResponse.value)
+
+        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.eligibleEdgeCount, 1)
+        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.provenEdgeCount, 0)
+        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.coverageRatio, 0)
+        XCTAssertNil(duplicateAcknowledgement.quality.commandAcknowledgement.latencySeconds.value)
+
+        for detail in [duplicateSend, duplicateResponse, duplicateAcknowledgement] {
+            for coverage in [
+                detail.quality.commandAcknowledgement,
+                detail.quality.commandFactualResponse,
+            ] {
+                if let ratio = coverage.coverageRatio {
+                    XCTAssertLessThanOrEqual(ratio, 1)
+                }
+            }
+            XCTAssertTrue(detail.quality.issues.contains {
+                $0.category == .malformedCorruptEvidence && $0.count >= 1
+            })
+        }
+    }
+
     func testStableFactualSpeedDriftAndCommandDomainSpeedDeltasAreVersionedMetrics() throws {
         let fixture = AnalysisFixture(sessionSeconds: 120)
         let heartRate = stride(from: 0, through: 115, by: 5).enumerated().map {
@@ -408,6 +481,10 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertEqual(detail.quality.heartRateCoverage.coverageRatio, 1)
         XCTAssertEqual(detail.quality.sessionGrade, .low)
         XCTAssertEqual(detail.quality.phases.map(\.grade), [.low])
+        XCTAssertEqual(
+            detail.quality.phases.first?.exclusionCodes,
+            ["configuration-payload-unavailable", "factual-treadmill-uncovered-time"]
+        )
         XCTAssertTrue(detail.quality.issues.contains {
             $0.category == .malformedCorruptEvidence
                 && $0.code == "configuration-payload-unavailable"
@@ -489,6 +566,23 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertEqual(first.logicalResult, second.logicalResult)
         XCTAssertEqual(try decodeDetail(first).control.cooldown.finishReason.value, "insufficient")
         XCTAssertEqual(try decodeDetail(second).control.cooldown.finishReason.value, "insufficient")
+    }
+
+    func testCooldownTerminalLifecycleAtPhaseEndpointIsIncluded() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 150)
+        let events = fixture.cooldownEvents(start: 20, end: 150, target: 120) + [
+            fixture.event(
+                ordinal: 30,
+                seconds: 150,
+                payload: .cooldown(CooldownEvent(lifecycle: .cancelled, targetHeartRate: 120))
+            ),
+        ]
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(160)
+        ))
+
+        XCTAssertEqual(detail.control.cooldown.finishReason.value, "cancelled")
     }
 
     func testCanonicalFrameCannotBridgeNativeObservationGap() throws {
@@ -777,7 +871,10 @@ private struct AnalysisFixture {
         includeSend: Bool = true,
         responseEventSeconds: Double = 15,
         associatedProtocolKind: TreadmillProtocolKind? = nil,
-        associatedConnectionEpoch: TreadmillConnectionEpoch? = nil
+        associatedConnectionEpoch: TreadmillConnectionEpoch? = nil,
+        duplicateSend: Bool = false,
+        duplicateResponse: Bool = false,
+        duplicateAcknowledgement: Bool = false
     ) -> [WorkoutEvent] {
         let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
         let firstDecisionID = DecisionID(rawValue: uuid(5_100))
@@ -911,6 +1008,33 @@ private struct AnalysisFixture {
         if includeSend {
             events.append(
                 event(ordinal: 33, seconds: 12, payload: .treadmillEvidence(.sendAttempt(send)))
+            )
+            if duplicateSend {
+                events.append(
+                    event(
+                        ordinal: 36,
+                        seconds: 12,
+                        payload: .treadmillEvidence(.sendAttempt(send))
+                    )
+                )
+            }
+        }
+        if duplicateResponse {
+            events.append(
+                event(
+                    ordinal: 37,
+                    seconds: responseEventSeconds,
+                    payload: .treadmillEvidence(.observation(response))
+                )
+            )
+        }
+        if duplicateAcknowledgement {
+            events.append(
+                event(
+                    ordinal: 38,
+                    seconds: 13,
+                    payload: .treadmillEvidence(.acknowledgement(acknowledgement))
+                )
             )
         }
         return events
