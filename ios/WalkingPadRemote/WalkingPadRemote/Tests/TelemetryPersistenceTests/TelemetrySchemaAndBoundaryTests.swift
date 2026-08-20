@@ -7,12 +7,14 @@ import XCTest
 final class TelemetrySchemaAndBoundaryTests: XCTestCase {
     func testVersionedSchemaMigrationPlanIndicesAndUniquenessAreRegistered() throws {
         XCTAssertEqual(TelemetrySchemaV1.versionIdentifier, Schema.Version(1, 0, 0))
-        XCTAssertEqual(TelemetryMigrationPlan.schemas.count, 1)
+        XCTAssertEqual(TelemetrySchemaV2.versionIdentifier, Schema.Version(1, 1, 0))
+        XCTAssertEqual(TelemetryMigrationPlan.schemas.count, 2)
         XCTAssertTrue(TelemetryMigrationPlan.schemas[0] == TelemetrySchemaV1.self)
-        XCTAssertTrue(TelemetryMigrationPlan.stages.isEmpty)
+        XCTAssertTrue(TelemetryMigrationPlan.schemas[1] == TelemetrySchemaV2.self)
+        XCTAssertEqual(TelemetryMigrationPlan.stages.count, 1)
 
-        let schema = Schema(versionedSchema: TelemetrySchemaV1.self)
-        XCTAssertEqual(schema.entities.count, 8)
+        let schema = Schema(versionedSchema: TelemetrySchemaV2.self)
+        XCTAssertEqual(schema.entities.count, 13)
 
         let sessions = try XCTUnwrap(schema.entitiesByName["TelemetryWorkoutSessionV1"])
         XCTAssertTrue(sessions.attributesByName["sessionID"]?.isUnique == true)
@@ -40,6 +42,40 @@ final class TelemetrySchemaAndBoundaryTests: XCTestCase {
 
         let treadmill = try XCTUnwrap(schema.entitiesByName["TelemetryTreadmillSampleV1"])
         XCTAssertNotNil(treadmill.attributesByName["factualSpeedNormalizationRuleKey"])
+
+        let migrationSources = try XCTUnwrap(
+            schema.entitiesByName["TelemetryLegacyMigrationSourceV2"]
+        )
+        XCTAssertTrue(migrationSources.attributesByName["sourceID"]?.isUnique == true)
+        XCTAssertTrue(
+            migrationSources.indices.contains(["binary", "sourceKindKey", "contentHashDigest"])
+        )
+
+        let importedRecords = try XCTUnwrap(
+            schema.entitiesByName["TelemetryLegacyImportedRecordV2"]
+        )
+        XCTAssertTrue(importedRecords.attributesByName["sourceItemIdentityKey"]?.isUnique == true)
+        XCTAssertTrue(
+            importedRecords.indices.contains(["binary", "sourceID", "sourceRecordIndex"])
+        )
+
+        let candidates = try XCTUnwrap(
+            schema.entitiesByName["TelemetryLegacyWorkoutCandidateV2"]
+        )
+        XCTAssertTrue(candidates.attributesByName["sourceItemIdentityKey"]?.isUnique == true)
+        XCTAssertTrue(
+            candidates.indices.contains(["binary", "originKindKey", "workoutIdentifier"])
+        )
+
+        let importedWorkouts = try XCTUnwrap(
+            schema.entitiesByName["TelemetryLegacyImportedWorkoutV2"]
+        )
+        XCTAssertTrue(importedWorkouts.attributesByName["canonicalIdentityKey"]?.isUnique == true)
+
+        let reconciliations = try XCTUnwrap(
+            schema.entitiesByName["TelemetryLegacyReconciliationV2"]
+        )
+        XCTAssertTrue(reconciliations.attributesByName["reconciliationID"]?.isUnique == true)
     }
 
     func testInsertDuplicatePreflightsAreBoundedPredicates() throws {
