@@ -358,6 +358,51 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         }
     }
 
+    func testGenericLifecycleAttemptAndAckCannotClaimProvenCausalLatency() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 20)
+        let commandID = CommandID(rawValue: fixture.uuid(5_200))
+        let attemptID = CommandAttemptID(rawValue: fixture.uuid(5_201))
+        let events = fixture.phaseEvents(mainAt: 0, finishedAt: 20) + [
+            fixture.event(
+                ordinal: 40,
+                seconds: 10,
+                payload: .commandLifecycle(CommandLifecycleRecord(
+                    commandID: commandID,
+                    decisionID: nil,
+                    lifecycle: .sendAttempt(attemptID: attemptID, attemptNumber: 1)
+                ))
+            ),
+            fixture.event(
+                ordinal: 41,
+                seconds: 11,
+                payload: .commandLifecycle(CommandLifecycleRecord(
+                    commandID: commandID,
+                    decisionID: nil,
+                    lifecycle: .acknowledged(attemptID: attemptID)
+                ))
+            ),
+        ]
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: [
+                    fixture.heartRate(ordinal: 1, seconds: 0, bpm: 100),
+                    fixture.heartRate(ordinal: 2, seconds: 5, bpm: 100),
+                    fixture.heartRate(ordinal: 3, seconds: 10, bpm: 100),
+                    fixture.heartRate(ordinal: 4, seconds: 15, bpm: 100),
+                ],
+                events: events
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(30)
+        ))
+
+        XCTAssertEqual(detail.quality.commandAcknowledgement.eligibleEdgeCount, 0)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
+        XCTAssertNil(detail.quality.commandAcknowledgement.latencySeconds.value)
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 2
+        })
+    }
+
     func testStableFactualSpeedDriftAndCommandDomainSpeedDeltasAreVersionedMetrics() throws {
         let fixture = AnalysisFixture(sessionSeconds: 120)
         let heartRate = stride(from: 0, through: 115, by: 5).enumerated().map {

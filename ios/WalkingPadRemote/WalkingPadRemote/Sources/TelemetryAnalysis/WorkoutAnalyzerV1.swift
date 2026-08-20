@@ -526,16 +526,16 @@ private extension WorkoutAnalyzerV1 {
         let attemptID: CommandAttemptID
         let attemptNumber: UInt16
         let time: Double
-        let protocolKind: TreadmillProtocolKind?
-        let connectionEpoch: TreadmillConnectionEpoch?
+        let protocolKind: TreadmillProtocolKind
+        let connectionEpoch: TreadmillConnectionEpoch
     }
 
     struct ProvenEdge: Hashable {
         let commandID: CommandID
         let attemptID: CommandAttemptID
         let time: Double
-        let protocolKind: TreadmillProtocolKind?
-        let connectionEpoch: TreadmillConnectionEpoch?
+        let protocolKind: TreadmillProtocolKind
+        let connectionEpoch: TreadmillConnectionEpoch
     }
 
     struct ProvenEdgeIdentity: Hashable {
@@ -567,6 +567,7 @@ private extension WorkoutAnalyzerV1 {
             var responses: [ProvenEdge] = []
             var invalidAttemptIDs: Set<CommandAttemptID> = []
             var duplicateSendRecordCount = 0
+            var unsupportedGenericCausalRecordCount = 0
             var unknownAcknowledgements = 0
             var unknownResponses = 0
             var decisions: [DecisionID: DesiredDecision] = [:]
@@ -591,23 +592,8 @@ private extension WorkoutAnalyzerV1 {
                         if let decisionID = record.decisionID {
                             commandToDecision[record.commandID] = decisionID
                         }
-                    case let .sendAttempt(attemptID, attemptNumber):
-                        recordSend(SendAttempt(
-                            commandID: record.commandID,
-                            attemptID: attemptID,
-                            attemptNumber: attemptNumber,
-                            time: time,
-                            protocolKind: nil,
-                            connectionEpoch: nil
-                        ))
-                    case let .acknowledged(attemptID):
-                        acknowledgements.append(ProvenEdge(
-                            commandID: record.commandID,
-                            attemptID: attemptID,
-                            time: time,
-                            protocolKind: nil,
-                            connectionEpoch: nil
-                        ))
+                    case .sendAttempt, .acknowledged:
+                        unsupportedGenericCausalRecordCount += 1
                     case .timedOut, .retryScheduled, .cancelled, .failed:
                         break
                     }
@@ -695,19 +681,8 @@ private extension WorkoutAnalyzerV1 {
                 guard let send = sends[edge.attemptID] else { return false }
                 guard send.commandID == edge.commandID,
                       edge.time >= send.time else { return false }
-                switch (
-                    send.protocolKind,
-                    send.connectionEpoch,
-                    edge.protocolKind,
-                    edge.connectionEpoch
-                ) {
-                case (nil, nil, nil, nil):
-                    return true
-                case let (sendProtocol?, sendEpoch?, edgeProtocol?, edgeEpoch?):
-                    return sendProtocol == edgeProtocol && sendEpoch == edgeEpoch
-                default:
-                    return false
-                }
+                return send.protocolKind == edge.protocolKind
+                    && send.connectionEpoch == edge.connectionEpoch
             }
             provenAcknowledgements = sortedAcknowledgements.filter {
                 isValidEdge($0, duplicateAcknowledgementKeys)
@@ -717,7 +692,8 @@ private extension WorkoutAnalyzerV1 {
             }
             unknownAcknowledgementCount = unknownAcknowledgements
             unknownFactualResponseCount = unknownResponses
-            invalidCausalEdgeCount = duplicateSendRecordCount
+            invalidCausalEdgeCount = unsupportedGenericCausalRecordCount
+                + duplicateSendRecordCount
                 + sortedAcknowledgements.filter {
                     !isValidEdge($0, duplicateAcknowledgementKeys)
                 }.count
