@@ -511,12 +511,27 @@ final class TreadmillCommandDecisionTests: XCTestCase {
         )
     }
 
+    func testProtocolChangePreventsDeterministicAcknowledgementAssociation() {
+        let send = attempt(command: 6, attempt: 62, epoch: epochA, number: 1)
+
+        XCTAssertNil(
+            LegacyAcknowledgementObservation.deterministicallyAssociated(
+                protocolKind: .ftms,
+                connectionEpoch: epochA,
+                receivedAt: receivedAt,
+                recordedAt: receivedAt,
+                sendAttempt: send,
+                proof: TreadmillDeterministicAcknowledgementProof(evidenceKey: uuid(62))
+            )
+        )
+    }
+
     // PM decision test 7: a proven same-epoch edge remains typed and precise.
     func testIndependentSameEpochProofCanCreateKnownAssociation() throws {
         let send = attempt(command: 7, attempt: 71, epoch: epochA, number: 1)
         let ack = try XCTUnwrap(
             LegacyAcknowledgementObservation.deterministicallyAssociated(
-                protocolKind: .ftms,
+                protocolKind: .walkingPad,
                 connectionEpoch: epochA,
                 receivedAt: receivedAt,
                 recordedAt: receivedAt,

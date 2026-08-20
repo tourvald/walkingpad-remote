@@ -762,7 +762,8 @@ public struct LegacyAcknowledgementObservation: Codable, Hashable, Sendable {
         proof: TreadmillDeterministicAcknowledgementProof
     ) -> Self? {
         _ = proof
-        guard sendAttempt.connectionEpoch == connectionEpoch else {
+        guard sendAttempt.protocolKind == protocolKind,
+              sendAttempt.connectionEpoch == connectionEpoch else {
             return nil
         }
         return Self(
