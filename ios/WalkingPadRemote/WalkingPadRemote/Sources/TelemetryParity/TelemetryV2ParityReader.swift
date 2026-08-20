@@ -154,19 +154,27 @@ public enum TelemetryV2ParityReader {
         case let .treadmillEvidence(.decision(decision)):
             let mapped = mappedDecisionIntent(decision.intent)
             return TelemetryParityDecisionEvidence(
-                domain: decision.source == .heartRateControl
-                    ? .heartRateControl
-                    : .outsideHeartRateControl,
+                domain: .outsideHeartRateControl,
                 source: decision.source.rawValue,
                 action: mapped.action,
                 desiredSpeedKilometresPerHour: mapped.speed,
                 elapsedMilliseconds: milliseconds(event.timestamp.occurredElapsed)
             )
         case let .controlDecision(decision):
-            let mapped = mappedControlAction(decision.action)
+            guard case .heartRate = decision.target else {
+                let mapped = mappedControlAction(decision.action)
+                return TelemetryParityDecisionEvidence(
+                    domain: .unclassified,
+                    source: "controlDecision",
+                    action: mapped.action,
+                    desiredSpeedKilometresPerHour: mapped.speed,
+                    elapsedMilliseconds: milliseconds(event.timestamp.occurredElapsed)
+                )
+            }
+            let mapped = mappedSemanticHeartRateDecision(decision)
             return TelemetryParityDecisionEvidence(
-                domain: .unclassified,
-                source: "controlDecision",
+                domain: .heartRateControl,
+                source: "heartRateControl",
                 action: mapped.action,
                 desiredSpeedKilometresPerHour: mapped.speed,
                 elapsedMilliseconds: milliseconds(event.timestamp.occurredElapsed)
@@ -435,6 +443,23 @@ public enum TelemetryV2ParityReader {
         case .noCommand: ("hold", nil)
         case let .enqueueSpeed(speed): ("setSpeed", speed.value)
         case .enqueueStop: ("stop", nil)
+        }
+    }
+
+    private static func mappedSemanticHeartRateDecision(
+        _ decision: ControlDecision
+    ) -> (action: String, speed: Double?) {
+        switch (decision.action, decision.reason) {
+        case let (.enqueueSpeed(speed), _):
+            ("setSpeed", speed.value)
+        case (.noCommand, .withinTarget):
+            ("hold", nil)
+        case let (.noCommand, .other(value)) where value == "inertiaHold":
+            ("inertiaHold", nil)
+        case let (.noCommand, .other(value)) where value == "speedLimit":
+            ("speedLimit", nil)
+        default:
+            ("unsupportedHeartRateControlDecision", nil)
         }
     }
 

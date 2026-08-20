@@ -48,26 +48,35 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         XCTAssertEqual(control.findings.first?.classification, .actualSemanticMismatch)
     }
 
-    func testProductionShapedHeartRateDecisionDomainReportsMissingRequiredOutcomes() throws {
+    func testProductionShapedHeartRateDecisionDomainUsesGenericEventsWithoutDuplicates() throws {
         let fixture = try productionShapedDecisionDomainFixture()
 
         XCTAssertEqual(fixture.legacy.decisions.count, 4)
-        XCTAssertEqual(fixture.telemetryV2.decisions.count, 4)
+        XCTAssertEqual(fixture.telemetryV2.decisions.count, 8)
         XCTAssertTrue(fixture.legacy.decisions.allSatisfy {
             $0.domain == .heartRateControl
         })
         XCTAssertEqual(
-            fixture.telemetryV2.decisions.map(\.domain),
-            [
-                .outsideHeartRateControl,
-                .heartRateControl,
-                .outsideHeartRateControl,
-                .outsideHeartRateControl,
-            ]
+            fixture.legacy.decisions.map(\.desiredSpeedKilometresPerHour),
+            [4.1, nil, nil, nil]
+        )
+        let semanticDecisions = fixture.telemetryV2.decisions.filter {
+            $0.domain == .heartRateControl
+        }
+        XCTAssertEqual(
+            semanticDecisions.map(\.action),
+            ["setSpeed", "hold", "inertiaHold", "speedLimit"]
         )
         XCTAssertEqual(
-            fixture.telemetryV2.decisions.filter { $0.domain == .heartRateControl }.count,
-            1
+            semanticDecisions.map(\.desiredSpeedKilometresPerHour),
+            [4.1, nil, nil, nil]
+        )
+        let outsideDecisions = fixture.telemetryV2.decisions.filter {
+            $0.domain == .outsideHeartRateControl
+        }
+        XCTAssertEqual(
+            outsideDecisions.map(\.source),
+            ["start", "heartRateControl", "cooldown", "stop"]
         )
 
         let report = TelemetrySemanticParityValidator.validate(
@@ -76,24 +85,33 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         )
         let control = result(.controlDecisions, in: report)
 
-        XCTAssertEqual(control.status, .fail)
-        XCTAssertEqual(
-            control.findings.map(\.code),
-            [
-                "heart-rate-control-decision-count-hold",
-                "heart-rate-control-decision-count-inertiaHold",
-                "heart-rate-control-decision-count-speedLimit",
-            ]
+        XCTAssertEqual(control.status, .pass)
+        XCTAssertTrue(control.findings.isEmpty)
+    }
+
+    func testCompleteV2SessionMissingSemanticHeartRateDecisionStillFails() throws {
+        let fixture = try productionShapedDecisionDomainFixture(
+            omittingSemanticOutcome: "inertiaHold"
         )
-        XCTAssertTrue(control.findings.allSatisfy {
-            $0.classification == .actualSemanticMismatch && $0.impact == .fail
-        })
-        XCTAssertFalse(control.findings.contains {
-            $0.code.contains("setSpeed")
-                || $0.detail.contains("start")
-                || $0.detail.contains("cooldown")
-                || $0.detail.contains("stop")
-        })
+
+        XCTAssertEqual(
+            fixture.telemetryV2.decisions.filter { $0.domain == .heartRateControl }.map(\.action),
+            ["setSpeed", "hold", "speedLimit"]
+        )
+        let report = TelemetrySemanticParityValidator.validate(
+            legacy: fixture.legacy,
+            telemetryV2: fixture.telemetryV2
+        )
+        let control = result(.controlDecisions, in: report)
+
+        XCTAssertEqual(control.status, .fail)
+        XCTAssertEqual(control.findings.count, 1)
+        XCTAssertEqual(
+            control.findings.first?.code,
+            "heart-rate-control-decision-count-inertiaHold"
+        )
+        XCTAssertEqual(control.findings.first?.classification, .actualSemanticMismatch)
+        XCTAssertEqual(control.findings.first?.impact, .fail)
     }
 
     func testHeartRateDecisionOrderMismatchFailsWithoutFuzzyPairing() {
@@ -514,6 +532,55 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         XCTAssertEqual(read.integrity.outOfOrderRecordCount, 1)
     }
 
+    func testV2ReaderUsesHeartRateTargetAndFlagsUnsupportedSemanticCombination() throws {
+        let sessionID = SessionID(
+            rawValue: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        )
+        let start = Date(timeIntervalSince1970: 1_000)
+        let session = try makeV2Session(sessionID: sessionID, start: start)
+        let events = [
+            makeControlDecisionEvent(
+                session: session,
+                start: start,
+                elapsedMicroseconds: 1_000_000,
+                target: .desiredSpeed(DesiredSpeedKilometresPerHour(value: 4.2)),
+                action: .enqueueSpeed(DesiredSpeedKilometresPerHour(value: 4.2)),
+                reason: .manual
+            ),
+            makeControlDecisionEvent(
+                session: session,
+                start: start,
+                elapsedMicroseconds: 2_000_000,
+                action: .noCommand,
+                reason: .other("unexpected")
+            ),
+            makeControlDecisionEvent(
+                session: session,
+                start: start,
+                elapsedMicroseconds: 3_000_000,
+                action: .noCommand,
+                reason: .withinTarget
+            ),
+        ]
+
+        let read = try TelemetryV2ParityReader.read(
+            session: session,
+            heartRate: [],
+            treadmill: [],
+            events: events,
+            frames: []
+        )
+
+        XCTAssertEqual(
+            read.decisions.map(\.domain),
+            [.unclassified, .heartRateControl, .heartRateControl]
+        )
+        XCTAssertEqual(
+            read.decisions.map(\.action),
+            ["setSpeed", "unsupportedHeartRateControlDecision", "hold"]
+        )
+    }
+
     func testV2ReaderPreservesUnassociatedObservedResponseWithNilCausalIDs() throws {
         let sessionID = SessionID(
             rawValue: UUID(uuidString: "66666666-6666-6666-6666-666666666666")!
@@ -632,7 +699,9 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         )
     }
 
-    private func productionShapedDecisionDomainFixture() throws -> (
+    private func productionShapedDecisionDomainFixture(
+        omittingSemanticOutcome: String? = nil
+    ) throws -> (
         legacy: TelemetryParitySessionEvidence,
         telemetryV2: TelemetryParitySessionEvidence
     ) {
@@ -652,7 +721,34 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         let connectionEpoch = TreadmillConnectionEpoch(
             rawValue: UUID(uuidString: "99999999-9999-9999-9999-999999999999")!
         )
-        let v2Events = [
+        let v2Session = try makeV2Session(sessionID: sessionID, start: start)
+        let semanticRows: [(
+            outcome: String,
+            elapsedMicroseconds: Int64,
+            action: ControlAction,
+            reason: ControlDecisionReason
+        )] = [
+            (
+                "setSpeed",
+                1_000_000,
+                .enqueueSpeed(DesiredSpeedKilometresPerHour(value: 4.1)),
+                .belowTarget
+            ),
+            ("hold", 2_000_000, .noCommand, .withinTarget),
+            ("inertiaHold", 3_000_000, .noCommand, .heartRateInertiaHold),
+            ("speedLimit", 4_000_000, .noCommand, .heartRateSpeedLimit),
+        ]
+        let semanticEvents = semanticRows.compactMap { row -> WorkoutEvent? in
+            guard row.outcome != omittingSemanticOutcome else { return nil }
+            return makeControlDecisionEvent(
+                session: v2Session,
+                start: start,
+                elapsedMicroseconds: row.elapsedMicroseconds,
+                action: row.action,
+                reason: row.reason
+            )
+        }
+        var v2Events = [
             makeTreadmillDecisionEvent(
                 sessionID: sessionID,
                 start: start,
@@ -661,18 +757,23 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
                 intent: .startAtDesiredSpeed(DesiredSpeedKilometresPerHour(value: 4.0)),
                 connectionEpoch: connectionEpoch
             ),
+        ]
+        v2Events.append(contentsOf: semanticEvents)
+        v2Events.append(
             makeTreadmillDecisionEvent(
                 sessionID: sessionID,
                 start: start,
-                elapsedMicroseconds: 1_000_000,
+                elapsedMicroseconds: 1_100_000,
                 source: .heartRateControl,
                 intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: 4.1)),
                 connectionEpoch: connectionEpoch
-            ),
+            )
+        )
+        v2Events.append(contentsOf: [
             makeTreadmillDecisionEvent(
                 sessionID: sessionID,
                 start: start,
-                elapsedMicroseconds: 2_500_000,
+                elapsedMicroseconds: 4_500_000,
                 source: .cooldown,
                 intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: 3.5)),
                 connectionEpoch: connectionEpoch
@@ -680,20 +781,46 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
             makeTreadmillDecisionEvent(
                 sessionID: sessionID,
                 start: start,
-                elapsedMicroseconds: 4_500_000,
+                elapsedMicroseconds: 5_000_000,
                 source: .stop,
                 intent: .stop,
                 connectionEpoch: connectionEpoch
             ),
-        ]
+        ])
         let telemetryV2 = try TelemetryV2ParityReader.read(
-            session: makeV2Session(sessionID: sessionID, start: start),
+            session: v2Session,
             heartRate: [],
             treadmill: [],
             events: v2Events,
             frames: []
         )
         return (legacy, telemetryV2)
+    }
+
+    private func makeControlDecisionEvent(
+        session: WorkoutSessionRecord,
+        start: Date,
+        elapsedMicroseconds: Int64,
+        target: ControlTarget = .heartRate(beatsPerMinute: 110),
+        action: ControlAction,
+        reason: ControlDecisionReason
+    ) -> WorkoutEvent {
+        makeEvent(
+            sessionID: session.sessionID,
+            start: start,
+            elapsedMicroseconds: elapsedMicroseconds,
+            payload: .controlDecision(
+                ControlDecision(
+                    decisionID: DecisionID(),
+                    observationsUsed: [],
+                    target: target,
+                    action: action,
+                    reason: reason,
+                    versions: session.versions,
+                    configurationSnapshotID: session.configuration.id
+                )
+            )
+        )
     }
 
     private func makeTreadmillDecisionEvent(
