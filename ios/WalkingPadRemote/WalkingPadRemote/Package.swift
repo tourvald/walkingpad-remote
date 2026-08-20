@@ -34,6 +34,10 @@ let package = Package(
             targets: ["TelemetryRuntime"]
         ),
         .library(
+            name: "TelemetryParity",
+            targets: ["TelemetryParity"]
+        ),
+        .library(
             name: "TelemetrySoak",
             targets: ["TelemetrySoak"]
         ),
@@ -67,6 +71,14 @@ let package = Package(
                 "TelemetryDomain",
                 "TelemetryInstrumentation",
                 "TelemetryRecorder",
+            ]
+        ),
+        .target(
+            name: "TelemetryParity",
+            dependencies: [
+                "TelemetryDomain",
+                "TelemetryPersistence",
+                "TelemetryRuntime",
             ]
         ),
         .target(
@@ -148,6 +160,15 @@ let package = Package(
         .testTarget(
             name: "TelemetryRuntimeTests",
             dependencies: ["TelemetryDomain", "TelemetryRecorder", "TelemetryRuntime"]
+        ),
+        .testTarget(
+            name: "TelemetryParityTests",
+            dependencies: [
+                "TelemetryDomain",
+                "TelemetryParity",
+                "TelemetryPersistence",
+                "TelemetryRuntime",
+            ]
         ),
         .testTarget(
             name: "TelemetryInstrumentationTests",

@@ -229,3 +229,311 @@ public enum DeterministicControlReplay {
         return updateChecksum(result, bytes: reference.branch.utf8)
     }
 }
+
+public enum SemanticControlReplayScenario: String, Codable, CaseIterable, Sendable {
+    case normalHeartRateControl
+    case delayedHeartRate
+    case missingHeartRate
+    case overshootPrediction
+    case speedLimits
+    case disconnect
+    case cooldown
+    case stop
+    case startAffordanceRuntimeAuthorization
+}
+
+public enum SemanticControlReplayOutput: Codable, Equatable, Sendable {
+    case start(speedKilometresPerHour: Double)
+    case setSpeed(kilometresPerHour: Double)
+    case hold(reason: String)
+    case waitForHeartRate
+    case stop(reason: String)
+    case runtimeAuthorizationBlocked
+}
+
+public struct SemanticControlReplayResult: Codable, Equatable, Sendable {
+    public let scenario: SemanticControlReplayScenario
+    public let startAffordanceAvailable: Bool
+    public let runtimeAuthorizationAllowed: Bool
+    public let outputs: [SemanticControlReplayOutput]
+
+    public init(
+        scenario: SemanticControlReplayScenario,
+        startAffordanceAvailable: Bool,
+        runtimeAuthorizationAllowed: Bool,
+        outputs: [SemanticControlReplayOutput]
+    ) {
+        self.scenario = scenario
+        self.startAffordanceAvailable = startAffordanceAvailable
+        self.runtimeAuthorizationAllowed = runtimeAuthorizationAllowed
+        self.outputs = outputs
+    }
+}
+
+public struct SemanticControlReplayObservation: Codable, Equatable, Sendable {
+    public let scenario: SemanticControlReplayScenario
+    public let step: String
+    public let heartRateBpm: Int?
+    public let targetHeartRateBpm: Int
+    public let controllerSpeedKilometresPerHour: Double
+
+    public init(
+        scenario: SemanticControlReplayScenario,
+        step: String,
+        heartRateBpm: Int?,
+        targetHeartRateBpm: Int,
+        controllerSpeedKilometresPerHour: Double
+    ) {
+        self.scenario = scenario
+        self.step = step
+        self.heartRateBpm = heartRateBpm
+        self.targetHeartRateBpm = targetHeartRateBpm
+        self.controllerSpeedKilometresPerHour = controllerSpeedKilometresPerHour
+    }
+}
+
+public protocol SemanticControlReplayTelemetryObserver: AnyObject, Sendable {
+    func observe(_ observation: SemanticControlReplayObservation)
+}
+
+public extension DeterministicControlReplay {
+    /// Replays normalized harness observations through the current pure controller
+    /// helpers. The optional observer is write-only: no telemetry-derived value is
+    /// read while choosing outputs, and the harness never reaches BLE transport.
+    static func run(
+        scenario: SemanticControlReplayScenario,
+        telemetryObserver: (any SemanticControlReplayTelemetryObserver)? = nil
+    ) -> SemanticControlReplayResult {
+        let treadmillConnected = scenario != .disconnect
+        let currentHeartRateVisible = scenario != .missingHeartRate
+        let watchReachable = scenario != .startAffordanceRuntimeAuthorization
+        let affordance = HRDomainService.heartRateStartAffordanceAvailable(
+            treadmillConnected: treadmillConnected,
+            currentHeartRateVisible: currentHeartRateVisible
+        )
+        let runtimeAuthorization = HRDomainService.heartRateRuntimePrerequisitesAllowStart(
+            treadmillConnected: treadmillConnected,
+            watchReachable: watchReachable,
+            currentHeartRateVisible: currentHeartRateVisible
+        )
+
+        let outputs: [SemanticControlReplayOutput]
+        switch scenario {
+        case .normalHeartRateControl:
+            outputs = [heartRateOutput(
+                scenario: scenario,
+                heartRateBpm: 90,
+                predictedBpm: nil,
+                currentSpeed: 4.0,
+                observer: telemetryObserver
+            )]
+
+        case .delayedHeartRate:
+            telemetryObserver?.observe(
+                observation(
+                    scenario: scenario,
+                    step: "within_initial_grace",
+                    heartRateBpm: nil,
+                    speed: 4.0
+                )
+            )
+            outputs = [
+                .waitForHeartRate,
+                heartRateOutput(
+                    scenario: scenario,
+                    heartRateBpm: 92,
+                    predictedBpm: nil,
+                    currentSpeed: 4.0,
+                    observer: telemetryObserver
+                ),
+            ]
+
+        case .missingHeartRate:
+            let missingSeconds = HRDomainService.missingHeartRateSignalSeconds(
+                lastReceivedAt: nil,
+                now: Date(timeIntervalSince1970: 100),
+                noDataMaximumSeconds: 30
+            )
+            telemetryObserver?.observe(
+                observation(
+                    scenario: scenario,
+                    step: "missing_heart_rate",
+                    heartRateBpm: nil,
+                    speed: 4.0
+                )
+            )
+            outputs = HRDomainService.shouldStopForMissingHeartRateSignal(
+                missingSeconds: missingSeconds,
+                noDataMaximumSeconds: 30
+            ) ? [.stop(reason: "missingHeartRate")] : [.hold(reason: "missingHeartRate")]
+
+        case .overshootPrediction:
+            outputs = [heartRateOutput(
+                scenario: scenario,
+                heartRateBpm: 108,
+                predictedBpm: 116,
+                currentSpeed: 6.0,
+                observer: telemetryObserver
+            )]
+
+        case .speedLimits:
+            outputs = [heartRateOutput(
+                scenario: scenario,
+                heartRateBpm: 80,
+                predictedBpm: nil,
+                currentSpeed: 12.0,
+                observer: telemetryObserver
+            )]
+
+        case .disconnect:
+            telemetryObserver?.observe(
+                observation(
+                    scenario: scenario,
+                    step: "connection_lost",
+                    heartRateBpm: 105,
+                    speed: 5.0
+                )
+            )
+            outputs = [.stop(reason: "disconnect")]
+
+        case .cooldown:
+            let config = CooldownRuntimeEngine.Config(
+                targetBpm: 110,
+                minSpeedKmh: 3.5,
+                maxMinutes: 2,
+                holdSeconds: 8,
+                baseStepKmh: 0.5,
+                stepIntervalSeconds: 10
+            )
+            let aggregates = CooldownRuntimeEngine.SessionAggregates(
+                sessionPeakBpm: 168,
+                mainAvgBpm: 148,
+                mainPeakBpm: 171,
+                zoneSeconds: [10, 20, 30, 40, 50],
+                zone4PlusSeconds: 90
+            )
+            telemetryObserver?.observe(
+                observation(
+                    scenario: scenario,
+                    step: "cooldown_start",
+                    heartRateBpm: 145,
+                    speed: 6.0
+                )
+            )
+            let cooldown = CooldownRuntimeEngine.start(
+                config: config,
+                input: CooldownRuntimeEngine.StartInput(
+                    currentBpm: 145,
+                    deviceTargetSpeedKmh: 6.0,
+                    actualSpeedKmh: 6.0,
+                    sessionAggregates: aggregates
+                )
+            )
+            outputs = cooldown.effects.compactMap { effect in
+                guard case let .setSpeed(speed) = effect else { return nil }
+                return .setSpeed(kilometresPerHour: speed.targetKmh)
+            }
+
+        case .stop:
+            telemetryObserver?.observe(
+                observation(
+                    scenario: scenario,
+                    step: "manual_stop",
+                    heartRateBpm: 105,
+                    speed: 5.0
+                )
+            )
+            outputs = [.stop(reason: "manualStop")]
+
+        case .startAffordanceRuntimeAuthorization:
+            telemetryObserver?.observe(
+                observation(
+                    scenario: scenario,
+                    step: "post_tap_runtime_authorization",
+                    heartRateBpm: 100,
+                    speed: 0
+                )
+            )
+            outputs = runtimeAuthorization
+                ? [.start(speedKilometresPerHour: 3.0)]
+                : [.runtimeAuthorizationBlocked]
+        }
+
+        return SemanticControlReplayResult(
+            scenario: scenario,
+            startAffordanceAvailable: affordance,
+            runtimeAuthorizationAllowed: runtimeAuthorization,
+            outputs: outputs
+        )
+    }
+
+    private static func heartRateOutput(
+        scenario: SemanticControlReplayScenario,
+        heartRateBpm: Int,
+        predictedBpm: Int?,
+        currentSpeed: Double,
+        observer: (any SemanticControlReplayTelemetryObserver)?
+    ) -> SemanticControlReplayOutput {
+        let targetBpm = 110
+        observer?.observe(
+            observation(
+                scenario: scenario,
+                step: "heart_rate_decision",
+                heartRateBpm: heartRateBpm,
+                speed: currentSpeed
+            )
+        )
+        let effectiveBpm = max(heartRateBpm, predictedBpm ?? heartRateBpm)
+        let diff = effectiveBpm - targetBpm
+        let thresholds = HRDomainService.AdaptiveThresholdPercents(
+            deadband: 3.0,
+            downLevel2Start: 8.0,
+            downLevel3Start: 15.0,
+            downLevel4Start: 23.0,
+            upLevel2Start: 23.0,
+            upLevel3Start: 31.0,
+            upLevel4Start: 46.0
+        )
+        let deadband = HRDomainService.deadbandBpm(
+            targetBpm: targetBpm,
+            thresholds: thresholds
+        )
+        guard abs(diff) > deadband else { return .hold(reason: "deadband") }
+        let increasing = diff < 0
+        let selection = HRDomainService.stepFromDiff(
+            diffPercent: HRDomainService.diffPercent(
+                absDiff: abs(diff),
+                targetBpm: targetBpm
+            ),
+            isIncreasingSpeed: increasing,
+            thresholds: thresholds
+        )
+        let direction = increasing ? 1.0 : -1.0
+        let bounds = TreadmillSpeedBoundsService.normalized(
+            min: 0.5,
+            max: 12.0,
+            increment: 0.1
+        )
+        let next = TreadmillSpeedBoundsService.clampRunningSpeed(
+            currentSpeed + direction * selection.stepKmh,
+            bounds: bounds
+        )
+        guard next != currentSpeed else { return .hold(reason: "speedLimit") }
+        return .setSpeed(kilometresPerHour: next)
+    }
+
+    private static func observation(
+        scenario: SemanticControlReplayScenario,
+        step: String,
+        heartRateBpm: Int?,
+        speed: Double
+    ) -> SemanticControlReplayObservation {
+        SemanticControlReplayObservation(
+            scenario: scenario,
+            step: step,
+            heartRateBpm: heartRateBpm,
+            targetHeartRateBpm: 110,
+            controllerSpeedKilometresPerHour: speed
+        )
+    }
+}
