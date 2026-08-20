@@ -97,6 +97,7 @@ public enum LegacyTelemetryJSONLReader {
             case "hr_decision":
                 decisions.append(
                     TelemetryParityDecisionEvidence(
+                        domain: .heartRateControl,
                         source: "heartRateControl",
                         action: normalizedDecision(payload),
                         desiredSpeedKilometresPerHour: double(payload["speed_after_kmh"]),

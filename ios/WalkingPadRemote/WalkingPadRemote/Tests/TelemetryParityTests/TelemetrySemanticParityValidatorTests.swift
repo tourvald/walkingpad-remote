@@ -29,6 +29,7 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
     func testActualControlMismatchFailsWithoutBeingCalledRecorderLoss() {
         let legacy = evidence(origin: .legacyJSONL)
         let mismatchedDecision = TelemetryParityDecisionEvidence(
+            domain: .heartRateControl,
             source: "heartRateControl",
             action: "setSpeed",
             desiredSpeedKilometresPerHour: 4.8,
@@ -45,6 +46,84 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         XCTAssertEqual(report.overallStatus, .fail)
         XCTAssertEqual(control.status, .fail)
         XCTAssertEqual(control.findings.first?.classification, .actualSemanticMismatch)
+    }
+
+    func testProductionShapedHeartRateDecisionDomainReportsMissingRequiredOutcomes() throws {
+        let fixture = try productionShapedDecisionDomainFixture()
+
+        XCTAssertEqual(fixture.legacy.decisions.count, 4)
+        XCTAssertEqual(fixture.telemetryV2.decisions.count, 4)
+        XCTAssertTrue(fixture.legacy.decisions.allSatisfy {
+            $0.domain == .heartRateControl
+        })
+        XCTAssertEqual(
+            fixture.telemetryV2.decisions.map(\.domain),
+            [
+                .outsideHeartRateControl,
+                .heartRateControl,
+                .outsideHeartRateControl,
+                .outsideHeartRateControl,
+            ]
+        )
+        XCTAssertEqual(
+            fixture.telemetryV2.decisions.filter { $0.domain == .heartRateControl }.count,
+            1
+        )
+
+        let report = TelemetrySemanticParityValidator.validate(
+            legacy: fixture.legacy,
+            telemetryV2: fixture.telemetryV2
+        )
+        let control = result(.controlDecisions, in: report)
+
+        XCTAssertEqual(control.status, .fail)
+        XCTAssertEqual(
+            control.findings.map(\.code),
+            [
+                "heart-rate-control-decision-count-hold",
+                "heart-rate-control-decision-count-inertiaHold",
+                "heart-rate-control-decision-count-speedLimit",
+            ]
+        )
+        XCTAssertTrue(control.findings.allSatisfy {
+            $0.classification == .actualSemanticMismatch && $0.impact == .fail
+        })
+        XCTAssertFalse(control.findings.contains {
+            $0.code.contains("setSpeed")
+                || $0.detail.contains("start")
+                || $0.detail.contains("cooldown")
+                || $0.detail.contains("stop")
+        })
+    }
+
+    func testHeartRateDecisionOrderMismatchFailsWithoutFuzzyPairing() {
+        let set = TelemetryParityDecisionEvidence(
+            domain: .heartRateControl,
+            source: "heartRateControl",
+            action: "setSpeed",
+            desiredSpeedKilometresPerHour: 4.1,
+            elapsedMilliseconds: 1_000
+        )
+        let hold = TelemetryParityDecisionEvidence(
+            domain: .heartRateControl,
+            source: "heartRateControl",
+            action: "hold",
+            desiredSpeedKilometresPerHour: 4.1,
+            elapsedMilliseconds: 2_000
+        )
+        let legacy = evidence(origin: .legacyJSONL, decisions: [set, hold])
+        let v2 = evidence(origin: .telemetryV2, decisions: [hold, set])
+
+        let report = TelemetrySemanticParityValidator.validate(
+            legacy: legacy,
+            telemetryV2: v2
+        )
+
+        XCTAssertTrue(result(.controlDecisions, in: report).findings.contains {
+            $0.code == "heart-rate-control-decision-order"
+                && $0.classification == .actualSemanticMismatch
+                && $0.impact == .fail
+        })
     }
 
     func testKnownRecorderLossFailsAsRecorderDataLoss() {
@@ -553,6 +632,99 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         )
     }
 
+    private func productionShapedDecisionDomainFixture() throws -> (
+        legacy: TelemetryParitySessionEvidence,
+        telemetryV2: TelemetryParitySessionEvidence
+    ) {
+        let sessionID = SessionID(
+            rawValue: UUID(uuidString: "88888888-8888-8888-8888-888888888888")!
+        )
+        let start = Date(timeIntervalSince1970: 1_000)
+        let legacyJSONL = """
+        {"ts":"1970-01-01T00:16:40.000Z","event":"session_start","session_id":"\(sessionID.description)","target_bpm":110,"duration_min":1,"decision_interval_s":10,"adaptive_step_enabled":true,"max_step_kmh":0.5,"zone_bounds":[100,120,140,160],"cooldown_target_bpm":105,"cooldown_min_speed_kmh":3.5,"cooldown_max_minutes":2,"telemetry_schema_version":"1","algorithm_version":"a","safety_policy_version":"s","workout_protocol_version":"w"}
+        {"ts":"1970-01-01T00:16:41.000Z","event":"hr_decision","session_id":"\(sessionID.description)","decision":"set","speed_after_kmh":4.1}
+        {"ts":"1970-01-01T00:16:42.000Z","event":"hr_decision","session_id":"\(sessionID.description)","decision":"hold","speed_after_kmh":4.1}
+        {"ts":"1970-01-01T00:16:43.000Z","event":"hr_decision","session_id":"\(sessionID.description)","decision":"inertia_hold","speed_after_kmh":4.1}
+        {"ts":"1970-01-01T00:16:44.000Z","event":"hr_decision","session_id":"\(sessionID.description)","decision":"limit","speed_after_kmh":4.1}
+        {"ts":"1970-01-01T00:16:50.000Z","event":"session_end","session_id":"\(sessionID.description)","reason":"manual_stop"}
+        """
+        let legacy = try LegacyTelemetryJSONLReader.read(data: Data(legacyJSONL.utf8))
+        let connectionEpoch = TreadmillConnectionEpoch(
+            rawValue: UUID(uuidString: "99999999-9999-9999-9999-999999999999")!
+        )
+        let v2Events = [
+            makeTreadmillDecisionEvent(
+                sessionID: sessionID,
+                start: start,
+                elapsedMicroseconds: 500_000,
+                source: .start,
+                intent: .startAtDesiredSpeed(DesiredSpeedKilometresPerHour(value: 4.0)),
+                connectionEpoch: connectionEpoch
+            ),
+            makeTreadmillDecisionEvent(
+                sessionID: sessionID,
+                start: start,
+                elapsedMicroseconds: 1_000_000,
+                source: .heartRateControl,
+                intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: 4.1)),
+                connectionEpoch: connectionEpoch
+            ),
+            makeTreadmillDecisionEvent(
+                sessionID: sessionID,
+                start: start,
+                elapsedMicroseconds: 2_500_000,
+                source: .cooldown,
+                intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: 3.5)),
+                connectionEpoch: connectionEpoch
+            ),
+            makeTreadmillDecisionEvent(
+                sessionID: sessionID,
+                start: start,
+                elapsedMicroseconds: 4_500_000,
+                source: .stop,
+                intent: .stop,
+                connectionEpoch: connectionEpoch
+            ),
+        ]
+        let telemetryV2 = try TelemetryV2ParityReader.read(
+            session: makeV2Session(sessionID: sessionID, start: start),
+            heartRate: [],
+            treadmill: [],
+            events: v2Events,
+            frames: []
+        )
+        return (legacy, telemetryV2)
+    }
+
+    private func makeTreadmillDecisionEvent(
+        sessionID: SessionID,
+        start: Date,
+        elapsedMicroseconds: Int64,
+        source: TreadmillControlDecisionSource,
+        intent: TreadmillControlDecisionIntent,
+        connectionEpoch: TreadmillConnectionEpoch
+    ) -> WorkoutEvent {
+        makeEvent(
+            sessionID: sessionID,
+            start: start,
+            elapsedMicroseconds: elapsedMicroseconds,
+            payload: .treadmillEvidence(
+                .decision(
+                    TreadmillControlDecisionEvidence(
+                        decisionID: DecisionID(),
+                        source: source,
+                        intent: intent,
+                        heartRateInputs: [],
+                        occurredAt: start.addingTimeInterval(
+                            Double(elapsedMicroseconds) / 1_000_000
+                        ),
+                        connectionEpoch: connectionEpoch
+                    )
+                )
+            )
+        )
+    }
+
     private func makeEvent(
         sessionID: SessionID,
         start: Date,
@@ -639,6 +811,7 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
             ),
             decisions: decisions ?? [
                 TelemetryParityDecisionEvidence(
+                    domain: .heartRateControl,
                     source: "heartRateControl",
                     action: "setSpeed",
                     desiredSpeedKilometresPerHour: 4.1,

@@ -338,38 +338,90 @@ public enum TelemetrySemanticParityValidator {
         tolerance: TelemetryParityTolerance,
         add: FindingSink
     ) {
-        guard legacy.decisions.count == v2.decisions.count else {
-            addMissingOrExtra(
-                category: .controlDecisions,
-                code: "decision-count",
-                legacyCount: legacy.decisions.count,
-                v2Count: v2.decisions.count,
-                v2Completeness: v2.completeness,
-                add: add
-            )
-            return
+        let legacyHeartRateDecisions = legacy.decisions.filter {
+            $0.domain == .heartRateControl
         }
-        for (index, pair) in zip(legacy.decisions, v2.decisions).enumerated() {
-            let speedMatches: Bool
-            switch (pair.0.desiredSpeedKilometresPerHour, pair.1.desiredSpeedKilometresPerHour) {
-            case (nil, nil): speedMatches = true
-            case let (lhs?, rhs?):
-                speedMatches = abs(lhs - rhs) <= tolerance.speedKilometresPerHour
-            default: speedMatches = false
-            }
-            if pair.0.source != pair.1.source
-                || pair.0.action != pair.1.action
-                || !speedMatches
-                || abs(pair.0.elapsedMilliseconds - pair.1.elapsedMilliseconds) > tolerance.timestampMilliseconds {
-                add(
-                    .controlDecisions,
-                    "decision-mismatch-\(index)",
-                    .actualSemanticMismatch,
-                    .fail,
-                    "Control decision \(index) differs in source, action, speed target, or time."
+        let v2HeartRateDecisions = v2.decisions.filter {
+            $0.domain == .heartRateControl
+        }
+
+        let legacyActionOrder = legacyHeartRateDecisions.map(\.action)
+        let v2ActionOrder = v2HeartRateDecisions.map(\.action)
+        if legacyHeartRateDecisions.count == v2HeartRateDecisions.count,
+           legacyActionOrder != v2ActionOrder {
+            add(
+                .controlDecisions,
+                "heart-rate-control-decision-order",
+                .actualSemanticMismatch,
+                .fail,
+                "Comparable HR-control decision action order differs."
+            )
+        }
+
+        let actions = Set(legacyActionOrder + v2ActionOrder).sorted()
+        for action in actions {
+            let legacyActionDecisions = legacyHeartRateDecisions.filter { $0.action == action }
+            let v2ActionDecisions = v2HeartRateDecisions.filter { $0.action == action }
+
+            if legacyActionDecisions.count != v2ActionDecisions.count {
+                addHeartRateDecisionCountDifference(
+                    action: action,
+                    legacyCount: legacyActionDecisions.count,
+                    v2Count: v2ActionDecisions.count,
+                    v2Completeness: v2.completeness,
+                    add: add
                 )
             }
+
+            // Exact semantic action plus occurrence order is the identity rule.
+            // Speed and timestamp are compared only after that deterministic pairing.
+            for (index, pair) in zip(legacyActionDecisions, v2ActionDecisions).enumerated() {
+                let speedMatches: Bool
+                switch (pair.0.desiredSpeedKilometresPerHour, pair.1.desiredSpeedKilometresPerHour) {
+                case (nil, nil): speedMatches = true
+                case let (lhs?, rhs?):
+                    speedMatches = abs(lhs - rhs) <= tolerance.speedKilometresPerHour
+                default: speedMatches = false
+                }
+                if pair.0.source != pair.1.source
+                    || !speedMatches
+                    || abs(pair.0.elapsedMilliseconds - pair.1.elapsedMilliseconds) > tolerance.timestampMilliseconds {
+                    add(
+                        .controlDecisions,
+                        "heart-rate-control-decision-mismatch-\(action)-\(index)",
+                        .actualSemanticMismatch,
+                        .fail,
+                        "HR-control \(action) decision occurrence \(index) differs in source, speed target, or time."
+                    )
+                }
+            }
         }
+    }
+
+    private static func addHeartRateDecisionCountDifference(
+        action: String,
+        legacyCount: Int,
+        v2Count: Int,
+        v2Completeness: TelemetryParityCompleteness,
+        add: FindingSink
+    ) {
+        let v2IsMissingRequiredEvidence = v2Count < legacyCount
+        let classification: TelemetryParityFindingClass
+        let impact: TelemetryParityStatus
+        if v2IsMissingRequiredEvidence, v2Completeness != .complete {
+            classification = .v2RecorderOrDataLoss
+            impact = .inconclusive
+        } else {
+            classification = .actualSemanticMismatch
+            impact = .fail
+        }
+        add(
+            .controlDecisions,
+            "heart-rate-control-decision-count-\(action)",
+            classification,
+            impact,
+            "Comparable HR-control \(action) count: legacy=\(legacyCount), V2=\(v2Count)."
+        )
     }
 
     private static func compareTreadmillFacts(

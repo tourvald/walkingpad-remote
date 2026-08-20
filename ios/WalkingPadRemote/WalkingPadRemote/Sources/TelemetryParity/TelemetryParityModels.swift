@@ -247,18 +247,27 @@ public struct TelemetryParityConfigurationEvidence: Codable, Equatable, Sendable
     }
 }
 
+public enum TelemetryParityDecisionDomain: String, Codable, Sendable {
+    case heartRateControl
+    case outsideHeartRateControl
+    case unclassified
+}
+
 public struct TelemetryParityDecisionEvidence: Codable, Equatable, Sendable {
+    public let domain: TelemetryParityDecisionDomain
     public let source: String
     public let action: String
     public let desiredSpeedKilometresPerHour: Double?
     public let elapsedMilliseconds: Int64
 
     public init(
+        domain: TelemetryParityDecisionDomain,
         source: String,
         action: String,
         desiredSpeedKilometresPerHour: Double?,
         elapsedMilliseconds: Int64
     ) {
+        self.domain = domain
         self.source = source
         self.action = action
         self.desiredSpeedKilometresPerHour = desiredSpeedKilometresPerHour

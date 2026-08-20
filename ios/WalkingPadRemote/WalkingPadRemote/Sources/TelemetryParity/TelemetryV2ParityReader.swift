@@ -154,6 +154,9 @@ public enum TelemetryV2ParityReader {
         case let .treadmillEvidence(.decision(decision)):
             let mapped = mappedDecisionIntent(decision.intent)
             return TelemetryParityDecisionEvidence(
+                domain: decision.source == .heartRateControl
+                    ? .heartRateControl
+                    : .outsideHeartRateControl,
                 source: decision.source.rawValue,
                 action: mapped.action,
                 desiredSpeedKilometresPerHour: mapped.speed,
@@ -162,6 +165,7 @@ public enum TelemetryV2ParityReader {
         case let .controlDecision(decision):
             let mapped = mappedControlAction(decision.action)
             return TelemetryParityDecisionEvidence(
+                domain: .unclassified,
                 source: "controlDecision",
                 action: mapped.action,
                 desiredSpeedKilometresPerHour: mapped.speed,
