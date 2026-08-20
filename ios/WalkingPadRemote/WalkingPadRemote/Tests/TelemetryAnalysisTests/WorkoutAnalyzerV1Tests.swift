@@ -189,7 +189,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         })
     }
 
-    func testProvenAndUnknownEdgesChangeOnlyCausalMetrics() throws {
+    func testUnknownAndUnsupportedClaimsPreserveEquivalentFactualMetrics() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
             fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
@@ -203,11 +203,11 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             )
         }
         let common = fixture.phaseEvents(mainAt: 0, finishedAt: 30)
-        let provenDetail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+        let unsupportedDetail = try decodeDetail(WorkoutAnalyzerV1.analyze(
             fixture.input(
                 heartRate: heartRate,
                 treadmill: treadmill,
-                events: common + fixture.causalEdgeEvents(proven: true)
+                events: common + fixture.causalEdgeEvents(specificClaim: true)
             ),
             generatedAt: fixture.baseDate.addingTimeInterval(40)
         ))
@@ -215,56 +215,92 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 treadmill: treadmill,
-                events: common + fixture.causalEdgeEvents(proven: false)
+                events: common + fixture.causalEdgeEvents(specificClaim: false)
             ),
             generatedAt: fixture.baseDate.addingTimeInterval(40)
         ))
 
-        XCTAssertEqual(
-            provenDetail.quality.commandAcknowledgement.latencySeconds.value!.mean,
-            1,
-            accuracy: 0.000_001
-        )
-        XCTAssertEqual(
-            provenDetail.quality.commandFactualResponse.latencySeconds.value!.mean,
-            3,
-            accuracy: 0.000_001
-        )
-        XCTAssertEqual(
-            provenDetail.control.eventAlignedHeartRateResponse.value?
-                .provenFactualResponseEventCount,
-            1
-        )
-        XCTAssertEqual(
-            provenDetail.control.eventAlignedHeartRateResponse.value?
-                .responseBeatsPerMinute.mean,
-            0
-        )
-        XCTAssertNil(
-            provenDetail.control.eventAlignedHeartRateResponse.value?.standardError
-        )
-        XCTAssertEqual(provenDetail.control.eventAlignedHeartRateResponse.confidence, .low)
-        XCTAssertNil(unknownDetail.quality.commandAcknowledgement.latencySeconds.value)
-        XCTAssertNil(unknownDetail.quality.commandFactualResponse.latencySeconds.value)
-        XCTAssertNil(unknownDetail.control.eventAlignedHeartRateResponse.value)
+        for detail in [unsupportedDetail, unknownDetail] {
+            XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
+            XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+            XCTAssertNil(detail.quality.commandAcknowledgement.latencySeconds.value)
+            XCTAssertNil(detail.quality.commandFactualResponse.latencySeconds.value)
+            XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+            XCTAssertFalse(detail.quality.recorderLoss)
+        }
+        XCTAssertEqual(unsupportedDetail.quality.commandAcknowledgement.unknownAssociationCount, 0)
+        XCTAssertEqual(unsupportedDetail.quality.commandFactualResponse.unknownAssociationCount, 0)
+        XCTAssertTrue(unsupportedDetail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence
+                && $0.code == "unsupported-persisted-command-ack-causal-claim"
+                && $0.count == 1
+        })
+        XCTAssertTrue(unsupportedDetail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence
+                && $0.code == "unsupported-persisted-command-factual-response-causal-claim"
+                && $0.count == 1
+        })
+        XCTAssertFalse(unsupportedDetail.quality.issues.contains {
+            $0.category == .protocolRuntimeCausalAmbiguity
+                || $0.category == .recorderEvidenceLoss
+        })
+        XCTAssertEqual(unsupportedDetail.quality.sessionGrade, .low)
+        XCTAssertTrue(unsupportedDetail.quality.commandAcknowledgement.latencySeconds
+            .unavailableReasons.contains(
+                "independently-verifiable-persisted-causal-proof-unavailable"
+            ))
+        XCTAssertTrue(unsupportedDetail.quality.commandFactualResponse.latencySeconds
+            .unavailableReasons.contains(
+                "independently-verifiable-persisted-causal-proof-unavailable"
+            ))
+        XCTAssertTrue(unsupportedDetail.control.eventAlignedHeartRateResponse
+            .unavailableReasons.contains(
+                "independently-verifiable-persisted-factual-response-proof-unavailable"
+            ))
         XCTAssertEqual(unknownDetail.quality.commandAcknowledgement.unknownAssociationCount, 1)
         XCTAssertGreaterThanOrEqual(
             unknownDetail.quality.commandFactualResponse.unknownAssociationCount,
             1
         )
+        XCTAssertTrue(unknownDetail.quality.issues.contains {
+            $0.category == .protocolRuntimeCausalAmbiguity
+        })
+        XCTAssertEqual(unknownDetail.quality.sessionGrade, .medium)
+        XCTAssertFalse(unknownDetail.quality.issues.contains {
+            $0.code.hasPrefix("unsupported-persisted-command-")
+        })
         XCTAssertEqual(
-            provenDetail.quality.heartRateCoverage,
+            unsupportedDetail.quality.heartRateCoverage,
             unknownDetail.quality.heartRateCoverage
         )
         XCTAssertEqual(
-            provenDetail.quality.treadmillFactualCoverage,
+            unsupportedDetail.quality.treadmillFactualCoverage,
             unknownDetail.quality.treadmillFactualCoverage
         )
-        XCTAssertEqual(provenDetail.control.heartRateError, unknownDetail.control.heartRateError)
-        XCTAssertEqual(provenDetail.control.zoneDurations, unknownDetail.control.zoneDurations)
+        XCTAssertEqual(unsupportedDetail.control.commandCount, unknownDetail.control.commandCount)
+        XCTAssertEqual(
+            unsupportedDetail.control.speedDeltaKilometresPerHour,
+            unknownDetail.control.speedDeltaKilometresPerHour
+        )
+        XCTAssertEqual(
+            unsupportedDetail.control.retryAttemptLatencySeconds,
+            unknownDetail.control.retryAttemptLatencySeconds
+        )
+        XCTAssertEqual(
+            unsupportedDetail.control.heartRateError,
+            unknownDetail.control.heartRateError
+        )
+        XCTAssertEqual(
+            unsupportedDetail.control.zoneDurations,
+            unknownDetail.control.zoneDurations
+        )
+        XCTAssertEqual(
+            unsupportedDetail.control.stableSpeedHeartRateDrift,
+            unknownDetail.control.stableSpeedHeartRateDrift
+        )
     }
 
-    func testMalformedProvenResponseEdgesCannotProduceCausalMetrics() throws {
+    func testStructurallyInvalidSpecificClaimsRemainUnsupported() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
             fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
@@ -282,7 +318,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 treadmill: treadmill,
-                events: common + fixture.causalEdgeEvents(proven: true, includeSend: false)
+                events: common + fixture.causalEdgeEvents(specificClaim: true, includeSend: false)
             ),
             generatedAt: fixture.baseDate.addingTimeInterval(40)
         ))
@@ -291,7 +327,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
                 heartRate: heartRate,
                 treadmill: treadmill,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     responseEventSeconds: 11.5
                 )
             ),
@@ -332,7 +368,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
                 heartRate: heartRate,
                 treadmill: treadmill,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     associatedProtocolKind: .walkingPad
                 )
             ),
@@ -343,7 +379,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
                 heartRate: heartRate,
                 treadmill: treadmill,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     associatedConnectionEpoch: TreadmillConnectionEpoch(
                         rawValue: fixture.uuid(91)
                     )
@@ -375,7 +411,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
                 heartRate: heartRate,
                 events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
                     + fixture.causalEdgeEvents(
-                        proven: true,
+                        specificClaim: true,
                         firstDecisionConnectionEpoch: epochA
                     )
             ),
@@ -384,10 +420,13 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
 
         XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
         XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
-        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 1)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.code == "unsupported-persisted-command-factual-response-causal-claim"
+        })
     }
 
-    func testDecisionEnqueueAndSendOrderingMustBeProven() throws {
+    func testInvalidDecisionEnqueueAndSendOrderingIsMalformed() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
             fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
@@ -397,7 +436,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     decisionAfterEnqueue: true
                 )
             ),
@@ -407,7 +446,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     sendBeforeEnqueue: true
                 )
             ),
@@ -435,7 +474,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
                 heartRate: heartRate,
                 events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
                     + fixture.causalEdgeEvents(
-                        proven: true,
+                        specificClaim: true,
                         reversedEqualTimeOrder: true
                     )
             ),
@@ -462,7 +501,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     duplicateDecisionID: true
                 )
             ),
@@ -472,7 +511,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     mismatchedSendDecision: true
                 )
             ),
@@ -503,7 +542,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
                 heartRate: heartRate,
                 events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
                     + fixture.causalEdgeEvents(
-                        proven: true,
+                        specificClaim: true,
                         duplicateCommandEnqueuedWithoutDecision: true
                     )
             ),
@@ -530,7 +569,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
                 heartRate: heartRate,
                 events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
                     + fixture.causalEdgeEvents(
-                        proven: true,
+                        specificClaim: true,
                         nilDecisionChain: true
                     )
             ),
@@ -609,7 +648,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     duplicateSend: true
                 )
             ),
@@ -619,7 +658,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     duplicateResponse: true
                 )
             ),
@@ -629,7 +668,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             fixture.input(
                 heartRate: heartRate,
                 events: common + fixture.causalEdgeEvents(
-                    proven: true,
+                    specificClaim: true,
                     duplicateAcknowledgement: true
                 )
             ),
@@ -642,20 +681,24 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertNil(duplicateSend.quality.commandFactualResponse.latencySeconds.value)
         XCTAssertNil(duplicateSend.control.eventAlignedHeartRateResponse.value)
 
-        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.eligibleEdgeCount, 0)
+        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.eligibleEdgeCount, 1)
         XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.provenEdgeCount, 0)
-        XCTAssertNil(duplicateResponse.quality.commandFactualResponse.coverageRatio)
+        XCTAssertEqual(duplicateResponse.quality.commandFactualResponse.coverageRatio, 0)
         XCTAssertNil(duplicateResponse.quality.commandFactualResponse.latencySeconds.value)
         XCTAssertNil(duplicateResponse.control.eventAlignedHeartRateResponse.value)
 
-        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.eligibleEdgeCount, 0)
+        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.eligibleEdgeCount, 1)
         XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.provenEdgeCount, 0)
-        XCTAssertNil(duplicateAcknowledgement.quality.commandAcknowledgement.coverageRatio)
+        XCTAssertEqual(duplicateAcknowledgement.quality.commandAcknowledgement.coverageRatio, 0)
         XCTAssertNil(duplicateAcknowledgement.quality.commandAcknowledgement.latencySeconds.value)
 
+        XCTAssertEqual(duplicateSend.control.commandCount, 1)
+        XCTAssertNil(duplicateSend.control.speedDeltaKilometresPerHour.value)
+        for detail in [duplicateResponse, duplicateAcknowledgement] {
+            XCTAssertEqual(detail.control.commandCount, 2)
+            XCTAssertEqual(detail.control.speedDeltaKilometresPerHour.value?.count, 1)
+        }
         for detail in [duplicateSend, duplicateResponse, duplicateAcknowledgement] {
-            XCTAssertEqual(detail.control.commandCount, 1)
-            XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
             for coverage in [
                 detail.quality.commandAcknowledgement,
                 detail.quality.commandFactualResponse,
@@ -718,7 +761,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
 
     func testGenericEnqueuedCannotLinkInformativeDecisionToTypedResponse() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
-        let typedWithoutEnqueued = fixture.causalEdgeEvents(proven: true).filter { event in
+        let typedWithoutEnqueued = fixture.causalEdgeEvents(specificClaim: true).filter { event in
             guard case .treadmillEvidence(.commandEnqueued) = event.payload.payload else {
                 return true
             }
@@ -809,6 +852,42 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertNil(detail.control.retryAttemptLatencySeconds.value)
     }
 
+    func testValidPersistedAttemptSequenceProducesRetryLatencyWithoutCausalProof() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let retry = TreadmillCommandSendAttemptEvidence(
+            commandID: CommandID(rawValue: fixture.uuid(5_102)),
+            decisionID: DecisionID(rawValue: fixture.uuid(5_101)),
+            attemptID: CommandAttemptID(rawValue: fixture.uuid(5_303)),
+            attemptNumber: 2,
+            protocolKind: .ftms,
+            connectionEpoch: TreadmillConnectionEpoch(rawValue: fixture.uuid(90)),
+            sentAt: fixture.baseDate.addingTimeInterval(14),
+            writeType: .withResponse
+        )
+        let events = fixture.causalEdgeEvents(specificClaim: false) + [
+            fixture.event(
+                ordinal: 59,
+                seconds: 14,
+                payload: .treadmillEvidence(.sendAttempt(retry))
+            ),
+        ]
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(events: fixture.phaseEvents(mainAt: 0, finishedAt: 30) + events),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertEqual(
+            try XCTUnwrap(detail.control.retryAttemptLatencySeconds.value).mean,
+            2,
+            accuracy: 0.000_001
+        )
+        XCTAssertNil(detail.quality.commandAcknowledgement.latencySeconds.value)
+        XCTAssertNil(detail.quality.commandFactualResponse.latencySeconds.value)
+        XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.unknownAssociationCount, 1)
+        XCTAssertEqual(detail.quality.commandFactualResponse.unknownAssociationCount, 1)
+    }
+
     func testDuplicateAttemptNumberQuarantinesConflictingAttemptsAndEdges() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let commandID = CommandID(rawValue: fixture.uuid(5_102))
@@ -824,7 +903,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             sentAt: fixture.baseDate.addingTimeInterval(14),
             writeType: .withResponse
         )
-        let events = fixture.causalEdgeEvents(proven: true) + [
+        let events = fixture.causalEdgeEvents(specificClaim: true) + [
             fixture.event(
                 ordinal: 60,
                 seconds: 14,
@@ -863,7 +942,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             sentAt: fixture.baseDate.addingTimeInterval(12),
             writeType: .withResponse
         )
-        let events = fixture.causalEdgeEvents(proven: true) + [
+        let events = fixture.causalEdgeEvents(specificClaim: true) + [
             fixture.event(
                 ordinal: 61,
                 seconds: 12,
@@ -924,7 +1003,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
                 attemptID: attempt3ID
             )
         )
-        let events = fixture.causalEdgeEvents(proven: false) + [
+        let events = fixture.causalEdgeEvents(specificClaim: false) + [
             fixture.event(
                 ordinal: 62,
                 seconds: 11.5,
@@ -982,7 +1061,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             sentAt: fixture.baseDate.addingTimeInterval(12.1),
             writeType: .withResponse
         )
-        let events = fixture.causalEdgeEvents(proven: true) + [
+        let events = fixture.causalEdgeEvents(specificClaim: true) + [
             fixture.event(
                 ordinal: 65,
                 seconds: 11.1,
@@ -1020,7 +1099,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             connectionEpoch: epoch,
             enqueuedAt: fixture.baseDate.addingTimeInterval(10.5)
         )
-        let events = fixture.causalEdgeEvents(proven: true) + [
+        let events = fixture.causalEdgeEvents(specificClaim: true) + [
             fixture.event(
                 ordinal: 67,
                 seconds: 10.5,
@@ -1033,8 +1112,10 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         ))
 
         XCTAssertEqual(detail.control.commandCount, 3)
-        XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 1)
-        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 1)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertNil(detail.quality.commandAcknowledgement.latencySeconds.value)
+        XCTAssertNil(detail.quality.commandFactualResponse.latencySeconds.value)
     }
 
     func testStableFactualSpeedDriftAndCommandDomainSpeedDeltasAreVersionedMetrics() throws {
@@ -1569,7 +1650,7 @@ private struct AnalysisFixture {
     }
 
     func causalEdgeEvents(
-        proven: Bool,
+        specificClaim: Bool,
         includeSend: Bool = true,
         responseEventSeconds: Double = 15,
         associatedProtocolKind: TreadmillProtocolKind? = nil,
@@ -1633,7 +1714,7 @@ private struct AnalysisFixture {
         )
         let acknowledgement: LegacyAcknowledgementObservation
         let response: TreadmillObservationEvidence
-        if proven {
+        if specificClaim {
             let edgeProtocol = associatedProtocolKind ?? .ftms
             let edgeEpoch = associatedConnectionEpoch ?? epoch
             acknowledgement = LegacyAcknowledgementObservation(

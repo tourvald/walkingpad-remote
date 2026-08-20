@@ -68,7 +68,8 @@ The versioned detail stores:
   distributions;
 - receive-time fallback, duplicate, out-of-order, and source-switch counts;
 - factual treadmill covered/uncovered duration and ratio;
-- command-to-ACK and command-to-factual-response causal coverage and latency;
+- command-to-ACK and command-to-factual-response causal coverage, with latency
+  explicitly unavailable when persisted independent proof is absent;
 - incomplete-session and recorder-loss flags;
 - session and per-phase grades, explicit issues, exclusions, and unavailable
   reasons.
@@ -107,10 +108,11 @@ All duration/error/state metrics below integrate the covered half-open segments:
   seconds whose speed remains within 0.1 km/h of that window's reference speed.
   V1 combines window slopes by covered-duration weight and reports covered time,
   window count, slope, and duration-weighted fit;
-- descriptive event-aligned HR change for informative desired-speed changes of
-  at least 0.2 km/h. Each side is a 10-second window and requires at least 50%
-  HR coverage. The result includes evidence count, distribution, standard error
-  when estimable, and explicitly does not claim a causal treatment effect.
+- a reserved descriptive event-aligned HR change metric for informative
+  desired-speed changes of at least 0.2 km/h. It requires a persisted,
+  independently verifiable factual-response causal proof before its 10-second
+  before/after HR windows may be evaluated. The current accepted schema contains
+  no such proof representation, so Analyzer V1 reports this metric unavailable.
 
 The interval result is a versioned empty framework with
 `intervalEngineImplemented == false`. Analyzer V1 does not implement an interval
@@ -118,19 +120,32 @@ engine.
 
 ## Causal metrics
 
-The eligible causal denominator is persisted command-send attempts. ACK or
-factual-response latency is calculated only when a typed persisted edge names
-the exact matching command and attempt and occurs no earlier than that send.
-Unassociated legacy ACK and factual-response evidence increments explicit
-unknown-association accounting but yields no latency.
+The eligible causal denominator is persisted command-send attempts. Under the
+current accepted persisted schema, neither ACK nor factual-response evidence
+contains an independently verifiable proof representation for a specific
+command/attempt association. A persisted
+`deterministicallyCorrelated(commandID, attemptID)` claim therefore does not
+prove an edge, even when its IDs, protocol, connection epoch, and ordering are
+structurally consistent.
 
-Retry latency uses known command and attempt numbers only. Event-aligned HR
-response additionally requires a proven factual-response edge tied through the
-typed command-to-decision identity to an informative speed decision.
+Consequently, command-to-ACK latency, command-to-factual-response latency, and
+event-aligned HR response requiring a factual-response edge are unavailable.
+Specific persisted claims are recorded as unsupported malformed causal evidence;
+they are not counted as honest protocol/runtime ambiguity and do not imply
+recorder loss. Honest unassociated evidence with nil causal IDs remains explicit
+protocol/runtime ambiguity.
 
-Analyzer V1 never associates evidence using timestamps, proximity, queue order,
-target similarity, desired/commanded/modelled/expected speed, or canonical
-frames. Existing nil IDs from Issues #29/#30/#32 remain nil.
+Structural checks such as missing attempts, duplicate identities, protocol or
+epoch mismatch, and impossible ordering may reject a claim. They never establish
+proof in the opposite direction. Analyzer V1 also never associates evidence
+using timestamps, proximity, queue order, target similarity,
+desired/commanded/modelled/expected speed, or canonical frames. Existing nil IDs
+from Issues #29/#30/#32 remain nil.
+
+Retry latency is a separate attempt-based metric. It may be calculated from
+persisted command identity, unique attempt IDs, monotonic attempt numbers, typed
+protocol/connection scope, and independently valid persisted ordering. Its
+availability does not depend on ACK or factual-response causal proof.
 
 ## Cooldown
 

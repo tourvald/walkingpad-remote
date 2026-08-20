@@ -572,18 +572,13 @@ private extension WorkoutAnalyzerV1 {
         let connectionEpoch: TreadmillConnectionEpoch
     }
 
-    struct ProvenEdge: Hashable {
+    struct PersistedSpecificClaim: Hashable {
         let commandID: CommandID
         let attemptID: CommandAttemptID
         let time: Double
         let recordedTime: Double
         let protocolKind: TreadmillProtocolKind
         let connectionEpoch: TreadmillConnectionEpoch
-    }
-
-    struct ProvenEdgeIdentity: Hashable {
-        let commandID: CommandID
-        let attemptID: CommandAttemptID
     }
 
     struct ScopedCommandIdentity: Hashable {
@@ -637,10 +632,12 @@ private extension WorkoutAnalyzerV1 {
     struct CausalAnalysis {
         let commandIDs: Set<ScopedCommandIdentity>
         let sendsByAttempt: [CommandAttemptID: SendAttempt]
-        let provenAcknowledgements: [ProvenEdge]
-        let provenFactualResponses: [ProvenEdge]
+        let provenAcknowledgements: [PersistedSpecificClaim]
+        let provenFactualResponses: [PersistedSpecificClaim]
         let unknownAcknowledgementCount: Int
         let unknownFactualResponseCount: Int
+        let unsupportedAcknowledgementClaimCount: Int
+        let unsupportedFactualResponseClaimCount: Int
         let invalidCausalEdgeCount: Int
         let desiredDecisions: [ScopedDesiredDecision]
         let commandDecisionIDs: [ScopedCommandIdentity: DecisionID]
@@ -648,8 +645,8 @@ private extension WorkoutAnalyzerV1 {
         init(events: [WorkoutEvent]) {
             var commands: Set<ScopedCommandIdentity> = []
             var sends: [CommandAttemptID: SendAttempt] = [:]
-            var acknowledgements: [ProvenEdge] = []
-            var responses: [ProvenEdge] = []
+            var acknowledgements: [PersistedSpecificClaim] = []
+            var responses: [PersistedSpecificClaim] = []
             var invalidAttemptIDs: Set<CommandAttemptID> = []
             var duplicateSendScopes: Set<ScopedCommandIdentity> = []
             var duplicateSendRecordCount = 0
@@ -756,7 +753,7 @@ private extension WorkoutAnalyzerV1 {
                         case .unresolvedByLegacyRuntime:
                             unknownAcknowledgements += 1
                         case let .deterministicallyCorrelated(commandID, attemptID):
-                            acknowledgements.append(ProvenEdge(
+                            acknowledgements.append(PersistedSpecificClaim(
                                 commandID: commandID,
                                 attemptID: attemptID,
                                 time: time,
@@ -771,7 +768,7 @@ private extension WorkoutAnalyzerV1 {
                         case .unassociated:
                             unknownResponses += 1
                         case let .deterministicallyCorrelated(commandID, attemptID):
-                            responses.append(ProvenEdge(
+                            responses.append(PersistedSpecificClaim(
                                 commandID: commandID,
                                 attemptID: attemptID,
                                 time: time,
@@ -969,74 +966,21 @@ private extension WorkoutAnalyzerV1 {
             invalidAttemptIDs.formUnion(invalidRetryOrderAttemptIDs)
             invalidCommandDecisionScopes.formUnion(duplicateAttemptNumberScopes)
             invalidCommandDecisionScopes.formUnion(invalidRetryOrderScopes)
-            let duplicateAcknowledgementKeys = duplicateEdgeIdentities(sortedAcknowledgements)
-            let duplicateResponseKeys = duplicateEdgeIdentities(sortedResponses)
-            let isStructurallyValidEdge: (ProvenEdge, Set<ProvenEdgeIdentity>) -> Bool = {
-                edge, duplicateKeys in
-                let identity = ProvenEdgeIdentity(
-                    commandID: edge.commandID,
-                    attemptID: edge.attemptID
-                )
-                guard !invalidAttemptIDs.contains(edge.attemptID),
-                      !duplicateKeys.contains(identity) else { return false }
-                guard let send = sends[edge.attemptID] else { return false }
-                guard send.commandID == edge.commandID,
-                      causallyPrecedes(
-                          occurred: send.time,
-                          recorded: send.recordedTime,
-                          beforeOccurred: edge.time,
-                          beforeRecorded: edge.recordedTime
-                      ) else { return false }
-                return send.protocolKind == edge.protocolKind
-                    && send.connectionEpoch == edge.connectionEpoch
-            }
-            let invalidAcknowledgements = sortedAcknowledgements.filter {
-                !isStructurallyValidEdge($0, duplicateAcknowledgementKeys)
-            }
-            let invalidResponses = sortedResponses.filter {
-                !isStructurallyValidEdge($0, duplicateResponseKeys)
-            }
-            var invalidEdgeScopes: Set<ScopedCommandIdentity> = []
-            for edge in invalidAcknowledgements + invalidResponses {
-                invalidEdgeScopes.insert(ScopedCommandIdentity(
-                    commandID: edge.commandID,
-                    protocolKind: edge.protocolKind,
-                    connectionEpoch: edge.connectionEpoch
-                ))
-                if let send = sends[edge.attemptID] {
-                    invalidEdgeScopes.insert(ScopedCommandIdentity(
-                        commandID: send.commandID,
-                        protocolKind: send.protocolKind,
-                        connectionEpoch: send.connectionEpoch
-                    ))
-                }
-            }
-            invalidCommandDecisionScopes.formUnion(invalidEdgeScopes)
-            invalidAttemptIDs.formUnion(sends.values.filter { send in
-                invalidEdgeScopes.contains(ScopedCommandIdentity(
-                    commandID: send.commandID,
-                    protocolKind: send.protocolKind,
-                    connectionEpoch: send.connectionEpoch
-                ))
-            }.map(\.attemptID))
             let finalCommandDecisionIDs = validCommandDecisionIDs.filter {
                 !invalidCommandDecisionScopes.contains($0.key)
             }
             commandIDs = commands.subtracting(invalidCommandDecisionScopes)
             sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
-            let isValidEdge: (ProvenEdge, Set<ProvenEdgeIdentity>) -> Bool = {
-                edge, duplicateKeys in
-                isStructurallyValidEdge(edge, duplicateKeys)
-                    && !invalidAttemptIDs.contains(edge.attemptID)
-            }
-            provenAcknowledgements = sortedAcknowledgements.filter {
-                isValidEdge($0, duplicateAcknowledgementKeys)
-            }
-            provenFactualResponses = sortedResponses.filter {
-                isValidEdge($0, duplicateResponseKeys)
-            }
+            // The accepted persisted schema contains no independently verifiable
+            // proof token for a specific ACK/response-to-attempt association.
+            // Persisted specific claims are therefore unsupported, regardless of
+            // structural ID, protocol, epoch, or timestamp consistency.
+            provenAcknowledgements = []
+            provenFactualResponses = []
             unknownAcknowledgementCount = unknownAcknowledgements
             unknownFactualResponseCount = unknownResponses
+            unsupportedAcknowledgementClaimCount = sortedAcknowledgements.count
+            unsupportedFactualResponseClaimCount = sortedResponses.count
             invalidCausalEdgeCount = unsupportedGenericCausalRecordCount
                 + duplicateSendRecordCount
                 + duplicateAttemptNumberRecordCount
@@ -1044,12 +988,8 @@ private extension WorkoutAnalyzerV1 {
                 + invalidTypedSendCount
                 + invalidRetryOrderAttemptIDs.count
                 + invalidCommandDecisionLinkCount
-                + sortedAcknowledgements.filter {
-                    !isValidEdge($0, duplicateAcknowledgementKeys)
-                }.count
-                + sortedResponses.filter {
-                    !isValidEdge($0, duplicateResponseKeys)
-                }.count
+                + sortedAcknowledgements.count
+                + sortedResponses.count
             desiredDecisions = Array(Dictionary(
                 finalCommandDecisionIDs.compactMap { identity, decisionID -> (
                     ScopedDecisionIdentity,
@@ -1078,11 +1018,19 @@ private extension WorkoutAnalyzerV1 {
         }
 
         var acknowledgementCoverage: CausalAssociationCoverage {
-            coverage(edges: provenAcknowledgements, unknownCount: unknownAcknowledgementCount)
+            coverage(
+                edges: provenAcknowledgements,
+                unknownCount: unknownAcknowledgementCount,
+                unsupportedClaimCount: unsupportedAcknowledgementClaimCount
+            )
         }
 
         var factualResponseCoverage: CausalAssociationCoverage {
-            coverage(edges: provenFactualResponses, unknownCount: unknownFactualResponseCount)
+            coverage(
+                edges: provenFactualResponses,
+                unknownCount: unknownFactualResponseCount,
+                unsupportedClaimCount: unsupportedFactualResponseClaimCount
+            )
         }
 
         var retryLatencies: [Double] {
@@ -1148,8 +1096,9 @@ private extension WorkoutAnalyzerV1 {
         }
 
         private func coverage(
-            edges: [ProvenEdge],
-            unknownCount: Int
+            edges: [PersistedSpecificClaim],
+            unknownCount: Int,
+            unsupportedClaimCount: Int
         ) -> CausalAssociationCoverage {
             let valid = edges.compactMap { edge -> Double? in
                 guard let send = sendsByAttempt[edge.attemptID],
@@ -1164,9 +1113,11 @@ private extension WorkoutAnalyzerV1 {
             }
             let latency = metricDistribution(
                 valid,
-                noEvidenceReason: sendsByAttempt.isEmpty
-                    ? "no-command-attempt-evidence"
-                    : "no-proven-causal-edge"
+                noEvidenceReason: unsupportedClaimCount > 0
+                    ? "independently-verifiable-persisted-causal-proof-unavailable"
+                    : (sendsByAttempt.isEmpty
+                        ? "no-command-attempt-evidence"
+                        : "no-proven-causal-edge")
             )
             return CausalAssociationCoverage(
                 eligibleEdgeCount: sendsByAttempt.count,
@@ -1283,6 +1234,20 @@ private extension WorkoutAnalyzerV1 {
                 category: .protocolRuntimeCausalAmbiguity,
                 code: "unknown-command-factual-response-association",
                 count: UInt64(causal.unknownFactualResponseCount)
+            ))
+        }
+        if causal.unsupportedAcknowledgementClaimCount > 0 {
+            issues.append(AnalysisQualityIssue(
+                category: .malformedCorruptEvidence,
+                code: "unsupported-persisted-command-ack-causal-claim",
+                count: UInt64(causal.unsupportedAcknowledgementClaimCount)
+            ))
+        }
+        if causal.unsupportedFactualResponseClaimCount > 0 {
+            issues.append(AnalysisQualityIssue(
+                category: .malformedCorruptEvidence,
+                code: "unsupported-persisted-command-factual-response-causal-claim",
+                count: UInt64(causal.unsupportedFactualResponseClaimCount)
             ))
         }
         if hrCoverage.uncoveredSeconds > 0 {
@@ -1736,7 +1701,9 @@ private extension WorkoutAnalyzerV1 {
             return .unavailable([
                 informative.isEmpty
                     ? "no-informative-command-domain-speed-change"
-                    : "no-proven-factual-response-with-covered-heart-rate-windows",
+                    : (causal.unsupportedFactualResponseClaimCount > 0
+                        ? "independently-verifiable-persisted-factual-response-proof-unavailable"
+                        : "no-proven-factual-response-with-covered-heart-rate-windows"),
             ])
         }
         let standardError = responses.count > 1
@@ -2044,7 +2011,7 @@ private extension WorkoutAnalyzerV1 {
         }.filter { $0.isFinite && $0 >= 0 }.sorted()
     }
 
-    static func edgeOrder(_ lhs: ProvenEdge, _ rhs: ProvenEdge) -> Bool {
+    static func edgeOrder(_ lhs: PersistedSpecificClaim, _ rhs: PersistedSpecificClaim) -> Bool {
         if lhs.time != rhs.time { return lhs.time < rhs.time }
         if lhs.commandID != rhs.commandID {
             return lhs.commandID.description < rhs.commandID.description
@@ -2074,16 +2041,6 @@ private extension WorkoutAnalyzerV1 {
     ) -> Bool {
         if lhs.time != rhs.time { return lhs.time < rhs.time }
         return lhs.identity.decisionID.description < rhs.identity.decisionID.description
-    }
-
-    static func duplicateEdgeIdentities(
-        _ edges: [ProvenEdge]
-    ) -> Set<ProvenEdgeIdentity> {
-        Set(Dictionary(grouping: edges) { edge in
-            ProvenEdgeIdentity(commandID: edge.commandID, attemptID: edge.attemptID)
-        }.compactMap { identity, matches in
-            matches.count > 1 ? identity : nil
-        })
     }
 
     static func isUsableHeartRate(_ observation: HeartRateObservation) -> Bool {
