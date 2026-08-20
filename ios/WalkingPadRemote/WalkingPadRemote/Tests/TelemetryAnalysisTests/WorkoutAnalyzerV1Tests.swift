@@ -289,6 +289,70 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         }
     }
 
+    func testDecisionDeltasAndEventResponseNeverCrossConnectionEpochs() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let epochA = TreadmillConnectionEpoch(rawValue: fixture.uuid(92))
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+                    + fixture.causalEdgeEvents(
+                        proven: true,
+                        firstDecisionConnectionEpoch: epochA
+                    )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
+        XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 1)
+    }
+
+    func testDuplicateDecisionIDAndMismatchedSendDecisionAreQuarantined() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let common = fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+        let duplicateDecision = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    duplicateDecisionID: true
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        let mismatchedSendDecision = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    mismatchedSendDecision: true
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertNil(duplicateDecision.control.speedDeltaKilometresPerHour.value)
+        XCTAssertNil(duplicateDecision.control.eventAlignedHeartRateResponse.value)
+        XCTAssertTrue(duplicateDecision.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+
+        XCTAssertEqual(mismatchedSendDecision.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertNil(mismatchedSendDecision.quality.commandFactualResponse.latencySeconds.value)
+        XCTAssertNil(mismatchedSendDecision.control.eventAlignedHeartRateResponse.value)
+        XCTAssertTrue(mismatchedSendDecision.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+    }
+
     func testDuplicateCausalAttemptEvidenceIsMalformedAndNeverExceedsCoverage() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
@@ -986,21 +1050,44 @@ private struct AnalysisFixture {
     }
 
     func speedDecisionEvents(speeds: [Double], at times: [Double]) -> [WorkoutEvent] {
-        zip(speeds, times).enumerated().map { index, row in
-            event(
-                ordinal: 100 + index,
-                seconds: row.1,
-                payload: .treadmillEvidence(.decision(
-                    TreadmillControlDecisionEvidence(
-                        decisionID: DecisionID(rawValue: uuid(5_000 + index)),
-                        source: .heartRateControl,
-                        intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: row.0)),
-                        heartRateInputs: [],
-                        occurredAt: baseDate.addingTimeInterval(row.1),
-                        connectionEpoch: TreadmillConnectionEpoch(rawValue: uuid(90))
-                    )
-                ))
-            )
+        let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
+        return zip(speeds, times).enumerated().flatMap { index, row in
+            let decisionID = DecisionID(rawValue: uuid(5_000 + index))
+            return [
+                event(
+                    ordinal: 100 + (index * 2),
+                    seconds: row.1,
+                    payload: .treadmillEvidence(.decision(
+                        TreadmillControlDecisionEvidence(
+                            decisionID: decisionID,
+                            source: .heartRateControl,
+                            intent: .setDesiredSpeed(
+                                DesiredSpeedKilometresPerHour(value: row.0)
+                            ),
+                            heartRateInputs: [],
+                            occurredAt: baseDate.addingTimeInterval(row.1),
+                            connectionEpoch: epoch
+                        )
+                    ))
+                ),
+                event(
+                    ordinal: 101 + (index * 2),
+                    seconds: row.1 + 0.001,
+                    payload: .treadmillEvidence(.commandEnqueued(
+                        TreadmillCommandEnqueuedEvidence(
+                            commandID: CommandID(rawValue: uuid(5_050 + index)),
+                            decisionID: decisionID,
+                            kind: .setSpeed(CommandedSpeed(
+                                nativeValue: (row.0 * 100).rounded(),
+                                nativeUnit: .controllerNative(code: "ftms_hundredths_kmh")
+                            )),
+                            protocolKind: .ftms,
+                            connectionEpoch: epoch,
+                            enqueuedAt: baseDate.addingTimeInterval(row.1 + 0.001)
+                        )
+                    ))
+                ),
+            ]
         }
     }
 
@@ -1012,16 +1099,25 @@ private struct AnalysisFixture {
         associatedConnectionEpoch: TreadmillConnectionEpoch? = nil,
         duplicateSend: Bool = false,
         duplicateResponse: Bool = false,
-        duplicateAcknowledgement: Bool = false
+        duplicateAcknowledgement: Bool = false,
+        firstDecisionConnectionEpoch: TreadmillConnectionEpoch? = nil,
+        duplicateDecisionID: Bool = false,
+        mismatchedSendDecision: Bool = false
     ) -> [WorkoutEvent] {
         let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
+        let firstEpoch = firstDecisionConnectionEpoch ?? epoch
         let firstDecisionID = DecisionID(rawValue: uuid(5_100))
-        let decisionID = DecisionID(rawValue: uuid(5_101))
+        let decisionID = duplicateDecisionID
+            ? firstDecisionID
+            : DecisionID(rawValue: uuid(5_101))
+        let firstCommandID = CommandID(rawValue: uuid(5_105))
         let commandID = CommandID(rawValue: uuid(5_102))
         let attemptID = CommandAttemptID(rawValue: uuid(5_103))
         let send = TreadmillCommandSendAttemptEvidence(
             commandID: commandID,
-            decisionID: decisionID,
+            decisionID: mismatchedSendDecision
+                ? DecisionID(rawValue: uuid(5_106))
+                : decisionID,
             attemptID: attemptID,
             attemptNumber: 1,
             protocolKind: .ftms,
@@ -1097,12 +1193,29 @@ private struct AnalysisFixture {
                         intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: 3)),
                         heartRateInputs: [],
                         occurredAt: baseDate,
-                        connectionEpoch: epoch
+                        connectionEpoch: firstEpoch
                     )
                 ))
             ),
             event(
                 ordinal: 31,
+                seconds: 0.001,
+                payload: .treadmillEvidence(.commandEnqueued(
+                    TreadmillCommandEnqueuedEvidence(
+                        commandID: firstCommandID,
+                        decisionID: firstDecisionID,
+                        kind: .setSpeed(CommandedSpeed(
+                            nativeValue: 300,
+                            nativeUnit: .controllerNative(code: "ftms_hundredths_kmh")
+                        )),
+                        protocolKind: .ftms,
+                        connectionEpoch: firstEpoch,
+                        enqueuedAt: baseDate.addingTimeInterval(0.001)
+                    )
+                ))
+            ),
+            event(
+                ordinal: 32,
                 seconds: 10,
                 payload: .treadmillEvidence(.decision(
                     TreadmillControlDecisionEvidence(
@@ -1116,7 +1229,7 @@ private struct AnalysisFixture {
                 ))
             ),
             event(
-                ordinal: 32,
+                ordinal: 33,
                 seconds: 11,
                 payload: .treadmillEvidence(.commandEnqueued(
                     TreadmillCommandEnqueuedEvidence(
@@ -1133,24 +1246,24 @@ private struct AnalysisFixture {
                 ))
             ),
             event(
-                ordinal: 34,
+                ordinal: 35,
                 seconds: 13,
                 payload: .treadmillEvidence(.acknowledgement(acknowledgement))
             ),
             event(
-                ordinal: 35,
+                ordinal: 36,
                 seconds: responseEventSeconds,
                 payload: .treadmillEvidence(.observation(response))
             ),
         ]
         if includeSend {
             events.append(
-                event(ordinal: 33, seconds: 12, payload: .treadmillEvidence(.sendAttempt(send)))
+                event(ordinal: 34, seconds: 12, payload: .treadmillEvidence(.sendAttempt(send)))
             )
             if duplicateSend {
                 events.append(
                     event(
-                        ordinal: 36,
+                        ordinal: 37,
                         seconds: 12,
                         payload: .treadmillEvidence(.sendAttempt(send))
                     )
@@ -1160,7 +1273,7 @@ private struct AnalysisFixture {
         if duplicateResponse {
             events.append(
                 event(
-                    ordinal: 37,
+                    ordinal: 38,
                     seconds: responseEventSeconds,
                     payload: .treadmillEvidence(.observation(response))
                 )
@@ -1169,7 +1282,7 @@ private struct AnalysisFixture {
         if duplicateAcknowledgement {
             events.append(
                 event(
-                    ordinal: 38,
+                    ordinal: 39,
                     seconds: 13,
                     payload: .treadmillEvidence(.acknowledgement(acknowledgement))
                 )
