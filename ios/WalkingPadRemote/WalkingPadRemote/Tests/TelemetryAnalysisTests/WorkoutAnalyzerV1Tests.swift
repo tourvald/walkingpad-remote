@@ -425,6 +425,33 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         }
     }
 
+    func testEqualOccurredTimeRequiresForwardRecordedCausalOrder() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+                    + fixture.causalEdgeEvents(
+                        proven: true,
+                        reversedEqualTimeOrder: true
+                    )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertEqual(detail.control.commandCount, 1)
+        XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
+        XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+    }
+
     func testDuplicateDecisionIDAndMismatchedSendDecisionAreQuarantined() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
@@ -1326,12 +1353,22 @@ private struct AnalysisFixture {
         duplicateCommandEnqueuedWithoutDecision: Bool = false,
         decisionAfterEnqueue: Bool = false,
         sendBeforeEnqueue: Bool = false,
-        nilDecisionChain: Bool = false
+        nilDecisionChain: Bool = false,
+        reversedEqualTimeOrder: Bool = false
     ) -> [WorkoutEvent] {
         let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
         let firstEpoch = firstDecisionConnectionEpoch ?? epoch
-        let secondDecisionSeconds = decisionAfterEnqueue ? 11.5 : 10.0
-        let sendSeconds = sendBeforeEnqueue ? 10.5 : 12.0
+        let secondDecisionSeconds = reversedEqualTimeOrder
+            ? 12.0
+            : (decisionAfterEnqueue ? 11.5 : 10.0)
+        let enqueueSeconds = reversedEqualTimeOrder ? 12.0 : 11.0
+        let sendSeconds = reversedEqualTimeOrder
+            ? 12.0
+            : (sendBeforeEnqueue ? 10.5 : 12.0)
+        let acknowledgementSeconds = reversedEqualTimeOrder ? 12.0 : 13.0
+        let factualResponseSeconds = reversedEqualTimeOrder
+            ? 12.0
+            : responseEventSeconds
         let firstDecisionID = DecisionID(rawValue: uuid(5_100))
         let decisionID = duplicateDecisionID
             ? firstDecisionID
@@ -1443,6 +1480,7 @@ private struct AnalysisFixture {
             event(
                 ordinal: 32,
                 seconds: secondDecisionSeconds,
+                recordedSeconds: reversedEqualTimeOrder ? 12.005 : nil,
                 payload: .treadmillEvidence(.decision(
                     TreadmillControlDecisionEvidence(
                         decisionID: decisionID,
@@ -1456,7 +1494,8 @@ private struct AnalysisFixture {
             ),
             event(
                 ordinal: 33,
-                seconds: 11,
+                seconds: enqueueSeconds,
+                recordedSeconds: reversedEqualTimeOrder ? 12.004 : nil,
                 payload: .treadmillEvidence(.commandEnqueued(
                     TreadmillCommandEnqueuedEvidence(
                         commandID: commandID,
@@ -1467,18 +1506,20 @@ private struct AnalysisFixture {
                         )),
                         protocolKind: .ftms,
                         connectionEpoch: epoch,
-                        enqueuedAt: baseDate.addingTimeInterval(11)
+                        enqueuedAt: baseDate.addingTimeInterval(enqueueSeconds)
                     )
                 ))
             ),
             event(
                 ordinal: 35,
-                seconds: 13,
+                seconds: acknowledgementSeconds,
+                recordedSeconds: reversedEqualTimeOrder ? 12.002 : nil,
                 payload: .treadmillEvidence(.acknowledgement(acknowledgement))
             ),
             event(
                 ordinal: 36,
-                seconds: responseEventSeconds,
+                seconds: factualResponseSeconds,
+                recordedSeconds: reversedEqualTimeOrder ? 12.001 : nil,
                 payload: .treadmillEvidence(.observation(response))
             ),
         ]
@@ -1487,6 +1528,7 @@ private struct AnalysisFixture {
                 event(
                     ordinal: 34,
                     seconds: sendSeconds,
+                    recordedSeconds: reversedEqualTimeOrder ? 12.003 : nil,
                     payload: .treadmillEvidence(.sendAttempt(send))
                 )
             )
@@ -1547,16 +1589,18 @@ private struct AnalysisFixture {
     func event(
         ordinal: Int,
         seconds: Double,
+        recordedSeconds: Double? = nil,
         payload: WorkoutEventPayload
     ) -> WorkoutEvent {
-        WorkoutEvent(
+        let persistedSeconds = recordedSeconds ?? (seconds + 0.001)
+        return WorkoutEvent(
             recordID: RecordID(rawValue: uuid(6_000 + ordinal)),
             sessionID: session.sessionID,
             timestamp: EventTimestamp(
                 occurredAt: baseDate.addingTimeInterval(seconds),
-                recordedAt: baseDate.addingTimeInterval(seconds + 0.001),
+                recordedAt: baseDate.addingTimeInterval(persistedSeconds),
                 occurredElapsed: elapsed(seconds),
-                recordedElapsed: elapsed(seconds + 0.001)
+                recordedElapsed: elapsed(persistedSeconds)
             ),
             payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
         )

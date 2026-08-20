@@ -567,6 +567,7 @@ private extension WorkoutAnalyzerV1 {
         let attemptID: CommandAttemptID
         let attemptNumber: UInt16
         let time: Double
+        let recordedTime: Double
         let protocolKind: TreadmillProtocolKind
         let connectionEpoch: TreadmillConnectionEpoch
     }
@@ -575,6 +576,7 @@ private extension WorkoutAnalyzerV1 {
         let commandID: CommandID
         let attemptID: CommandAttemptID
         let time: Double
+        let recordedTime: Double
         let protocolKind: TreadmillProtocolKind
         let connectionEpoch: TreadmillConnectionEpoch
     }
@@ -592,12 +594,14 @@ private extension WorkoutAnalyzerV1 {
 
     struct DecisionRecord: Hashable {
         let time: Double
+        let recordedTime: Double
         let connectionEpoch: TreadmillConnectionEpoch
     }
 
     struct CommandEnqueueRecord: Hashable {
         let decisionID: DecisionID?
         let time: Double
+        let recordedTime: Double
         let kind: CommandKind
     }
 
@@ -667,6 +671,7 @@ private extension WorkoutAnalyzerV1 {
 
             for event in events.sorted(by: eventEvidenceOrder) {
                 let time = seconds(event.timestamp.occurredElapsed)
+                let recordedTime = seconds(event.timestamp.recordedElapsed)
                 switch event.payload.payload {
                 case .commandLifecycle:
                     unsupportedGenericCausalRecordCount += 1
@@ -679,6 +684,7 @@ private extension WorkoutAnalyzerV1 {
                         } else {
                             decisionRecords[decision.decisionID] = DecisionRecord(
                                 time: time,
+                                recordedTime: recordedTime,
                                 connectionEpoch: decision.connectionEpoch
                             )
                         }
@@ -714,6 +720,7 @@ private extension WorkoutAnalyzerV1 {
                         commandEnqueues[identity] = CommandEnqueueRecord(
                             decisionID: command.decisionID,
                             time: time,
+                            recordedTime: recordedTime,
                             kind: command.kind
                         )
                         if command.decisionID == nil {
@@ -727,6 +734,7 @@ private extension WorkoutAnalyzerV1 {
                             attemptID: attempt.attemptID,
                             attemptNumber: attempt.attemptNumber,
                             time: time,
+                            recordedTime: recordedTime,
                             protocolKind: attempt.protocolKind,
                             connectionEpoch: attempt.connectionEpoch
                         ))
@@ -739,6 +747,7 @@ private extension WorkoutAnalyzerV1 {
                                 commandID: commandID,
                                 attemptID: attemptID,
                                 time: time,
+                                recordedTime: recordedTime,
                                 protocolKind: acknowledgement.protocolKind,
                                 connectionEpoch: acknowledgement.connectionEpoch
                             ))
@@ -753,6 +762,7 @@ private extension WorkoutAnalyzerV1 {
                                 commandID: commandID,
                                 attemptID: attemptID,
                                 time: time,
+                                recordedTime: recordedTime,
                                 protocolKind: observation.protocolKind,
                                 connectionEpoch: observation.connectionEpoch
                             ))
@@ -768,6 +778,24 @@ private extension WorkoutAnalyzerV1 {
             }
             let sortedAcknowledgements = acknowledgements.sorted(by: edgeOrder)
             let sortedResponses = responses.sorted(by: edgeOrder)
+            let invalidDecisionLinkScopes = Set(commandEnqueues.compactMap {
+                identity, enqueue -> ScopedCommandIdentity? in
+                guard let decisionID = enqueue.decisionID,
+                      !invalidCommandDecisionScopes.contains(identity) else {
+                    return nil
+                }
+                guard let decision = decisionRecords[decisionID] else { return identity }
+                let valid = !invalidDecisionIDs.contains(decisionID)
+                    && decision.connectionEpoch == identity.connectionEpoch
+                    && causallyPrecedes(
+                        occurred: decision.time,
+                        recorded: decision.recordedTime,
+                        beforeOccurred: enqueue.time,
+                        beforeRecorded: enqueue.recordedTime
+                    )
+                return valid ? nil : identity
+            })
+            invalidCommandDecisionScopes.formUnion(invalidDecisionLinkScopes)
             let validCommandDecisionIDs = Dictionary(uniqueKeysWithValues:
                 commandEnqueues.compactMap { identity, enqueue -> (
                     ScopedCommandIdentity,
@@ -778,22 +806,18 @@ private extension WorkoutAnalyzerV1 {
                           !invalidDecisionIDs.contains(decisionID),
                           let decision = decisionRecords[decisionID],
                           decision.connectionEpoch == identity.connectionEpoch,
-                          decision.time <= enqueue.time else { return nil }
+                          causallyPrecedes(
+                              occurred: decision.time,
+                              recorded: decision.recordedTime,
+                              beforeOccurred: enqueue.time,
+                              beforeRecorded: enqueue.recordedTime
+                          ) else { return nil }
                     return (identity, decisionID)
                 }
             )
             let invalidCommandDecisionLinkCount = duplicateCommandRecordCount
                 + missingCommandDecisionLinkCount
-                + commandEnqueues.filter { identity, enqueue in
-                    guard let decisionID = enqueue.decisionID,
-                          !invalidCommandDecisionScopes.contains(identity) else {
-                        return false
-                    }
-                    guard let decision = decisionRecords[decisionID] else { return true }
-                    return invalidDecisionIDs.contains(decisionID)
-                        || decision.connectionEpoch != identity.connectionEpoch
-                        || decision.time > enqueue.time
-                }.count
+                + invalidDecisionLinkScopes.count
             var invalidTypedSendCount = 0
             for send in sends.values {
                 let identity = ScopedCommandIdentity(
@@ -811,7 +835,12 @@ private extension WorkoutAnalyzerV1 {
                     invalidTypedSendCount += 1
                     continue
                 }
-                let invalidTypedChain = send.time < enqueue.time
+                let invalidTypedChain = !causallyPrecedes(
+                    occurred: enqueue.time,
+                    recorded: enqueue.recordedTime,
+                    beforeOccurred: send.time,
+                    beforeRecorded: send.recordedTime
+                )
                     || send.decisionID != enqueue.decisionID
                     || (enqueue.decisionID != nil
                         && validCommandDecisionIDs[identity] == nil)
@@ -834,7 +863,12 @@ private extension WorkoutAnalyzerV1 {
                       !duplicateKeys.contains(identity) else { return false }
                 guard let send = sends[edge.attemptID] else { return false }
                 guard send.commandID == edge.commandID,
-                      edge.time >= send.time else { return false }
+                      causallyPrecedes(
+                          occurred: send.time,
+                          recorded: send.recordedTime,
+                          beforeOccurred: edge.time,
+                          beforeRecorded: edge.recordedTime
+                      ) else { return false }
                 return send.protocolKind == edge.protocolKind
                     && send.connectionEpoch == edge.connectionEpoch
             }
@@ -956,7 +990,12 @@ private extension WorkoutAnalyzerV1 {
             let valid = edges.compactMap { edge -> Double? in
                 guard let send = sendsByAttempt[edge.attemptID],
                       send.commandID == edge.commandID,
-                      edge.time >= send.time else { return nil }
+                      causallyPrecedes(
+                          occurred: send.time,
+                          recorded: send.recordedTime,
+                          beforeOccurred: edge.time,
+                          beforeRecorded: edge.recordedTime
+                      ) else { return nil }
                 return edge.time - send.time
             }
             let latency = metricDistribution(
@@ -1847,6 +1886,16 @@ private extension WorkoutAnalyzerV1 {
             return lhs.commandID.description < rhs.commandID.description
         }
         return lhs.attemptID.description < rhs.attemptID.description
+    }
+
+    static func causallyPrecedes(
+        occurred: Double,
+        recorded: Double,
+        beforeOccurred: Double,
+        beforeRecorded: Double
+    ) -> Bool {
+        if occurred != beforeOccurred { return occurred < beforeOccurred }
+        return recorded < beforeRecorded
     }
 
     static func scopedDecisionOrder(
