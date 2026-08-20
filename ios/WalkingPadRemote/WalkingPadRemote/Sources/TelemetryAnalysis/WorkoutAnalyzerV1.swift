@@ -592,6 +592,11 @@ private extension WorkoutAnalyzerV1 {
         let connectionEpoch: TreadmillConnectionEpoch
     }
 
+    struct ScopedAttemptNumberIdentity: Hashable {
+        let command: ScopedCommandIdentity
+        let attemptNumber: UInt16
+    }
+
     struct DecisionRecord: Hashable {
         let time: Double
         let recordedTime: Double
@@ -776,6 +781,25 @@ private extension WorkoutAnalyzerV1 {
                     break
                 }
             }
+            let sendsByAttemptNumber = Dictionary(grouping: sends.values) { send in
+                ScopedAttemptNumberIdentity(
+                    command: ScopedCommandIdentity(
+                        commandID: send.commandID,
+                        protocolKind: send.protocolKind,
+                        connectionEpoch: send.connectionEpoch
+                    ),
+                    attemptNumber: send.attemptNumber
+                )
+            }
+            let duplicateAttemptNumberGroups = sendsByAttemptNumber.values.filter {
+                $0.count > 1
+            }
+            invalidAttemptIDs.formUnion(
+                duplicateAttemptNumberGroups.flatMap { $0.map(\.attemptID) }
+            )
+            let duplicateAttemptNumberRecordCount = duplicateAttemptNumberGroups.reduce(0) {
+                $0 + ($1.count - 1)
+            }
             let sortedAcknowledgements = acknowledgements.sorted(by: edgeOrder)
             let sortedResponses = responses.sorted(by: edgeOrder)
             let invalidDecisionLinkScopes = Set(commandEnqueues.compactMap {
@@ -849,6 +873,36 @@ private extension WorkoutAnalyzerV1 {
                     invalidTypedSendCount += 1
                 }
             }
+            let validSendsByCommand = Dictionary(grouping: sends.values.filter {
+                !invalidAttemptIDs.contains($0.attemptID)
+            }) { send in
+                ScopedCommandIdentity(
+                    commandID: send.commandID,
+                    protocolKind: send.protocolKind,
+                    connectionEpoch: send.connectionEpoch
+                )
+            }
+            var invalidRetryOrderAttemptIDs: Set<CommandAttemptID> = []
+            for attempts in validSendsByCommand.values {
+                let ordered = attempts.sorted {
+                    if $0.attemptNumber != $1.attemptNumber {
+                        return $0.attemptNumber < $1.attemptNumber
+                    }
+                    return sendOrder($0, $1)
+                }
+                for (previous, next) in zip(ordered, ordered.dropFirst())
+                    where !causallyPrecedes(
+                        occurred: previous.time,
+                        recorded: previous.recordedTime,
+                        beforeOccurred: next.time,
+                        beforeRecorded: next.recordedTime
+                    )
+                {
+                    invalidRetryOrderAttemptIDs.insert(previous.attemptID)
+                    invalidRetryOrderAttemptIDs.insert(next.attemptID)
+                }
+            }
+            invalidAttemptIDs.formUnion(invalidRetryOrderAttemptIDs)
             commandIDs = commands.subtracting(invalidCommandDecisionScopes)
             sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
             let duplicateAcknowledgementKeys = duplicateEdgeIdentities(sortedAcknowledgements)
@@ -882,8 +936,10 @@ private extension WorkoutAnalyzerV1 {
             unknownFactualResponseCount = unknownResponses
             invalidCausalEdgeCount = unsupportedGenericCausalRecordCount
                 + duplicateSendRecordCount
+                + duplicateAttemptNumberRecordCount
                 + duplicateDecisionRecordCount
                 + invalidTypedSendCount
+                + invalidRetryOrderAttemptIDs.count
                 + invalidCommandDecisionLinkCount
                 + sortedAcknowledgements.filter {
                     !isValidEdge($0, duplicateAcknowledgementKeys)
@@ -943,7 +999,12 @@ private extension WorkoutAnalyzerV1 {
                 return zip(ordered, ordered.dropFirst()).compactMap { pair -> Double? in
                     let (previous, next) = pair
                     guard next.attemptNumber > previous.attemptNumber,
-                          next.time >= previous.time else { return nil }
+                          causallyPrecedes(
+                              occurred: previous.time,
+                              recorded: previous.recordedTime,
+                              beforeOccurred: next.time,
+                              beforeRecorded: next.recordedTime
+                          ) else { return nil }
                     return next.time - previous.time
                 }
             }
@@ -1885,6 +1946,12 @@ private extension WorkoutAnalyzerV1 {
         if lhs.commandID != rhs.commandID {
             return lhs.commandID.description < rhs.commandID.description
         }
+        return lhs.attemptID.description < rhs.attemptID.description
+    }
+
+    static func sendOrder(_ lhs: SendAttempt, _ rhs: SendAttempt) -> Bool {
+        if lhs.time != rhs.time { return lhs.time < rhs.time }
+        if lhs.recordedTime != rhs.recordedTime { return lhs.recordedTime < rhs.recordedTime }
         return lhs.attemptID.description < rhs.attemptID.description
     }
 
