@@ -11,6 +11,29 @@ final class EventSessionAndAnalysisTests: XCTestCase {
         try assertCodableRoundTrip(decision)
     }
 
+    func testHeartRateNoCommandReasonsPreserveVersionOneOtherWireRepresentation() throws {
+        let encoder = JSONEncoder()
+        let cases: [(ControlDecisionReason, ControlDecisionReason)] = [
+            (.heartRateInertiaHold, .other("inertiaHold")),
+            (.heartRateSpeedLimit, .other("speedLimit")),
+        ]
+
+        for (semanticReason, versionOneReason) in cases {
+            XCTAssertEqual(semanticReason, versionOneReason)
+            XCTAssertEqual(
+                try encoder.encode(semanticReason),
+                try encoder.encode(versionOneReason)
+            )
+            XCTAssertEqual(
+                try JSONDecoder().decode(
+                    ControlDecisionReason.self,
+                    from: encoder.encode(semanticReason)
+                ),
+                versionOneReason
+            )
+        }
+    }
+
     func testEveryCommandLifecycleCaseRoundTripsWithCausalIDs() throws {
         let commandID = CommandID()
         let decisionID = DecisionID()

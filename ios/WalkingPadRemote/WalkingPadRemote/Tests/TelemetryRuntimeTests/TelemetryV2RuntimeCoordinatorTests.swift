@@ -434,6 +434,217 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(phases.map(\.current), [.main, .cooldown, .finished])
     }
 
+    func testProductionShapedLegacyAndSemanticHrDecisionsPersistInOccurrenceOrder() async throws {
+        let fixture = Issue50ProductionDecisionFixture.fixture
+        let persistence = RuntimePersistence()
+        let factoryGate = DispatchSemaphore(value: 0)
+        let clock = ManualRuntimeClock(date: fixture.startedAt)
+        let descriptor = Self.descriptor(startedAt: fixture.startedAt)
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: {
+                factoryGate.wait()
+                return persistence
+            },
+            runtimeClock: clock
+        )
+
+        coordinator.beginSession(descriptor)
+        for row in fixture.rows {
+            clock.advance(by: .seconds(1))
+            XCTAssertEqual(clock.nowDate(), row.occurredAt)
+            XCTAssertEqual(
+                coordinator.observeHeartRateControlDecision(
+                    decisionID: row.decisionID,
+                    targetBeatsPerMinute: fixture.targetBeatsPerMinute,
+                    action: row.action,
+                    reason: row.reason,
+                    heartRateInputs: [row.heartRateInput],
+                    occurredAt: row.occurredAt
+                ),
+                .enqueued
+            )
+        }
+
+        factoryGate.signal()
+        try await eventually {
+            if case .active = coordinator.status { return true }
+            return false
+        }
+        coordinator.endSession(reason: "fixture-complete")
+        try await eventually { await persistence.finalizations.count == 1 }
+
+        let snapshot = await persistence.snapshot()
+        let header = try XCTUnwrap(snapshot.headers.first)
+        let events = snapshot.records.compactMap { record -> WorkoutEvent? in
+            guard case let .event(event) = record,
+                  event.kind == .controlDecision else { return nil }
+            return event
+        }
+        XCTAssertEqual(events.count, fixture.rows.count)
+        XCTAssertEqual(
+            events.compactMap(Self.semanticHeartRateOutcome),
+            fixture.rows.map(\.semanticOutcome)
+        )
+        XCTAssertEqual(
+            fixture.rows.map(\.legacyOutcome),
+            ["set", "hold", "inertia_hold", "limit"]
+        )
+
+        for (event, row) in zip(events, fixture.rows) {
+            guard case let .controlDecision(decision) = event.payload.payload else {
+                XCTFail("Expected typed controlDecision payload")
+                continue
+            }
+            XCTAssertEqual(decision.decisionID, row.decisionID)
+            XCTAssertEqual(decision.target, .heartRate(beatsPerMinute: 120))
+            XCTAssertEqual(decision.action, row.action)
+            XCTAssertEqual(decision.reason, row.reason)
+            XCTAssertEqual(
+                decision.observationsUsed,
+                [
+                    .heartRate(
+                        ObservationID(
+                            rawValue: row.heartRateInput.canonicalObservationID.rawValue
+                        )
+                    ),
+                ]
+            )
+            XCTAssertEqual(decision.versions, descriptor.versions)
+            XCTAssertEqual(decision.configurationSnapshotID, header.configuration.id)
+            XCTAssertEqual(event.sourceID, events.first?.sourceID)
+            XCTAssertNotNil(event.sourceID)
+            XCTAssertEqual(event.timestamp.occurredAt, row.occurredAt)
+            XCTAssertEqual(
+                event.timestamp.occurredElapsed,
+                ElapsedDuration(microseconds: row.elapsedSeconds * 1_000_000)
+            )
+            XCTAssertNil(event.commandID)
+            XCTAssertNil(event.attemptID)
+        }
+    }
+
+    func testDecisionTelemetryDispositionCannotChangeAlreadySelectedControlOutput() async throws {
+        let fixture = Issue50ProductionDecisionFixture.fixture
+        let row = fixture.rows[0]
+        let expectedOutput = Issue50ProductionDecisionFixture.ControlOutput(
+            desiredSpeedKilometresPerHour: 4.1,
+            deviceTargetSpeedKilometresPerHour: 4.1,
+            commandLabel: "SPEED 4.1 km/h (HR)"
+        )
+
+        let unavailable = TelemetryV2RuntimeCoordinator { RuntimePersistence() }
+        var unavailableDisposition: TelemetryYieldDisposition?
+        let unavailableOutput = Self.alreadySelectedControlOutput(expectedOutput) {
+            unavailableDisposition = unavailable.observeHeartRateControlDecision(
+                decisionID: row.decisionID,
+                targetBeatsPerMinute: fixture.targetBeatsPerMinute,
+                action: row.action,
+                reason: row.reason,
+                heartRateInputs: [row.heartRateInput],
+                occurredAt: row.occurredAt
+            )
+            return unavailableDisposition
+        }
+        XCTAssertNil(unavailableDisposition)
+        XCTAssertEqual(unavailableOutput, expectedOutput)
+
+        enum FactoryFailure: Error { case unavailable }
+        let failing = TelemetryV2RuntimeCoordinator { throw FactoryFailure.unavailable }
+        failing.beginSession(Self.descriptor(startedAt: fixture.startedAt))
+        try await eventually {
+            if case .unavailable = failing.status { return true }
+            return false
+        }
+        var failingDisposition: TelemetryYieldDisposition?
+        let failingOutput = Self.alreadySelectedControlOutput(expectedOutput) {
+            failingDisposition = failing.observeHeartRateControlDecision(
+                decisionID: row.decisionID,
+                targetBeatsPerMinute: fixture.targetBeatsPerMinute,
+                action: row.action,
+                reason: row.reason,
+                heartRateInputs: [row.heartRateInput],
+                occurredAt: row.occurredAt
+            )
+            return failingDisposition
+        }
+        XCTAssertNil(failingDisposition)
+        XCTAssertEqual(failingOutput, expectedOutput)
+
+        let enabledPersistence = RuntimePersistence()
+        let enabled = TelemetryV2RuntimeCoordinator { enabledPersistence }
+        enabled.beginSession(Self.descriptor(startedAt: fixture.startedAt))
+        try await eventually {
+            if case .active = enabled.status { return true }
+            return false
+        }
+        var enabledDisposition: TelemetryYieldDisposition?
+        let enabledOutput = Self.alreadySelectedControlOutput(expectedOutput) {
+            enabledDisposition = enabled.observeHeartRateControlDecision(
+                decisionID: row.decisionID,
+                targetBeatsPerMinute: fixture.targetBeatsPerMinute,
+                action: row.action,
+                reason: row.reason,
+                heartRateInputs: [row.heartRateInput],
+                occurredAt: row.occurredAt
+            )
+            return enabledDisposition
+        }
+        XCTAssertEqual(enabledDisposition, .enqueued)
+        XCTAssertEqual(enabledOutput, expectedOutput)
+        enabled.endSession(reason: "enabled-complete")
+        try await eventually { await enabledPersistence.finalizations.count == 1 }
+
+        let backpressuredPersistence = RuntimePersistence()
+        let factoryGate = DispatchSemaphore(value: 0)
+        let backpressured = TelemetryV2RuntimeCoordinator {
+            factoryGate.wait()
+            return backpressuredPersistence
+        }
+        backpressured.beginSession(Self.descriptor(startedAt: fixture.startedAt))
+        for offset in 0..<256 {
+            XCTAssertEqual(
+                backpressured.observeHeartRateControlDecision(
+                    decisionID: DecisionID(
+                        rawValue: UUID(
+                            uuidString: String(
+                                format: "50000000-0000-0000-0000-%012d",
+                                offset
+                            )
+                        )!
+                    ),
+                    targetBeatsPerMinute: fixture.targetBeatsPerMinute,
+                    action: row.action,
+                    reason: row.reason,
+                    heartRateInputs: [row.heartRateInput],
+                    occurredAt: row.occurredAt
+                ),
+                .enqueued
+            )
+        }
+        var backpressuredDisposition: TelemetryYieldDisposition?
+        let backpressuredOutput = Self.alreadySelectedControlOutput(expectedOutput) {
+            backpressuredDisposition = backpressured.observeHeartRateControlDecision(
+                decisionID: row.decisionID,
+                targetBeatsPerMinute: fixture.targetBeatsPerMinute,
+                action: row.action,
+                reason: row.reason,
+                heartRateInputs: [row.heartRateInput],
+                occurredAt: row.occurredAt
+            )
+            return backpressuredDisposition
+        }
+        XCTAssertEqual(backpressuredDisposition, .lostCritical)
+        XCTAssertEqual(backpressuredOutput, expectedOutput)
+
+        factoryGate.signal()
+        try await eventually { await backpressuredPersistence.finalizations.count == 1 }
+        if case .incomplete = backpressured.status {
+            // Recorder loss is visible only in telemetry state.
+        } else {
+            XCTFail("Expected telemetry-only incomplete status")
+        }
+    }
+
     func testPendingUnknownCausalityReplaysWithoutInventingIdentifiers() async throws {
         let persistence = RuntimePersistence()
         let factoryGate = DispatchSemaphore(value: 0)
@@ -687,6 +898,27 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(enabledOutput, disabledOutput)
     }
 
+    private static func semanticHeartRateOutcome(_ event: WorkoutEvent) -> String? {
+        guard case let .controlDecision(decision) = event.payload.payload else { return nil }
+        switch (decision.action, decision.reason) {
+        case (.enqueueSpeed, _): return "setSpeed"
+        case (.noCommand, .withinTarget): return "hold"
+        case let (.noCommand, .other(value)) where value == "inertiaHold":
+            return "inertiaHold"
+        case let (.noCommand, .other(value)) where value == "speedLimit":
+            return "speedLimit"
+        default: return nil
+        }
+    }
+
+    private static func alreadySelectedControlOutput(
+        _ output: Issue50ProductionDecisionFixture.ControlOutput,
+        observe: () -> TelemetryYieldDisposition?
+    ) -> Issue50ProductionDecisionFixture.ControlOutput {
+        _ = observe()
+        return output
+    }
+
     private static func descriptor(
         legacySessionID: UUID? = UUID(uuidString: "10000000-0000-0000-0000-000000000030"),
         startedAt: Date = Date(timeIntervalSince1970: 1_000)
@@ -737,6 +969,85 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             treadmillFreshnessLimitSeconds: 30
         )
     }
+}
+
+private struct Issue50ProductionDecisionFixture {
+    struct Row {
+        let legacyOutcome: String
+        let semanticOutcome: String
+        let decisionID: DecisionID
+        let action: ControlAction
+        let reason: ControlDecisionReason
+        let heartRateInput: HeartRateCausalReference
+        let occurredAt: Date
+        let elapsedSeconds: Int64
+    }
+
+    struct ControlOutput: Equatable {
+        let desiredSpeedKilometresPerHour: Double
+        let deviceTargetSpeedKilometresPerHour: Double
+        let commandLabel: String
+    }
+
+    let startedAt: Date
+    let targetBeatsPerMinute: UInt16
+    let rows: [Row]
+
+    static let fixture: Self = {
+        let startedAt = Date(timeIntervalSince1970: 30_000)
+        let legacyOutcomes = ["set", "hold", "inertia_hold", "limit"]
+        let semanticOutcomes = ["setSpeed", "hold", "inertiaHold", "speedLimit"]
+        let actions: [ControlAction] = [
+            .enqueueSpeed(DesiredSpeedKilometresPerHour(value: 4.1)),
+            .noCommand,
+            .noCommand,
+            .noCommand,
+        ]
+        let reasons: [ControlDecisionReason] = [
+            .belowTarget,
+            .withinTarget,
+            .heartRateInertiaHold,
+            .heartRateSpeedLimit,
+        ]
+        let rows = legacyOutcomes.indices.map { index in
+            let ordinal = index + 1
+            return Row(
+                legacyOutcome: legacyOutcomes[index],
+                semanticOutcome: semanticOutcomes[index],
+                decisionID: DecisionID(
+                    rawValue: UUID(
+                        uuidString: String(
+                            format: "51000000-0000-0000-0000-%012d",
+                            ordinal
+                        )
+                    )!
+                ),
+                action: actions[index],
+                reason: reasons[index],
+                heartRateInput: HeartRateCausalReference(
+                    deliveryID: HeartRateDeliveryID(
+                        rawValue: UUID(
+                            uuidString: String(
+                                format: "52000000-0000-0000-0000-%012d",
+                                ordinal
+                            )
+                        )!
+                    ),
+                    canonicalObservationID: HeartRateCanonicalObservationID(
+                        rawValue: UUID(
+                            uuidString: String(
+                                format: "53000000-0000-0000-0000-%012d",
+                                ordinal
+                            )
+                        )!
+                    )
+                ),
+                occurredAt: startedAt.addingTimeInterval(TimeInterval(ordinal)),
+                elapsedSeconds: Int64(ordinal)
+            )
+        }
+        return Self(startedAt: startedAt, targetBeatsPerMinute: 120, rows: rows)
+    }()
 }
 
 private final class ManualRuntimeClock: TelemetryV2RuntimeClock, @unchecked Sendable {
