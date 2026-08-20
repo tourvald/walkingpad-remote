@@ -13,6 +13,14 @@ public enum WorkoutAnalyzerV1 {
     public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1")
     public static let metricDefinitionVersion = "timestamp-hold-metrics-v1"
 
+    static func secondsDetail(_ seconds: Double) -> String {
+        String(
+            format: "%.3f seconds",
+            locale: Locale(identifier: "en_US_POSIX"),
+            arguments: [seconds]
+        )
+    }
+
     public static func evidenceHash(
         for input: WorkoutAnalysisInput,
         policy: AnalyzerV1Policy = .default
@@ -518,12 +526,16 @@ private extension WorkoutAnalyzerV1 {
         let attemptID: CommandAttemptID
         let attemptNumber: UInt16
         let time: Double
+        let protocolKind: TreadmillProtocolKind?
+        let connectionEpoch: TreadmillConnectionEpoch?
     }
 
     struct ProvenEdge: Hashable {
         let commandID: CommandID
         let attemptID: CommandAttemptID
         let time: Double
+        let protocolKind: TreadmillProtocolKind?
+        let connectionEpoch: TreadmillConnectionEpoch?
     }
 
     struct DesiredDecision: Hashable {
@@ -568,13 +580,17 @@ private extension WorkoutAnalyzerV1 {
                             commandID: record.commandID,
                             attemptID: attemptID,
                             attemptNumber: attemptNumber,
-                            time: time
+                            time: time,
+                            protocolKind: nil,
+                            connectionEpoch: nil
                         )
                     case let .acknowledged(attemptID):
                         acknowledgements.insert(ProvenEdge(
                             commandID: record.commandID,
                             attemptID: attemptID,
-                            time: time
+                            time: time,
+                            protocolKind: nil,
+                            connectionEpoch: nil
                         ))
                     case .timedOut, .retryScheduled, .cancelled, .failed:
                         break
@@ -606,7 +622,9 @@ private extension WorkoutAnalyzerV1 {
                             commandID: attempt.commandID,
                             attemptID: attempt.attemptID,
                             attemptNumber: attempt.attemptNumber,
-                            time: time
+                            time: time,
+                            protocolKind: attempt.protocolKind,
+                            connectionEpoch: attempt.connectionEpoch
                         )
                     case let .acknowledgement(acknowledgement):
                         switch acknowledgement.association {
@@ -616,7 +634,9 @@ private extension WorkoutAnalyzerV1 {
                             acknowledgements.insert(ProvenEdge(
                                 commandID: commandID,
                                 attemptID: attemptID,
-                                time: time
+                                time: time,
+                                protocolKind: acknowledgement.protocolKind,
+                                connectionEpoch: acknowledgement.connectionEpoch
                             ))
                         }
                     case let .observation(observation):
@@ -628,7 +648,9 @@ private extension WorkoutAnalyzerV1 {
                             responses.insert(ProvenEdge(
                                 commandID: commandID,
                                 attemptID: attemptID,
-                                time: time
+                                time: time,
+                                protocolKind: observation.protocolKind,
+                                connectionEpoch: observation.connectionEpoch
                             ))
                         }
                     case .unitsTruth, .commandQueueDelay, .unassociatedWrite,
@@ -646,7 +668,21 @@ private extension WorkoutAnalyzerV1 {
             let sortedResponses = responses.sorted(by: edgeOrder)
             let isValidEdge: (ProvenEdge) -> Bool = { edge in
                 guard let send = sends[edge.attemptID] else { return false }
-                return send.commandID == edge.commandID && edge.time >= send.time
+                guard send.commandID == edge.commandID,
+                      edge.time >= send.time else { return false }
+                switch (
+                    send.protocolKind,
+                    send.connectionEpoch,
+                    edge.protocolKind,
+                    edge.connectionEpoch
+                ) {
+                case (nil, nil, nil, nil):
+                    return true
+                case let (sendProtocol?, sendEpoch?, edgeProtocol?, edgeEpoch?):
+                    return sendProtocol == edgeProtocol && sendEpoch == edgeEpoch
+                default:
+                    return false
+                }
             }
             provenAcknowledgements = sortedAcknowledgements.filter(isValidEdge)
             provenFactualResponses = sortedResponses.filter(isValidEdge)
@@ -1819,10 +1855,6 @@ private extension WorkoutAnalyzerV1 {
     static func saturatedUInt64(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
         let result = lhs.addingReportingOverflow(rhs)
         return result.overflow ? UInt64.max : result.partialValue
-    }
-
-    static func secondsDetail(_ seconds: Double) -> String {
-        String(format: "%.3f seconds", seconds)
     }
 
     static func approximatelyEqual(_ lhs: Double, _ rhs: Double) -> Bool {

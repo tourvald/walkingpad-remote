@@ -234,6 +234,57 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         })
     }
 
+    func testMismatchedProtocolOrEpochCannotProduceCausalMetrics() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let treadmill = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.treadmill(
+                ordinal: $0.offset + 1,
+                seconds: Double($0.element),
+                speed: 4,
+                factual: true
+            )
+        }
+        let common = fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+        let protocolMismatch = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                treadmill: treadmill,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    associatedProtocolKind: .walkingPad
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        let epochMismatch = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                treadmill: treadmill,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    associatedConnectionEpoch: TreadmillConnectionEpoch(
+                        rawValue: fixture.uuid(91)
+                    )
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        for detail in [protocolMismatch, epochMismatch] {
+            XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
+            XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+            XCTAssertNil(detail.quality.commandAcknowledgement.latencySeconds.value)
+            XCTAssertNil(detail.quality.commandFactualResponse.latencySeconds.value)
+            XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+            XCTAssertTrue(detail.quality.issues.contains {
+                $0.category == .malformedCorruptEvidence && $0.count >= 2
+            })
+        }
+    }
+
     func testStableFactualSpeedDriftAndCommandDomainSpeedDeltasAreVersionedMetrics() throws {
         let fixture = AnalysisFixture(sessionSeconds: 120)
         let heartRate = stride(from: 0, through: 115, by: 5).enumerated().map {
@@ -361,6 +412,29 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
             $0.category == .malformedCorruptEvidence
                 && $0.code == "configuration-payload-unavailable"
         })
+    }
+
+    func testCoverageExclusionDetailsUseLocaleIndependentDecimalFormatting() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 10)
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: [fixture.heartRate(ordinal: 1, seconds: 0, bpm: 100)],
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 10)
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(20)
+        ))
+        let coverageIssue = try XCTUnwrap(detail.quality.issues.first {
+            $0.code == "heart-rate-uncovered-time"
+        })
+        let frenchFormatting = String(
+            format: "%.3f seconds",
+            locale: Locale(identifier: "fr_FR"),
+            arguments: [3.0]
+        )
+
+        XCTAssertEqual(coverageIssue.detail, "3.000 seconds")
+        XCTAssertNotEqual(coverageIssue.detail, frenchFormatting)
+        XCTAssertEqual(WorkoutAnalyzerV1.secondsDetail(3), "3.000 seconds")
     }
 
     func testEvidenceHashAndLogicalRecomputeAreDeterministicAcrossInputOrdering() throws {
@@ -701,7 +775,9 @@ private struct AnalysisFixture {
     func causalEdgeEvents(
         proven: Bool,
         includeSend: Bool = true,
-        responseEventSeconds: Double = 15
+        responseEventSeconds: Double = 15,
+        associatedProtocolKind: TreadmillProtocolKind? = nil,
+        associatedConnectionEpoch: TreadmillConnectionEpoch? = nil
     ) -> [WorkoutEvent] {
         let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
         let firstDecisionID = DecisionID(rawValue: uuid(5_100))
@@ -734,19 +810,38 @@ private struct AnalysisFixture {
         let acknowledgement: LegacyAcknowledgementObservation
         let response: TreadmillObservationEvidence
         if proven {
-            acknowledgement = LegacyAcknowledgementObservation.deterministicallyAssociated(
-                protocolKind: .ftms,
-                connectionEpoch: epoch,
+            let edgeProtocol = associatedProtocolKind ?? .ftms
+            let edgeEpoch = associatedConnectionEpoch ?? epoch
+            acknowledgement = LegacyAcknowledgementObservation(
+                protocolKind: edgeProtocol,
+                connectionEpoch: edgeEpoch,
                 receivedAt: baseDate.addingTimeInterval(13),
                 recordedAt: baseDate.addingTimeInterval(13),
-                sendAttempt: send,
-                proof: TreadmillDeterministicAcknowledgementProof(evidenceKey: uuid(5_105))
-            )!
-            response = TreadmillObservationEvidence.deterministicallyAssociated(
-                unassociatedResponse,
-                sendAttempt: send,
-                proof: TreadmillDeterministicResponseProof(evidenceKey: uuid(5_106))
-            )!
+                association: .deterministicallyCorrelated(
+                    commandID: commandID,
+                    attemptID: attemptID
+                )
+            )
+            response = TreadmillObservationEvidence(
+                observationID: unassociatedResponse.observationID,
+                protocolKind: edgeProtocol,
+                connectionEpoch: edgeEpoch,
+                nativeSpeed: unassociatedResponse.nativeSpeed,
+                factualSpeed: unassociatedResponse.factualSpeed,
+                rawDeviceState: unassociatedResponse.rawDeviceState,
+                deviceState: unassociatedResponse.deviceState,
+                measuredAt: unassociatedResponse.measuredAt,
+                receivedAt: unassociatedResponse.receivedAt,
+                recordedAt: unassociatedResponse.recordedAt,
+                arrivalOrder: unassociatedResponse.arrivalOrder,
+                freshness: unassociatedResponse.freshness,
+                quality: unassociatedResponse.quality,
+                provenance: unassociatedResponse.provenance,
+                responseAssociation: .deterministicallyCorrelated(
+                    commandID: commandID,
+                    attemptID: attemptID
+                )
+            )
         } else {
             acknowledgement = .unresolved(
                 protocolKind: .ftms,
