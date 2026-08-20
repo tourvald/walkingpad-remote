@@ -493,6 +493,34 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         })
     }
 
+    func testNilDecisionTypedChainCannotClaimCommandOrCausalMetrics() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+                    + fixture.causalEdgeEvents(
+                        proven: true,
+                        nilDecisionChain: true
+                    )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertEqual(detail.control.commandCount, 1)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertNil(detail.quality.commandAcknowledgement.latencySeconds.value)
+        XCTAssertNil(detail.quality.commandFactualResponse.latencySeconds.value)
+        XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+    }
+
     func testConflictingReenteredPhaseEvidenceMakesPhaseMetricsUnavailable() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
@@ -1297,7 +1325,8 @@ private struct AnalysisFixture {
         mismatchedSendDecision: Bool = false,
         duplicateCommandEnqueuedWithoutDecision: Bool = false,
         decisionAfterEnqueue: Bool = false,
-        sendBeforeEnqueue: Bool = false
+        sendBeforeEnqueue: Bool = false,
+        nilDecisionChain: Bool = false
     ) -> [WorkoutEvent] {
         let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
         let firstEpoch = firstDecisionConnectionEpoch ?? epoch
@@ -1314,7 +1343,7 @@ private struct AnalysisFixture {
             commandID: commandID,
             decisionID: mismatchedSendDecision
                 ? DecisionID(rawValue: uuid(5_106))
-                : decisionID,
+                : (nilDecisionChain ? nil : decisionID),
             attemptID: attemptID,
             attemptNumber: 1,
             protocolKind: .ftms,
@@ -1431,7 +1460,7 @@ private struct AnalysisFixture {
                 payload: .treadmillEvidence(.commandEnqueued(
                     TreadmillCommandEnqueuedEvidence(
                         commandID: commandID,
-                        decisionID: decisionID,
+                        decisionID: nilDecisionChain ? nil : decisionID,
                         kind: .setSpeed(CommandedSpeed(
                             nativeValue: 400,
                             nativeUnit: .controllerNative(code: "ftms_hundredths_kmh")

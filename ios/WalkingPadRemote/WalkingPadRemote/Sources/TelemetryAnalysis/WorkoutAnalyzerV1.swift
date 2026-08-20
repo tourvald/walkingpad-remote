@@ -654,6 +654,7 @@ private extension WorkoutAnalyzerV1 {
             var commandEnqueues: [ScopedCommandIdentity: CommandEnqueueRecord] = [:]
             var invalidCommandDecisionScopes: Set<ScopedCommandIdentity> = []
             var duplicateCommandRecordCount = 0
+            var missingCommandDecisionLinkCount = 0
 
             func recordSend(_ send: SendAttempt) {
                 if sends[send.attemptID] != nil {
@@ -715,6 +716,10 @@ private extension WorkoutAnalyzerV1 {
                             time: time,
                             kind: command.kind
                         )
+                        if command.decisionID == nil {
+                            invalidCommandDecisionScopes.insert(identity)
+                            missingCommandDecisionLinkCount += 1
+                        }
                     case let .sendAttempt(attempt):
                         recordSend(SendAttempt(
                             commandID: attempt.commandID,
@@ -778,6 +783,7 @@ private extension WorkoutAnalyzerV1 {
                 }
             )
             let invalidCommandDecisionLinkCount = duplicateCommandRecordCount
+                + missingCommandDecisionLinkCount
                 + commandEnqueues.filter { identity, enqueue in
                     guard let decisionID = enqueue.decisionID,
                           !invalidCommandDecisionScopes.contains(identity) else {
