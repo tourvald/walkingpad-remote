@@ -46,6 +46,8 @@ public enum ControlDecisionReason: Codable, Hashable, Sendable {
     case withinTarget
     case belowTarget
     case aboveTarget
+    case inertiaHold
+    case speedLimit
     case safetyGate(String)
     case manual
     case other(String)

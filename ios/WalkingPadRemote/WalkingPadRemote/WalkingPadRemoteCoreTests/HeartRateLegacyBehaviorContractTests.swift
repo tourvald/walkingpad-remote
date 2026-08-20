@@ -119,6 +119,56 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
     }
 
+    func testEveryLegacyHrDecisionEmitsOnePassiveSemanticDecisionInBranchOrder() throws {
+        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+        let observer = try functionBody(
+            "private func observeSemanticHeartRateDecision(",
+            in: managerSource
+        )
+
+        XCTAssertEqual(
+            tick.components(separatedBy: "logTrainingEvent(\"hr_decision\"").count - 1,
+            4
+        )
+        XCTAssertEqual(
+            tick.components(separatedBy: "observeSemanticHeartRateDecision(").count - 1,
+            4
+        )
+        assertOrdered(
+            [
+                "if absDiff <= deadbandBpm",
+                "\"decision\": \"hold\"",
+                "reason: .withinTarget",
+                "if direction > 0, let trend, trend > 0, let predictedValue",
+                "\"decision\": \"inertia_hold\"",
+                "reason: .inertiaHold",
+                "let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)",
+                "if nextSpeed != currentTarget",
+                "let telemetryDecision = makeTreadmillDecision(",
+                "defer { observeTreadmillDecision(telemetryDecision) }",
+                "sendTreadmillSetSpeed(",
+                "\"decision\": \"set\"",
+                "action: .enqueueSpeed(",
+                "\"decision\": \"limit\"",
+                "reason: .speedLimit",
+            ],
+            in: tick
+        )
+        XCTAssertFalse(tick.contains("if observeSemanticHeartRateDecision"))
+        XCTAssertFalse(tick.contains("guard observeSemanticHeartRateDecision"))
+        XCTAssertFalse(tick.contains("return observeSemanticHeartRateDecision"))
+
+        XCTAssertTrue(
+            observer.contains("_ = telemetryV2Coordinator.observeHeartRateControlDecision(")
+        )
+        for forbidden in [
+            "TelemetryStore", "TelemetryPersistence", "TelemetryRecorder", "FileManager",
+            "FileHandle", "Task", "await ", "logTrainingEvent", "sendTreadmill",
+        ] {
+            XCTAssertFalse(observer.contains(forbidden), "Decision observer contains \(forbidden)")
+        }
+    }
+
     func testStartAffordanceIsSeparateFromRuntimeAuthorization() throws {
         let recompute = try functionBody(
             "private func recomputeHrStartAllowed()",
