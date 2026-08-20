@@ -691,7 +691,8 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
 
         XCTAssertEqual(detail.control.commandCount, 0)
         XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
-        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 1)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertNil(detail.quality.commandFactualResponse.latencySeconds.value)
         XCTAssertTrue(detail.quality.issues.contains {
             $0.category == .malformedCorruptEvidence && $0.count >= 1
         })

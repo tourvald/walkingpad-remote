@@ -800,7 +800,11 @@ private extension WorkoutAnalyzerV1 {
                     invalidTypedSendCount += 1
                     continue
                 }
-                guard let enqueue = commandEnqueues[identity] else { continue }
+                guard let enqueue = commandEnqueues[identity] else {
+                    invalidAttemptIDs.insert(send.attemptID)
+                    invalidTypedSendCount += 1
+                    continue
+                }
                 let invalidTypedChain = send.time < enqueue.time
                     || send.decisionID != enqueue.decisionID
                     || (enqueue.decisionID != nil
