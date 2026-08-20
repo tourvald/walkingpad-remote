@@ -441,15 +441,20 @@ public enum TelemetrySemanticParityValidator {
             )
         }
 
-        guard !legacy.limitations.contains(where: { $0.category == .commandLifecycle }) else {
-            return
-        }
         for kind in [
             TelemetryParityCommandOutcomeKind.acknowledgement,
             .timeout,
             .writeResult,
             .observedResponse,
         ] {
+            let sourceCannotCompareAssociation = legacy.limitations.contains {
+                $0.category == .commandLifecycle
+                    && $0.code == "legacy-jsonl-ack-acceptance-not-explicit"
+            }
+            if sourceCannotCompareAssociation
+                && (kind == .acknowledgement || kind == .observedResponse) {
+                continue
+            }
             let legacyCount = legacy.commandEvidence.filter { $0.outcomeKind == kind }.count
             let v2Count = v2.commandEvidence.filter { $0.outcomeKind == kind }.count
             if legacyCount != v2Count {

@@ -47,6 +47,13 @@ Known legacy modelled speed, synthetic steps, sample-count-derived seconds, and
 missing runtime version fields are not V2 targets. Comparable explicit facts are
 still checked. When the legacy source cannot establish a category, that category
 is `INCONCLUSIVE`; absence is not converted to zero, equality, or failure.
+Invalid-checksum speed remains native evidence without being promoted to factual
+speed. The legacy ACK-association limitation excludes only ACK/response ownership;
+explicit timeout and write-result counts remain comparable.
+
+The immutable-array V2 reader checks source event order before applying its
+deterministic comparison sort, while typed HR/treadmill arrival order and frame
+identity/gaps are checked independently.
 
 Physical-device truth is always reported `INCONCLUSIVE` by this hosted gate and
 does not downgrade an otherwise passing automated parity result. Issue #37 owns
@@ -98,7 +105,11 @@ Required scenarios are:
 
 Production formulas and branching remain inline in `BluetoothManager`. The
 replay harness is test evidence assembled from the existing pure helpers, not a
-new production controller authority.
+new production controller authority. A source-contract regression anchors the
+harness composition to the current inline prediction, deadband, adaptive-step,
+inertia, speed-clamp, missing-HR, cooldown, and Start authorization branches; it
+fails if those production branches drift away from the shared pure rules used by
+the replay.
 
 ## Output API
 

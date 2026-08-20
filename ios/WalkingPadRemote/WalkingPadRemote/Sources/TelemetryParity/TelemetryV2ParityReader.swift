@@ -377,6 +377,9 @@ public enum TelemetryV2ParityReader {
         let duplicateIdentifiers = identifiers.count - Set(identifiers).count
         let outOfOrder = outOfOrderCount(heartRate.map(\.arrivalOrder))
             + outOfOrderCount(treadmill.map(\.arrivalOrder))
+            + zip(events, events.dropFirst()).filter {
+                $0.timestamp.occurredElapsed > $1.timestamp.occurredElapsed
+            }.count
         let frameSeconds = frames.map(\.canonicalElapsedSecond)
         let duplicateSeconds = frameSeconds.count - Set(frameSeconds).count
         let sortedFrames = frames.sorted { $0.canonicalElapsedSecond < $1.canonicalElapsedSecond }

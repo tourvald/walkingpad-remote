@@ -112,7 +112,8 @@ public enum LegacyTelemetryJSONLReader {
                             elapsedMilliseconds: elapsedMilliseconds,
                             nativeValue: reportedSpeed,
                             nativeUnit: "walkingpad_controller_tenths",
-                            factualSpeedKilometresPerHour: unitsAreMetric ? reportedSpeed : nil,
+                            factualSpeedKilometresPerHour: unitsAreMetric
+                                && bool(payload["checksum_ok"]) == true ? reportedSpeed : nil,
                             deviceState: normalizedWalkingPadState(
                                 speedKilometresPerHour: reportedSpeed,
                                 rawState: integer(payload["state"])
@@ -133,13 +134,15 @@ public enum LegacyTelemetryJSONLReader {
                     )
                 }
             case "notify_fitshow_speed", "notify_fitshow_status":
-                if let reportedSpeed = double(payload["speed_kmh"]) {
+                if let reportedSpeed = double(payload["speed_kmh"]), reportedSpeed >= 0 {
                     treadmillFacts.append(
                         TelemetryParityTreadmillFact(
                             elapsedMilliseconds: elapsedMilliseconds,
                             nativeValue: reportedSpeed,
                             nativeUnit: "kilometres_per_hour",
-                            factualSpeedKilometresPerHour: reportedSpeed,
+                            factualSpeedKilometresPerHour: bool(payload["checksum_ok"]) == true
+                                ? reportedSpeed
+                                : nil,
                             deviceState: string(payload["state"]) ?? "unknown"
                         )
                     )

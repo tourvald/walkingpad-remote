@@ -141,6 +141,39 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         XCTAssertEqual(report.causalCoverage.unsupportedClaimCount, 1)
     }
 
+    func testExplicitLegacyTimeoutRemainsComparableDespiteAckLimitation() {
+        let limitation = TelemetryParitySourceLimitation(
+            category: .commandLifecycle,
+            code: "legacy-jsonl-ack-acceptance-not-explicit",
+            detail: "Legacy ACK ownership is unavailable."
+        )
+        let timeout = TelemetryParityCommandEvidence(
+            outcomeKind: .timeout,
+            semanticCommand: nil,
+            elapsedMilliseconds: 2_200,
+            association: .unknown,
+            commandIdentifier: nil,
+            attemptIdentifier: nil
+        )
+        let legacy = evidence(
+            origin: .legacyJSONL,
+            commandEvidence: [sentCommand(), timeout],
+            limitations: [limitation]
+        )
+        let v2 = evidence(origin: .telemetryV2, commandEvidence: [sentCommand()])
+
+        let report = TelemetrySemanticParityValidator.validate(
+            legacy: legacy,
+            telemetryV2: v2
+        )
+        let commands = result(.commandLifecycle, in: report)
+
+        XCTAssertEqual(commands.status, .fail)
+        XCTAssertTrue(commands.findings.contains {
+            $0.code == "timeout-count" && $0.classification == .v2RecorderOrDataLoss
+        })
+    }
+
     func testCompleteSessionWithMissingRequiredHeartRateFails() {
         let legacy = evidence(origin: .legacyJSONL)
         let v2 = evidence(origin: .telemetryV2, heartRate: [])
@@ -219,7 +252,7 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         let jsonl = """
         {"ts":"2026-08-20T10:00:00.000Z","event":"session_start","session_id":"11111111-1111-1111-1111-111111111111","target_bpm":110,"duration_min":1,"decision_interval_s":10,"adaptive_step_enabled":true,"max_step_kmh":0.5,"zone_bounds":[100,120,140,160],"cooldown_target_bpm":105,"cooldown_min_speed_kmh":3.5,"cooldown_max_minutes":2,"telemetry_schema_version":"1","algorithm_version":"a","safety_policy_version":"s","workout_protocol_version":"w"}
         {"ts":"2026-08-20T10:00:01.000Z","event":"hr_sample","session_id":"11111111-1111-1111-1111-111111111111","hr_bpm":90}
-        {"ts":"2026-08-20T10:00:01.500Z","event":"notify_fe01","session_id":"11111111-1111-1111-1111-111111111111","speed_kmh":4.2,"state":0,"controller_units":"metric","controller_units_fresh":true}
+        {"ts":"2026-08-20T10:00:01.500Z","event":"notify_fe01","session_id":"11111111-1111-1111-1111-111111111111","speed_kmh":4.2,"state":0,"controller_units":"metric","controller_units_fresh":true,"checksum_ok":true}
         {"ts":"2026-08-20T10:00:02.000Z","event":"session_end","session_id":"11111111-1111-1111-1111-111111111111","reason":"manual_stop"}
         """
         let data = Data(jsonl.utf8)
@@ -231,78 +264,32 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         XCTAssertEqual(evidence.sessionIdentifier, "11111111-1111-1111-1111-111111111111")
         XCTAssertEqual(evidence.heartRate.map(\.beatsPerMinute), [90])
         XCTAssertEqual(evidence.treadmillFacts.first?.nativeUnit, "walkingpad_controller_tenths")
+        XCTAssertEqual(evidence.treadmillFacts.first?.factualSpeedKilometresPerHour, 4.2)
         XCTAssertEqual(evidence.treadmillFacts.first?.deviceState, "moving")
         XCTAssertTrue(evidence.limitations.contains {
             $0.code == "legacy-jsonl-ack-acceptance-not-explicit"
         })
     }
 
+    func testLegacyReaderNeverPromotesInvalidChecksumSpeedToFactualTruth() throws {
+        let jsonl = """
+        {"ts":"2026-08-20T10:00:00.000Z","event":"session_start","session_id":"11111111-1111-1111-1111-111111111111"}
+        {"ts":"2026-08-20T10:00:01.000Z","event":"notify_fe01","session_id":"11111111-1111-1111-1111-111111111111","speed_kmh":4.2,"state":1,"controller_units":"metric","controller_units_fresh":true,"checksum_ok":false}
+        {"ts":"2026-08-20T10:00:02.000Z","event":"notify_fitshow_speed","session_id":"11111111-1111-1111-1111-111111111111","speed_kmh":4.3,"checksum_ok":false}
+        {"ts":"2026-08-20T10:00:03.000Z","event":"session_end","session_id":"11111111-1111-1111-1111-111111111111","reason":"manual_stop"}
+        """
+
+        let read = try LegacyTelemetryJSONLReader.read(data: Data(jsonl.utf8))
+
+        XCTAssertEqual(read.treadmillFacts.map(\.nativeValue), [4.2, 4.3])
+        XCTAssertEqual(read.treadmillFacts.map(\.factualSpeedKilometresPerHour), [nil, nil])
+    }
+
     func testV2StoreReaderIsReadOnly() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let sessionID = SessionID(rawValue: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!)
         let start = Date(timeIntervalSince1970: 1_000)
-        let configuration = TelemetryV2ConfigurationInput(
-            profileLocalIdentifier: "profile",
-            workoutMode: .heartRateControlled,
-            targetHeartRate: 110,
-            durationMinutes: 1,
-            decisionIntervalSeconds: 10,
-            adaptiveStepEnabled: true,
-            maximumStepKilometresPerHour: 0.5,
-            heartRateZones: [100, 120, 140, 160],
-            cooldownTargetHeartRate: 105,
-            cooldownMinimumSpeedKilometresPerHour: 3.5,
-            cooldownMaximumMinutes: 2,
-            heartRateProviderKind: "legacyWatchWorkoutStream",
-            heartRateProviderStableLocalKey: "watch",
-            treadmill: TelemetryV2TreadmillContext(
-                stableLocalIdentifier: nil,
-                model: nil,
-                protocolName: "walkingPad",
-                protocolVersion: nil,
-                minimumSpeedKilometresPerHour: 0.5,
-                maximumSpeedKilometresPerHour: 12,
-                speedIncrementKilometresPerHour: 0.1
-            )
-        )
-        let payload = try JSONEncoder().encode(configuration)
-        let session = WorkoutSessionRecord(
-            recordID: RecordID(),
-            sessionID: sessionID,
-            profileLocalIdentifier: "profile",
-            lifecycleState: .completed,
-            workoutMode: .heartRateControlled,
-            startedAt: start,
-            endedAt: start.addingTimeInterval(10),
-            endedElapsed: ElapsedDuration(microseconds: 10_000_000),
-            incompleteReason: nil,
-            appContext: AppRuntimeContext(
-                appVersion: "1",
-                buildNumber: "1",
-                operatingSystemVersion: "test"
-            ),
-            versions: RuntimeVersionContext(
-                telemetrySchema: TelemetrySchemaVersion(rawValue: "1"),
-                algorithm: AlgorithmVersion(rawValue: "a"),
-                safetyPolicy: SafetyPolicyVersion(rawValue: "s"),
-                workoutProtocol: WorkoutProtocolVersion(rawValue: "w")
-            ),
-            configuration: ImmutableConfigurationSnapshot(
-                id: ConfigurationSnapshotID(),
-                formatVersion: 1,
-                format: .canonicalJSON,
-                canonicalPayload: payload,
-                contentHash: ContentHash(algorithm: .sha256, lowercaseHexDigest: "00")
-            ),
-            healthKitWorkoutIdentifier: nil,
-            treadmill: nil,
-            recorderHealth: RecorderHealthSummary(
-                isComplete: true,
-                lostCriticalRecordCount: 0,
-                lostNativeRecordCount: 0,
-                lastPersistedElapsed: ElapsedDuration(microseconds: 10_000_000)
-            )
-        )
+        let session = try makeV2Session(sessionID: sessionID, start: start)
         try await store.insertSession(session)
         let commandID = CommandID(
             rawValue: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
@@ -419,11 +406,129 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         XCTAssertEqual(before, after)
     }
 
+    func testV2ArrayReaderReportsOutOfOrderEventsBeforeSortingForComparison() throws {
+        let sessionID = SessionID(
+            rawValue: UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
+        )
+        let start = Date(timeIntervalSince1970: 1_000)
+        let session = try makeV2Session(sessionID: sessionID, start: start)
+        let later = makeEvent(
+            sessionID: sessionID,
+            start: start,
+            elapsedMicroseconds: 2_000_000
+        )
+        let earlier = makeEvent(
+            sessionID: sessionID,
+            start: start,
+            elapsedMicroseconds: 1_000_000
+        )
+
+        let read = try TelemetryV2ParityReader.read(
+            session: session,
+            heartRate: [],
+            treadmill: [],
+            events: [later, earlier],
+            frames: []
+        )
+
+        XCTAssertEqual(read.integrity.outOfOrderRecordCount, 1)
+    }
+
     private func result(
         _ category: TelemetryParityCategory,
         in report: TelemetrySemanticParityReport
     ) -> TelemetryParityCategoryResult {
         report.categories.first { $0.category == category }!
+    }
+
+    private func makeV2Session(
+        sessionID: SessionID,
+        start: Date
+    ) throws -> WorkoutSessionRecord {
+        let configuration = TelemetryV2ConfigurationInput(
+            profileLocalIdentifier: "profile",
+            workoutMode: .heartRateControlled,
+            targetHeartRate: 110,
+            durationMinutes: 1,
+            decisionIntervalSeconds: 10,
+            adaptiveStepEnabled: true,
+            maximumStepKilometresPerHour: 0.5,
+            heartRateZones: [100, 120, 140, 160],
+            cooldownTargetHeartRate: 105,
+            cooldownMinimumSpeedKilometresPerHour: 3.5,
+            cooldownMaximumMinutes: 2,
+            heartRateProviderKind: "legacyWatchWorkoutStream",
+            heartRateProviderStableLocalKey: "watch",
+            treadmill: TelemetryV2TreadmillContext(
+                stableLocalIdentifier: nil,
+                model: nil,
+                protocolName: "walkingPad",
+                protocolVersion: nil,
+                minimumSpeedKilometresPerHour: 0.5,
+                maximumSpeedKilometresPerHour: 12,
+                speedIncrementKilometresPerHour: 0.1
+            )
+        )
+        return WorkoutSessionRecord(
+            recordID: RecordID(),
+            sessionID: sessionID,
+            profileLocalIdentifier: "profile",
+            lifecycleState: .completed,
+            workoutMode: .heartRateControlled,
+            startedAt: start,
+            endedAt: start.addingTimeInterval(10),
+            endedElapsed: ElapsedDuration(microseconds: 10_000_000),
+            incompleteReason: nil,
+            appContext: AppRuntimeContext(
+                appVersion: "1",
+                buildNumber: "1",
+                operatingSystemVersion: "test"
+            ),
+            versions: RuntimeVersionContext(
+                telemetrySchema: TelemetrySchemaVersion(rawValue: "1"),
+                algorithm: AlgorithmVersion(rawValue: "a"),
+                safetyPolicy: SafetyPolicyVersion(rawValue: "s"),
+                workoutProtocol: WorkoutProtocolVersion(rawValue: "w")
+            ),
+            configuration: ImmutableConfigurationSnapshot(
+                id: ConfigurationSnapshotID(),
+                formatVersion: 1,
+                format: .canonicalJSON,
+                canonicalPayload: try JSONEncoder().encode(configuration),
+                contentHash: ContentHash(algorithm: .sha256, lowercaseHexDigest: "00")
+            ),
+            healthKitWorkoutIdentifier: nil,
+            treadmill: nil,
+            recorderHealth: RecorderHealthSummary(
+                isComplete: true,
+                lostCriticalRecordCount: 0,
+                lostNativeRecordCount: 0,
+                lastPersistedElapsed: ElapsedDuration(microseconds: 10_000_000)
+            )
+        )
+    }
+
+    private func makeEvent(
+        sessionID: SessionID,
+        start: Date,
+        elapsedMicroseconds: Int64
+    ) -> WorkoutEvent {
+        let elapsed = ElapsedDuration(microseconds: elapsedMicroseconds)
+        let occurredAt = start.addingTimeInterval(Double(elapsedMicroseconds) / 1_000_000)
+        return WorkoutEvent(
+            recordID: RecordID(),
+            sessionID: sessionID,
+            timestamp: EventTimestamp(
+                occurredAt: occurredAt,
+                recordedAt: occurredAt,
+                occurredElapsed: elapsed,
+                recordedElapsed: elapsed
+            ),
+            payload: EventPayloadEnvelope(
+                schemaVersion: 1,
+                payload: .manualStop(ManualStopEvent(reason: "test"))
+            )
+        )
     }
 
     private func evidence(

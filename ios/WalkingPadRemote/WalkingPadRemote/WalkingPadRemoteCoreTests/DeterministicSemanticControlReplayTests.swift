@@ -69,6 +69,93 @@ final class DeterministicSemanticControlReplayTests: XCTestCase {
             return false
         })
     }
+
+    func testReplayCompositionIsAnchoredToCurrentInlineProductionBranches() throws {
+        let manager = source(relativePath: "WalkingPadRemote/BluetoothManager.swift")
+        let replay = source(relativePath: "WalkingPadRemote/DeterministicControlReplay.swift")
+        let tick = try functionBody("private func tickTelemetry()", in: manager)
+
+        assertOrdered(
+            [
+                "let predictedValue = trend.map",
+                "let effectiveBpm = max(heartRateBPM, predictedBpm ?? heartRateBPM)",
+                "let diff = effectiveBpm - hrTargetBPM",
+                "let absDiffPercent = adaptiveDiffPercent",
+                "let deadbandBpm = adaptiveDeadbandBpm",
+                "let stepSelection: AdaptiveStepSelection",
+                "adaptiveStepFromDiff(",
+                "if absDiff <= deadbandBpm",
+                "if direction > 0, let trend, trend > 0, let predictedValue",
+                "let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)",
+            ],
+            in: tick
+        )
+        for sharedRule in [
+            "HRDomainService.diffPercent(",
+            "HRDomainService.deadbandBpm(",
+            "HRDomainService.stepFromDiff(",
+            "TreadmillSpeedBoundsService.clampRunningSpeed(",
+            "HRDomainService.shouldStopForMissingHeartRateSignal(",
+            "CooldownRuntimeEngine.start(",
+            "HRDomainService.heartRateStartAffordanceAvailable(",
+            "HRDomainService.heartRateRuntimePrerequisitesAllowStart(",
+        ] {
+            XCTAssertTrue(replay.contains(sharedRule), "Replay missing shared rule: \(sharedRule)")
+        }
+        XCTAssertFalse(manager.contains("SemanticControlReplayScenario"))
+        XCTAssertFalse(replay.contains("BluetoothManager"))
+        XCTAssertFalse(replay.contains("CoreBluetooth"))
+        XCTAssertFalse(replay.contains("writeValue"))
+    }
+
+    private func source(relativePath: String) -> String {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let root = testsDirectory.deletingLastPathComponent()
+        return (try? String(
+            contentsOf: root.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )) ?? ""
+    }
+
+    private func functionBody(_ signature: String, in source: String) throws -> String {
+        guard let signatureRange = source.range(of: signature),
+              let openingBrace = source[signatureRange.upperBound...].firstIndex(of: "{")
+        else {
+            throw NSError(domain: "DeterministicSemanticControlReplayTests", code: 1)
+        }
+        var depth = 0
+        var index = openingBrace
+        while index < source.endIndex {
+            switch source[index] {
+            case "{": depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 { return String(source[openingBrace...index]) }
+            default: break
+            }
+            index = source.index(after: index)
+        }
+        throw NSError(domain: "DeterministicSemanticControlReplayTests", code: 2)
+    }
+
+    private func assertOrdered(
+        _ fragments: [String],
+        in source: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        var lowerBound = source.startIndex
+        for fragment in fragments {
+            guard let range = source.range(
+                of: fragment,
+                range: lowerBound..<source.endIndex
+            ) else {
+                XCTFail("Missing or out-of-order fragment: \(fragment)", file: file, line: line)
+                return
+            }
+            lowerBound = range.upperBound
+        }
+    }
 }
 
 private final class ReplayObservationCollector: SemanticControlReplayTelemetryObserver,
