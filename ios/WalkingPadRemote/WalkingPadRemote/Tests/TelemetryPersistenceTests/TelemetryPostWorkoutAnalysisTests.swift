@@ -104,13 +104,19 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
             incompleteReason: "fixture-recorder-loss"
         )
         let running = fixtureSession(seed: 52, lifecycle: .running)
-        for session in [complete, incomplete, running] {
+        for session in [running, incomplete, complete] {
             try await store.insertSession(session)
         }
         _ = try await store.analyzeTerminalWorkout(
             sessionID: complete.sessionID,
             generatedAt: complete.endedAt!
         )
+
+        let expectedPending = [complete.sessionID, incomplete.sessionID].sorted {
+            $0.description < $1.description
+        }
+        let pending = try await store.pendingTerminalAnalysisSessionIDs()
+        XCTAssertEqual(pending, expectedPending)
 
         let results = await store.resumePendingWorkoutAnalyses()
 

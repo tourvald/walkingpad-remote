@@ -800,6 +800,7 @@ private extension WorkoutAnalyzerV1 {
             count + (hasMalformedQuality(observation.quality) ? 1 : 0)
         }
         let malformedCount = malformedNativeCount + causal.invalidCausalEdgeCount
+        let hasMalformedEvidence = malformedCount > 0 || !configurationAvailable
         var issues: [AnalysisQualityIssue] = []
         if recorderLoss {
             issues.append(AnalysisQualityIssue(
@@ -867,7 +868,7 @@ private extension WorkoutAnalyzerV1 {
             coverage: hrCoverage.coverageRatio,
             incomplete: incomplete,
             recorderLoss: recorderLoss,
-            malformed: malformedCount > 0,
+            malformed: hasMalformedEvidence,
             hasCausalAmbiguity: causal.unknownAcknowledgementCount > 0
                 || causal.unknownFactualResponseCount > 0
         )
@@ -890,7 +891,7 @@ private extension WorkoutAnalyzerV1 {
                     coverage: coverage.coverageRatio,
                     incomplete: false,
                     recorderLoss: recorderLoss,
-                    malformed: malformedCount > 0,
+                    malformed: hasMalformedEvidence,
                     hasCausalAmbiguity: false
                 )
                 var codes: [String] = []
@@ -1392,11 +1393,19 @@ private extension WorkoutAnalyzerV1 {
                     ? "cooldown-target-or-minimum-speed-unavailable"
                     : "cooldown-joint-heart-rate-speed-coverage-unavailable",
             ])
-        let finishReason = events.compactMap { event -> (Double, String)? in
+        let finishReason = events.compactMap {
+            event -> (time: Double, recordID: String, lifecycle: String)? in
             guard case let .cooldown(cooldown) = event.payload.payload,
                   range.contains(seconds(event.timestamp.occurredElapsed)) else { return nil }
-            return (seconds(event.timestamp.occurredElapsed), cooldown.lifecycle.rawValue)
-        }.sorted { $0.0 < $1.0 }.last?.1
+            return (
+                seconds(event.timestamp.occurredElapsed),
+                event.recordID.description,
+                cooldown.lifecycle.rawValue
+            )
+        }.sorted { lhs, rhs in
+            if lhs.time != rhs.time { return lhs.time < rhs.time }
+            return lhs.recordID < rhs.recordID
+        }.last?.lifecycle
         let finishMetric: AnalysisMetric<String> = finishReason.map {
             AnalysisMetric(value: $0, confidence: .high)
         } ?? .unavailable(["cooldown-finish-event-unavailable"])

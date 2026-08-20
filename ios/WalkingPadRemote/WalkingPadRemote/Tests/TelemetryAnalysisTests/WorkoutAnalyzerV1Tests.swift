@@ -338,6 +338,31 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertNil(detail.control.cooldown.targetAndMinimumSpeedMaximumStreakSeconds.value)
     }
 
+    func testMalformedConfigurationLowersSessionAndPhaseQualityGrades() throws {
+        let fixture = AnalysisFixture(
+            sessionSeconds: 10,
+            configurationPayload: Data(#"{"targetHeartRate":100}"#.utf8)
+        )
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: [
+                    fixture.heartRate(ordinal: 1, seconds: 0, bpm: 100),
+                    fixture.heartRate(ordinal: 2, seconds: 5, bpm: 100),
+                ],
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 10)
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(20)
+        ))
+
+        XCTAssertEqual(detail.quality.heartRateCoverage.coverageRatio, 1)
+        XCTAssertEqual(detail.quality.sessionGrade, .low)
+        XCTAssertEqual(detail.quality.phases.map(\.grade), [.low])
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence
+                && $0.code == "configuration-payload-unavailable"
+        })
+    }
+
     func testEvidenceHashAndLogicalRecomputeAreDeterministicAcrossInputOrdering() throws {
         let fixture = AnalysisFixture(sessionSeconds: 20)
         let heartRate = [
@@ -360,6 +385,36 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertEqual(first.recordID, second.recordID)
         XCTAssertEqual(first.logicalResult, second.logicalResult)
         XCTAssertNotEqual(first.generatedAt, second.generatedAt)
+    }
+
+    func testEqualTimestampCooldownEventsUseDeterministicRecordIDTieBreak() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 150)
+        let tieTime = 149.999
+        let events = fixture.cooldownEvents(start: 20, end: 150, target: 120) + [
+            fixture.event(
+                ordinal: 20,
+                seconds: tieTime,
+                payload: .cooldown(CooldownEvent(lifecycle: .cancelled, targetHeartRate: 120))
+            ),
+            fixture.event(
+                ordinal: 21,
+                seconds: tieTime,
+                payload: .cooldown(CooldownEvent(lifecycle: .insufficient, targetHeartRate: 120))
+            ),
+        ]
+        let first = try WorkoutAnalyzerV1.analyze(
+            fixture.input(events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(160)
+        )
+        let second = try WorkoutAnalyzerV1.analyze(
+            fixture.input(events: events.reversed()),
+            generatedAt: fixture.baseDate.addingTimeInterval(160)
+        )
+
+        XCTAssertEqual(first.evidenceHash, second.evidenceHash)
+        XCTAssertEqual(first.logicalResult, second.logicalResult)
+        XCTAssertEqual(try decodeDetail(first).control.cooldown.finishReason.value, "insufficient")
+        XCTAssertEqual(try decodeDetail(second).control.cooldown.finishReason.value, "insufficient")
     }
 
     func testCanonicalFrameCannotBridgeNativeObservationGap() throws {
@@ -443,7 +498,10 @@ private struct AnalysisFixture {
         lifecycle: SessionLifecycleState = .completed,
         recorderComplete: Bool = true,
         lostNative: UInt64 = 0,
-        incompleteReason: String? = nil
+        incompleteReason: String? = nil,
+        configurationPayload: Data = Data(
+            #"{"targetHeartRate":100,"heartRateZones":[90,110,130,150],"cooldownTargetHeartRate":120,"cooldownMinimumSpeedKilometresPerHour":2.0}"#.utf8
+        )
     ) {
         let sessionID = SessionID(rawValue: Self.uuid(1))
         primarySource = SignalSourceIdentity(
@@ -456,7 +514,6 @@ private struct AnalysisFixture {
             providerKind: .treadmillProtocol,
             stableLocalKey: "fixture-treadmill"
         )
-        let configurationPayload = Data(#"{"targetHeartRate":100,"heartRateZones":[90,110,130,150],"cooldownTargetHeartRate":120,"cooldownMinimumSpeedKilometresPerHour":2.0}"#.utf8)
         session = WorkoutSessionRecord(
             recordID: RecordID(rawValue: Self.uuid(4)),
             sessionID: sessionID,

@@ -46,7 +46,9 @@ public extension TelemetryStore {
     func pendingTerminalAnalysisSessionIDs() throws -> [SessionID] {
         try fetchSessions().filter { session in
             Self.isAnalysisTerminal(session.lifecycleState)
-        }.map(\.sessionID)
+        }.map(\.sessionID).sorted { lhs, rhs in
+            lhs.description < rhs.description
+        }
     }
 
     private func terminalAnalysisInput(
