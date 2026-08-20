@@ -370,10 +370,20 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     public typealias StatusHandler = @Sendable (TelemetryV2RuntimeStatus) -> Void
     public typealias WriterHealthHandler = @Sendable (TelemetryV2WriterHealthSnapshot) -> Void
 
+    fileprivate struct PendingHeartRateControlDecision: Sendable {
+        let decisionID: DecisionID
+        let targetBeatsPerMinute: UInt16
+        let action: ControlAction
+        let reason: ControlDecisionReason
+        let heartRateInputs: [HeartRateCausalReference]
+        let occurredAt: Date
+    }
+
     fileprivate enum PendingEvidence: Sendable {
         case heartRate(HeartRateNormalizationResult)
         case sourceLifecycle(HeartRateSourceLifecycleEvidence)
         case controlUse(HeartRateControlUseEvidence)
+        case heartRateControlDecision(PendingHeartRateControlDecision)
         case treadmill(TreadmillTelemetryEvidence)
         case event(WorkoutEventPayload, Date)
         case workoutPhase(WorkoutPhase, Date)
@@ -390,7 +400,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 } else {
                     (1, 0)
                 }
-            case .sourceLifecycle, .controlUse, .event, .workoutPhase:
+            case .sourceLifecycle, .controlUse, .heartRateControlDecision,
+                 .event, .workoutPhase:
                 (1, 0)
             }
         }
@@ -402,7 +413,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 stableKey = "hr:\(result.delivery.source.stableLocalKey)"
             case let .sourceLifecycle(evidence):
                 stableKey = "hr:\(evidence.source.stableLocalKey)"
-            case .controlUse:
+            case .controlUse, .heartRateControlDecision:
                 stableKey = "hr:\(descriptor.configuration.heartRateProviderStableLocalKey)"
             case let .treadmill(evidence):
                 guard let stableDevice = descriptor.configuration.treadmill.stableLocalIdentifier,
@@ -684,6 +695,31 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         return Self.heartRateDisposition(disposition)
     }
 
+    @discardableResult
+    public func observeHeartRateControlDecision(
+        decisionID: DecisionID = DecisionID(),
+        targetBeatsPerMinute: UInt16,
+        action: ControlAction,
+        reason: ControlDecisionReason,
+        heartRateInputs: [HeartRateCausalReference],
+        occurredAt: Date
+    ) -> TelemetryYieldDisposition? {
+        let evidence = PendingHeartRateControlDecision(
+            decisionID: decisionID,
+            targetBeatsPerMinute: targetBeatsPerMinute,
+            action: action,
+            reason: reason,
+            heartRateInputs: heartRateInputs,
+            occurredAt: occurredAt
+        )
+        guard let session = currentActiveSession() else {
+            return bufferDisposition(.heartRateControlDecision(evidence))
+        }
+        let disposition = session.observeHeartRateControlDecision(evidence)
+        refreshStatus(from: session)
+        return disposition
+    }
+
     public func observeTreadmillEvidence(
         _ evidence: TreadmillTelemetryEvidence
     ) -> TreadmillTelemetrySinkDisposition {
@@ -762,6 +798,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 )
                 let session = TelemetryV2ActiveSession(
                     descriptor: work.0.descriptor,
+                    configurationSnapshotID: header.configuration.id,
                     recorder: recorder,
                     runtimeClock: self?.runtimeClock ?? ContinuousTelemetryV2RuntimeClock(),
                     startedMonotonic: work.0.startedMonotonic
@@ -986,6 +1023,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     }
 
     private let descriptor: TelemetryV2SessionDescriptor
+    private let configurationSnapshotID: ConfigurationSnapshotID
     private let recorder: TelemetryRecorder
     private let runtimeClock: any TelemetryV2RuntimeClock
     private let startedMonotonic: Duration
@@ -1003,11 +1041,13 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
 
     init(
         descriptor: TelemetryV2SessionDescriptor,
+        configurationSnapshotID: ConfigurationSnapshotID,
         recorder: TelemetryRecorder,
         runtimeClock: any TelemetryV2RuntimeClock,
         startedMonotonic: Duration
     ) {
         self.descriptor = descriptor
+        self.configurationSnapshotID = configurationSnapshotID
         self.recorder = recorder
         self.runtimeClock = runtimeClock
         self.startedMonotonic = startedMonotonic
@@ -1044,6 +1084,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             _ = observeHeartRateRuntime(.sourceLifecycle(sourceLifecycle))
         case let .controlUse(controlUse):
             _ = observeHeartRateRuntime(.controlUse(controlUse))
+        case let .heartRateControlDecision(decision):
+            _ = observeHeartRateControlDecision(decision)
         case let .treadmill(treadmill):
             _ = observeTreadmill(treadmill)
         case let .event(payload, occurredAt):
@@ -1278,6 +1320,34 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             .heartRateEvidence(evidence),
             occurredAt: occurredAt,
             sourceID: sourceIdentity.id
+        )
+    }
+
+    func observeHeartRateControlDecision(
+        _ evidence: TelemetryV2RuntimeCoordinator.PendingHeartRateControlDecision
+    ) -> TelemetryYieldDisposition {
+        let source = heartRateSource(
+            HeartRateProviderIdentity(
+                kind: .legacyWatchWorkoutStream,
+                stableLocalKey: descriptor.configuration.heartRateProviderStableLocalKey
+            )
+        )
+        emitSourceIfNeeded(source, observedAt: evidence.occurredAt)
+        let decision = ControlDecision(
+            decisionID: evidence.decisionID,
+            observationsUsed: evidence.heartRateInputs.map {
+                .heartRate(ObservationID(rawValue: $0.canonicalObservationID.rawValue))
+            },
+            target: .heartRate(beatsPerMinute: evidence.targetBeatsPerMinute),
+            action: evidence.action,
+            reason: evidence.reason,
+            versions: descriptor.versions,
+            configurationSnapshotID: configurationSnapshotID
+        )
+        return yieldEvent(
+            .controlDecision(decision),
+            occurredAt: evidence.occurredAt,
+            sourceID: source.id
         )
     }
 

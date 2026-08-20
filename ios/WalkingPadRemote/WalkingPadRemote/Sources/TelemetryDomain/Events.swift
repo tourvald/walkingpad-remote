@@ -51,6 +51,11 @@ public enum ControlDecisionReason: Codable, Hashable, Sendable {
     case other(String)
 }
 
+public extension ControlDecisionReason {
+    static let heartRateInertiaHold = Self.other("inertiaHold")
+    static let heartRateSpeedLimit = Self.other("speedLimit")
+}
+
 public struct ControlDecision: Codable, Hashable, Sendable {
     public let decisionID: DecisionID
     public let observationsUsed: [ObservationReference]

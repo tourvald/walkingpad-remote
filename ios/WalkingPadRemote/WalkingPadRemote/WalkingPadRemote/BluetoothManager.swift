@@ -4107,6 +4107,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             "speed_before_kmh": currentTarget,
                             "speed_after_kmh": currentTarget
                         ])
+                        observeSemanticHeartRateDecision(
+                            action: .noCommand,
+                            reason: .withinTarget,
+                            heartRateInputs: controlUseEvidence?.inputs ?? [],
+                            occurredAt: Date()
+                        )
                         return
                     }
                     if direction > 0, let trend, trend > 0, let predictedValue {
@@ -4130,6 +4136,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                                 "speed_before_kmh": currentTarget,
                                 "speed_after_kmh": currentTarget
                             ])
+                            observeSemanticHeartRateDecision(
+                                action: .noCommand,
+                                reason: .heartRateInertiaHold,
+                                heartRateInputs: controlUseEvidence?.inputs ?? [],
+                                occurredAt: Date()
+                            )
                             return
                         }
                     }
@@ -4168,6 +4180,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             "speed_before_kmh": currentTarget,
                             "speed_after_kmh": nextSpeed
                         ])
+                        observeSemanticHeartRateDecision(
+                            action: .enqueueSpeed(
+                                DesiredSpeedKilometresPerHour(value: nextSpeed)
+                            ),
+                            reason: diff < 0 ? .belowTarget : .aboveTarget,
+                            heartRateInputs: controlUseEvidence?.inputs ?? [],
+                            occurredAt: Date()
+                        )
                     } else {
                         hrStatusLine = "HR‑контроль: предел скорости"
                         hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → предел скорости"
@@ -4184,6 +4204,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             "speed_before_kmh": currentTarget,
                             "speed_after_kmh": currentTarget
                         ])
+                        observeSemanticHeartRateDecision(
+                            action: .noCommand,
+                            reason: .heartRateSpeedLimit,
+                            heartRateInputs: controlUseEvidence?.inputs ?? [],
+                            occurredAt: Date()
+                        )
                     }
                 }
             } else if cooldownRuntimeState == nil {
@@ -5693,6 +5719,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func observeHeartRateControlUse(_ evidence: HeartRateControlUseEvidence?) {
         guard let evidence else { return }
         _ = heartRateTelemetrySink?.observeControlUse(evidence)
+    }
+
+    private func observeSemanticHeartRateDecision(
+        action: ControlAction,
+        reason: ControlDecisionReason,
+        heartRateInputs: [HeartRateCausalReference],
+        occurredAt: Date
+    ) {
+        _ = telemetryV2Coordinator.observeHeartRateControlDecision(
+            targetBeatsPerMinute: UInt16(clamping: hrTargetBPM),
+            action: action,
+            reason: reason,
+            heartRateInputs: heartRateInputs,
+            occurredAt: occurredAt
+        )
     }
 
     private func currentHrTrendBpmPerSecond() -> Double? {
