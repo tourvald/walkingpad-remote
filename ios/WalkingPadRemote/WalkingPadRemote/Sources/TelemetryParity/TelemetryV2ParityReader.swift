@@ -232,7 +232,19 @@ public enum TelemetryV2ParityReader {
                     )
                 )
             case let .treadmillEvidence(.observation(observation)):
-                if case let .deterministicallyCorrelated(commandID, attemptID) = observation.responseAssociation {
+                switch observation.responseAssociation {
+                case .unassociated:
+                    result.append(
+                        TelemetryParityCommandEvidence(
+                            outcomeKind: .observedResponse,
+                            semanticCommand: nil,
+                            elapsedMilliseconds: elapsedMilliseconds,
+                            association: .unknown,
+                            commandIdentifier: nil,
+                            attemptIdentifier: nil
+                        )
+                    )
+                case let .deterministicallyCorrelated(commandID, attemptID):
                     result.append(
                         TelemetryParityCommandEvidence(
                             outcomeKind: .observedResponse,

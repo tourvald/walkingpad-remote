@@ -74,6 +74,16 @@ final class DeterministicSemanticControlReplayTests: XCTestCase {
         let manager = source(relativePath: "WalkingPadRemote/BluetoothManager.swift")
         let replay = source(relativePath: "WalkingPadRemote/DeterministicControlReplay.swift")
         let tick = try functionBody("private func tickTelemetry()", in: manager)
+        let affordance = try functionBody(
+            "var isHrControlStartAffordanceAvailable: Bool",
+            in: manager
+        )
+        let start = try functionBody("func startHrControl()", in: manager)
+        let stop = try functionBody("func stopHrControl()", in: manager)
+        let disconnect = try functionBody(
+            "private func disconnect(userInitiated: Bool = false)",
+            in: manager
+        )
 
         assertOrdered(
             [
@@ -90,6 +100,25 @@ final class DeterministicSemanticControlReplayTests: XCTestCase {
             ],
             in: tick
         )
+        XCTAssertTrue(tick.contains(".missingHeartRateSignalSeconds("))
+        XCTAssertTrue(tick.contains("HRDomainService.shouldStopForMissingHeartRateSignal("))
+        XCTAssertTrue(tick.contains("CooldownRuntimeEngine.start("))
+        XCTAssertTrue(tick.contains("CooldownRuntimeEngine.tick("))
+        XCTAssertTrue(
+            affordance.contains("HRDomainService.heartRateStartAffordanceAvailable(")
+        )
+        assertOrdered(
+            [
+                "HRDomainService",
+                ".heartRateRuntimePrerequisitesAllowStart(",
+                "guard existingGatesAllowStart",
+                "isHrControlRunning = true",
+                "startWithSpeed",
+            ],
+            in: start
+        )
+        XCTAssertTrue(stop.contains("stopBeltWithToggle(reason: \"hr\")"))
+        XCTAssertTrue(disconnect.contains("self.isHrControlRunning = false"))
         for sharedRule in [
             "HRDomainService.diffPercent(",
             "HRDomainService.deadbandBpm(",

@@ -407,10 +407,16 @@ public enum TelemetrySemanticParityValidator {
                 factualSpeedMatches = abs(lhs - rhs) <= tolerance.speedKilometresPerHour
             case (_, nil): factualSpeedMatches = false
             }
+            let deviceStateMatches: Bool
+            switch (pair.0.deviceState, pair.1.deviceState) {
+            case (nil, _): deviceStateMatches = true
+            case let (lhs?, rhs?): deviceStateMatches = lhs == rhs
+            case (_, nil): deviceStateMatches = false
+            }
             if pair.0.nativeUnit != pair.1.nativeUnit
                 || abs(pair.0.nativeValue - pair.1.nativeValue) > tolerance.speedKilometresPerHour
                 || !factualSpeedMatches
-                || pair.0.deviceState != pair.1.deviceState
+                || !deviceStateMatches
                 || abs(pair.0.elapsedMilliseconds - pair.1.elapsedMilliseconds) > tolerance.timestampMilliseconds {
                 add(
                     .treadmillFacts,

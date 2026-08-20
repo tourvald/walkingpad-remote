@@ -271,14 +271,14 @@ public struct TelemetryParityTreadmillFact: Codable, Equatable, Sendable {
     public let nativeValue: Double
     public let nativeUnit: String
     public let factualSpeedKilometresPerHour: Double?
-    public let deviceState: String
+    public let deviceState: String?
 
     public init(
         elapsedMilliseconds: Int64,
         nativeValue: Double,
         nativeUnit: String,
         factualSpeedKilometresPerHour: Double?,
-        deviceState: String
+        deviceState: String?
     ) {
         self.elapsedMilliseconds = elapsedMilliseconds
         self.nativeValue = nativeValue

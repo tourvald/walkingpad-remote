@@ -283,6 +283,7 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
 
         XCTAssertEqual(read.treadmillFacts.map(\.nativeValue), [4.2, 4.3])
         XCTAssertEqual(read.treadmillFacts.map(\.factualSpeedKilometresPerHour), [nil, nil])
+        XCTAssertEqual(read.treadmillFacts.map(\.deviceState), [nil, nil])
     }
 
     func testV2StoreReaderIsReadOnly() async throws {
@@ -434,6 +435,50 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
         XCTAssertEqual(read.integrity.outOfOrderRecordCount, 1)
     }
 
+    func testV2ReaderPreservesUnassociatedObservedResponseWithNilCausalIDs() throws {
+        let sessionID = SessionID(
+            rawValue: UUID(uuidString: "66666666-6666-6666-6666-666666666666")!
+        )
+        let start = Date(timeIntervalSince1970: 1_000)
+        let session = try makeV2Session(sessionID: sessionID, start: start)
+        let receivedAt = start.addingTimeInterval(1)
+        var normalizer = TreadmillObservationNormalizer()
+        let observation = normalizer.normalize(
+            .ftms(
+                speedRawHundredthsKmh: 420,
+                rawState: 1,
+                deviceState: .moving,
+                connectionEpoch: TreadmillConnectionEpoch(
+                    rawValue: UUID(uuidString: "77777777-7777-7777-7777-777777777777")!
+                ),
+                receivedAt: receivedAt
+            ),
+            unitsTruth: nil,
+            observationID: ObservationID(),
+            recordedAt: receivedAt
+        )
+        let event = makeEvent(
+            sessionID: sessionID,
+            start: start,
+            elapsedMicroseconds: 1_000_000,
+            payload: .treadmillEvidence(.observation(observation))
+        )
+
+        let read = try TelemetryV2ParityReader.read(
+            session: session,
+            heartRate: [],
+            treadmill: [],
+            events: [event],
+            frames: []
+        )
+
+        XCTAssertEqual(read.commandEvidence.count, 1)
+        XCTAssertEqual(read.commandEvidence.first?.outcomeKind, .observedResponse)
+        XCTAssertEqual(read.commandEvidence.first?.association, .unknown)
+        XCTAssertNil(read.commandEvidence.first?.commandIdentifier)
+        XCTAssertNil(read.commandEvidence.first?.attemptIdentifier)
+    }
+
     private func result(
         _ category: TelemetryParityCategory,
         in report: TelemetrySemanticParityReport
@@ -511,7 +556,8 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
     private func makeEvent(
         sessionID: SessionID,
         start: Date,
-        elapsedMicroseconds: Int64
+        elapsedMicroseconds: Int64,
+        payload: WorkoutEventPayload = .manualStop(ManualStopEvent(reason: "test"))
     ) -> WorkoutEvent {
         let elapsed = ElapsedDuration(microseconds: elapsedMicroseconds)
         let occurredAt = start.addingTimeInterval(Double(elapsedMicroseconds) / 1_000_000)
@@ -526,7 +572,7 @@ final class TelemetrySemanticParityValidatorTests: XCTestCase {
             ),
             payload: EventPayloadEnvelope(
                 schemaVersion: 1,
-                payload: .manualStop(ManualStopEvent(reason: "test"))
+                payload: payload
             )
         )
     }

@@ -47,9 +47,10 @@ Known legacy modelled speed, synthetic steps, sample-count-derived seconds, and
 missing runtime version fields are not V2 targets. Comparable explicit facts are
 still checked. When the legacy source cannot establish a category, that category
 is `INCONCLUSIVE`; absence is not converted to zero, equality, or failure.
-Invalid-checksum speed remains native evidence without being promoted to factual
-speed. The legacy ACK-association limitation excludes only ACK/response ownership;
-explicit timeout and write-result counts remain comparable.
+Invalid-checksum speed remains native evidence without promoting its speed or
+device state to factual truth. The legacy ACK-association limitation excludes
+only ACK/response ownership; explicit timeout and write-result counts remain
+comparable.
 
 The immutable-array V2 reader checks source event order before applying its
 deterministic comparison sort, while typed HR/treadmill arrival order and frame

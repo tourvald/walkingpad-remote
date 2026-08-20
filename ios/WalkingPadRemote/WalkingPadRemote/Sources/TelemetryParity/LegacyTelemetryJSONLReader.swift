@@ -114,10 +114,12 @@ public enum LegacyTelemetryJSONLReader {
                             nativeUnit: "walkingpad_controller_tenths",
                             factualSpeedKilometresPerHour: unitsAreMetric
                                 && bool(payload["checksum_ok"]) == true ? reportedSpeed : nil,
-                            deviceState: normalizedWalkingPadState(
-                                speedKilometresPerHour: reportedSpeed,
-                                rawState: integer(payload["state"])
-                            )
+                            deviceState: bool(payload["checksum_ok"]) == true
+                                ? normalizedWalkingPadState(
+                                    speedKilometresPerHour: reportedSpeed,
+                                    rawState: integer(payload["state"])
+                                )
+                                : nil
                         )
                     )
                 }
@@ -143,7 +145,9 @@ public enum LegacyTelemetryJSONLReader {
                             factualSpeedKilometresPerHour: bool(payload["checksum_ok"]) == true
                                 ? reportedSpeed
                                 : nil,
-                            deviceState: string(payload["state"]) ?? "unknown"
+                            deviceState: bool(payload["checksum_ok"]) == true
+                                ? string(payload["state"])
+                                : nil
                         )
                     )
                 }
