@@ -313,6 +313,7 @@ public struct TreadmillObservationEvidence: Codable, Hashable, Sendable {
     public var attemptID: CommandAttemptID? {
         responseAssociation.attemptID
     }
+
 }
 
 public struct TreadmillObservationNormalizer: Sendable {
@@ -719,7 +720,8 @@ public struct LegacyAcknowledgementObservation: Codable, Hashable, Sendable {
         proof: TreadmillDeterministicAcknowledgementProof
     ) -> Self? {
         _ = proof
-        guard sendAttempt.connectionEpoch == connectionEpoch else {
+        guard sendAttempt.protocolKind == protocolKind,
+              sendAttempt.connectionEpoch == connectionEpoch else {
             return nil
         }
         return Self(
@@ -986,6 +988,7 @@ public struct TreadmillCommandEvidenceLedger: Sendable {
         guard case let .deterministicallyCorrelated(commandID, attemptID) = acknowledgement.association,
               var entry = entries[attemptID],
               entry.sendAttempt.commandID == commandID,
+              entry.sendAttempt.protocolKind == acknowledgement.protocolKind,
               entry.sendAttempt.connectionEpoch == acknowledgement.connectionEpoch else {
             return
         }

@@ -394,6 +394,26 @@ final class TreadmillCommandDecisionTests: XCTestCase {
         XCTAssertEqual(ledger.state(for: send.attemptID), .sent)
     }
 
+    func testMismatchedProtocolAcknowledgementCannotMutateAttemptLedger() {
+        var ledger = TreadmillCommandEvidenceLedger()
+        let send = attempt(command: 5, attempt: 52, epoch: epochA, number: 1)
+        ledger.recordSendAttempt(send)
+        let corruptAcknowledgement = LegacyAcknowledgementObservation(
+            protocolKind: .ftms,
+            connectionEpoch: epochA,
+            receivedAt: receivedAt,
+            recordedAt: receivedAt,
+            association: .deterministicallyCorrelated(
+                commandID: send.commandID,
+                attemptID: send.attemptID
+            )
+        )
+
+        ledger.observeAcknowledgement(corruptAcknowledgement)
+
+        XCTAssertEqual(ledger.state(for: send.attemptID), .sent)
+    }
+
     // PM decision test 5: every sink disposition leaves the legacy trace identical.
     func testTelemetryDispositionCannotChangeLegacyBytesOrderTimingTimeoutOrRetryTrace() {
         let dispositions: [TreadmillTelemetrySinkDisposition?] = [
@@ -438,12 +458,27 @@ final class TreadmillCommandDecisionTests: XCTestCase {
         )
     }
 
+    func testProtocolChangePreventsDeterministicAcknowledgementAssociation() {
+        let send = attempt(command: 6, attempt: 62, epoch: epochA, number: 1)
+
+        XCTAssertNil(
+            LegacyAcknowledgementObservation.deterministicallyAssociated(
+                protocolKind: .ftms,
+                connectionEpoch: epochA,
+                receivedAt: receivedAt,
+                recordedAt: receivedAt,
+                sendAttempt: send,
+                proof: TreadmillDeterministicAcknowledgementProof(evidenceKey: uuid(62))
+            )
+        )
+    }
+
     // PM decision test 7: a proven same-epoch edge remains typed and precise.
     func testIndependentSameEpochProofCanCreateKnownAssociation() throws {
         let send = attempt(command: 7, attempt: 71, epoch: epochA, number: 1)
         let ack = try XCTUnwrap(
             LegacyAcknowledgementObservation.deterministicallyAssociated(
-                protocolKind: .ftms,
+                protocolKind: .walkingPad,
                 connectionEpoch: epochA,
                 receivedAt: receivedAt,
                 recordedAt: receivedAt,
