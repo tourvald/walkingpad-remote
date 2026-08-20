@@ -1030,6 +1030,7 @@ public struct TreadmillCommandEvidenceLedger: Sendable {
         guard case let .deterministicallyCorrelated(commandID, attemptID) = acknowledgement.association,
               var entry = entries[attemptID],
               entry.sendAttempt.commandID == commandID,
+              entry.sendAttempt.protocolKind == acknowledgement.protocolKind,
               entry.sendAttempt.connectionEpoch == acknowledgement.connectionEpoch else {
             return
         }

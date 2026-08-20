@@ -467,6 +467,26 @@ final class TreadmillCommandDecisionTests: XCTestCase {
         XCTAssertEqual(ledger.state(for: send.attemptID), .sent)
     }
 
+    func testMismatchedProtocolAcknowledgementCannotMutateAttemptLedger() {
+        var ledger = TreadmillCommandEvidenceLedger()
+        let send = attempt(command: 5, attempt: 52, epoch: epochA, number: 1)
+        ledger.recordSendAttempt(send)
+        let corruptAcknowledgement = LegacyAcknowledgementObservation(
+            protocolKind: .ftms,
+            connectionEpoch: epochA,
+            receivedAt: receivedAt,
+            recordedAt: receivedAt,
+            association: .deterministicallyCorrelated(
+                commandID: send.commandID,
+                attemptID: send.attemptID
+            )
+        )
+
+        ledger.observeAcknowledgement(corruptAcknowledgement)
+
+        XCTAssertEqual(ledger.state(for: send.attemptID), .sent)
+    }
+
     // PM decision test 5: every sink disposition leaves the legacy trace identical.
     func testTelemetryDispositionCannotChangeLegacyBytesOrderTimingTimeoutOrRetryTrace() {
         let dispositions: [TreadmillTelemetrySinkDisposition?] = [

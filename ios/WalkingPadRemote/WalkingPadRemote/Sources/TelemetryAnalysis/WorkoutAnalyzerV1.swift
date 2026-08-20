@@ -543,14 +543,21 @@ private extension WorkoutAnalyzerV1 {
         let attemptID: CommandAttemptID
     }
 
+    struct ScopedCommandIdentity: Hashable {
+        let commandID: CommandID
+        let protocolKind: TreadmillProtocolKind
+        let connectionEpoch: TreadmillConnectionEpoch
+    }
+
     struct DesiredDecision: Hashable {
         let decisionID: DecisionID
         let time: Double
         let speed: Double
+        let connectionEpoch: TreadmillConnectionEpoch
     }
 
     struct CausalAnalysis {
-        let commandIDs: Set<CommandID>
+        let commandIDs: Set<ScopedCommandIdentity>
         let sendsByAttempt: [CommandAttemptID: SendAttempt]
         let provenAcknowledgements: [ProvenEdge]
         let provenFactualResponses: [ProvenEdge]
@@ -558,10 +565,10 @@ private extension WorkoutAnalyzerV1 {
         let unknownFactualResponseCount: Int
         let invalidCausalEdgeCount: Int
         let desiredDecisions: [DesiredDecision]
-        let commandDecisionIDs: [CommandID: DecisionID]
+        let commandDecisionIDs: [ScopedCommandIdentity: DecisionID]
 
         init(events: [WorkoutEvent]) {
-            var commands: Set<CommandID> = []
+            var commands: Set<ScopedCommandIdentity> = []
             var sends: [CommandAttemptID: SendAttempt] = [:]
             var acknowledgements: [ProvenEdge] = []
             var responses: [ProvenEdge] = []
@@ -571,7 +578,9 @@ private extension WorkoutAnalyzerV1 {
             var unknownAcknowledgements = 0
             var unknownResponses = 0
             var decisions: [DecisionID: DesiredDecision] = [:]
-            var commandToDecision: [CommandID: DecisionID] = [:]
+            var commandToDecision: [ScopedCommandIdentity: DecisionID] = [:]
+            var invalidCommandDecisionScopes: Set<ScopedCommandIdentity> = []
+            var duplicateCommandLinkRecordCount = 0
 
             func recordSend(_ send: SendAttempt) {
                 if sends[send.attemptID] != nil {
@@ -585,18 +594,8 @@ private extension WorkoutAnalyzerV1 {
             for event in events.sorted(by: eventEvidenceOrder) {
                 let time = seconds(event.timestamp.occurredElapsed)
                 switch event.payload.payload {
-                case let .commandLifecycle(record):
-                    switch record.lifecycle {
-                    case .enqueued:
-                        commands.insert(record.commandID)
-                        if let decisionID = record.decisionID {
-                            commandToDecision[record.commandID] = decisionID
-                        }
-                    case .sendAttempt, .acknowledged:
-                        unsupportedGenericCausalRecordCount += 1
-                    case .timedOut, .retryScheduled, .cancelled, .failed:
-                        break
-                    }
+                case .commandLifecycle:
+                    unsupportedGenericCausalRecordCount += 1
                 case let .treadmillEvidence(evidence):
                     switch evidence {
                     case let .decision(decision):
@@ -611,13 +610,24 @@ private extension WorkoutAnalyzerV1 {
                             decisions[decision.decisionID] = DesiredDecision(
                                 decisionID: decision.decisionID,
                                 time: time,
-                                speed: speed
+                                speed: speed,
+                                connectionEpoch: decision.connectionEpoch
                             )
                         }
                     case let .commandEnqueued(command):
-                        commands.insert(command.commandID)
+                        let identity = ScopedCommandIdentity(
+                            commandID: command.commandID,
+                            protocolKind: command.protocolKind,
+                            connectionEpoch: command.connectionEpoch
+                        )
+                        commands.insert(identity)
                         if let decisionID = command.decisionID {
-                            commandToDecision[command.commandID] = decisionID
+                            if commandToDecision[identity] != nil {
+                                invalidCommandDecisionScopes.insert(identity)
+                                duplicateCommandLinkRecordCount += 1
+                            } else {
+                                commandToDecision[identity] = decisionID
+                            }
                         }
                     case let .sendAttempt(attempt):
                         recordSend(SendAttempt(
@@ -668,6 +678,15 @@ private extension WorkoutAnalyzerV1 {
             sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
             let sortedAcknowledgements = acknowledgements.sorted(by: edgeOrder)
             let sortedResponses = responses.sorted(by: edgeOrder)
+            let validCommandDecisionIDs = commandToDecision.filter { identity, decisionID in
+                !invalidCommandDecisionScopes.contains(identity)
+                    && decisions[decisionID]?.connectionEpoch == identity.connectionEpoch
+            }
+            let invalidCommandDecisionLinkCount = duplicateCommandLinkRecordCount
+                + commandToDecision.filter { identity, decisionID in
+                    invalidCommandDecisionScopes.contains(identity)
+                        || decisions[decisionID]?.connectionEpoch != identity.connectionEpoch
+                }.count
             let duplicateAcknowledgementKeys = duplicateEdgeIdentities(sortedAcknowledgements)
             let duplicateResponseKeys = duplicateEdgeIdentities(sortedResponses)
             let isValidEdge: (ProvenEdge, Set<ProvenEdgeIdentity>) -> Bool = {
@@ -694,6 +713,7 @@ private extension WorkoutAnalyzerV1 {
             unknownFactualResponseCount = unknownResponses
             invalidCausalEdgeCount = unsupportedGenericCausalRecordCount
                 + duplicateSendRecordCount
+                + invalidCommandDecisionLinkCount
                 + sortedAcknowledgements.filter {
                     !isValidEdge($0, duplicateAcknowledgementKeys)
                 }.count
@@ -704,7 +724,7 @@ private extension WorkoutAnalyzerV1 {
                 if $0.time != $1.time { return $0.time < $1.time }
                 return $0.decisionID.description < $1.decisionID.description
             }
-            commandDecisionIDs = commandToDecision
+            commandDecisionIDs = validCommandDecisionIDs
         }
 
         var acknowledgementCoverage: CausalAssociationCoverage {
@@ -716,7 +736,13 @@ private extension WorkoutAnalyzerV1 {
         }
 
         var retryLatencies: [Double] {
-            Dictionary(grouping: sendsByAttempt.values, by: \.commandID).values.flatMap { attempts in
+            Dictionary(grouping: sendsByAttempt.values) { send in
+                ScopedCommandIdentity(
+                    commandID: send.commandID,
+                    protocolKind: send.protocolKind,
+                    connectionEpoch: send.connectionEpoch
+                )
+            }.values.flatMap { attempts in
                 let ordered = attempts.sorted {
                     if $0.attemptNumber != $1.attemptNumber {
                         return $0.attemptNumber < $1.attemptNumber
@@ -736,15 +762,15 @@ private extension WorkoutAnalyzerV1 {
             zip(desiredDecisions, desiredDecisions.dropFirst()).map { $1.speed - $0.speed }
         }
 
-        func informativeCommandIDs(minimumDelta: Double) -> Set<CommandID> {
+        func informativeCommandIDs(minimumDelta: Double) -> Set<ScopedCommandIdentity> {
             var informativeDecisions: Set<DecisionID> = []
             for pair in zip(desiredDecisions, desiredDecisions.dropFirst())
                 where abs(pair.1.speed - pair.0.speed) >= minimumDelta
             {
                 informativeDecisions.insert(pair.1.decisionID)
             }
-            return Set(commandDecisionIDs.compactMap { commandID, decisionID in
-                informativeDecisions.contains(decisionID) ? commandID : nil
+            return Set(commandDecisionIDs.compactMap { identity, decisionID in
+                informativeDecisions.contains(decisionID) ? identity : nil
             })
         }
 
@@ -1291,7 +1317,13 @@ private extension WorkoutAnalyzerV1 {
             minimumDelta: policy.informativeSpeedDeltaKilometresPerHour
         )
         var responses: [Double] = []
-        for edge in causal.provenFactualResponses where informative.contains(edge.commandID) {
+        for edge in causal.provenFactualResponses {
+            let identity = ScopedCommandIdentity(
+                commandID: edge.commandID,
+                protocolKind: edge.protocolKind,
+                connectionEpoch: edge.connectionEpoch
+            )
+            guard informative.contains(identity) else { continue }
             let before = (edge.time - policy.eventResponseWindowSeconds)..<edge.time
             let after = edge.time..<(edge.time + policy.eventResponseWindowSeconds)
             let beforeCoverage = heartRate.coveredSeconds(in: before)

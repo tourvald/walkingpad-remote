@@ -398,9 +398,102 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertEqual(detail.quality.commandAcknowledgement.eligibleEdgeCount, 0)
         XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
         XCTAssertNil(detail.quality.commandAcknowledgement.latencySeconds.value)
+        XCTAssertEqual(detail.control.commandCount, 0)
         XCTAssertTrue(detail.quality.issues.contains {
             $0.category == .malformedCorruptEvidence && $0.count >= 2
         })
+    }
+
+    func testGenericEnqueuedCannotLinkInformativeDecisionToTypedResponse() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let typedWithoutEnqueued = fixture.causalEdgeEvents(proven: true).filter { event in
+            guard case .treadmillEvidence(.commandEnqueued) = event.payload.payload else {
+                return true
+            }
+            return false
+        }
+        let genericEnqueued = fixture.event(
+            ordinal: 45,
+            seconds: 11,
+            payload: .commandLifecycle(CommandLifecycleRecord(
+                commandID: CommandID(rawValue: fixture.uuid(5_102)),
+                decisionID: DecisionID(rawValue: fixture.uuid(5_101)),
+                lifecycle: .enqueued(kind: .other("fixture-generic"))
+            ))
+        )
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+                    + typedWithoutEnqueued
+                    + [genericEnqueued]
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertEqual(detail.control.commandCount, 0)
+        XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 1)
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+    }
+
+    func testRetryLatencyDoesNotCrossProtocolOrConnectionEpoch() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let commandID = CommandID(rawValue: fixture.uuid(5_300))
+        let epochA = TreadmillConnectionEpoch(rawValue: fixture.uuid(93))
+        let epochB = TreadmillConnectionEpoch(rawValue: fixture.uuid(94))
+        let attempts = [
+            TreadmillCommandSendAttemptEvidence(
+                commandID: commandID,
+                decisionID: nil,
+                attemptID: CommandAttemptID(rawValue: fixture.uuid(5_301)),
+                attemptNumber: 1,
+                protocolKind: .ftms,
+                connectionEpoch: epochA,
+                sentAt: fixture.baseDate.addingTimeInterval(10),
+                writeType: .withResponse
+            ),
+            TreadmillCommandSendAttemptEvidence(
+                commandID: commandID,
+                decisionID: nil,
+                attemptID: CommandAttemptID(rawValue: fixture.uuid(5_302)),
+                attemptNumber: 2,
+                protocolKind: .ftms,
+                connectionEpoch: epochB,
+                sentAt: fixture.baseDate.addingTimeInterval(15),
+                writeType: .withResponse
+            ),
+            TreadmillCommandSendAttemptEvidence(
+                commandID: commandID,
+                decisionID: nil,
+                attemptID: CommandAttemptID(rawValue: fixture.uuid(5_303)),
+                attemptNumber: 3,
+                protocolKind: .walkingPad,
+                connectionEpoch: epochA,
+                sentAt: fixture.baseDate.addingTimeInterval(20),
+                writeType: .withResponse
+            ),
+        ]
+        let sendEvents = attempts.enumerated().map { index, attempt in
+            fixture.event(
+                ordinal: 50 + index,
+                seconds: Double(10 + (index * 5)),
+                payload: .treadmillEvidence(.sendAttempt(attempt))
+            )
+        }
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 30) + sendEvents
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertNil(detail.control.retryAttemptLatencySeconds.value)
     }
 
     func testStableFactualSpeedDriftAndCommandDomainSpeedDeltasAreVersionedMetrics() throws {
