@@ -35,6 +35,81 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         )
     }
 
+    func testDuplicateAndOutOfOrderNativeSamplesCannotChangeDurationMetrics() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 20)
+        let heartRate = [
+            fixture.heartRate(ordinal: 1, seconds: 0, bpm: 100),
+            fixture.heartRate(ordinal: 2, seconds: 10, bpm: 120),
+        ]
+        let treadmill = [
+            fixture.treadmill(ordinal: 1, seconds: 0, speed: 3, factual: true),
+            fixture.treadmill(ordinal: 2, seconds: 10, speed: 4, factual: true),
+        ]
+        let events = fixture.phaseEvents(mainAt: 0, finishedAt: 20)
+        let baselineResult = try WorkoutAnalyzerV1.analyze(
+            fixture.input(heartRate: heartRate, treadmill: treadmill, events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(30)
+        )
+        let flaggedResult = try WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate + [
+                    fixture.heartRate(
+                        ordinal: 3,
+                        seconds: 2,
+                        bpm: 200,
+                        quality: [.duplicateProviderIdentity]
+                    ),
+                    fixture.heartRate(
+                        ordinal: 4,
+                        seconds: 3,
+                        bpm: 40,
+                        quality: [.measurementOutOfArrivalOrder]
+                    ),
+                ],
+                treadmill: treadmill + [
+                    fixture.treadmill(
+                        ordinal: 3,
+                        seconds: 2,
+                        speed: 9,
+                        factual: true,
+                        quality: [.duplicateProviderSequence]
+                    ),
+                    fixture.treadmill(
+                        ordinal: 4,
+                        seconds: 3,
+                        speed: 8,
+                        factual: true,
+                        quality: [.measurementOutOfArrivalOrder]
+                    ),
+                ],
+                events: events
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(30)
+        )
+        let baseline = try decodeDetail(baselineResult)
+        let flagged = try decodeDetail(flaggedResult)
+
+        XCTAssertEqual(flagged.control.heartRateError, baseline.control.heartRateError)
+        XCTAssertEqual(
+            flaggedResult.keyMetrics.averageHeartRate,
+            baselineResult.keyMetrics.averageHeartRate
+        )
+        XCTAssertEqual(
+            flaggedResult.keyMetrics.averageFactualSpeedKilometresPerHour,
+            baselineResult.keyMetrics.averageFactualSpeedKilometresPerHour
+        )
+        XCTAssertEqual(flagged.quality.heartRateCoverage, baseline.quality.heartRateCoverage)
+        XCTAssertEqual(
+            flagged.quality.treadmillFactualCoverage,
+            baseline.quality.treadmillFactualCoverage
+        )
+        XCTAssertEqual(flagged.quality.duplicateEvidenceCount, 2)
+        XCTAssertGreaterThanOrEqual(flagged.quality.outOfOrderEvidenceCount, 2)
+        XCTAssertTrue(flagged.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence
+        })
+    }
+
     func testQualityClassesRemainDistinctForLossAmbiguityCoverageAndMalformedEvidence() throws {
         let fixture = AnalysisFixture(
             sessionSeconds: 30,
@@ -312,6 +387,44 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 1)
     }
 
+    func testDecisionEnqueueAndSendOrderingMustBeProven() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let common = fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+        let decisionAfterEnqueue = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    decisionAfterEnqueue: true
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        let sendBeforeEnqueue = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                heartRate: heartRate,
+                events: common + fixture.causalEdgeEvents(
+                    proven: true,
+                    sendBeforeEnqueue: true
+                )
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertNil(decisionAfterEnqueue.control.speedDeltaKilometresPerHour.value)
+        for detail in [decisionAfterEnqueue, sendBeforeEnqueue] {
+            XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
+            XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+            XCTAssertNil(detail.quality.commandFactualResponse.latencySeconds.value)
+            XCTAssertTrue(detail.quality.issues.contains {
+                $0.category == .malformedCorruptEvidence && $0.count >= 1
+            })
+        }
+    }
+
     func testDuplicateDecisionIDAndMismatchedSendDecisionAreQuarantined() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
@@ -372,9 +485,62 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
 
         XCTAssertNil(detail.control.speedDeltaKilometresPerHour.value)
         XCTAssertNil(detail.control.eventAlignedHeartRateResponse.value)
-        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 1)
+        XCTAssertEqual(detail.control.commandCount, 1)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertNil(detail.quality.commandFactualResponse.latencySeconds.value)
         XCTAssertTrue(detail.quality.issues.contains {
             $0.category == .malformedCorruptEvidence && $0.count >= 1
+        })
+    }
+
+    func testConflictingReenteredPhaseEvidenceMakesPhaseMetricsUnavailable() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let heartRate = stride(from: 0, through: 25, by: 5).enumerated().map {
+            fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+        }
+        let events = [
+            fixture.event(
+                ordinal: 1,
+                seconds: 0,
+                payload: .workoutPhase(WorkoutPhaseTransition(previous: nil, current: .main))
+            ),
+            fixture.event(
+                ordinal: 2,
+                seconds: 10,
+                payload: .workoutPhase(
+                    WorkoutPhaseTransition(previous: .main, current: .cooldown)
+                )
+            ),
+            fixture.event(
+                ordinal: 3,
+                seconds: 20,
+                payload: .workoutPhase(
+                    WorkoutPhaseTransition(previous: .cooldown, current: .main)
+                )
+            ),
+            fixture.event(
+                ordinal: 4,
+                seconds: 30,
+                payload: .workoutPhase(
+                    WorkoutPhaseTransition(previous: .main, current: .finished)
+                )
+            ),
+        ]
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(heartRate: heartRate, events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+
+        XCTAssertTrue(detail.control.zoneDurations.isEmpty)
+        XCTAssertNil(detail.control.targetRangeDurationSeconds.value)
+        XCTAssertNil(detail.control.heartRateError.value)
+        XCTAssertNil(detail.control.cooldown.durationSeconds)
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.category == .malformedCorruptEvidence
+                && $0.code == "invalid-workout-phase-transition-evidence"
+        })
+        XCTAssertTrue(detail.quality.phases.allSatisfy {
+            $0.exclusionCodes.contains("invalid-workout-phase-transition-evidence")
         })
     }
 
@@ -1128,10 +1294,14 @@ private struct AnalysisFixture {
         firstDecisionConnectionEpoch: TreadmillConnectionEpoch? = nil,
         duplicateDecisionID: Bool = false,
         mismatchedSendDecision: Bool = false,
-        duplicateCommandEnqueuedWithoutDecision: Bool = false
+        duplicateCommandEnqueuedWithoutDecision: Bool = false,
+        decisionAfterEnqueue: Bool = false,
+        sendBeforeEnqueue: Bool = false
     ) -> [WorkoutEvent] {
         let epoch = TreadmillConnectionEpoch(rawValue: uuid(90))
         let firstEpoch = firstDecisionConnectionEpoch ?? epoch
+        let secondDecisionSeconds = decisionAfterEnqueue ? 11.5 : 10.0
+        let sendSeconds = sendBeforeEnqueue ? 10.5 : 12.0
         let firstDecisionID = DecisionID(rawValue: uuid(5_100))
         let decisionID = duplicateDecisionID
             ? firstDecisionID
@@ -1148,7 +1318,7 @@ private struct AnalysisFixture {
             attemptNumber: 1,
             protocolKind: .ftms,
             connectionEpoch: epoch,
-            sentAt: baseDate.addingTimeInterval(12),
+            sentAt: baseDate.addingTimeInterval(sendSeconds),
             writeType: .withResponse
         )
         var normalizer = TreadmillObservationNormalizer()
@@ -1242,14 +1412,14 @@ private struct AnalysisFixture {
             ),
             event(
                 ordinal: 32,
-                seconds: 10,
+                seconds: secondDecisionSeconds,
                 payload: .treadmillEvidence(.decision(
                     TreadmillControlDecisionEvidence(
                         decisionID: decisionID,
                         source: .heartRateControl,
                         intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: 4)),
                         heartRateInputs: [],
-                        occurredAt: baseDate.addingTimeInterval(10),
+                        occurredAt: baseDate.addingTimeInterval(secondDecisionSeconds),
                         connectionEpoch: epoch
                     )
                 ))
@@ -1284,13 +1454,17 @@ private struct AnalysisFixture {
         ]
         if includeSend {
             events.append(
-                event(ordinal: 34, seconds: 12, payload: .treadmillEvidence(.sendAttempt(send)))
+                event(
+                    ordinal: 34,
+                    seconds: sendSeconds,
+                    payload: .treadmillEvidence(.sendAttempt(send))
+                )
             )
             if duplicateSend {
                 events.append(
                     event(
                         ordinal: 37,
-                        seconds: 12,
+                        seconds: sendSeconds,
                         payload: .treadmillEvidence(.sendAttempt(send))
                     )
                 )

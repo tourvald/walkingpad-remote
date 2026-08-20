@@ -208,14 +208,15 @@ private extension WorkoutAnalyzerV1 {
 
     struct PhaseTimeline {
         let intervals: [PhaseInterval]
+        let invalidEvidenceCount: Int
 
         init(events: [WorkoutEvent], sessionEnd: Double) {
-            var changes: [(Double, WorkoutPhase, String)] = []
+            var changes: [(Double, WorkoutPhaseTransition, String)] = []
             for event in events {
                 guard case let .workoutPhase(transition) = event.payload.payload else { continue }
                 changes.append((
                     seconds(event.timestamp.occurredElapsed),
-                    transition.current,
+                    transition,
                     event.recordID.description
                 ))
             }
@@ -223,17 +224,48 @@ private extension WorkoutAnalyzerV1 {
                 if $0.0 != $1.0 { return $0.0 < $1.0 }
                 return $0.2 < $1.2
             }
-            if changes.first?.0 ?? .infinity > 0 {
-                changes.insert((0, .unknown, ""), at: 0)
+            var current: WorkoutPhase?
+            var seen: Set<WorkoutPhase> = []
+            var validChanges: [(Double, WorkoutPhase, String)] = []
+            var invalid = 0
+            for change in changes {
+                let time = change.0
+                let transition = change.1
+                guard time.isFinite,
+                      0 <= time,
+                      time <= sessionEnd,
+                      transition.previous == current,
+                      !seen.contains(transition.current),
+                      current != .finished else {
+                    invalid += 1
+                    continue
+                }
+                validChanges.append((time, transition.current, change.2))
+                current = transition.current
+                seen.insert(transition.current)
+            }
+            invalidEvidenceCount = invalid
+            guard invalid == 0 else {
+                intervals = sessionEnd > 0
+                    ? [PhaseInterval(phase: .unknown, start: 0, end: sessionEnd)]
+                    : []
+                return
+            }
+            if validChanges.first?.0 ?? .infinity > 0 {
+                validChanges.insert((0, .unknown, ""), at: 0)
             }
             var built: [PhaseInterval] = []
-            for index in changes.indices {
-                let start = min(sessionEnd, max(0, changes[index].0))
-                let end = index + 1 < changes.count
-                    ? min(sessionEnd, max(start, changes[index + 1].0))
+            for index in validChanges.indices {
+                let start = min(sessionEnd, max(0, validChanges[index].0))
+                let end = index + 1 < validChanges.count
+                    ? min(sessionEnd, max(start, validChanges[index + 1].0))
                     : sessionEnd
                 if end > start {
-                    built.append(PhaseInterval(phase: changes[index].1, start: start, end: end))
+                    built.append(PhaseInterval(
+                        phase: validChanges[index].1,
+                        start: start,
+                        end: end
+                    ))
                 }
             }
             if built.isEmpty, sessionEnd > 0 {
@@ -351,14 +383,20 @@ private extension WorkoutAnalyzerV1 {
             freshnessSeconds: Double
         ) {
             self.sessionEnd = sessionEnd
+            let replayEligible = observations.filter {
+                !hasDuplicateOrOutOfOrderQuality($0.quality)
+            }
             observationsInArrivalOrder = observations.sorted {
                 if $0.arrivalOrder != $1.arrivalOrder { return $0.arrivalOrder < $1.arrivalOrder }
                 return $0.recordID.description < $1.recordID.description
             }
-            effectiveTimesInArrivalOrder = observationsInArrivalOrder.map {
+            effectiveTimesInArrivalOrder = replayEligible.sorted {
+                if $0.arrivalOrder != $1.arrivalOrder { return $0.arrivalOrder < $1.arrivalOrder }
+                return $0.recordID.description < $1.recordID.description
+            }.map {
                 seconds($0.timestamp.effectiveElapsed)
             }
-            let ordered = observations.sorted(by: heartRateEvidenceOrder)
+            let ordered = replayEligible.sorted(by: heartRateEvidenceOrder)
             var built: [HeartRateSegment] = []
             for index in ordered.indices {
                 let observation = ordered[index]
@@ -460,7 +498,9 @@ private extension WorkoutAnalyzerV1 {
             freshnessSeconds: Double
         ) {
             self.sessionEnd = sessionEnd
-            let ordered = observations.sorted(by: treadmillEvidenceOrder)
+            let ordered = observations.filter {
+                !hasDuplicateOrOutOfOrderQuality($0.quality)
+            }.sorted(by: treadmillEvidenceOrder)
             var built: [SpeedSegment] = []
             for index in ordered.indices {
                 let observation = ordered[index]
@@ -550,6 +590,17 @@ private extension WorkoutAnalyzerV1 {
         let connectionEpoch: TreadmillConnectionEpoch
     }
 
+    struct DecisionRecord: Hashable {
+        let time: Double
+        let connectionEpoch: TreadmillConnectionEpoch
+    }
+
+    struct CommandEnqueueRecord: Hashable {
+        let decisionID: DecisionID?
+        let time: Double
+        let kind: CommandKind
+    }
+
     struct DesiredDecision: Hashable {
         let decisionID: DecisionID
         let time: Double
@@ -595,12 +646,12 @@ private extension WorkoutAnalyzerV1 {
             var unsupportedGenericCausalRecordCount = 0
             var unknownAcknowledgements = 0
             var unknownResponses = 0
-            var decisionEpochs: [DecisionID: TreadmillConnectionEpoch] = [:]
+            var decisionRecords: [DecisionID: DecisionRecord] = [:]
             var decisions: [DecisionID: DesiredDecision] = [:]
             var invalidDecisionIDs: Set<DecisionID> = []
             var duplicateDecisionRecordCount = 0
-            var seenCommandScopes: Set<ScopedCommandIdentity> = []
-            var commandToDecision: [ScopedCommandIdentity: DecisionID] = [:]
+            var commandScopesByID: [CommandID: ScopedCommandIdentity] = [:]
+            var commandEnqueues: [ScopedCommandIdentity: CommandEnqueueRecord] = [:]
             var invalidCommandDecisionScopes: Set<ScopedCommandIdentity> = []
             var duplicateCommandRecordCount = 0
 
@@ -621,11 +672,14 @@ private extension WorkoutAnalyzerV1 {
                 case let .treadmillEvidence(evidence):
                     switch evidence {
                     case let .decision(decision):
-                        if decisionEpochs[decision.decisionID] != nil {
+                        if decisionRecords[decision.decisionID] != nil {
                             invalidDecisionIDs.insert(decision.decisionID)
                             duplicateDecisionRecordCount += 1
                         } else {
-                            decisionEpochs[decision.decisionID] = decision.connectionEpoch
+                            decisionRecords[decision.decisionID] = DecisionRecord(
+                                time: time,
+                                connectionEpoch: decision.connectionEpoch
+                            )
                         }
                         let speed: Double?
                         switch decision.intent {
@@ -649,14 +703,18 @@ private extension WorkoutAnalyzerV1 {
                             connectionEpoch: command.connectionEpoch
                         )
                         commands.insert(identity)
-                        guard seenCommandScopes.insert(identity).inserted else {
+                        if let firstScope = commandScopesByID[command.commandID] {
+                            invalidCommandDecisionScopes.insert(firstScope)
                             invalidCommandDecisionScopes.insert(identity)
                             duplicateCommandRecordCount += 1
                             break
                         }
-                        if let decisionID = command.decisionID {
-                            commandToDecision[identity] = decisionID
-                        }
+                        commandScopesByID[command.commandID] = identity
+                        commandEnqueues[identity] = CommandEnqueueRecord(
+                            decisionID: command.decisionID,
+                            time: time,
+                            kind: command.kind
+                        )
                     case let .sendAttempt(attempt):
                         recordSend(SendAttempt(
                             commandID: attempt.commandID,
@@ -705,34 +763,54 @@ private extension WorkoutAnalyzerV1 {
             }
             let sortedAcknowledgements = acknowledgements.sorted(by: edgeOrder)
             let sortedResponses = responses.sorted(by: edgeOrder)
-            let validCommandDecisionIDs = commandToDecision.filter { identity, decisionID in
-                !invalidCommandDecisionScopes.contains(identity)
-                    && !invalidDecisionIDs.contains(decisionID)
-                    && decisionEpochs[decisionID] == identity.connectionEpoch
-            }
+            let validCommandDecisionIDs = Dictionary(uniqueKeysWithValues:
+                commandEnqueues.compactMap { identity, enqueue -> (
+                    ScopedCommandIdentity,
+                    DecisionID
+                )? in
+                    guard let decisionID = enqueue.decisionID,
+                          !invalidCommandDecisionScopes.contains(identity),
+                          !invalidDecisionIDs.contains(decisionID),
+                          let decision = decisionRecords[decisionID],
+                          decision.connectionEpoch == identity.connectionEpoch,
+                          decision.time <= enqueue.time else { return nil }
+                    return (identity, decisionID)
+                }
+            )
             let invalidCommandDecisionLinkCount = duplicateCommandRecordCount
-                + commandToDecision.filter { identity, decisionID in
-                    !invalidCommandDecisionScopes.contains(identity)
-                        && (invalidDecisionIDs.contains(decisionID)
-                        || decisionEpochs[decisionID] != identity.connectionEpoch
-                        )
+                + commandEnqueues.filter { identity, enqueue in
+                    guard let decisionID = enqueue.decisionID,
+                          !invalidCommandDecisionScopes.contains(identity) else {
+                        return false
+                    }
+                    guard let decision = decisionRecords[decisionID] else { return true }
+                    return invalidDecisionIDs.contains(decisionID)
+                        || decision.connectionEpoch != identity.connectionEpoch
+                        || decision.time > enqueue.time
                 }.count
-            var mismatchedSendDecisionCount = 0
+            var invalidTypedSendCount = 0
             for send in sends.values {
                 let identity = ScopedCommandIdentity(
                     commandID: send.commandID,
                     protocolKind: send.protocolKind,
                     connectionEpoch: send.connectionEpoch
                 )
-                guard let enqueuedDecisionID = validCommandDecisionIDs[identity] else {
+                if invalidCommandDecisionScopes.contains(identity) {
+                    invalidAttemptIDs.insert(send.attemptID)
+                    invalidTypedSendCount += 1
                     continue
                 }
-                if send.decisionID != enqueuedDecisionID {
+                guard let enqueue = commandEnqueues[identity] else { continue }
+                let invalidTypedChain = send.time < enqueue.time
+                    || send.decisionID != enqueue.decisionID
+                    || (enqueue.decisionID != nil
+                        && validCommandDecisionIDs[identity] == nil)
+                if invalidTypedChain {
                     invalidAttemptIDs.insert(send.attemptID)
-                    mismatchedSendDecisionCount += 1
+                    invalidTypedSendCount += 1
                 }
             }
-            commandIDs = commands
+            commandIDs = commands.subtracting(invalidCommandDecisionScopes)
             sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
             let duplicateAcknowledgementKeys = duplicateEdgeIdentities(sortedAcknowledgements)
             let duplicateResponseKeys = duplicateEdgeIdentities(sortedResponses)
@@ -761,7 +839,7 @@ private extension WorkoutAnalyzerV1 {
             invalidCausalEdgeCount = unsupportedGenericCausalRecordCount
                 + duplicateSendRecordCount
                 + duplicateDecisionRecordCount
-                + mismatchedSendDecisionCount
+                + invalidTypedSendCount
                 + invalidCommandDecisionLinkCount
                 + sortedAcknowledgements.filter {
                     !isValidEdge($0, duplicateAcknowledgementKeys)
@@ -775,6 +853,7 @@ private extension WorkoutAnalyzerV1 {
                     ScopedDesiredDecision
                 )? in
                     guard let decision = decisions[decisionID],
+                          case .setSpeed = commandEnqueues[identity]?.kind,
                           !invalidDecisionIDs.contains(decisionID) else { return nil }
                     let scopedIdentity = ScopedDecisionIdentity(
                         decisionID: decisionID,
@@ -920,8 +999,13 @@ private extension WorkoutAnalyzerV1 {
         let duplicateCount = input.heartRate.filter {
             $0.quality.contains(.duplicateProviderIdentity)
                 || $0.quality.contains(.duplicateProviderSequence)
+        }.count + input.treadmill.filter {
+            $0.quality.contains(.duplicateProviderIdentity)
+                || $0.quality.contains(.duplicateProviderSequence)
         }.count
         let outOfOrderCount = input.heartRate.reduce(0) {
+            $0 + ($1.quality.contains(.measurementOutOfArrivalOrder) ? 1 : 0)
+        } + input.treadmill.reduce(0) {
             $0 + ($1.quality.contains(.measurementOutOfArrivalOrder) ? 1 : 0)
         } + zip(
             heartRate.effectiveTimesInArrivalOrder,
@@ -956,7 +1040,9 @@ private extension WorkoutAnalyzerV1 {
         } + input.treadmill.reduce(0) { count, observation in
             count + (hasMalformedQuality(observation.quality) ? 1 : 0)
         }
-        let malformedCount = malformedNativeCount + causal.invalidCausalEdgeCount
+        let malformedCount = malformedNativeCount
+            + causal.invalidCausalEdgeCount
+            + phases.invalidEvidenceCount
         let hasMalformedEvidence = malformedCount > 0 || !configurationAvailable
         var issues: [AnalysisQualityIssue] = []
         if recorderLoss {
@@ -1014,6 +1100,13 @@ private extension WorkoutAnalyzerV1 {
                 count: UInt64(malformedCount)
             ))
         }
+        if phases.invalidEvidenceCount > 0 {
+            issues.append(AnalysisQualityIssue(
+                category: .malformedCorruptEvidence,
+                code: "invalid-workout-phase-transition-evidence",
+                count: UInt64(phases.invalidEvidenceCount)
+            ))
+        }
         if incomplete {
             issues.append(AnalysisQualityIssue(
                 category: .sourceCoverageUnavailable,
@@ -1058,6 +1151,9 @@ private extension WorkoutAnalyzerV1 {
                 if !configurationAvailable { codes.append("configuration-payload-unavailable") }
                 if malformedCount > 0 {
                     codes.append("malformed-or-invalid-native-evidence")
+                }
+                if phases.invalidEvidenceCount > 0 {
+                    codes.append("invalid-workout-phase-transition-evidence")
                 }
                 return PhaseQualitySummary(
                     phase: phaseKey(interval.phase),
@@ -1109,7 +1205,9 @@ private extension WorkoutAnalyzerV1 {
         policy: AnalyzerV1Policy
     ) -> WorkoutControlMetricsV1 {
         let mainRange = phases.range(for: .main)
-        let mainSegments = heartRate.clippedSegments(in: mainRange)
+        let mainSegments = mainRange.map {
+            heartRate.clippedSegments(in: $0)
+        } ?? []
         let zoneDurations: [ZoneDurationV1]
         if let configuration, !mainSegments.isEmpty {
             var zoneSeconds = Array(repeating: 0.0, count: 5)
@@ -1761,6 +1859,7 @@ private extension WorkoutAnalyzerV1 {
 
     static func isUsableHeartRate(_ observation: HeartRateObservation) -> Bool {
         observation.freshness.state == .fresh
+            && !hasDuplicateOrOutOfOrderQuality(observation.quality)
             && !observation.quality.contains(.invalidNativeValue)
             && !observation.quality.contains(.nativeValueOutOfDomain)
             && !observation.quality.contains(.staleAtUse)
@@ -1770,6 +1869,7 @@ private extension WorkoutAnalyzerV1 {
 
     static func isUsableTreadmill(_ observation: TreadmillObservation) -> Bool {
         observation.freshness.state == .fresh
+            && !hasDuplicateOrOutOfOrderQuality(observation.quality)
             && !observation.quality.contains(.invalidNativeValue)
             && !observation.quality.contains(.nativeValueOutOfDomain)
             && !observation.quality.contains(.staleAtUse)
@@ -1778,9 +1878,16 @@ private extension WorkoutAnalyzerV1 {
     }
 
     static func hasMalformedQuality(_ quality: QualityFlags) -> Bool {
-        quality.contains(.invalidNativeValue)
+        hasDuplicateOrOutOfOrderQuality(quality)
+            || quality.contains(.invalidNativeValue)
             || quality.contains(.nativeValueOutOfDomain)
             || quality.contains(.clockRegression)
+    }
+
+    static func hasDuplicateOrOutOfOrderQuality(_ quality: QualityFlags) -> Bool {
+        quality.contains(.duplicateProviderIdentity)
+            || quality.contains(.duplicateProviderSequence)
+            || quality.contains(.measurementOutOfArrivalOrder)
     }
 
     static func mergeRanges(_ ranges: [Range<Double>]) -> [Range<Double>] {
