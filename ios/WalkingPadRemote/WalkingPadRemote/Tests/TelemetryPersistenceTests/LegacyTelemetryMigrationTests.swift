@@ -612,6 +612,170 @@ final class LegacyTelemetryMigrationTests: XCTestCase {
         XCTAssertTrue(reconciliations.isEmpty)
     }
 
+    func testOverlappingHistorySnapshotsKeepSameExactIDIsolatedAcrossProfiles() async throws {
+        let shared = ["id": "shared-looking-id", "durationSeconds": 10] as [String: Any]
+        let profileAHistory = try JSONSerialization.data(withJSONObject: [
+            shared,
+            ["id": "profile-a-only", "durationSeconds": 20],
+        ])
+        let profileBHistory = try JSONSerialization.data(withJSONObject: [
+            shared,
+            ["id": "profile-b-only", "durationSeconds": 30],
+        ])
+        let sharedOnly = try JSONSerialization.data(withJSONObject: [shared])
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        _ = await LegacyTelemetryMigrator(store: store).run(
+            LegacyTelemetryMigrationRequest(
+                jsonlSources: [],
+                workoutHistorySources: [
+                    .init(
+                        storageKey: "profile-a-older",
+                        representation: sharedOnly,
+                        exactProfileLocalIdentifier: "profile-a"
+                    ),
+                    .init(
+                        storageKey: "profile-a-newer",
+                        representation: profileAHistory,
+                        exactProfileLocalIdentifier: "profile-a"
+                    ),
+                    .init(
+                        storageKey: "profile-b-older",
+                        representation: sharedOnly,
+                        exactProfileLocalIdentifier: "profile-b"
+                    ),
+                    .init(
+                        storageKey: "profile-b-newer",
+                        representation: profileBHistory,
+                        exactProfileLocalIdentifier: "profile-b"
+                    ),
+                ],
+                knownProfileLocalIdentifiers: ["profile-a", "profile-b"]
+            )
+        )
+
+        let candidates = try await store.fetchLegacyWorkoutCandidates()
+        let workouts = try await store.fetchLegacyImportedWorkouts()
+        let reconciliations = try await store.fetchLegacyReconciliations()
+        let sharedCandidates = candidates.filter {
+            $0.workoutIdentifier == "shared-looking-id"
+        }
+
+        XCTAssertEqual(candidates.count, 6)
+        XCTAssertEqual(workouts.count, 4)
+        XCTAssertEqual(sharedCandidates.count, 4)
+        XCTAssertEqual(
+            Set(workouts.compactMap(\.profileLocalIdentifier)),
+            ["profile-a", "profile-b"]
+        )
+        for profile in ["profile-a", "profile-b"] {
+            let profileSharedCandidateIDs = Set(sharedCandidates.filter {
+                $0.profileLocalIdentifier == profile
+            }.map(\.candidateID))
+            let imported = try XCTUnwrap(workouts.first {
+                Set($0.candidateIDs) == profileSharedCandidateIDs
+            })
+            XCTAssertEqual(imported.identityStatus, .exact)
+            XCTAssertEqual(imported.profileLocalIdentifier, profile)
+        }
+        XCTAssertEqual(reconciliations.count, 2)
+        XCTAssertTrue(reconciliations.allSatisfy {
+            $0.outcome == .matched && $0.identityKind == .workoutIdentifier
+        })
+    }
+
+    func testOverlappingGlobalAndFallbackProfileHistoryReconcileExactWorkoutOnce() async throws {
+        let trainingLogsDirectory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: trainingLogsDirectory) }
+        let suiteName = "LegacyTelemetryMigrationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let workoutA: [String: Any] = [
+            "id": "overlap-workout-a",
+            "date": 1_800_000_000,
+            "durationSeconds": 600,
+            "avgBpm": 132,
+        ]
+        let workoutB: [String: Any] = [
+            "id": "profile-only-workout-b",
+            "date": 1_800_001_000,
+            "durationSeconds": 900,
+            "avgBpm": 138,
+        ]
+        let globalHistory = try JSONSerialization.data(
+            withJSONObject: [workoutA],
+            options: [.sortedKeys]
+        )
+        let scopedHistory = try JSONSerialization.data(
+            withJSONObject: [workoutA, workoutB],
+            options: [.sortedKeys]
+        )
+        let scopedKey = "workout_history_v1_profile_\(profileID)"
+        defaults.set(globalHistory, forKey: "workout_history_v1")
+        defaults.set(scopedHistory, forKey: scopedKey)
+
+        let request = LegacyTelemetryMigrationSourceDiscovery.makeRequest(
+            userDefaults: defaults,
+            trainingLogsDirectory: trainingLogsDirectory,
+            knownProfileLocalIdentifiers: [profileID],
+            deterministicLegacyFallbackProfileLocalIdentifier: profileID,
+            maximumRecordsPerBatch: 1
+        )
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let migrator = LegacyTelemetryMigrator(store: store)
+
+        let firstReport = await migrator.run(request)
+        let firstSources = try await store.fetchLegacyMigrationSources()
+        let firstCandidates = try await store.fetchLegacyWorkoutCandidates()
+        let firstWorkouts = try await store.fetchLegacyImportedWorkouts()
+        let firstReconciliations = try await store.fetchLegacyReconciliations()
+
+        XCTAssertEqual(firstReport.completion, .completed)
+        XCTAssertEqual(firstReport.completedSourceCount, 2)
+        XCTAssertEqual(firstSources.count, 2)
+        XCTAssertTrue(firstSources.allSatisfy {
+            $0.kind == .workoutHistory && $0.status == .completed
+        })
+        XCTAssertEqual(Set(firstSources.map(\.locator)), ["workout_history_v1", scopedKey])
+        XCTAssertEqual(firstCandidates.count, 3)
+
+        let workoutACandidateIDs = firstCandidates
+            .filter { $0.workoutIdentifier == "overlap-workout-a" }
+            .map(\.candidateID)
+        let workoutBCandidate = try XCTUnwrap(firstCandidates.first {
+            $0.workoutIdentifier == "profile-only-workout-b"
+        })
+        XCTAssertEqual(workoutACandidateIDs.count, 2)
+        XCTAssertEqual(firstWorkouts.count, 2)
+        let importedA = try XCTUnwrap(firstWorkouts.first {
+            Set($0.candidateIDs) == Set(workoutACandidateIDs)
+        })
+        XCTAssertEqual(importedA.identityStatus, .exact)
+        XCTAssertEqual(importedA.profileLocalIdentifier, profileID)
+        XCTAssertNotNil(firstWorkouts.first {
+            $0.candidateIDs == [workoutBCandidate.candidateID]
+        })
+        XCTAssertEqual(firstReconciliations.count, 1)
+        XCTAssertEqual(firstReconciliations.first?.outcome, .matched)
+        XCTAssertEqual(firstReconciliations.first?.identityKind, .workoutIdentifier)
+        XCTAssertEqual(firstReconciliations.first?.identityValue, "overlap-workout-a")
+        XCTAssertEqual(defaults.data(forKey: "workout_history_v1"), globalHistory)
+        XCTAssertEqual(defaults.data(forKey: scopedKey), scopedHistory)
+
+        let secondReport = await migrator.run(request)
+        let secondSources = try await store.fetchLegacyMigrationSources()
+        let secondCandidates = try await store.fetchLegacyWorkoutCandidates()
+        let secondWorkouts = try await store.fetchLegacyImportedWorkouts()
+        let secondReconciliations = try await store.fetchLegacyReconciliations()
+        XCTAssertEqual(secondReport.completion, .completed)
+        XCTAssertEqual(secondReport.skippedSourceCount, 2)
+        XCTAssertEqual(secondSources, firstSources)
+        XCTAssertEqual(secondCandidates, firstCandidates)
+        XCTAssertEqual(secondWorkouts, firstWorkouts)
+        XCTAssertEqual(secondReconciliations, firstReconciliations)
+        XCTAssertEqual(defaults.data(forKey: "workout_history_v1"), globalHistory)
+        XCTAssertEqual(defaults.data(forKey: scopedKey), scopedHistory)
+    }
+
     func testMalformedHistoryFailureIsAuditedAndRepresentationsStayImmutable() async throws {
         let history = Data("{not-an-array}".utf8)
         let original = history

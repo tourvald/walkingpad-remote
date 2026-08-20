@@ -293,7 +293,11 @@ extension TelemetryStore {
 
         let canonicalIdentityKey: String
         if !compatible.isEmpty, let kind = match.kind, let value = match.value {
-            canonicalIdentityKey = "\(kind.rawValue):\(value)"
+            canonicalIdentityKey = exactCanonicalIdentityKey(
+                kind: kind,
+                value: value,
+                candidates: [candidate] + compatible
+            )
         } else if !conflicting.isEmpty {
             canonicalIdentityKey = "candidate:\(candidate.candidateID)"
         } else {
@@ -384,17 +388,55 @@ extension TelemetryStore {
         value: String,
         limit: Int
     ) throws -> [TelemetryLegacyWorkoutCandidateV2] {
-        let candidateID = candidate.candidateID
         let oppositeOrigin = candidate.originKindKey == LegacyWorkoutCandidateOrigin.jsonl.rawValue
             ? LegacyWorkoutCandidateOrigin.workoutHistory.rawValue
             : LegacyWorkoutCandidateOrigin.jsonl.rawValue
+        var result = try exactCandidates(
+            excludingCandidateID: candidate.candidateID,
+            kind: kind,
+            value: value,
+            originKindKey: oppositeOrigin,
+            exactProfileLocalIdentifier: nil,
+            limit: limit
+        )
+        if candidate.originKindKey == LegacyWorkoutCandidateOrigin.workoutHistory.rawValue,
+           let profileLocalIdentifier = candidate.profileLocalIdentifier {
+            result.append(contentsOf: try exactCandidates(
+                excludingCandidateID: candidate.candidateID,
+                kind: kind,
+                value: value,
+                originKindKey: LegacyWorkoutCandidateOrigin.workoutHistory.rawValue,
+                exactProfileLocalIdentifier: profileLocalIdentifier,
+                limit: limit
+            ))
+        }
+        result.sort { $0.candidateID < $1.candidateID }
+        guard result.count <= limit else {
+            throw TelemetryStoreError.conflictingStableIdentity(
+                "legacy-reconciliation-match-limit:\(kind.rawValue)"
+            )
+        }
+        return result
+    }
+
+    private func exactCandidates(
+        excludingCandidateID candidateID: String,
+        kind: LegacyReconciliationIdentityKind,
+        value: String,
+        originKindKey: String,
+        exactProfileLocalIdentifier: String?,
+        limit: Int
+    ) throws -> [TelemetryLegacyWorkoutCandidateV2] {
         var descriptor: FetchDescriptor<TelemetryLegacyWorkoutCandidateV2>
+        let requiresExactProfile = exactProfileLocalIdentifier != nil
         switch kind {
         case .workoutIdentifier:
             descriptor = FetchDescriptor(
                 predicate: #Predicate {
                     $0.candidateID != candidateID
-                        && $0.originKindKey == oppositeOrigin
+                        && $0.originKindKey == originKindKey
+                        && (!requiresExactProfile
+                            || $0.profileLocalIdentifier == exactProfileLocalIdentifier)
                         && $0.workoutIdentifier == value
                 },
                 sortBy: [SortDescriptor(\.candidateID)]
@@ -403,7 +445,9 @@ extension TelemetryStore {
             descriptor = FetchDescriptor(
                 predicate: #Predicate {
                     $0.candidateID != candidateID
-                        && $0.originKindKey == oppositeOrigin
+                        && $0.originKindKey == originKindKey
+                        && (!requiresExactProfile
+                            || $0.profileLocalIdentifier == exactProfileLocalIdentifier)
                         && $0.healthKitWorkoutIdentifier == value
                 },
                 sortBy: [SortDescriptor(\.candidateID)]
@@ -412,20 +456,32 @@ extension TelemetryStore {
             descriptor = FetchDescriptor(
                 predicate: #Predicate {
                     $0.candidateID != candidateID
-                        && $0.originKindKey == oppositeOrigin
+                        && $0.originKindKey == originKindKey
+                        && (!requiresExactProfile
+                            || $0.profileLocalIdentifier == exactProfileLocalIdentifier)
                         && $0.stableLegacySessionIdentifier == value
                 },
                 sortBy: [SortDescriptor(\.candidateID)]
             )
         }
         descriptor.fetchLimit = limit + 1
-        let result = try modelContext.fetch(descriptor)
-        guard result.count <= limit else {
-            throw TelemetryStoreError.conflictingStableIdentity(
-                "legacy-reconciliation-match-limit:\(kind.rawValue)"
-            )
+        return try modelContext.fetch(descriptor)
+    }
+
+    private func exactCanonicalIdentityKey(
+        kind: LegacyReconciliationIdentityKind,
+        value: String,
+        candidates: [TelemetryLegacyWorkoutCandidateV2]
+    ) -> String {
+        let historyOrigin = LegacyWorkoutCandidateOrigin.workoutHistory.rawValue
+        if candidates.allSatisfy({ $0.originKindKey == historyOrigin }),
+           let profileLocalIdentifier = candidates.first?.profileLocalIdentifier,
+           candidates.allSatisfy({
+               $0.profileLocalIdentifier == profileLocalIdentifier
+           }) {
+            return "history-profile:\(profileLocalIdentifier):\(kind.rawValue):\(value)"
         }
-        return result
+        return "\(kind.rawValue):\(value)"
     }
 
     private func identityConflicts(
