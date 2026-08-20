@@ -794,14 +794,53 @@ private extension WorkoutAnalyzerV1 {
             let duplicateAttemptNumberGroups = sendsByAttemptNumber.values.filter {
                 $0.count > 1
             }
+            let duplicateAttemptNumberScopes = Set(duplicateAttemptNumberGroups.compactMap {
+                $0.first.map {
+                    ScopedCommandIdentity(
+                        commandID: $0.commandID,
+                        protocolKind: $0.protocolKind,
+                        connectionEpoch: $0.connectionEpoch
+                    )
+                }
+            })
             invalidAttemptIDs.formUnion(
-                duplicateAttemptNumberGroups.flatMap { $0.map(\.attemptID) }
+                sends.values.filter { send in
+                    duplicateAttemptNumberScopes.contains(ScopedCommandIdentity(
+                        commandID: send.commandID,
+                        protocolKind: send.protocolKind,
+                        connectionEpoch: send.connectionEpoch
+                    ))
+                }.map(\.attemptID)
             )
             let duplicateAttemptNumberRecordCount = duplicateAttemptNumberGroups.reduce(0) {
                 $0 + ($1.count - 1)
             }
             let sortedAcknowledgements = acknowledgements.sorted(by: edgeOrder)
             let sortedResponses = responses.sorted(by: edgeOrder)
+            let speedDecisionBindings = commandEnqueues.compactMap {
+                identity, enqueue -> (ScopedDecisionIdentity, ScopedCommandIdentity)? in
+                guard let decisionID = enqueue.decisionID,
+                      case .setSpeed = enqueue.kind else { return nil }
+                return (
+                    ScopedDecisionIdentity(
+                        decisionID: decisionID,
+                        protocolKind: identity.protocolKind,
+                        connectionEpoch: identity.connectionEpoch
+                    ),
+                    identity
+                )
+            }
+            let duplicateSpeedDecisionBindingGroups = Dictionary(
+                grouping: speedDecisionBindings,
+                by: { $0.0 }
+            ).values.filter { $0.count > 1 }
+            let invalidDuplicateSpeedDecisionScopes = Set(
+                duplicateSpeedDecisionBindingGroups.flatMap { $0.map(\.1) }
+            )
+            invalidCommandDecisionScopes.formUnion(invalidDuplicateSpeedDecisionScopes)
+            let duplicateSpeedDecisionBindingCount = duplicateSpeedDecisionBindingGroups.reduce(0) {
+                $0 + $1.count
+            }
             let invalidDecisionLinkScopes = Set(commandEnqueues.compactMap {
                 identity, enqueue -> ScopedCommandIdentity? in
                 guard let decisionID = enqueue.decisionID,
@@ -841,6 +880,7 @@ private extension WorkoutAnalyzerV1 {
             )
             let invalidCommandDecisionLinkCount = duplicateCommandRecordCount
                 + missingCommandDecisionLinkCount
+                + duplicateSpeedDecisionBindingCount
                 + invalidDecisionLinkScopes.count
             var invalidTypedSendCount = 0
             for send in sends.values {
@@ -890,16 +930,17 @@ private extension WorkoutAnalyzerV1 {
                     }
                     return sendOrder($0, $1)
                 }
-                for (previous, next) in zip(ordered, ordered.dropFirst())
-                    where !causallyPrecedes(
+                let hasInvalidOrder = zip(ordered, ordered.dropFirst()).contains {
+                    previous, next in
+                    !causallyPrecedes(
                         occurred: previous.time,
                         recorded: previous.recordedTime,
                         beforeOccurred: next.time,
                         beforeRecorded: next.recordedTime
                     )
-                {
-                    invalidRetryOrderAttemptIDs.insert(previous.attemptID)
-                    invalidRetryOrderAttemptIDs.insert(next.attemptID)
+                }
+                if hasInvalidOrder {
+                    invalidRetryOrderAttemptIDs.formUnion(attempts.map(\.attemptID))
                 }
             }
             invalidAttemptIDs.formUnion(invalidRetryOrderAttemptIDs)
