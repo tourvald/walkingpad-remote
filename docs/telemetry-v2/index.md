@@ -37,6 +37,7 @@ resolve a concrete remaining ambiguity.
 | Performance targets, soak measurements, privacy-safe instrumentation, or tuning evidence | [`performance-budget.md`](performance-budget.md) |
 | Issue #31 host measurements, A/B recorder decision, signpost catalog, or soak commands | [`issue-31-performance-report.md`](issue-31-performance-report.md) |
 | Dual-write, parity, migration, cutover, physical gate, rollback, or retirement | [`rollout-and-migration.md`](rollout-and-migration.md) |
+| Issue #32 parity categories, read-only inputs, report schema, or deterministic replay scenarios | [`issue-32-parity-validator.md`](issue-32-parity-validator.md) |
 
 ## Durable cross-Issue decisions
 
