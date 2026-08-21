@@ -304,7 +304,7 @@ extension TelemetryStore {
             canonicalIdentityKey = unreconciledIdentityKey(candidate)
         }
         let group = [candidate] + compatible
-        let identityStatus: LegacyIdentityStatus = !conflicting.isEmpty
+        let identityStatus: LegacyIdentityStatus = compatible.isEmpty && !conflicting.isEmpty
             ? .conflict
             : candidate.identityUncertain ? .uncertain : .exact
         let inserted = try upsertImportedWorkout(
@@ -473,9 +473,7 @@ extension TelemetryStore {
         value: String,
         candidates: [TelemetryLegacyWorkoutCandidateV2]
     ) -> String {
-        let historyOrigin = LegacyWorkoutCandidateOrigin.workoutHistory.rawValue
-        if candidates.allSatisfy({ $0.originKindKey == historyOrigin }),
-           let profileLocalIdentifier = candidates.first?.profileLocalIdentifier,
+        if let profileLocalIdentifier = candidates.first?.profileLocalIdentifier,
            candidates.allSatisfy({
                $0.profileLocalIdentifier == profileLocalIdentifier
            }) {
@@ -738,14 +736,26 @@ extension TelemetryStore {
         }
         var conflicts = summaries.flatMap(\.summary.conflicts)
         var warnings = Set(summaries.flatMap(\.summary.warnings))
-        let duration = resolvedValue(durationValues, preferredPrefix: "legacy-jsonl")
-        let target = resolvedValue(targetValues, preferredPrefix: "legacy-jsonl")
+        let duration = resolvedValue(
+            durationValues,
+            preferredPrefixes: [
+                "legacy-jsonl-timestamp-derived",
+                "legacy-jsonl-summary",
+            ]
+        )
+        let target = resolvedValue(targetValues, preferredPrefixes: ["legacy-jsonl"])
         let averageHR = resolvedValue(
             averageHeartRateValues,
-            preferredPrefix: "legacy-jsonl"
+            preferredPrefixes: [
+                "legacy-jsonl-timestamp-derived",
+                "legacy-jsonl-summary",
+            ]
         )
-        let speed = resolvedValue(speedValues, preferredPrefix: "legacy-jsonl")
-        let zones = resolvedValue(zoneValues, preferredPrefix: "legacy-jsonl-timestamp-derived")
+        let speed = resolvedValue(speedValues, preferredPrefixes: ["legacy-jsonl"])
+        let zones = resolvedValue(
+            zoneValues,
+            preferredPrefixes: ["legacy-jsonl-timestamp-derived"]
+        )
         for (field, isConflict) in [
             ("duration", duration.conflict),
             ("target_bpm", target.conflict),
@@ -775,13 +785,15 @@ extension TelemetryStore {
 
     private func resolvedValue<Value: Codable & Hashable & Sendable>(
         _ values: [LegacySourcedValue<Value>],
-        preferredPrefix: String
+        preferredPrefixes: [String]
     ) -> LegacyResolvedValue<Value> {
         var distinct: [LegacySourcedValue<Value>] = []
         for value in values where !distinct.contains(value) {
             distinct.append(value)
         }
-        let selected = distinct.first { $0.provenance.hasPrefix(preferredPrefix) }
+        let selected = preferredPrefixes.compactMap { preferredPrefix in
+            distinct.first { $0.provenance.hasPrefix(preferredPrefix) }
+        }.first
             ?? distinct.first
         let alternatives = distinct.filter { $0 != selected }
         let distinctValues = Set(distinct.map(\.value))

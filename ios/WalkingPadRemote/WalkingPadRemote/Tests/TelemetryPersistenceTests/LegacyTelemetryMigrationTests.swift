@@ -221,6 +221,134 @@ final class LegacyTelemetryMigrationTests: XCTestCase {
         XCTAssertTrue(workout.resolvedSummary.averageHeartRateBeatsPerMinute.conflict)
     }
 
+    func testTimestampDerivedJSONLPrecedesEarlierJSONLSummaryAndHistory() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let summaryURL = directory.appendingPathComponent("summary-only.jsonl")
+        let derivedURL = directory.appendingPathComponent("timestamp-derived.jsonl")
+        let summaryJSONL = lines([
+            object([
+                "event": "workout_saved",
+                "workout_id": "ordered-precedence-workout",
+                "profile_id": profileID,
+                "duration_s": 35,
+                "avg_bpm": 141,
+            ]),
+        ])
+        let derivedJSONL = lines([
+            object([
+                "event": "session_start",
+                "ts": 1_800_000_000,
+                "workout_id": "ordered-precedence-workout",
+                "profile_id": profileID,
+            ]),
+            object([
+                "event": "hr_sample",
+                "ts": 1_800_000_001,
+                "workout_id": "ordered-precedence-workout",
+                "profile_id": profileID,
+                "hr_bpm": 150,
+                "zone_index": 3,
+            ]),
+            object([
+                "event": "workout_saved",
+                "ts": 1_800_000_009,
+                "workout_id": "ordered-precedence-workout",
+                "profile_id": profileID,
+            ]),
+            object([
+                "event": "session_end",
+                "ts": 1_800_000_010,
+                "workout_id": "ordered-precedence-workout",
+                "profile_id": profileID,
+            ]),
+        ])
+        try summaryJSONL.write(to: summaryURL)
+        try derivedJSONL.write(to: derivedURL)
+        let history = try JSONSerialization.data(withJSONObject: [[
+            "id": "ordered-precedence-workout",
+            "durationSeconds": 40,
+            "avgBpm": 139,
+        ]], options: [.sortedKeys])
+        let store = try TelemetryStoreFactory.make(.inMemory)
+
+        _ = await LegacyTelemetryMigrator(store: store).run(
+            LegacyTelemetryMigrationRequest(
+                jsonlSources: [
+                    .init(
+                        url: summaryURL,
+                        deterministicFallbackProfileLocalIdentifier: nil
+                    ),
+                    .init(
+                        url: derivedURL,
+                        deterministicFallbackProfileLocalIdentifier: nil
+                    ),
+                ],
+                workoutHistorySources: [
+                    .init(
+                        storageKey: "workout_history_v1_profile_\(profileID)",
+                        representation: history,
+                        exactProfileLocalIdentifier: profileID
+                    ),
+                ],
+                knownProfileLocalIdentifiers: [profileID]
+            )
+        )
+
+        let candidates = try await store.fetchLegacyWorkoutCandidates()
+        let workouts = try await store.fetchLegacyImportedWorkouts()
+        let summaryCandidate = try XCTUnwrap(candidates.first {
+            $0.origin == .jsonl
+                && $0.summary.legacySummaryDurationSeconds == 35
+        })
+        let derivedCandidate = try XCTUnwrap(candidates.first {
+            $0.origin == .jsonl
+                && $0.summary.timestampDerivedDurationMicroseconds == 10_000_000
+        })
+        XCTAssertLessThan(summaryCandidate.candidateID, derivedCandidate.candidateID)
+        XCTAssertEqual(workouts.count, 1)
+        let workout = try XCTUnwrap(workouts.first)
+        XCTAssertEqual(Set(workout.candidateIDs), Set(candidates.map(\.candidateID)))
+        XCTAssertEqual(
+            workout.resolvedSummary.durationMicroseconds.selected,
+            LegacySourcedValue(
+                value: 10_000_000,
+                provenance: "legacy-jsonl-timestamp-derived"
+            )
+        )
+        XCTAssertEqual(
+            workout.resolvedSummary.averageHeartRateBeatsPerMinute.selected,
+            LegacySourcedValue(
+                value: 150.0,
+                provenance: "legacy-jsonl-timestamp-derived"
+            )
+        )
+        XCTAssertEqual(
+            Set(workout.resolvedSummary.durationMicroseconds.alternatives),
+            [
+                LegacySourcedValue(value: 35_000_000, provenance: "legacy-jsonl-summary"),
+                LegacySourcedValue(
+                    value: 40_000_000,
+                    provenance: "workout_history_v1-summary"
+                ),
+            ]
+        )
+        XCTAssertEqual(
+            Set(workout.resolvedSummary.averageHeartRateBeatsPerMinute.alternatives),
+            [
+                LegacySourcedValue(value: 141.0, provenance: "legacy-jsonl-summary"),
+                LegacySourcedValue(
+                    value: 139.0,
+                    provenance: "workout_history_v1-summary"
+                ),
+            ]
+        )
+        XCTAssertTrue(workout.resolvedSummary.durationMicroseconds.conflict)
+        XCTAssertTrue(workout.resolvedSummary.averageHeartRateBeatsPerMinute.conflict)
+        XCTAssertEqual(try Data(contentsOf: summaryURL), summaryJSONL)
+        XCTAssertEqual(try Data(contentsOf: derivedURL), derivedJSONL)
+    }
+
     func testCopiedJSONLAndCompletedRerunAreDeduplicatedByContent() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -747,6 +875,128 @@ final class LegacyTelemetryMigrationTests: XCTestCase {
         XCTAssertTrue(reconciliations.isEmpty)
     }
 
+    func testJSONLAndHistoryExactIdentityRemainIsolatedAcrossProfiles() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let profileA = "profile-a"
+        let profileB = "profile-b"
+        let jsonlAURL = directory.appendingPathComponent("profile-a.jsonl")
+        let jsonlBURL = directory.appendingPathComponent("profile-b.jsonl")
+        let jsonlA = lines([
+            object([
+                "event": "session_start", "ts": 1_800_000_000,
+                "session_id": "shared-session-x", "workout_id": "shared-workout-x",
+                "profile_id": profileA,
+            ]),
+            object([
+                "event": "workout_saved", "ts": 1_800_000_009,
+                "session_id": "shared-session-x", "workout_id": "shared-workout-x",
+                "profile_id": profileA,
+            ]),
+            object([
+                "event": "session_end", "ts": 1_800_000_010,
+                "session_id": "shared-session-x", "workout_id": "shared-workout-x",
+                "profile_id": profileA,
+            ]),
+        ])
+        let jsonlB = lines([
+            object([
+                "event": "session_start", "ts": 1_800_000_000,
+                "session_id": "shared-session-x", "workout_id": "shared-workout-x",
+                "profile_id": profileB,
+            ]),
+            object([
+                "event": "workout_saved", "ts": 1_800_000_009,
+                "session_id": "shared-session-x", "workout_id": "shared-workout-x",
+                "profile_id": profileB,
+            ]),
+            object([
+                "event": "session_end", "ts": 1_800_000_010,
+                "session_id": "shared-session-x", "workout_id": "shared-workout-x",
+                "profile_id": profileB,
+            ]),
+        ])
+        try jsonlA.write(to: jsonlAURL)
+        try jsonlB.write(to: jsonlBURL)
+        let history = try JSONSerialization.data(withJSONObject: [[
+            "id": "shared-workout-x",
+            "session_id": "shared-session-x",
+            "durationSeconds": 10,
+        ]], options: [.sortedKeys])
+        let store = try TelemetryStoreFactory.make(.inMemory)
+
+        _ = await LegacyTelemetryMigrator(store: store).run(
+            LegacyTelemetryMigrationRequest(
+                jsonlSources: [
+                    .init(url: jsonlAURL, deterministicFallbackProfileLocalIdentifier: nil),
+                    .init(url: jsonlBURL, deterministicFallbackProfileLocalIdentifier: nil),
+                ],
+                workoutHistorySources: [
+                    .init(
+                        storageKey: "workout_history_v1_profile_\(profileA)",
+                        representation: history,
+                        exactProfileLocalIdentifier: profileA
+                    ),
+                    .init(
+                        storageKey: "workout_history_v1_profile_\(profileB)",
+                        representation: history,
+                        exactProfileLocalIdentifier: profileB
+                    ),
+                ],
+                knownProfileLocalIdentifiers: [profileA, profileB]
+            )
+        )
+
+        let candidates = try await store.fetchLegacyWorkoutCandidates()
+        let workouts = try await store.fetchLegacyImportedWorkouts()
+        let reconciliations = try await store.fetchLegacyReconciliations()
+        XCTAssertEqual(candidates.count, 4)
+        XCTAssertEqual(workouts.count, 2)
+        XCTAssertEqual(Set(workouts.compactMap(\.profileLocalIdentifier)), [profileA, profileB])
+        for profile in [profileA, profileB] {
+            let profileCandidateIDs = Set(candidates.filter {
+                $0.profileLocalIdentifier == profile
+            }.map(\.candidateID))
+            XCTAssertEqual(profileCandidateIDs.count, 2)
+            let workout = try XCTUnwrap(workouts.first {
+                $0.profileLocalIdentifier == profile
+            })
+            XCTAssertEqual(workout.identityStatus, .exact)
+            XCTAssertEqual(Set(workout.candidateIDs), profileCandidateIDs)
+            XCTAssertTrue(workout.canonicalIdentityKey.hasPrefix("history-profile:\(profile):"))
+            XCTAssertTrue(reconciliations.contains {
+                $0.outcome == .matched
+                    && Set([$0.leftCandidateID, $0.rightCandidateID]) == profileCandidateIDs
+            })
+        }
+        XCTAssertFalse(workouts.contains { workout in
+            Set(workout.candidateIDs.compactMap { candidateID in
+                candidates.first { $0.candidateID == candidateID }?.profileLocalIdentifier
+            }).count > 1
+        })
+        let crossProfileConflicts = reconciliations.filter {
+            $0.outcome == .conflict
+                && $0.identityKind == .workoutIdentifier
+                && $0.identityValue == "shared-workout-x"
+        }
+        XCTAssertEqual(crossProfileConflicts.count, 2)
+        XCTAssertTrue(crossProfileConflicts.allSatisfy {
+            $0.detailCodes == ["conflicting-profile-ownership"]
+        })
+        let candidatesByID = Dictionary(
+            uniqueKeysWithValues: candidates.map { ($0.candidateID, $0) }
+        )
+        for conflict in crossProfileConflicts {
+            let profiles = Set([
+                candidatesByID[conflict.leftCandidateID]?.profileLocalIdentifier,
+                candidatesByID[conflict.rightCandidateID]?.profileLocalIdentifier,
+            ].compactMap { $0 })
+            XCTAssertEqual(profiles, [profileA, profileB])
+        }
+        XCTAssertEqual(try Data(contentsOf: jsonlAURL), jsonlA)
+        XCTAssertEqual(try Data(contentsOf: jsonlBURL), jsonlB)
+    }
+
     func testOverlappingHistorySnapshotsKeepSameExactIDIsolatedAcrossProfiles() async throws {
         let shared = ["id": "shared-looking-id", "durationSeconds": 10] as [String: Any]
         let profileAHistory = try JSONSerialization.data(withJSONObject: [
@@ -909,6 +1159,100 @@ final class LegacyTelemetryMigrationTests: XCTestCase {
         XCTAssertEqual(secondReconciliations, firstReconciliations)
         XCTAssertEqual(defaults.data(forKey: "workout_history_v1"), globalHistory)
         XCTAssertEqual(defaults.data(forKey: scopedKey), scopedHistory)
+    }
+
+    func testHistoryExactWorkoutKeepsCanonicalIdentityWhenJSONLArrivesLater() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let jsonlURL = directory.appendingPathComponent("later-evidence.jsonl")
+        let firstHistory = try JSONSerialization.data(withJSONObject: [[
+            "id": "origin-enrichment-workout",
+            "durationSeconds": 10,
+            "avgBpm": 130,
+        ]], options: [.sortedKeys])
+        let secondHistory = try JSONSerialization.data(withJSONObject: [[
+            "id": "origin-enrichment-workout",
+            "durationSeconds": 11,
+            "avgBpm": 131,
+        ]], options: [.sortedKeys])
+        let jsonl = lines([
+            object([
+                "event": "session_start", "ts": 1_800_000_000,
+                "workout_id": "origin-enrichment-workout", "profile_id": profileID,
+            ]),
+            object([
+                "event": "workout_saved", "ts": 1_800_000_011,
+                "workout_id": "origin-enrichment-workout", "profile_id": profileID,
+            ]),
+            object([
+                "event": "session_end", "ts": 1_800_000_012,
+                "workout_id": "origin-enrichment-workout", "profile_id": profileID,
+            ]),
+        ])
+        try jsonl.write(to: jsonlURL)
+        let historySources: [LegacyWorkoutHistorySourceDescriptor] = [
+            .init(
+                storageKey: "history-origin-enrichment-old",
+                representation: firstHistory,
+                exactProfileLocalIdentifier: profileID
+            ),
+            .init(
+                storageKey: "history-origin-enrichment-new",
+                representation: secondHistory,
+                exactProfileLocalIdentifier: profileID
+            ),
+        ]
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let migrator = LegacyTelemetryMigrator(store: store)
+        let firstRequest = LegacyTelemetryMigrationRequest(
+            jsonlSources: [],
+            workoutHistorySources: historySources,
+            knownProfileLocalIdentifiers: [profileID]
+        )
+
+        let firstReport = await migrator.run(firstRequest)
+        let firstCandidates = try await store.fetchLegacyWorkoutCandidates()
+        let firstWorkouts = try await store.fetchLegacyImportedWorkouts()
+        let firstReconciliations = try await store.fetchLegacyReconciliations()
+        XCTAssertEqual(firstReport.completion, .completed)
+        XCTAssertEqual(firstCandidates.count, 2)
+        XCTAssertEqual(firstWorkouts.count, 1)
+        let firstWorkout = try XCTUnwrap(firstWorkouts.first)
+        XCTAssertEqual(firstWorkout.profileLocalIdentifier, profileID)
+        XCTAssertEqual(firstWorkout.identityStatus, .exact)
+        XCTAssertEqual(Set(firstWorkout.candidateIDs), Set(firstCandidates.map(\.candidateID)))
+        XCTAssertTrue(firstWorkout.canonicalIdentityKey.hasPrefix("history-profile:\(profileID):"))
+        XCTAssertEqual(firstReconciliations.count, 1)
+
+        let secondRequest = LegacyTelemetryMigrationRequest(
+            jsonlSources: [
+                .init(url: jsonlURL, deterministicFallbackProfileLocalIdentifier: nil),
+            ],
+            workoutHistorySources: historySources,
+            knownProfileLocalIdentifiers: [profileID]
+        )
+        let secondReport = await migrator.run(secondRequest)
+        let secondSources = try await store.fetchLegacyMigrationSources()
+        let secondCandidates = try await store.fetchLegacyWorkoutCandidates()
+        let secondWorkouts = try await store.fetchLegacyImportedWorkouts()
+        let secondReconciliations = try await store.fetchLegacyReconciliations()
+        XCTAssertEqual(secondReport.completion, .completed)
+        XCTAssertEqual(secondReport.completedSourceCount, 1)
+        XCTAssertEqual(secondReport.skippedSourceCount, 2)
+        XCTAssertEqual(secondReport.importedWorkoutCount, 0)
+        XCTAssertEqual(secondSources.count, 3)
+        XCTAssertEqual(secondCandidates.count, 3)
+        XCTAssertEqual(secondWorkouts.count, 1)
+        let secondWorkout = try XCTUnwrap(secondWorkouts.first)
+        XCTAssertEqual(secondWorkout.importedWorkoutID, firstWorkout.importedWorkoutID)
+        XCTAssertEqual(secondWorkout.canonicalIdentityKey, firstWorkout.canonicalIdentityKey)
+        XCTAssertEqual(secondWorkout.profileLocalIdentifier, profileID)
+        XCTAssertEqual(secondWorkout.identityStatus, .exact)
+        XCTAssertEqual(Set(secondWorkout.candidateIDs), Set(secondCandidates.map(\.candidateID)))
+        XCTAssertGreaterThan(secondReconciliations.count, firstReconciliations.count)
+        XCTAssertEqual(try Data(contentsOf: jsonlURL), jsonl)
+        XCTAssertEqual(historySources[0].representation, firstHistory)
+        XCTAssertEqual(historySources[1].representation, secondHistory)
     }
 
     func testSequentialHistoryGrowthConvergesProvisionalWorkoutAcrossRuns() async throws {
