@@ -2,6 +2,9 @@ import SwiftUI
 #if canImport(TelemetryRuntime)
 import TelemetryRuntime
 #endif
+#if canImport(TelemetryDomain)
+import TelemetryDomain
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -14,21 +17,6 @@ struct HrFailureReport: Identifiable {
     let start: Date
     let end: Date
     let lines: [String]
-}
-#endif
-
-// Fallback definition for WorkoutEntry used by WorkoutHistoryCard if not provided by the app.
-#if !canImport(WorkoutHistoryModule)
-struct WorkoutEntry: Identifiable {
-    let id: UUID
-    let date: Date
-    let beatsPerMeter: Double?
-    let targetBpm: Int
-    let durationSeconds: Int
-    let avgBpm: Int
-    let avgSpeedKmh: Double?
-    let healthkitWorkoutUUID: String?
-    let zoneSeconds: [Int]?
 }
 #endif
 
@@ -2171,12 +2159,6 @@ private struct WorkoutStatsView: View {
         }
     }
 
-    private struct StatsResult {
-        let totalSeconds: Int
-        let avgBeatsPerMeter: Double?
-        let zoneSeconds: [Int]
-    }
-
     private struct StatsPageHeightPreferenceKey: PreferenceKey {
         static var defaultValue: [StatsScope: CGFloat] = [:]
 
@@ -2222,9 +2204,13 @@ private struct WorkoutStatsView: View {
                         pageHeights.merge(values, uniquingKeysWith: { _, new in new })
                     }
 
-                    WorkoutHistoryCard(entries: manager.workoutHistory, onDelete: { id in
-                        manager.deleteWorkoutEntry(id: id)
-                    })
+                    WorkoutHistoryCard(
+                        entries: manager.telemetryV2WorkoutHistory,
+                        readState: manager.telemetryV2WorkoutHistoryState,
+                        hasMore: manager.telemetryV2WorkoutHistoryHasMore,
+                        onRetry: { manager.refreshWorkoutHistoryFromV2(reset: true) },
+                        onLoadMore: { manager.loadNextWorkoutHistoryPageFromV2() }
+                    )
                     .padding(.horizontal)
                     .padding(.bottom)
                 }
@@ -2276,9 +2262,10 @@ private struct WorkoutStatsView: View {
 
     @ViewBuilder
     private func statsSummaryPage(for scope: StatsScope) -> some View {
+        let interval = currentInterval(for: scope)
         VStack(spacing: 16) {
             periodHeader(for: scope)
-            statsCard(scope: scope, title: scope.title, interval: currentInterval(for: scope))
+            statsCard(scope: scope, title: scope.title, interval: interval)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2290,6 +2277,9 @@ private struct WorkoutStatsView: View {
                 )
             }
         )
+        .task(id: "\(manager.workoutStatisticsKey(for: interval))|\(manager.telemetryV2ProjectionGeneration)") {
+            manager.refreshWorkoutStatisticsFromV2(for: interval)
+        }
     }
 
     private func periodHeader(for scope: StatsScope) -> some View {
@@ -2323,9 +2313,11 @@ private struct WorkoutStatsView: View {
 
     @ViewBuilder
     private func statsCard(scope: StatsScope, title: String, interval: DateInterval) -> some View {
-        let stats = computeStats(interval: interval)
-        let totalTime = formatTotalTime(stats.totalSeconds)
-        let beatsValue = stats.avgBeatsPerMeter.map { String(format: "%.2f", $0) } ?? "—"
+        let key = manager.workoutStatisticsKey(for: interval)
+        let stats = manager.telemetryV2Statistics[key]
+        let state = manager.telemetryV2StatisticsState[key] ?? .idle
+        let totalTime = formatTotalTime(stats?.totalDurationSeconds)
+        let beatsValue = stats?.averageBeatsPerMetre.map { String(format: "%.2f", $0) } ?? "—"
 
         Card {
             VStack(alignment: .leading, spacing: 12) {
@@ -2338,9 +2330,65 @@ private struct WorkoutStatsView: View {
                     StatTile(title: "Удары/м", value: beatsValue, unit: "")
                 }
 
-                zoneSummaryList(scope: scope, totalSeconds: stats.totalSeconds, zoneSeconds: stats.zoneSeconds)
+                if case .loading = state, stats == nil {
+                    ProgressView("Чтение Telemetry V2…")
+                        .font(.caption)
+                }
+                if case let .failed(message) = state {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Telemetry V2 недоступна: \(message)")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                        if stats != nil {
+                            Text("Ниже показан последний успешный V2 snapshot; обновление не выполнено.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Button("Повторить") {
+                            manager.refreshWorkoutStatisticsFromV2(for: interval)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+
+                zoneSummaryList(scope: scope, zoneSeconds: stats?.zoneSeconds)
+
+                if let stats, stats.excludedWorkoutCount > 0 {
+                    Text(
+                        "Исключено из агрегатов: \(stats.excludedWorkoutCount) · "
+                            + statisticsExclusionReasonText(stats.exclusionReasonCounts)
+                            + ". Валидные суммы сохранены; исключённые тренировки не считаются нулями."
+                    )
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                }
+
+                if let stats,
+                   stats.workoutsWithUnavailableDuration > 0
+                    || stats.workoutsWithUnavailableZones > 0 {
+                    Text("Часть метрик недоступна; пропуски показаны как «—» и не заменены нулями.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
         }
+    }
+
+    private func statisticsExclusionReasonText(
+        _ counts: [WorkoutStatisticsExclusionReason: Int]
+    ) -> String {
+        counts.keys.sorted { $0.rawValue < $1.rawValue }.map { reason in
+            let title: String
+            switch reason {
+            case .identity:
+                title = "identity"
+            case .possibleDuplicate:
+                title = "duplicate"
+            case .lifecycleOrQuality:
+                title = "lifecycle/quality"
+            }
+            return "\(title): \(counts[reason, default: 0])"
+        }.joined(separator: ", ")
     }
 
     private var zoneRanges: [String] {
@@ -2348,14 +2396,16 @@ private struct WorkoutStatsView: View {
     }
 
     @ViewBuilder
-    private func zoneSummaryList(scope: StatsScope, totalSeconds: Int, zoneSeconds: [Int]) -> some View {
+    private func zoneSummaryList(scope: StatsScope, zoneSeconds: [Double?]?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(0..<5, id: \.self) { idx in
-                let seconds = idx < zoneSeconds.count ? zoneSeconds[idx] : 0
-                let actualMinutes = seconds / 60
+                let seconds = zoneSeconds.flatMap { idx < $0.count ? $0[idx] : nil }
+                let actualMinutes = seconds.map { Int($0 / 60.0) }
                 let monthPlan = idx < manager.zonePlanMinutes.count ? manager.zonePlanMinutes[idx] : 0
                 let planMinutes = scope == .week ? Int(round(Double(monthPlan) / 4.0)) : monthPlan
-                let progress = planMinutes > 0 ? min(1.0, Double(actualMinutes) / Double(planMinutes)) : 0
+                let progress = actualMinutes.map {
+                    planMinutes > 0 ? min(1.0, Double($0) / Double(planMinutes)) : 0
+                }
                 ZoneSummaryRow(
                     title: "Зона \(idx + 1)",
                     rangeText: zoneRangeText(index: idx),
@@ -2369,33 +2419,9 @@ private struct WorkoutStatsView: View {
         .padding(.top, 2)
     }
 
-    private func computeStats(interval: DateInterval) -> StatsResult {
-        var totalSeconds = 0
-        var weightedSum = 0.0
-        var weightedSeconds = 0.0
-        var zoneTotals = Array(repeating: 0, count: 5)
-
-        for entry in manager.workoutHistory where interval.contains(entry.date) {
-            totalSeconds += entry.durationSeconds
-            if let bpm = entry.beatsPerMeter {
-                let weight = Double(max(1, entry.durationSeconds))
-                weightedSum += bpm * weight
-                weightedSeconds += weight
-            }
-            if let zones = entry.zoneSeconds, zones.count == 5 {
-                for idx in 0..<5 { zoneTotals[idx] += zones[idx] }
-            } else if entry.avgBpm > 0 {
-                let idx = zoneIndex(for: entry.avgBpm)
-                zoneTotals[idx] += entry.durationSeconds
-            }
-        }
-
-        let avg = weightedSeconds > 0 ? (weightedSum / weightedSeconds) : nil
-        return StatsResult(totalSeconds: totalSeconds, avgBeatsPerMeter: avg, zoneSeconds: zoneTotals)
-    }
-
-    private func formatTotalTime(_ seconds: Int) -> String {
-        let total = max(0, seconds)
+    private func formatTotalTime(_ seconds: Double?) -> String {
+        guard let seconds else { return "—" }
+        let total = max(0, Int(seconds))
         let hours = total / 3600
         let minutes = (total % 3600) / 60
         if hours > 0 {
@@ -2487,25 +2513,18 @@ private struct WorkoutStatsView: View {
         }
     }
 
-    private func zoneIndex(for bpm: Int) -> Int {
-        if bpm <= manager.hrZone1Max { return 0 }
-        if bpm <= manager.hrZone2Max { return 1 }
-        if bpm <= manager.hrZone3Max { return 2 }
-        if bpm <= manager.hrZone4Max { return 3 }
-        return 4
-    }
 }
 
 private struct ZoneSummaryRow: View {
     let title: String
     let rangeText: String
-    let actualMinutes: Int
+    let actualMinutes: Int?
     let planMinutes: Int
-    let progress: Double
+    let progress: Double?
     let color: Color
 
     var body: some View {
-        let achieved = planMinutes > 0 && actualMinutes >= planMinutes
+        let achieved = planMinutes > 0 && (actualMinutes ?? -1) >= planMinutes
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
@@ -2522,7 +2541,7 @@ private struct ZoneSummaryRow: View {
                 }
             }
             HStack(spacing: 6) {
-                Text("Факт \(actualMinutes) мин")
+                Text(actualMinutes.map { "Факт \($0) мин" } ?? "Факт —")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Text("·")
@@ -2538,7 +2557,7 @@ private struct ZoneSummaryRow: View {
                         .foregroundColor(.secondary)
                 }
             }
-            if planMinutes > 0 {
+            if planMinutes > 0, let progress {
                 ProgressView(value: min(1.0, max(0.0, progress)))
                     .progressViewStyle(.linear)
                     .tint(color)
@@ -2623,26 +2642,11 @@ private struct ZonePlanRow: View {
 }
 
 private struct WorkoutHistoryCard: View {
-    let entries: [WorkoutEntry]
-    let onDelete: (UUID) -> Void
-
-    // Convenience initializer to accept manager's nested WorkoutEntry type
-    init(entries: [BluetoothManager.WorkoutEntry], onDelete: @escaping (UUID) -> Void) {
-        self.entries = entries.map { src in
-            WorkoutEntry(
-                id: src.id,
-                date: src.date,
-                beatsPerMeter: src.beatsPerMeter,
-                targetBpm: src.targetBpm,
-                durationSeconds: src.durationSeconds,
-                avgBpm: src.avgBpm,
-                avgSpeedKmh: src.avgSpeedKmh,
-                healthkitWorkoutUUID: src.healthkitWorkoutUUID,
-                zoneSeconds: src.zoneSeconds
-            )
-        }
-        self.onDelete = onDelete
-    }
+    let entries: [WorkoutHistoryProjection]
+    let readState: BluetoothManager.WorkoutReadState
+    let hasMore: Bool
+    let onRetry: () -> Void
+    let onLoadMore: () -> Void
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -2658,27 +2662,52 @@ private struct WorkoutHistoryCard: View {
                     .font(.subheadline)
                     .foregroundColor(.secondary)
 
-                if entries.isEmpty {
+                if case .loading = readState, entries.isEmpty {
+                    ProgressView("Чтение Telemetry V2…")
+                        .font(.caption)
+                } else if case let .failed(message) = readState, entries.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("История Telemetry V2 недоступна: \(message)")
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                        Button("Повторить", action: onRetry)
+                            .buttonStyle(.bordered)
+                    }
+                } else if entries.isEmpty {
                     Text("Пока нет данных")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 } else {
-                    ForEach(entries.prefix(20)) { entry in
+                    ForEach(entries) { entry in
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(Self.dateFormatter.string(from: entry.date))
+                                Text(entry.startedAt.map(Self.dateFormatter.string(from:)) ?? "Дата неизвестна")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundColor(.primary)
                                 Text("Время: \(formatDuration(entry.durationSeconds))")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
+                                Text(provenanceText(for: entry))
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundColor(entry.origin == .nativeV2 ? .blue : .orange)
+                                if !entry.quality.warnings.isEmpty {
+                                    Text(entry.quality.warnings.joined(separator: "; "))
+                                        .font(.caption2)
+                                        .foregroundColor(.orange)
+                                }
+                                if let healthKitID = entry.healthKitWorkoutIdentifier {
+                                    Text(healthKitLinkageText(for: entry, identifier: healthKitID))
+                                        .font(.caption2.monospaced())
+                                        .foregroundColor(.secondary)
+                                        .textSelection(.enabled)
+                                }
                             }
                             Spacer()
                             VStack(alignment: .trailing, spacing: 4) {
-                                Text("Удары/м: \(entry.beatsPerMeter.map { String(format: "%.2f", $0) } ?? "—")")
+                                Text("Удары/м: \(entry.beatsPerMetre.map { String(format: "%.2f", $0) } ?? "—")")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
-                                Text("Цель: \(entry.targetBpm)")
+                                Text("Цель: \(entry.targetHeartRate.map(String.init) ?? "—")")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                                 Text("Ср. скорость: \(averageSpeedText(for: entry))")
@@ -2686,39 +2715,64 @@ private struct WorkoutHistoryCard: View {
                                     .foregroundColor(.secondary)
                                 Text("Ср. пульс: \(averageBpmText(for: entry))")
                                     .font(.caption2.weight(.semibold))
-                                    .foregroundColor(entry.avgBpm > 0 ? .red : .secondary)
+                                    .foregroundColor(entry.averageHeartRate == nil ? .secondary : .red)
                             }
-                            Button {
-                                onDelete(entry.id)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
                         }
-                        if entry.id != entries.prefix(20).last?.id {
+                        if entry.id != entries.last?.id {
                             Divider()
                         }
+                    }
+
+                    if hasMore {
+                        Button("Показать ещё", action: onLoadMore)
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    if case let .failed(message) = readState {
+                        Text("Следующая страница недоступна: \(message)")
+                            .font(.caption2)
+                            .foregroundColor(.red)
                     }
                 }
             }
         }
     }
 
-    private func formatDuration(_ seconds: Int) -> String {
-        let minutes = max(0, seconds) / 60
-        let secs = max(0, seconds) % 60
+    private func formatDuration(_ seconds: Double?) -> String {
+        guard let seconds else { return "—" }
+        let value = max(0, Int(seconds))
+        let minutes = value / 60
+        let secs = value % 60
         return String(format: "%d:%02d", minutes, secs)
     }
 
-    private func averageBpmText(for entry: WorkoutEntry) -> String {
-        guard entry.avgBpm > 0 else { return "—" }
-        return "\(entry.avgBpm) bpm"
+    private func averageBpmText(for entry: WorkoutHistoryProjection) -> String {
+        guard let average = entry.averageHeartRate else { return "—" }
+        return "\(Int(average.rounded())) bpm"
     }
 
-    private func averageSpeedText(for entry: WorkoutEntry) -> String {
-        guard let avgSpeed = entry.avgSpeedKmh, avgSpeed > 0.05 else { return "—" }
-        return String(format: "%.1f км/ч", avgSpeed)
+    private func averageSpeedText(for entry: WorkoutHistoryProjection) -> String {
+        guard let speed = entry.averageSpeed else { return "—" }
+        let prefix = speed.evidenceKind == .legacyEstimated ? "≈" : ""
+        return prefix + String(format: "%.1f км/ч", speed.kilometresPerHour)
+    }
+
+    private func provenanceText(for entry: WorkoutHistoryProjection) -> String {
+        let origin = entry.origin == .nativeV2 ? "V2 native" : "Legacy import"
+        let lifecycle = entry.quality.lifecycleState
+        let grade = entry.quality.analysisGrade.map { " · \($0)" } ?? ""
+        return "\(origin) · \(lifecycle)\(grade)"
+    }
+
+    private func healthKitLinkageText(
+        for entry: WorkoutHistoryProjection,
+        identifier: UUID
+    ) -> String {
+        let provenance = entry.quality.provenance.contains(
+            "telemetry-v2-imported-exact-healthkit-linkage"
+        ) ? " · exact import linkage" : " · native linkage"
+        return "HealthKit: \(identifier.uuidString.lowercased())\(provenance)"
     }
 }
 
@@ -2762,16 +2816,11 @@ private struct DebugView: View {
         scope: TrainingLogCsvExportScope,
         sessionSummaryOnly: Bool
     ) -> String {
-        let count = manager.trainingLogsExportCount(for: scope, sessionSummaryOnly: sessionSummaryOnly)
-
         switch scope {
         case .all:
-            if sessionSummaryOnly {
-                return "Все тренировки (\(count))"
-            }
-            return "Все raw логи (\(count))"
+            return sessionSummaryOnly ? "Все V2 summary" : "Все V2 evidence"
         case .lastCompletedWorkouts(let limit):
-            return "Последние \(limit) тренировки (будет \(count))"
+            return "Последние \(limit) завершённых"
         }
     }
 
@@ -2795,25 +2844,43 @@ private struct DebugView: View {
 
     private var telemetryV2WriterHealthDetailLines: [String] {
         let duration = manager.telemetryV2WriterHealthSnapshot.mostRecentFlushDuration
-        guard let duration else { return ["Latest flush: —"] }
+        guard let duration else {
+            return [
+                "Latest flush: —",
+                "Legacy shadow parity writer: \(manager.legacyShadowWriterStatusText)",
+            ]
+        }
         let components = duration.components
         let milliseconds = (Double(components.seconds) * 1_000)
             + (Double(components.attoseconds) / 1_000_000_000_000_000)
-        return ["Latest flush: \(String(format: "%.1f", milliseconds)) ms"]
+        return [
+            "Latest flush: \(String(format: "%.1f", milliseconds)) ms",
+            "Legacy shadow parity writer: \(manager.legacyShadowWriterStatusText)",
+        ]
     }
 
     private var trainingLogsCardPresentation: DebugTrainingLogsCard.Presentation {
-        let inventory = manager.trainingLogsInventory
-        let lastLogName = manager.lastTrainingLogPath.isEmpty
-            ? nil
-            : URL(fileURLWithPath: manager.lastTrainingLogPath).lastPathComponent
+        let entries = manager.telemetryV2WorkoutHistory
+        let readReady = manager.telemetryV2WorkoutHistoryState == .loaded
+        let readStatusText: String = {
+            switch manager.telemetryV2WorkoutHistoryState {
+            case .idle: return "V2 read: idle"
+            case .loading: return "V2 read: loading"
+            case .loaded: return "V2 read: ready"
+            case let .failed(message): return "V2 read failed: \(message)"
+            }
+        }()
+        let completedCount = entries.filter {
+            $0.quality.lifecycleState == "completed" || $0.quality.lifecycleState == "imported"
+        }.count
+        let unavailableCount = entries.filter { !$0.quality.unavailableMetrics.isEmpty }.count
+        let possibleDuplicateCount = entries.filter(\.quality.possibleDuplicate).count
         let detailLines = [
-            "Session Summary включает только завершённые тренировки (`workout_saved`).",
-            inventory.clearableSessionFiles > 0
-                ? "Ручная очистка удаляет только raw JSONL-логи активного профиля; статистика тренировок сохраняется."
-                : "Активная сессия защищена от удаления и не участвует в ручной очистке.",
-            lastLogName.map { "Последний JSONL: \($0)" }
-        ].compactMap { $0 }
+            "Export формируется потоково из Telemetry V2 и включает manifest, raw JSONL, normalized CSV и session summary.",
+            "Legacy JSONL и UserDefaults shadow history не читаются, не очищаются и не удаляются.",
+            "Поля HealthKit linkage и version context сохраняются; device/profile identifiers исключены.",
+            readStatusText,
+        ]
 
         let rawExportOptions = trainingLogScopeOptions.map { scope in
             DebugTrainingLogsCard.Presentation.ExportOption(
@@ -2834,36 +2901,28 @@ private struct DebugView: View {
             testRunActive: manager.treadmillTestRunIsActive,
             testRunStatusText: manager.treadmillTestRunDisplayText,
             canStartTestRun: manager.canStartTreadmillTestRun,
-            subtitle: "Активный профиль: \(manager.activeUserProfileLabel)",
+            subtitle: "Telemetry V2 · активный профиль: \(manager.activeUserProfileLabel)",
             profileMetrics: [
-                .init(id: "profile_raw", title: "Raw", value: "\(inventory.matchingProfileSessionFiles)", tint: .accentColor),
-                .init(id: "profile_completed", title: "Трен.", value: "\(inventory.matchingProfileCompletedWorkoutFiles)", tint: .blue),
-                .init(id: "profile_size", title: "Размер", value: formattedByteCount(inventory.matchingProfileBytes), tint: .green)
+                .init(id: "profile_loaded", title: "Загружено", value: "\(entries.count)", tint: .accentColor),
+                .init(id: "profile_completed", title: "Заверш.", value: "\(completedCount)", tint: .blue),
+                .init(id: "profile_quality", title: "Missing / dup", value: "\(unavailableCount) / \(possibleDuplicateCount)", tint: .orange)
             ],
-            deviceMetrics: [
-                .init(id: "device_raw", title: "Все raw", value: "\(inventory.totalSessionFiles)", tint: .secondary),
-                .init(id: "device_completed", title: "Все тр.", value: "\(inventory.completedWorkoutFiles)", tint: .secondary),
-                .init(id: "device_size", title: "Память", value: formattedByteCount(inventory.totalBytes), tint: .secondary)
-            ],
+            deviceMetrics: [],
             writerHealthMetrics: telemetryV2WriterHealthMetrics,
             writerHealthDetailLines: telemetryV2WriterHealthDetailLines,
             rawExportOptions: rawExportOptions,
-            rawExportSubtitle: inventory.matchingProfileSessionFiles > 0
-                ? "\(inventory.matchingProfileSessionFiles) raw сессий доступно"
-                : "Нет raw логов",
-            canExportRaw: inventory.matchingProfileSessionFiles > 0,
+            rawExportSubtitle: readReady ? "Raw + normalized + manifest" : "V2 read unavailable",
+            canExportRaw: readReady,
             sessionSummaryOptions: summaryExportOptions,
-            sessionSummarySubtitle: inventory.matchingProfileCompletedWorkoutFiles > 0
-                ? "\(inventory.matchingProfileCompletedWorkoutFiles) тренировок готово"
-                : "Нет завершённых тренировок",
-            canExportSessionSummary: inventory.matchingProfileCompletedWorkoutFiles > 0,
-            clearSubtitle: inventory.clearableSessionFiles > 0
-                ? "\(inventory.clearableSessionFiles) файлов · \(formattedByteCount(inventory.clearableBytes))"
-                : "Сейчас очищать нечего",
-            canClear: inventory.clearableSessionFiles > 0,
-            clearConfirmationMessage: "Будут удалены только raw JSONL training logs активного профиля: \(inventory.clearableSessionFiles) файлов, \(formattedByteCount(inventory.clearableBytes)). История тренировок в статистике останется.",
+            sessionSummarySubtitle: readReady
+                ? "V2 summary + quality fields"
+                : "V2 read unavailable",
+            canExportSessionSummary: readReady,
+            clearSubtitle: "Source evidence is immutable in this cutover.",
+            canClear: false,
+            clearConfirmationMessage: "",
             detailLines: detailLines,
-            footer: inventory.matchingProfileCompletedWorkoutFiles < 3
+            footer: completedCount < 3
                 ? "Для анализа лучше накопить хотя бы 3 завершённые тренировки."
                 : nil
         )
@@ -3106,9 +3165,6 @@ private struct DebugView: View {
                         },
                         onExportSessionSummary: { scope in
                             exportTrainingSessionSummaryCsv(manager: manager, scope: scope)
-                        },
-                        onClear: {
-                            manager.clearTrainingLogsForActiveProfile()
                         }
                     )
 
@@ -3127,7 +3183,7 @@ private struct DebugView: View {
             }
             .navigationTitle("Отладка")
             .onAppear {
-                manager.refreshTrainingLogsInventory()
+                manager.refreshWorkoutHistoryFromV2(reset: true)
             }
         }
     }
@@ -3150,50 +3206,65 @@ private func exportTrainingHistoryCsv(
     manager: BluetoothManager,
     scope: TrainingLogCsvExportScope
 ) {
-    let present: (UIActivityViewController) -> Void = { vc in
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let root = scene.windows.first?.rootViewController {
-            root.present(vc, animated: true)
-        }
-    }
-
-    guard let export = manager.prepareTrainingLogsCsvExport(scope: scope) else {
-        let message = scope.missingLogsMessage
-        let vc = UIActivityViewController(activityItems: [message], applicationActivities: nil)
-        present(vc)
-        return
-    }
-
-    let vc = UIActivityViewController(activityItems: [export.csvURL], applicationActivities: nil)
-    vc.completionWithItemsHandler = { _, completed, _, _ in
-        manager.finalizeTrainingLogsCsvExport(export, completed: completed)
-    }
-    present(vc)
+    presentTelemetryV2ExportWarning(manager: manager, scope: scope)
 }
 
 private func exportTrainingSessionSummaryCsv(
     manager: BluetoothManager,
     scope: TrainingLogCsvExportScope
 ) {
-    let present: (UIActivityViewController) -> Void = { vc in
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let root = scene.windows.first?.rootViewController {
-            root.present(vc, animated: true)
+    presentTelemetryV2ExportWarning(manager: manager, scope: scope)
+}
+
+private func presentTelemetryV2ExportWarning(
+    manager: BluetoothManager,
+    scope: TrainingLogCsvExportScope
+) {
+    guard let root = activeRootViewController() else { return }
+    let alert = UIAlertController(
+        title: "Health Data Export",
+        message: "The export contains heart-rate and workout health data. Share it only with a trusted recipient. Source evidence will not be deleted.",
+        preferredStyle: .alert
+    )
+    alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+    alert.addAction(UIAlertAction(title: "Continue", style: .default) { _ in
+        Task { @MainActor in
+            do {
+                let artifact = try await manager.prepareTelemetryV2Export(scope: scope)
+                let activity = UIActivityViewController(
+                    activityItems: artifact.fileURLs,
+                    applicationActivities: nil
+                )
+                activity.completionWithItemsHandler = { _, completed, _, _ in
+                    Task { @MainActor in
+                        manager.finalizeTelemetryV2Export(artifact, completed: completed)
+                    }
+                }
+                activeRootViewController()?.present(activity, animated: true)
+            } catch {
+                let failure = UIAlertController(
+                    title: "Telemetry V2 Export Failed",
+                    message: error.localizedDescription,
+                    preferredStyle: .alert
+                )
+                failure.addAction(UIAlertAction(title: "OK", style: .default))
+                activeRootViewController()?.present(failure, animated: true)
+            }
         }
-    }
+    })
+    root.present(alert, animated: true)
+}
 
-    guard let export = manager.prepareTrainingSessionSummaryCsvExport(scope: scope) else {
-        let message = "Completed training logs not found yet. Start and save an HR workout first."
-        let vc = UIActivityViewController(activityItems: [message], applicationActivities: nil)
-        present(vc)
-        return
+private func activeRootViewController() -> UIViewController? {
+    guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else {
+        return nil
     }
-
-    let vc = UIActivityViewController(activityItems: [export.csvURL], applicationActivities: nil)
-    vc.completionWithItemsHandler = { _, completed, _, _ in
-        manager.finalizeTrainingLogsCsvExport(export, completed: completed)
+    var controller = scene.windows.first(where: \.isKeyWindow)?.rootViewController
+        ?? scene.windows.first?.rootViewController
+    while let presented = controller?.presentedViewController {
+        controller = presented
     }
-    present(vc)
+    return controller
 }
 
 // Overload to accept manager's nested type and forward to the existing exporter

@@ -189,6 +189,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var nextCommandAllowedAt: Date = .distantPast
     private var pendingHealthkitWorkoutUUID: String? = nil
     private var pendingHealthkitWorkoutProfileID: UUID? = nil
+    private var activeTelemetryV2SessionID: SessionID? = nil
+    private var pendingHealthkitTelemetryV2SessionID: SessionID? = nil
     private var hrControlFailed: Bool = false
     private let legacyWatchHeartRateSource = HeartRateProviderIdentity(
         kind: .legacyWatchWorkoutStream,
@@ -203,6 +205,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var treadmillTelemetrySink: (any TreadmillTelemetrySink)?
     @Published private(set) var telemetryV2StatusText: String = "idle"
     @Published private(set) var telemetryV2WriterHealthSnapshot: TelemetryV2WriterHealthSnapshot = .idle
+    @Published private(set) var legacyShadowWriterStatusText: String = "idle"
     private lazy var telemetryV2Coordinator = TelemetryV2RuntimeCoordinator(
         persistenceFactory: {
             let appIdentifier = Bundle.main.bundleIdentifier ?? "sw.WalkingPadRemote"
@@ -219,6 +222,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         writerHealthHandler: { [weak self] snapshot in
             Task { @MainActor [weak self] in
                 self?.telemetryV2WriterHealthSnapshot = snapshot
+            }
+        },
+        projectionChangeHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.telemetryV2ProjectionDidChange()
             }
         }
     )
@@ -507,8 +515,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         UserDefaults.standard.set(data, forKey: profileScopedStoreKey(zonePlanStoreKey, profileID: profileID))
     }
 
-    private func workoutEntry(from dto: WorkoutEntryDTO) -> WorkoutEntry {
-        WorkoutEntry(
+    private func legacyShadowWorkoutEntry(from dto: WorkoutEntryDTO) -> LegacyShadowWorkoutEntry {
+        LegacyShadowWorkoutEntry(
             id: dto.id,
             date: dto.date,
             beatsPerMeter: dto.beatsPerMeter,
@@ -521,7 +529,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
-    private func workoutEntryDTO(from entry: WorkoutEntry) -> WorkoutEntryDTO {
+    private func workoutEntryDTO(from entry: LegacyShadowWorkoutEntry) -> WorkoutEntryDTO {
         WorkoutEntryDTO(
             id: entry.id,
             date: entry.date,
@@ -535,33 +543,48 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
-    private func loadWorkoutHistory(profileID: UUID) -> [WorkoutEntry] {
+    private func loadLegacyShadowWorkoutHistory(profileID: UUID) -> [LegacyShadowWorkoutEntry] {
         let key = profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID)
         guard let data = UserDefaults.standard.data(forKey: key),
               let list = try? JSONDecoder().decode([WorkoutEntryDTO].self, from: data) else {
             return []
         }
 
-        return list.map { workoutEntry(from: $0) }
+        return list.map { legacyShadowWorkoutEntry(from: $0) }
     }
 
-    private func saveWorkoutHistory(_ entries: [WorkoutEntry], profileID: UUID) {
+    private func saveLegacyShadowWorkoutHistory(
+        _ entries: [LegacyShadowWorkoutEntry],
+        profileID: UUID
+    ) {
+        // Compatibility-only parity evidence through #37; #36 owns mandatory removal.
         let list = entries.prefix(50).map { workoutEntryDTO(from: $0) }
-        guard let data = try? JSONEncoder().encode(list) else { return }
-        UserDefaults.standard.set(data, forKey: profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID))
+        guard let data = try? JSONEncoder().encode(list) else {
+            legacyShadowWriterStatusText = "failed: encode"
+            appendLog("Legacy shadow writer failed: encode")
+            return
+        }
+        let key = profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID)
+        UserDefaults.standard.set(data, forKey: key)
+        if UserDefaults.standard.data(forKey: key) == data {
+            legacyShadowWriterStatusText = "ok"
+        } else {
+            legacyShadowWriterStatusText = "failed: persistence"
+            appendLog("Legacy shadow writer failed: persistence")
+        }
     }
 
     private func removeStoredData(for profileID: UUID) {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: profileScopedStoreKey(hrSettingsStoreKey, profileID: profileID))
         defaults.removeObject(forKey: profileScopedStoreKey(zonePlanStoreKey, profileID: profileID))
-        defaults.removeObject(forKey: profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID))
+        // Preserve legacy workout shadow evidence until the explicit #36 retirement.
     }
 
     private func loadActiveProfileScopedData() {
         loadHrSettings()
         loadZonePlan()
-        loadWorkoutHistory()
+        loadLegacyShadowWorkoutHistory()
     }
 
     func selectUserProfile(id: UUID) {
@@ -574,11 +597,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         saveHrSettingsIfNeeded()
         saveZonePlan()
-        saveWorkoutHistory()
+        saveLegacyShadowWorkoutHistory()
 
         activeUserProfileID = id
         saveProfilesState()
         loadActiveProfileScopedData()
+        refreshWorkoutHistoryFromV2(reset: true)
         refreshTrainingLogsInventory()
         appendLog("Active profile switched: \(activeUserProfileLabel)")
         infoToastMessage = "Активный профиль: \(activeUserProfileLabel)"
@@ -598,16 +622,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         saveHrSettingsIfNeeded()
         saveZonePlan()
-        saveWorkoutHistory()
+        saveLegacyShadowWorkoutHistory()
 
         saveHrSettings(profileID: profile.id)
         saveZonePlan(profileID: profile.id)
-        saveWorkoutHistory([], profileID: profile.id)
+        saveLegacyShadowWorkoutHistory([], profileID: profile.id)
 
         userProfiles = sortedProfiles(userProfiles + [profile])
         activeUserProfileID = profile.id
         saveProfilesState()
         loadActiveProfileScopedData()
+        refreshWorkoutHistoryFromV2(reset: true)
         refreshTrainingLogsInventory()
         appendLog("Profile created: \(profile.label)")
         infoToastMessage = "Создан профиль: \(profile.label)"
@@ -651,52 +676,28 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         self.activeUserProfileID = userProfiles.first?.id
         saveProfilesState()
         loadActiveProfileScopedData()
+        refreshWorkoutHistoryFromV2(reset: true)
         refreshTrainingLogsInventory()
         appendLog("Profile deleted: \(deletedLabel)")
         infoToastMessage = "Профиль удалён: \(deletedLabel)"
     }
 
-    private func loadWorkoutHistory() {
+    private func loadLegacyShadowWorkoutHistory() {
         guard let activeUserProfileID else {
-            workoutHistory = []
+            legacyShadowWorkoutHistory = []
             return
         }
-        workoutHistory = loadWorkoutHistory(profileID: activeUserProfileID)
+        legacyShadowWorkoutHistory = loadLegacyShadowWorkoutHistory(
+            profileID: activeUserProfileID
+        )
     }
 
-    private func saveWorkoutHistory() {
+    private func saveLegacyShadowWorkoutHistory() {
         guard let activeUserProfileID else { return }
-        saveWorkoutHistory(workoutHistory, profileID: activeUserProfileID)
-    }
-
-    func deleteWorkoutEntry(id: UUID) {
-        guard let idx = workoutHistory.firstIndex(where: { $0.id == id }) else { return }
-        let entry = workoutHistory.remove(at: idx)
-        saveWorkoutHistory()
-        guard let uuidString = entry.healthkitWorkoutUUID, let uuid = UUID(uuidString: uuidString) else { return }
-        guard HKHealthStore.isHealthDataAvailable() else { return }
-        let workoutType = HKObjectType.workoutType()
-        healthStore.requestAuthorization(toShare: [workoutType], read: [workoutType]) { [weak self] success, error in
-            guard success, error == nil else {
-                self?.appendLog("HealthKit delete auth failed")
-                return
-            }
-            let predicate = HKQuery.predicateForObject(with: uuid)
-            let query = HKSampleQuery(sampleType: workoutType, predicate: predicate, limit: 1, sortDescriptors: nil) { _, samples, _ in
-                guard let workout = samples?.first as? HKWorkout else {
-                    self?.appendLog("HealthKit workout not found for UUID \(uuidString)")
-                    return
-                }
-                self?.healthStore.delete(workout) { ok, _ in
-                    if ok {
-                        self?.appendLog("HealthKit workout deleted \(uuidString)")
-                    } else {
-                        self?.appendLog("HealthKit delete failed \(uuidString)")
-                    }
-                }
-            }
-            self?.healthStore.execute(query)
-        }
+        saveLegacyShadowWorkoutHistory(
+            legacyShadowWorkoutHistory,
+            profileID: activeUserProfileID
+        )
     }
 
     private struct HrSettingsDTO: Codable {
@@ -1513,7 +1514,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func startTrainingStructuredLog(trigger: String) -> UUID? {
         stopTrainingStructuredLog(reason: "restart_before_new_session")
         guard let dir = trainingLogsDirectoryURL() else { return nil }
-        pruneTrainingLogs(in: dir)
 
         let sessionId = UUID().uuidString
         let fileName = "hr_session_\(trainingLogTimestampFormatter.string(from: Date()))_\(sessionId).jsonl"
@@ -1688,50 +1688,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func finalizeTrainingLogsCsvExport(_ export: TrainingLogsCsvExport, completed: Bool) {
-        defer {
-            try? FileManager.default.removeItem(at: export.csvURL)
-        }
-
-        guard completed else {
-            appendLog("Training CSV share cancelled: \(export.csvURL.lastPathComponent)")
-            return
-        }
-
-        let activeLogFile: URL? = trainingLogQueue.sync { trainingLogFileURL?.standardizedFileURL }
-        let protectedFiles = Set(activeLogFile.map { [$0] } ?? [])
-        let cleanup = TrainingTelemetryWriter.cleanupExportedJsonlFiles(
-            export.sourceFiles,
-            keeping: protectedFiles
+        try? FileManager.default.removeItem(at: export.csvURL)
+        appendLog(
+            "Legacy CSV share \(completed ? "completed" : "cancelled"); source evidence preserved"
         )
-
-        if let dir = trainingLogsDirectoryURL() {
-            pruneTrainingLogs(in: dir)
-        }
-
-        refreshTrainingLogsInventory()
-
-        let reclaimedText = ByteCountFormatter.string(
-            fromByteCount: cleanup.reclaimedBytes,
-            countStyle: .file
-        )
-
-        let message: String
-        if cleanup.removedCount > 0 {
-            if cleanup.skippedCount > 0 {
-                message = "CSV выгружен. Очищено \(cleanup.removedCount) raw логов, освобождено \(reclaimedText), пропущено \(cleanup.skippedCount)."
-            } else {
-                message = "CSV выгружен. Очищено \(cleanup.removedCount) raw логов, освобождено \(reclaimedText)."
-            }
-        } else if cleanup.skippedCount > 0 {
-            message = "CSV выгружен. Raw логи не удалены: активная сессия ещё открыта или файлы уже были очищены."
-        } else {
-            message = "CSV выгружен. Дополнительная очистка raw логов не потребовалась."
-        }
-
-        appendLog("Training raw logs cleanup: scope=\(export.scope.logDescription) removed=\(cleanup.removedCount) skipped=\(cleanup.skippedCount) freed=\(cleanup.reclaimedBytes) rows=\(export.rowCount)")
-        DispatchQueue.main.async {
-            self.infoToastMessage = message
-        }
     }
 
     private func hex(_ data: Data) -> String {
@@ -1798,57 +1758,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func clearTrainingLogsForActiveProfile() {
-        synchronizeTrainingLogFileIfNeeded()
-        guard let allJsonlFiles = allTrainingJsonlFiles(),
-              !allJsonlFiles.isEmpty else {
-            trainingLogsInventory = .empty
-            infoToastMessage = "Raw training logs не найдены."
-            return
-        }
-
-        let protectedFiles = currentProtectedTrainingLogFiles()
-        let selectedFiles = TrainingTelemetryWriter.selectJsonlFilesForClear(
-            allJsonlFiles,
-            matchingProfileID: activeUserProfileID?.uuidString,
-            legacyFallbackProfileID: legacyFallbackProfileID,
-            keeping: protectedFiles
-        )
-
-        guard !selectedFiles.isEmpty else {
-            refreshTrainingLogsInventory()
-            infoToastMessage = "Для активного профиля нечего очищать. Активная сессия не удаляется."
-            return
-        }
-
-        let cleanup = TrainingTelemetryWriter.cleanupExportedJsonlFiles(
-            selectedFiles,
-            keeping: protectedFiles
-        )
-
-        if let dir = trainingLogsDirectoryURL() {
-            pruneTrainingLogs(in: dir)
-        }
-
-        refreshTrainingLogsInventory()
-
-        let reclaimedText = ByteCountFormatter.string(
-            fromByteCount: cleanup.reclaimedBytes,
-            countStyle: .file
-        )
-
-        let message: String
-        if cleanup.removedCount > 0 {
-            if cleanup.skippedCount > 0 {
-                message = "Raw training logs очищены: удалено \(cleanup.removedCount) файлов, освобождено \(reclaimedText), пропущено \(cleanup.skippedCount). История тренировок в статистике сохранена."
-            } else {
-                message = "Raw training logs очищены: удалено \(cleanup.removedCount) файлов, освобождено \(reclaimedText). История тренировок в статистике сохранена."
-            }
-        } else {
-            message = "Raw training logs не очищены: активная сессия ещё открыта или файлы уже отсутствуют."
-        }
-
-        appendLog("Training raw logs cleared manually: removed=\(cleanup.removedCount) skipped=\(cleanup.skippedCount) freed=\(cleanup.reclaimedBytes)")
-        infoToastMessage = message
+        appendLog("Legacy training log clear ignored; source evidence preserved through #37")
+        infoToastMessage = "Legacy source evidence is preserved until the explicit retirement gate."
     }
 
     private func availableTrainingJsonlFiles(scope: TrainingLogCsvExportScope) -> [URL]? {
@@ -1872,7 +1783,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var infoToastMessage: String? = nil
 
     // History
-    struct WorkoutEntry: Identifiable {
+    private struct LegacyShadowWorkoutEntry: Identifiable {
         let id: UUID
         let date: Date
         let beatsPerMeter: Double?
@@ -1883,7 +1794,171 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let healthkitWorkoutUUID: String?
         let zoneSeconds: [Int]?
     }
-    @Published var workoutHistory: [WorkoutEntry] = []
+    private var legacyShadowWorkoutHistory: [LegacyShadowWorkoutEntry] = []
+
+    enum WorkoutReadState: Equatable {
+        case idle
+        case loading
+        case loaded
+        case failed(String)
+    }
+
+    @Published private(set) var telemetryV2WorkoutHistory: [WorkoutHistoryProjection] = []
+    @Published private(set) var telemetryV2WorkoutHistoryState: WorkoutReadState = .idle
+    @Published private(set) var telemetryV2WorkoutHistoryHasMore: Bool = false
+    @Published private(set) var telemetryV2Statistics: [String: WorkoutStatisticsProjection] = [:]
+    @Published private(set) var telemetryV2StatisticsState: [String: WorkoutReadState] = [:]
+    @Published private(set) var telemetryV2ProjectionGeneration: UInt = 0
+    private var telemetryV2WorkoutHistoryCursor: WorkoutHistoryCursor? = nil
+    private var telemetryV2WorkoutReadRequestID: UUID? = nil
+    private let telemetryV2WorkoutPageSize = 50
+
+    private func telemetryV2ProjectionDidChange() {
+        telemetryV2ProjectionGeneration &+= 1
+        telemetryV2Statistics.removeAll()
+        telemetryV2StatisticsState.removeAll()
+        refreshWorkoutHistoryFromV2(reset: true)
+    }
+
+    private func activeWorkoutReadFilter(
+        startedAtOrAfter: Date? = nil,
+        startedBefore: Date? = nil
+    ) -> WorkoutReadFilter? {
+        guard let profileID = activeUserProfileID else { return nil }
+        return WorkoutReadFilter(
+            profileScope: .exact(profileID.uuidString),
+            startedAtOrAfter: startedAtOrAfter,
+            startedBefore: startedBefore
+        )
+    }
+
+    func refreshWorkoutHistoryFromV2(reset: Bool = true) {
+        guard let filter = activeWorkoutReadFilter(),
+              let requestedProfileID = activeUserProfileID else {
+            telemetryV2WorkoutHistory = []
+            telemetryV2WorkoutHistoryState = .failed("active-profile-unavailable")
+            telemetryV2WorkoutHistoryHasMore = false
+            telemetryV2WorkoutHistoryCursor = nil
+            return
+        }
+
+        if reset {
+            telemetryV2WorkoutHistory = []
+            telemetryV2WorkoutHistoryCursor = nil
+        }
+        telemetryV2WorkoutHistoryState = .loading
+        let cursor = telemetryV2WorkoutHistoryCursor
+        let requestID = UUID()
+        telemetryV2WorkoutReadRequestID = requestID
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let page = try await self.telemetryV2Coordinator.fetchWorkoutHistoryPage(
+                    filter: filter,
+                    after: cursor,
+                    limit: self.telemetryV2WorkoutPageSize
+                )
+                await MainActor.run {
+                    guard self.activeUserProfileID == requestedProfileID,
+                          self.telemetryV2WorkoutReadRequestID == requestID else { return }
+                    if reset {
+                        self.telemetryV2WorkoutHistory = page.items
+                    } else {
+                        let existingIDs = Set(self.telemetryV2WorkoutHistory.map(\.id))
+                        self.telemetryV2WorkoutHistory.append(
+                            contentsOf: page.items.filter { !existingIDs.contains($0.id) }
+                        )
+                    }
+                    self.telemetryV2WorkoutHistoryCursor = page.nextCursor
+                    self.telemetryV2WorkoutHistoryHasMore = page.nextCursor != nil
+                    self.telemetryV2WorkoutHistoryState = .loaded
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.activeUserProfileID == requestedProfileID,
+                          self.telemetryV2WorkoutReadRequestID == requestID else { return }
+                    self.telemetryV2WorkoutHistoryState = .failed(error.localizedDescription)
+                    self.appendLog("Telemetry V2 workout read failed: \(error)")
+                }
+            }
+        }
+    }
+
+    func loadNextWorkoutHistoryPageFromV2() {
+        guard telemetryV2WorkoutHistoryHasMore,
+              telemetryV2WorkoutHistoryState != .loading else { return }
+        refreshWorkoutHistoryFromV2(reset: false)
+    }
+
+    func workoutStatisticsKey(for interval: DateInterval) -> String {
+        let profile = activeUserProfileID?.uuidString ?? "unassigned"
+        return "\(profile)|\(interval.start.timeIntervalSince1970)|\(interval.end.timeIntervalSince1970)"
+    }
+
+    func refreshWorkoutStatisticsFromV2(for interval: DateInterval) {
+        guard let filter = activeWorkoutReadFilter(
+            startedAtOrAfter: interval.start,
+            startedBefore: interval.end
+        ), let requestedProfileID = activeUserProfileID else { return }
+        let key = workoutStatisticsKey(for: interval)
+        let requestedProjectionGeneration = telemetryV2ProjectionGeneration
+        telemetryV2StatisticsState[key] = .loading
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let statistics = try await self.telemetryV2Coordinator.fetchWorkoutStatistics(
+                    filter: filter,
+                    batchSize: 100
+                )
+                await MainActor.run {
+                    guard self.activeUserProfileID == requestedProfileID,
+                          self.telemetryV2ProjectionGeneration
+                            == requestedProjectionGeneration else { return }
+                    self.telemetryV2Statistics[key] = statistics
+                    self.telemetryV2StatisticsState[key] = .loaded
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.activeUserProfileID == requestedProfileID,
+                          self.telemetryV2ProjectionGeneration
+                            == requestedProjectionGeneration else { return }
+                    self.telemetryV2StatisticsState[key] = .failed(error.localizedDescription)
+                    self.appendLog("Telemetry V2 statistics read failed: \(error)")
+                }
+            }
+        }
+    }
+
+    func prepareTelemetryV2Export(
+        scope: TrainingLogCsvExportScope
+    ) async throws -> WorkoutExportArtifact {
+        guard let filter = activeWorkoutReadFilter() else {
+            throw TelemetryWorkoutReadError.unavailable("active-profile-unavailable")
+        }
+        let selection: WorkoutExportSelection
+        switch scope {
+        case .all:
+            selection = .all
+        case .lastCompletedWorkouts(let count):
+            selection = .latestCompleted(count)
+        }
+        return try await telemetryV2Coordinator.exportWorkouts(
+            WorkoutExportRequest(filter: filter, selection: selection)
+        )
+    }
+
+    func finalizeTelemetryV2Export(_ artifact: WorkoutExportArtifact, completed: Bool) {
+        do {
+            try FileManager.default.removeItem(at: artifact.directoryURL)
+        } catch {
+            appendLog("Telemetry V2 export temporary cleanup failed: \(error.localizedDescription)")
+        }
+        infoToastMessage = completed
+            ? "Telemetry V2 export shared. Source evidence was preserved."
+            : "Telemetry V2 export cancelled. Source evidence was preserved."
+    }
 
     // Lifecycle
     private func scheduleLegacyTelemetryMigration() {
@@ -1918,7 +1993,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         loadProfilesState()
         loadHrSettings()
         loadZonePlan()
-        loadWorkoutHistory()
+        loadLegacyShadowWorkoutHistory()
+        refreshWorkoutHistoryFromV2(reset: true)
         refreshTrainingLogsInventory()
         setHeartRateTelemetrySink(telemetryV2Coordinator)
         setTreadmillTelemetrySink(telemetryV2Coordinator)
@@ -5443,6 +5519,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let sessionID = TelemetryV2SessionDescriptor.sessionID(
             deterministicallyLinkedTo: legacySessionID
         )
+        activeTelemetryV2SessionID = sessionID
 #if canImport(UIKit)
         let deviceModel: String? = UIDevice.current.model
 #else
@@ -5821,7 +5898,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let averageSpeed = (avgSpeedActive && avgSpeedKmh > 0.05) ? avgSpeedKmh : nil
         let workoutProfileID = activeUserProfileID
         let attachedHealthkitWorkoutUUID = pendingHealthkitWorkoutUUID
-        let entry = WorkoutEntry(
+        let telemetryV2SessionID = activeTelemetryV2SessionID
+        let entry = LegacyShadowWorkoutEntry(
             id: UUID(),
             date: Date(),
             beatsPerMeter: beatsPerMeter,
@@ -5832,11 +5910,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             healthkitWorkoutUUID: attachedHealthkitWorkoutUUID,
             zoneSeconds: hrZoneSeconds
         )
-        workoutHistory.insert(entry, at: 0)
+        legacyShadowWorkoutHistory.insert(entry, at: 0)
         pendingHealthkitWorkoutUUID = nil
         pendingHealthkitWorkoutProfileID = attachedHealthkitWorkoutUUID == nil ? workoutProfileID : nil
+        pendingHealthkitTelemetryV2SessionID = attachedHealthkitWorkoutUUID == nil
+            ? telemetryV2SessionID
+            : nil
         hrWorkoutRecorded = true
-        saveWorkoutHistory()
+        saveLegacyShadowWorkoutHistory()
+        if let attachedHealthkitWorkoutUUID,
+           let workoutIdentifier = UUID(uuidString: attachedHealthkitWorkoutUUID),
+           let telemetryV2SessionID {
+            associateHealthKitWorkoutWithTelemetryV2(
+                sessionID: telemetryV2SessionID,
+                workoutIdentifier: workoutIdentifier
+            )
+        }
         logTrainingEvent("workout_saved", fields: [
             "workout_id": entry.id.uuidString,
             "duration_s": actualDuration,
@@ -5850,6 +5939,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func attachHealthkitWorkoutUUID(_ uuid: String, endedAt: Date?) {
+        if let workoutIdentifier = UUID(uuidString: uuid),
+           let telemetryV2SessionID = pendingHealthkitTelemetryV2SessionID
+                ?? activeTelemetryV2SessionID {
+            pendingHealthkitTelemetryV2SessionID = nil
+            associateHealthKitWorkoutWithTelemetryV2(
+                sessionID: telemetryV2SessionID,
+                workoutIdentifier: workoutIdentifier
+            )
+        }
         let matchWindow: TimeInterval = 15 * 60
         let targetProfileID = pendingHealthkitWorkoutProfileID ?? activeUserProfileID
         guard let targetProfileID else {
@@ -5857,11 +5955,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
-        var entries = loadWorkoutHistory(profileID: targetProfileID)
+        var entries = loadLegacyShadowWorkoutHistory(profileID: targetProfileID)
 
         let attachUUID: (Int) -> Void = { index in
             let entry = entries[index]
-            entries[index] = WorkoutEntry(
+            entries[index] = LegacyShadowWorkoutEntry(
                 id: entry.id,
                 date: entry.date,
                 beatsPerMeter: entry.beatsPerMeter,
@@ -5872,9 +5970,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 healthkitWorkoutUUID: uuid,
                 zoneSeconds: entry.zoneSeconds
             )
-            self.saveWorkoutHistory(entries, profileID: targetProfileID)
+            self.saveLegacyShadowWorkoutHistory(entries, profileID: targetProfileID)
             if self.activeUserProfileID == targetProfileID {
-                self.workoutHistory = entries
+                self.legacyShadowWorkoutHistory = entries
             }
             self.pendingHealthkitWorkoutProfileID = nil
         }
@@ -5891,6 +5989,28 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         pendingHealthkitWorkoutUUID = uuid
         pendingHealthkitWorkoutProfileID = targetProfileID
+    }
+
+    private func associateHealthKitWorkoutWithTelemetryV2(
+        sessionID: SessionID,
+        workoutIdentifier: UUID
+    ) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.telemetryV2Coordinator.associateHealthKitWorkout(
+                    sessionID: sessionID,
+                    workoutIdentifier: workoutIdentifier
+                )
+            } catch {
+                await MainActor.run {
+                    self.appendLog("Telemetry V2 HealthKit linkage failed: \(error)")
+                    self.telemetryV2WorkoutHistoryState = .failed(
+                        "HealthKit linkage failed: \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
     }
 
     // KS-F0 protocol: F7 A2 <cmd> <val> <crc> FD, crc = sum(bytes[1..3]) % 256
