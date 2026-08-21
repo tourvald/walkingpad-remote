@@ -20,11 +20,30 @@ enum TelemetrySchemaV1: VersionedSchema {
 
 enum TelemetryMigrationPlan: SchemaMigrationPlan {
     public static var schemas: [any VersionedSchema.Type] {
-        [TelemetrySchemaV1.self]
+        [TelemetrySchemaV1.self, TelemetrySchemaV2.self]
     }
 
     public static var stages: [MigrationStage] {
-        []
+        [
+            .lightweight(
+                fromVersion: TelemetrySchemaV1.self,
+                toVersion: TelemetrySchemaV2.self
+            )
+        ]
+    }
+}
+
+enum TelemetrySchemaV2: VersionedSchema {
+    public static let versionIdentifier = Schema.Version(1, 1, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        TelemetrySchemaV1.models + [
+            TelemetryLegacyMigrationSourceV2.self,
+            TelemetryLegacyImportedRecordV2.self,
+            TelemetryLegacyWorkoutCandidateV2.self,
+            TelemetryLegacyImportedWorkoutV2.self,
+            TelemetryLegacyReconciliationV2.self,
+        ]
     }
 }
 
@@ -507,5 +526,268 @@ final class TelemetryWorkoutAnalysisV1 {
         self.detailSchemaVersion = detailSchemaVersion
         self.detailPayload = detailPayload
         self.session = session
+    }
+}
+
+@Model
+final class TelemetryLegacyMigrationSourceV2 {
+    #Index<TelemetryLegacyMigrationSourceV2>(
+        [\.sourceKindKey, \.contentHashDigest],
+        [\.statusKey, \.updatedAt]
+    )
+
+    @Attribute(.unique) public var sourceID: String
+    public var sourceKindKey: String
+    public var contentHashDigest: String
+    public var importerVersion: String
+    public var locator: String
+    public var exactProfileLocalIdentifier: String?
+    public var statusKey: String
+    public var checkpointByteOffset: Int64
+    public var checkpointRecordIndex: Int64
+    public var parsedRecordCount: Int64
+    public var malformedRecordCount: Int64
+    public var warningCount: Int64
+    public var aggregateStatePayload: Data
+    public var errorCode: String?
+    public var errorDetail: String?
+    public var updatedAt: Date
+    public var completedAt: Date?
+
+    public init(
+        sourceID: String,
+        sourceKindKey: String,
+        contentHashDigest: String,
+        importerVersion: String,
+        locator: String,
+        exactProfileLocalIdentifier: String?,
+        statusKey: String,
+        checkpointByteOffset: Int64,
+        checkpointRecordIndex: Int64,
+        parsedRecordCount: Int64,
+        malformedRecordCount: Int64,
+        warningCount: Int64,
+        aggregateStatePayload: Data,
+        errorCode: String?,
+        errorDetail: String?,
+        updatedAt: Date,
+        completedAt: Date?
+    ) {
+        self.sourceID = sourceID
+        self.sourceKindKey = sourceKindKey
+        self.contentHashDigest = contentHashDigest
+        self.importerVersion = importerVersion
+        self.locator = locator
+        self.exactProfileLocalIdentifier = exactProfileLocalIdentifier
+        self.statusKey = statusKey
+        self.checkpointByteOffset = checkpointByteOffset
+        self.checkpointRecordIndex = checkpointRecordIndex
+        self.parsedRecordCount = parsedRecordCount
+        self.malformedRecordCount = malformedRecordCount
+        self.warningCount = warningCount
+        self.aggregateStatePayload = aggregateStatePayload
+        self.errorCode = errorCode
+        self.errorDetail = errorDetail
+        self.updatedAt = updatedAt
+        self.completedAt = completedAt
+    }
+}
+
+@Model
+final class TelemetryLegacyImportedRecordV2 {
+    #Index<TelemetryLegacyImportedRecordV2>(
+        [\.sourceID, \.sourceRecordIndex],
+        [\.candidateID, \.occurredAt],
+        [\.workoutIdentifier],
+        [\.healthKitWorkoutIdentifier],
+        [\.stableLegacySessionIdentifier]
+    )
+
+    @Attribute(.unique) public var importedRecordID: String
+    @Attribute(.unique) public var sourceItemIdentityKey: String
+    public var sourceID: String
+    public var candidateID: String
+    public var sourceRecordIndex: Int64
+    public var sourceByteOffset: Int64
+    public var eventKind: String
+    public var occurredAt: Date?
+    public var profileLocalIdentifier: String?
+    public var workoutIdentifier: String?
+    public var healthKitWorkoutIdentifier: String?
+    public var stableLegacySessionIdentifier: String?
+    public var provenanceKey: String
+    public var normalizedPayload: Data
+    public var identityUncertain: Bool
+    public var adaptationQualityEligible: Bool
+
+    public init(
+        importedRecordID: String,
+        sourceItemIdentityKey: String,
+        sourceID: String,
+        candidateID: String,
+        sourceRecordIndex: Int64,
+        sourceByteOffset: Int64,
+        eventKind: String,
+        occurredAt: Date?,
+        profileLocalIdentifier: String?,
+        workoutIdentifier: String?,
+        healthKitWorkoutIdentifier: String?,
+        stableLegacySessionIdentifier: String?,
+        provenanceKey: String,
+        normalizedPayload: Data,
+        identityUncertain: Bool,
+        adaptationQualityEligible: Bool
+    ) {
+        self.importedRecordID = importedRecordID
+        self.sourceItemIdentityKey = sourceItemIdentityKey
+        self.sourceID = sourceID
+        self.candidateID = candidateID
+        self.sourceRecordIndex = sourceRecordIndex
+        self.sourceByteOffset = sourceByteOffset
+        self.eventKind = eventKind
+        self.occurredAt = occurredAt
+        self.profileLocalIdentifier = profileLocalIdentifier
+        self.workoutIdentifier = workoutIdentifier
+        self.healthKitWorkoutIdentifier = healthKitWorkoutIdentifier
+        self.stableLegacySessionIdentifier = stableLegacySessionIdentifier
+        self.provenanceKey = provenanceKey
+        self.normalizedPayload = normalizedPayload
+        self.identityUncertain = identityUncertain
+        self.adaptationQualityEligible = adaptationQualityEligible
+    }
+}
+
+@Model
+final class TelemetryLegacyWorkoutCandidateV2 {
+    #Index<TelemetryLegacyWorkoutCandidateV2>(
+        [\.originKindKey, \.workoutIdentifier],
+        [\.originKindKey, \.healthKitWorkoutIdentifier],
+        [\.originKindKey, \.stableLegacySessionIdentifier],
+        [\.profileLocalIdentifier, \.startedAt]
+    )
+
+    @Attribute(.unique) public var candidateID: String
+    @Attribute(.unique) public var sourceItemIdentityKey: String
+    public var sourceID: String
+    public var originKindKey: String
+    public var profileLocalIdentifier: String?
+    public var workoutIdentifier: String?
+    public var healthKitWorkoutIdentifier: String?
+    public var stableLegacySessionIdentifier: String?
+    public var startedAt: Date?
+    public var endedAt: Date?
+    public var identityUncertain: Bool
+    public var possibleDuplicate: Bool
+    public var summaryPayload: Data
+
+    public init(
+        candidateID: String,
+        sourceItemIdentityKey: String,
+        sourceID: String,
+        originKindKey: String,
+        profileLocalIdentifier: String?,
+        workoutIdentifier: String?,
+        healthKitWorkoutIdentifier: String?,
+        stableLegacySessionIdentifier: String?,
+        startedAt: Date?,
+        endedAt: Date?,
+        identityUncertain: Bool,
+        possibleDuplicate: Bool,
+        summaryPayload: Data
+    ) {
+        self.candidateID = candidateID
+        self.sourceItemIdentityKey = sourceItemIdentityKey
+        self.sourceID = sourceID
+        self.originKindKey = originKindKey
+        self.profileLocalIdentifier = profileLocalIdentifier
+        self.workoutIdentifier = workoutIdentifier
+        self.healthKitWorkoutIdentifier = healthKitWorkoutIdentifier
+        self.stableLegacySessionIdentifier = stableLegacySessionIdentifier
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.identityUncertain = identityUncertain
+        self.possibleDuplicate = possibleDuplicate
+        self.summaryPayload = summaryPayload
+    }
+}
+
+@Model
+final class TelemetryLegacyImportedWorkoutV2 {
+    #Index<TelemetryLegacyImportedWorkoutV2>(
+        [\.profileLocalIdentifier, \.startedAt],
+        [\.identityStatusKey]
+    )
+
+    @Attribute(.unique) public var importedWorkoutID: String
+    @Attribute(.unique) public var canonicalIdentityKey: String
+    public var profileLocalIdentifier: String?
+    public var startedAt: Date?
+    public var endedAt: Date?
+    public var identityStatusKey: String
+    public var possibleDuplicate: Bool
+    public var adaptationQualityEligible: Bool
+    public var candidateIDsPayload: Data
+    public var resolvedSummaryPayload: Data
+
+    public init(
+        importedWorkoutID: String,
+        canonicalIdentityKey: String,
+        profileLocalIdentifier: String?,
+        startedAt: Date?,
+        endedAt: Date?,
+        identityStatusKey: String,
+        possibleDuplicate: Bool,
+        adaptationQualityEligible: Bool,
+        candidateIDsPayload: Data,
+        resolvedSummaryPayload: Data
+    ) {
+        self.importedWorkoutID = importedWorkoutID
+        self.canonicalIdentityKey = canonicalIdentityKey
+        self.profileLocalIdentifier = profileLocalIdentifier
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.identityStatusKey = identityStatusKey
+        self.possibleDuplicate = possibleDuplicate
+        self.adaptationQualityEligible = adaptationQualityEligible
+        self.candidateIDsPayload = candidateIDsPayload
+        self.resolvedSummaryPayload = resolvedSummaryPayload
+    }
+}
+
+@Model
+final class TelemetryLegacyReconciliationV2 {
+    #Index<TelemetryLegacyReconciliationV2>(
+        [\.leftCandidateID],
+        [\.rightCandidateID],
+        [\.outcomeKey]
+    )
+
+    @Attribute(.unique) public var reconciliationID: String
+    public var leftCandidateID: String
+    public var rightCandidateID: String
+    public var outcomeKey: String
+    public var identityKindKey: String?
+    public var identityValue: String?
+    public var importedWorkoutID: String?
+    public var detailPayload: Data
+
+    public init(
+        reconciliationID: String,
+        leftCandidateID: String,
+        rightCandidateID: String,
+        outcomeKey: String,
+        identityKindKey: String?,
+        identityValue: String?,
+        importedWorkoutID: String?,
+        detailPayload: Data
+    ) {
+        self.reconciliationID = reconciliationID
+        self.leftCandidateID = leftCandidateID
+        self.rightCandidateID = rightCandidateID
+        self.outcomeKey = outcomeKey
+        self.identityKindKey = identityKindKey
+        self.identityValue = identityValue
+        self.importedWorkoutID = importedWorkoutID
+        self.detailPayload = detailPayload
     }
 }

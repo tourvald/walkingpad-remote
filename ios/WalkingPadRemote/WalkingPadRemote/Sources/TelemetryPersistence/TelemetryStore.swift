@@ -87,7 +87,7 @@ struct TelemetryGateTraversalCounts: Codable, Hashable, Sendable {
 
 public enum TelemetryStoreFactory {
     public static func make(_ configuration: TelemetryStoreConfiguration) throws -> TelemetryStore {
-        let schema = Schema(versionedSchema: TelemetrySchemaV1.self)
+        let schema = Schema(versionedSchema: TelemetrySchemaV2.self)
         let modelConfiguration: ModelConfiguration
         let onDiskStoreURL: URL?
 
@@ -813,7 +813,7 @@ public actor TelemetryStore {
         Thread.isMainThread
     }
 
-    private func explicitTransaction(_ operation: () throws -> Void) throws {
+    func explicitTransaction(_ operation: () throws -> Void) throws {
         if explicitTransactionDepth > 0 {
             try operation()
             return
@@ -939,7 +939,7 @@ public actor TelemetryStore {
     }
 }
 
-private extension TelemetryStore {
+extension TelemetryStore {
     static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

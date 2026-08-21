@@ -231,6 +231,47 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
     }
 
+    func testLegacyMigrationIsStartupOnlyAndCannotEnterControlOrSafetyPaths() throws {
+        let schedule = try functionBody(
+            "private func scheduleLegacyTelemetryMigration()",
+            in: managerSource
+        )
+        let startLifecycle = try functionBody("func start()", in: managerSource)
+        let controlStart = try functionBody("func startHrControl()", in: managerSource)
+        let recompute = try functionBody(
+            "private func recomputeHrStartAllowed()",
+            in: managerSource
+        )
+        let controlTick = try functionBody("private func tickTelemetry()", in: managerSource)
+
+        XCTAssertTrue(schedule.contains("scheduleLegacyMigrationInBackground"))
+        XCTAssertTrue(schedule.contains("LegacyTelemetryMigrationSourceDiscovery.makeRequest"))
+        XCTAssertTrue(schedule.contains("sortedProfiles(userProfiles)"))
+        XCTAssertFalse(schedule.contains("activeUserProfileID"))
+        for forbidden in [
+            "sendTreadmill", "startHrControl", "stopHrControl", "recomputeHrStartAllowed",
+            "hrStartAllowed", "controllerUnits", "speedTargetKmh", "tickTelemetry",
+        ] {
+            XCTAssertFalse(schedule.contains(forbidden), "Migration scheduling contains \(forbidden)")
+        }
+
+        assertOrdered(
+            [
+                "loadProfilesState()",
+                "telemetryV2Coordinator.prepareStoreAndRecover()",
+                "scheduleLegacyTelemetryMigration()",
+                "recomputeHrStartAllowed()",
+            ],
+            in: startLifecycle
+        )
+        for controlPath in [controlStart, recompute, controlTick] {
+            XCTAssertFalse(controlPath.contains("LegacyTelemetryMigration"))
+            XCTAssertFalse(controlPath.contains("scheduleLegacyMigration"))
+            XCTAssertFalse(controlPath.contains("workout_history_v1"))
+            XCTAssertFalse(controlPath.contains("TrainingLogs"))
+        }
+    }
+
     func testInstrumentationCannotAuthorizeControlStopCooldownOrWatchBehavior() throws {
         let start = try functionBody("func startHrControl()", in: managerSource)
         let stop = try functionBody("func stopHrControl()", in: managerSource)

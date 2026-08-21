@@ -5,7 +5,7 @@ import TelemetryDomain
 import XCTest
 
 @Model
-private final class TelemetrySyntheticMigrationMarkerV2 {
+private final class TelemetrySyntheticMigrationMarkerV3 {
     @Attribute(.unique) var key: String
     var createdAt: Date
 
@@ -15,24 +15,28 @@ private final class TelemetrySyntheticMigrationMarkerV2 {
     }
 }
 
-private enum TelemetrySyntheticSchemaV2: VersionedSchema {
+private enum TelemetrySyntheticSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
 
     static var models: [any PersistentModel.Type] {
-        TelemetrySchemaV1.models + [TelemetrySyntheticMigrationMarkerV2.self]
+        TelemetrySchemaV2.models + [TelemetrySyntheticMigrationMarkerV3.self]
     }
 }
 
 private enum TelemetrySyntheticMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [TelemetrySchemaV1.self, TelemetrySyntheticSchemaV2.self]
+        [TelemetrySchemaV1.self, TelemetrySchemaV2.self, TelemetrySyntheticSchemaV3.self]
     }
 
     static var stages: [MigrationStage] {
         [
             .lightweight(
                 fromVersion: TelemetrySchemaV1.self,
-                toVersion: TelemetrySyntheticSchemaV2.self
+                toVersion: TelemetrySchemaV2.self
+            ),
+            .lightweight(
+                fromVersion: TelemetrySchemaV2.self,
+                toVersion: TelemetrySyntheticSchemaV3.self
             ),
         ]
     }
@@ -45,7 +49,7 @@ private struct TelemetrySyntheticMigrationEvidence: Equatable {
 }
 
 final class TelemetryGateMigrationTests: XCTestCase {
-    func testV1ToSyntheticV2MigrationRetainsEvidenceAcrossRepeatedReopen() async throws {
+    func testCurrentSchemaToSyntheticSuccessorRetainsEvidenceAcrossRepeatedReopen() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "telemetry-gate-migration-\(UUID().uuidString)",
             isDirectory: true
@@ -139,7 +143,7 @@ final class TelemetryGateMigrationTests: XCTestCase {
             primaryStoreURL: storeURL,
             phase: "before migration open"
         )
-        let schema = Schema(versionedSchema: TelemetrySyntheticSchemaV2.self)
+        let schema = Schema(versionedSchema: TelemetrySyntheticSchemaV3.self)
         let configuration = ModelConfiguration(
             "TelemetryV2SyntheticMigration",
             schema: schema,
@@ -156,7 +160,7 @@ final class TelemetryGateMigrationTests: XCTestCase {
         if addMarker {
             try context.transaction {
                 context.insert(
-                    TelemetrySyntheticMigrationMarkerV2(
+                    TelemetrySyntheticMigrationMarkerV3(
                         key: "synthetic-successor-v2",
                         createdAt: TelemetryGateFixtureGenerator.baseDate
                     )
@@ -195,7 +199,7 @@ final class TelemetryGateMigrationTests: XCTestCase {
             ),
             heartRateIdentityHash: hasher.lowercaseHexDigest,
             markerCount: try context.fetchCount(
-                FetchDescriptor<TelemetrySyntheticMigrationMarkerV2>()
+                FetchDescriptor<TelemetrySyntheticMigrationMarkerV3>()
             )
         )
     }

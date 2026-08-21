@@ -1886,6 +1886,30 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var workoutHistory: [WorkoutEntry] = []
 
     // Lifecycle
+    private func scheduleLegacyTelemetryMigration() {
+        let knownProfiles = sortedProfiles(userProfiles).map {
+            $0.id.uuidString.lowercased()
+        }
+        let deterministicFallbackProfile = knownProfiles.first
+        telemetryV2Coordinator.scheduleLegacyMigrationInBackground {
+            guard let logsDirectory = LegacyTelemetryMigrationSourceDiscovery
+                .defaultTrainingLogsDirectory() else {
+                return LegacyTelemetryMigrationRequest(
+                    jsonlSources: [],
+                    workoutHistorySources: [],
+                    knownProfileLocalIdentifiers: Set(knownProfiles)
+                )
+            }
+            return LegacyTelemetryMigrationSourceDiscovery.makeRequest(
+                userDefaults: .standard,
+                trainingLogsDirectory: logsDirectory,
+                knownProfileLocalIdentifiers: knownProfiles,
+                deterministicLegacyFallbackProfileLocalIdentifier:
+                    deterministicFallbackProfile
+            )
+        }
+    }
+
     func start() {
         ensureCentral()
         autoConnectSuppressed = false
@@ -1899,6 +1923,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         setHeartRateTelemetrySink(telemetryV2Coordinator)
         setTreadmillTelemetrySink(telemetryV2Coordinator)
         telemetryV2Coordinator.prepareStoreAndRecover()
+        scheduleLegacyTelemetryMigration()
 #if canImport(WatchConnectivity)
         startWatchConnectivity()
 #endif

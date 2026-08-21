@@ -367,6 +367,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     TreadmillTelemetrySink, @unchecked Sendable
 {
     public typealias PersistenceFactory = @Sendable () throws -> any TelemetryRecorderPersistence
+    public typealias LegacyMigrationRequestFactory =
+        @Sendable () throws -> LegacyTelemetryMigrationRequest
     public typealias StatusHandler = @Sendable (TelemetryV2RuntimeStatus) -> Void
     public typealias WriterHealthHandler = @Sendable (TelemetryV2WriterHealthSnapshot) -> Void
 
@@ -507,6 +509,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private let runtimeClock: any TelemetryV2RuntimeClock
     private let installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?
     private var persistence: (any TelemetryRecorderPersistence)?
+    private var pendingLegacyMigrationRequestFactory: LegacyMigrationRequestFactory?
+    private var legacyMigrationStarted = false
     private var preparationStarted = false
     private var preparationFailed = false
     private var generation: UInt64 = 0
@@ -589,6 +593,23 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 self?.storePreparationFailed(error)
             }
         }
+    }
+
+    /// Schedules optional historical migration after the isolated store is
+    /// available. The request is built and consumed on a utility task; neither
+    /// its result nor its failure changes runtime/control status.
+    public func scheduleLegacyMigrationInBackground(
+        requestFactory: @escaping LegacyMigrationRequestFactory
+    ) {
+        let accepted = withLock {
+            guard !legacyMigrationStarted,
+                  pendingLegacyMigrationRequestFactory == nil else { return false }
+            pendingLegacyMigrationRequestFactory = requestFactory
+            return true
+        }
+        guard accepted else { return }
+        prepareStoreAndRecover()
+        launchLegacyMigrationIfPossible()
     }
 
     public func beginSession(_ descriptor: TelemetryV2SessionDescriptor) {
@@ -774,6 +795,28 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             }
         }
         launchPendingSessionIfPossible()
+        launchLegacyMigrationIfPossible()
+    }
+
+    private func launchLegacyMigrationIfPossible() {
+        let work: (
+            any LegacyTelemetryMigrationCapability,
+            LegacyMigrationRequestFactory
+        )? = withLock {
+            guard !legacyMigrationStarted,
+                  let factory = pendingLegacyMigrationRequestFactory,
+                  let migration = persistence as? any LegacyTelemetryMigrationCapability else {
+                return nil
+            }
+            legacyMigrationStarted = true
+            pendingLegacyMigrationRequestFactory = nil
+            return (migration, factory)
+        }
+        guard let work else { return }
+        Task.detached(priority: .utility) {
+            guard let request = try? work.1() else { return }
+            _ = await work.0.migrateLegacyTelemetry(request)
+        }
     }
 
     private func storePreparationFailed(_ error: Error) {

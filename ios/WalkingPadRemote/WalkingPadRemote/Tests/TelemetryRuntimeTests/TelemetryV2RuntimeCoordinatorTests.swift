@@ -7,6 +7,55 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
+    func testLegacyMigrationRunsOnceInBackgroundAndCannotOwnRuntimeLifecycle() async throws {
+        let persistence = RuntimePersistence(
+            suspendMigration: true,
+            migrationReport: LegacyTelemetryMigrationReport(
+                completion: .failed,
+                completedSourceCount: 0,
+                skippedSourceCount: 0,
+                failedSourceCount: 1,
+                importedRecordCount: 0,
+                importedWorkoutCount: 0
+            )
+        )
+        let coordinator = TelemetryV2RuntimeCoordinator { persistence }
+        coordinator.prepareStoreAndRecover()
+        try await eventually { coordinator.status == .idle }
+
+        let request = LegacyTelemetryMigrationRequest(
+            jsonlSources: [],
+            workoutHistorySources: [],
+            knownProfileLocalIdentifiers: ["profile-a"]
+        )
+        coordinator.scheduleLegacyMigrationInBackground { request }
+        coordinator.scheduleLegacyMigrationInBackground { request }
+        try await eventually { await persistence.migrationCallCount == 1 }
+        XCTAssertEqual(coordinator.status, .idle)
+
+        let session = Self.descriptor()
+        coordinator.beginSession(session)
+        try await eventually { coordinator.activeSessionIDForTesting == session.sessionID }
+        if case .active = coordinator.status {
+            // Migration is still suspended and has no authority over runtime state.
+        } else {
+            XCTFail("A background migration must not block session activation")
+        }
+        coordinator.endSession(reason: "migration-isolation-test")
+        try await eventually { await persistence.finalizations.count == 1 }
+        try await eventually { coordinator.status == .idle }
+
+        await persistence.resumeMigration()
+        try await eventually { await persistence.migrationCompletionCount == 1 }
+        let migrationRequests = await persistence.migrationRequests
+        XCTAssertEqual(coordinator.status, .idle)
+        XCTAssertEqual(migrationRequests.count, 1)
+        XCTAssertEqual(
+            migrationRequests.first?.knownProfileLocalIdentifiers,
+            ["profile-a"]
+        )
+    }
+
     func testWriterHealthSnapshotMapsOnlyTypedOperationalDiagnostics() {
         let snapshot = TelemetryV2WriterHealthSnapshot(
             runtimeStatus: .active(.incomplete),
@@ -1108,7 +1157,8 @@ private final class ManualRuntimeClock: TelemetryV2RuntimeClock, @unchecked Send
 
 private actor RuntimePersistence:
     TelemetryRecorderPersistence,
-    TelemetryPostWorkoutAnalysisCapability
+    TelemetryPostWorkoutAnalysisCapability,
+    LegacyTelemetryMigrationCapability
 {
     struct Snapshot: Sendable {
         let headers: [WorkoutSessionRecord]
@@ -1129,22 +1179,39 @@ private actor RuntimePersistence:
     private let suspendBegin: Bool
     private let suspendFinalize: Bool
     private let suspendAnalysis: Bool
+    private let suspendMigration: Bool
     private let finalizeFailure: Bool
+    private let migrationReport: LegacyTelemetryMigrationReport
     private var beginContinuation: CheckedContinuation<Void, Never>?
     private var finalizeContinuation: CheckedContinuation<Void, Never>?
     private var analysisContinuation: CheckedContinuation<Void, Never>?
+    private var migrationContinuation: CheckedContinuation<Void, Never>?
     private(set) var analysisSessionIDs: [SessionID] = []
+    private(set) var migrationRequests: [LegacyTelemetryMigrationRequest] = []
+    private(set) var migrationCallCount = 0
+    private(set) var migrationCompletionCount = 0
 
     init(
         suspendBegin: Bool = false,
         suspendFinalize: Bool = false,
         suspendAnalysis: Bool = false,
-        finalizeFailure: Bool = false
+        suspendMigration: Bool = false,
+        finalizeFailure: Bool = false,
+        migrationReport: LegacyTelemetryMigrationReport = LegacyTelemetryMigrationReport(
+            completion: .completed,
+            completedSourceCount: 0,
+            skippedSourceCount: 0,
+            failedSourceCount: 0,
+            importedRecordCount: 0,
+            importedWorkoutCount: 0
+        )
     ) {
         self.suspendBegin = suspendBegin
         self.suspendFinalize = suspendFinalize
         self.suspendAnalysis = suspendAnalysis
+        self.suspendMigration = suspendMigration
         self.finalizeFailure = finalizeFailure
+        self.migrationReport = migrationReport
     }
 
     func beginSession(_ header: WorkoutSessionRecord) async throws {
@@ -1190,6 +1257,18 @@ private actor RuntimePersistence:
         []
     }
 
+    func migrateLegacyTelemetry(
+        _ request: LegacyTelemetryMigrationRequest
+    ) async -> LegacyTelemetryMigrationReport {
+        migrationCallCount += 1
+        migrationRequests.append(request)
+        if suspendMigration {
+            await withCheckedContinuation { migrationContinuation = $0 }
+        }
+        migrationCompletionCount += 1
+        return migrationReport
+    }
+
     func resumeBegin() {
         beginContinuation?.resume()
         beginContinuation = nil
@@ -1203,6 +1282,11 @@ private actor RuntimePersistence:
     func resumeAnalysis() {
         analysisContinuation?.resume()
         analysisContinuation = nil
+    }
+
+    func resumeMigration() {
+        migrationContinuation?.resume()
+        migrationContinuation = nil
     }
 
     func snapshot() -> Snapshot {
