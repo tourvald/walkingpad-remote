@@ -78,6 +78,19 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
         XCTAssertFalse(legacyClear.contains("pruneTrainingLogs"))
     }
 
+    func testStatisticsUIExposesExcludedWorkoutCompleteness() {
+        XCTAssertTrue(contentSource.contains("stats.excludedWorkoutCount"))
+        XCTAssertTrue(contentSource.contains("exclusionReasonCounts"))
+        XCTAssertTrue(contentSource.contains("Исключено из агрегатов"))
+    }
+
+    func testHistoryUIExposesExactImportedHealthKitLinkageProvenance() {
+        XCTAssertTrue(
+            contentSource.contains("telemetry-v2-imported-exact-healthkit-linkage")
+        )
+        XCTAssertTrue(contentSource.contains("exact import linkage"))
+    }
+
     private func source(_ fileName: String) -> String {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent()

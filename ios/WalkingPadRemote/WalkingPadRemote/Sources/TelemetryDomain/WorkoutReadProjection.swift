@@ -195,6 +195,7 @@ public struct WorkoutStatisticsProjection: Codable, Hashable, Sendable {
     public let queryableWorkoutCount: Int
     public let includedWorkoutCount: Int
     public let excludedWorkoutCount: Int
+    public let exclusionReasonCounts: [WorkoutStatisticsExclusionReason: Int]
     public let workoutsWithUnavailableDuration: Int
     public let workoutsWithUnavailableZones: Int
     public let isPartial: Bool
@@ -207,6 +208,7 @@ public struct WorkoutStatisticsProjection: Codable, Hashable, Sendable {
         queryableWorkoutCount: Int,
         includedWorkoutCount: Int,
         excludedWorkoutCount: Int,
+        exclusionReasonCounts: [WorkoutStatisticsExclusionReason: Int],
         workoutsWithUnavailableDuration: Int,
         workoutsWithUnavailableZones: Int,
         isPartial: Bool,
@@ -218,11 +220,18 @@ public struct WorkoutStatisticsProjection: Codable, Hashable, Sendable {
         self.queryableWorkoutCount = queryableWorkoutCount
         self.includedWorkoutCount = includedWorkoutCount
         self.excludedWorkoutCount = excludedWorkoutCount
+        self.exclusionReasonCounts = exclusionReasonCounts
         self.workoutsWithUnavailableDuration = workoutsWithUnavailableDuration
         self.workoutsWithUnavailableZones = workoutsWithUnavailableZones
         self.isPartial = isPartial
         self.diagnostics = diagnostics
     }
+}
+
+public enum WorkoutStatisticsExclusionReason: String, Codable, Hashable, Sendable {
+    case identity
+    case possibleDuplicate
+    case lifecycleOrQuality
 }
 
 public enum WorkoutExportSelection: Codable, Hashable, Sendable {

@@ -56,6 +56,22 @@ private struct WorkoutReadDiagnosticsAccumulator {
     }
 }
 
+private struct ExactImportedHealthKitEvidence {
+    let identifier: UUID?
+    let hasLinkageEvidence: Bool
+    let warnings: [String]
+    let storeFetchCount: Int
+    let maximumStoreFetchLimit: Int
+
+    static let none = ExactImportedHealthKitEvidence(
+        identifier: nil,
+        hasLinkageEvidence: false,
+        warnings: [],
+        storeFetchCount: 0,
+        maximumStoreFetchLimit: 0
+    )
+}
+
 public extension TelemetryStore {
     func fetchWorkoutHistoryPage(
         filter: WorkoutReadFilter,
@@ -123,7 +139,19 @@ public extension TelemetryStore {
 
                 switch candidate {
                 case let .native(model):
-                    projections.append(try nativeProjection(model))
+                    let healthKitEvidence = try exactImportedHealthKitEvidence(
+                        for: model,
+                        profileScope: filter.profileScope
+                    )
+                    for _ in 0..<healthKitEvidence.storeFetchCount {
+                        diagnostics.recordFetch(limit: healthKitEvidence.maximumStoreFetchLimit)
+                    }
+                    projections.append(
+                        try nativeProjection(
+                            model,
+                            exactImportedHealthKitEvidence: healthKitEvidence
+                        )
+                    )
                 case let .imported(model):
                     let candidateModels = try importedCandidateModels(model)
                     diagnostics.recordFetch(limit: max(1, try modelCandidateIDs(model).count))
@@ -174,6 +202,7 @@ public extension TelemetryStore {
         var queryableWorkoutCount = 0
         var includedWorkoutCount = 0
         var excludedWorkoutCount = 0
+        var exclusionReasonCounts: [WorkoutStatisticsExclusionReason: Int] = [:]
         var unavailableDurationCount = 0
         var unavailableZoneCount = 0
         var durationTotal = 0.0
@@ -198,6 +227,7 @@ public extension TelemetryStore {
                 queryableWorkoutCount += 1
                 guard item.quality.includedInStatistics else {
                     excludedWorkoutCount += 1
+                    exclusionReasonCounts[statisticsExclusionReason(for: item), default: 0] += 1
                     continue
                 }
                 includedWorkoutCount += 1
@@ -242,9 +272,12 @@ public extension TelemetryStore {
             queryableWorkoutCount: queryableWorkoutCount,
             includedWorkoutCount: includedWorkoutCount,
             excludedWorkoutCount: excludedWorkoutCount,
+            exclusionReasonCounts: exclusionReasonCounts,
             workoutsWithUnavailableDuration: unavailableDurationCount,
             workoutsWithUnavailableZones: unavailableZoneCount,
-            isPartial: unavailableDurationCount > 0 || unavailableZoneCount > 0,
+            isPartial: excludedWorkoutCount > 0
+                || unavailableDurationCount > 0
+                || unavailableZoneCount > 0,
             diagnostics: diagnostics.snapshot
         )
     }
@@ -625,7 +658,8 @@ private extension TelemetryStore {
     }
 
     func nativeProjection(
-        _ model: TelemetryWorkoutSessionV1
+        _ model: TelemetryWorkoutSessionV1,
+        exactImportedHealthKitEvidence: ExactImportedHealthKitEvidence
     ) throws -> WorkoutHistoryProjection {
         let configuration: TelemetrySessionConfigurationProjection? = try model.configuration.map {
             try Self.decode(
@@ -669,6 +703,12 @@ private extension TelemetryStore {
         let completed = model.lifecycleStateKey == SessionLifecycleState.completed.rawValue
         let adaptationEligible = completed
             && analysis?.qualityGradeKey == AnalysisQualityGrade.high.rawValue
+        let nativeHealthKitIdentifier = model.healthKitWorkoutIdentifier.flatMap(UUID.init)
+        let resolvedHealthKitIdentifier = nativeHealthKitIdentifier
+            ?? exactImportedHealthKitEvidence.identifier
+        let linkageProvenance = exactImportedHealthKitEvidence.hasLinkageEvidence
+            ? ["telemetry-v2-imported-exact-healthkit-linkage"]
+            : []
         return WorkoutHistoryProjection(
             id: "native:\(model.sessionID)",
             origin: .nativeV2,
@@ -680,7 +720,7 @@ private extension TelemetryStore {
             averageSpeed: averageSpeed,
             beatsPerMetre: nil,
             zoneSeconds: zoneSeconds,
-            healthKitWorkoutIdentifier: model.healthKitWorkoutIdentifier.flatMap(UUID.init),
+            healthKitWorkoutIdentifier: resolvedHealthKitIdentifier,
             telemetrySchemaVersion: model.telemetrySchemaVersion,
             appVersion: model.appVersion,
             buildNumber: model.buildNumber,
@@ -694,11 +734,118 @@ private extension TelemetryStore {
                 possibleDuplicate: false,
                 adaptationEligible: adaptationEligible,
                 includedInStatistics: completed,
-                provenance: ["telemetry-v2-native"],
+                provenance: ["telemetry-v2-native"] + linkageProvenance,
                 unavailableMetrics: unavailable,
-                warnings: model.incompleteReason.map { [$0] } ?? []
+                warnings: (model.incompleteReason.map { [$0] } ?? [])
+                    + exactImportedHealthKitEvidence.warnings
             )
         )
+    }
+
+    func exactImportedHealthKitEvidence(
+        for model: TelemetryWorkoutSessionV1,
+        profileScope: WorkoutReadProfileScope
+    ) throws -> ExactImportedHealthKitEvidence {
+        guard model.healthKitWorkoutIdentifier == nil,
+              case let .exact(profile) = profileScope else {
+            return .none
+        }
+        let alternateProfile = Self.alternateUUIDSpelling(for: profile)
+        guard model.profileLocalIdentifier == profile
+                || model.profileLocalIdentifier == alternateProfile else {
+            return .none
+        }
+
+        let candidateBatchSize = 64
+        let stableSessionID = model.sessionID
+        var candidates: [TelemetryLegacyWorkoutCandidateV2] = []
+        var storeFetchCount = 0
+        for origin in [
+            LegacyWorkoutCandidateOrigin.jsonl.rawValue,
+            LegacyWorkoutCandidateOrigin.workoutHistory.rawValue,
+        ] {
+            var candidateCursor: String?
+            repeat {
+                let descriptor: FetchDescriptor<TelemetryLegacyWorkoutCandidateV2>
+                if let cursor = candidateCursor {
+                    descriptor = FetchDescriptor(
+                        predicate: #Predicate {
+                            $0.originKindKey == origin
+                                && ($0.profileLocalIdentifier == profile
+                                    || $0.profileLocalIdentifier == alternateProfile)
+                                && $0.stableLegacySessionIdentifier == stableSessionID
+                                && $0.candidateID > cursor
+                        },
+                        sortBy: [SortDescriptor(\.candidateID)]
+                    )
+                } else {
+                    descriptor = FetchDescriptor(
+                        predicate: #Predicate {
+                            $0.originKindKey == origin
+                                && ($0.profileLocalIdentifier == profile
+                                    || $0.profileLocalIdentifier == alternateProfile)
+                                && $0.stableLegacySessionIdentifier == stableSessionID
+                        },
+                        sortBy: [SortDescriptor(\.candidateID)]
+                    )
+                }
+                var bounded = descriptor
+                bounded.fetchLimit = candidateBatchSize + 1
+                let page = try modelContext.fetch(bounded)
+                storeFetchCount += 1
+                candidates.append(contentsOf: page.prefix(candidateBatchSize))
+                guard candidates.count <= 256 else {
+                    throw TelemetryWorkoutReadError.corruptProjection(
+                        "too many exact imported linkage candidates for \(stableSessionID)"
+                    )
+                }
+                candidateCursor = page.count > candidateBatchSize
+                    ? page[candidateBatchSize - 1].candidateID
+                    : nil
+            } while candidateCursor != nil
+        }
+
+        let rawIdentifiers = candidates
+            .filter { !$0.identityUncertain }
+            .compactMap(\.healthKitWorkoutIdentifier)
+        guard !rawIdentifiers.isEmpty else {
+            return ExactImportedHealthKitEvidence(
+                identifier: nil,
+                hasLinkageEvidence: false,
+                warnings: [],
+                storeFetchCount: storeFetchCount,
+                maximumStoreFetchLimit: candidateBatchSize + 1
+            )
+        }
+        let parsedIdentifiers = rawIdentifiers.compactMap(UUID.init)
+        let identifiers = Set(parsedIdentifiers)
+        var warnings: [String] = []
+        if identifiers.count > 1 {
+            warnings.append("conflicting-healthkit-workout-identifier")
+        }
+        if parsedIdentifiers.count != rawIdentifiers.count {
+            warnings.append("invalid-healthkit-workout-identifier")
+        }
+        return ExactImportedHealthKitEvidence(
+            identifier: identifiers.count == 1 ? identifiers.first : nil,
+            hasLinkageEvidence: true,
+            warnings: warnings,
+            storeFetchCount: storeFetchCount,
+            maximumStoreFetchLimit: candidateBatchSize + 1
+        )
+    }
+
+    func statisticsExclusionReason(
+        for item: WorkoutHistoryProjection
+    ) -> WorkoutStatisticsExclusionReason {
+        if let identityStatus = item.quality.identityStatus,
+           identityStatus != LegacyIdentityStatus.exact.rawValue {
+            return .identity
+        }
+        if item.quality.possibleDuplicate {
+            return .possibleDuplicate
+        }
+        return .lifecycleOrQuality
     }
 
     func importedProjection(

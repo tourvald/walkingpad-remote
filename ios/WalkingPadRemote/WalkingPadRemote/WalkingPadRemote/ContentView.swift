@@ -2353,13 +2353,42 @@ private struct WorkoutStatsView: View {
 
                 zoneSummaryList(scope: scope, zoneSeconds: stats?.zoneSeconds)
 
-                if stats?.isPartial == true {
+                if let stats, stats.excludedWorkoutCount > 0 {
+                    Text(
+                        "Исключено из агрегатов: \(stats.excludedWorkoutCount) · "
+                            + statisticsExclusionReasonText(stats.exclusionReasonCounts)
+                            + ". Валидные суммы сохранены; исключённые тренировки не считаются нулями."
+                    )
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                }
+
+                if let stats,
+                   stats.workoutsWithUnavailableDuration > 0
+                    || stats.workoutsWithUnavailableZones > 0 {
                     Text("Часть метрик недоступна; пропуски показаны как «—» и не заменены нулями.")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
             }
         }
+    }
+
+    private func statisticsExclusionReasonText(
+        _ counts: [WorkoutStatisticsExclusionReason: Int]
+    ) -> String {
+        counts.keys.sorted { $0.rawValue < $1.rawValue }.map { reason in
+            let title: String
+            switch reason {
+            case .identity:
+                title = "identity"
+            case .possibleDuplicate:
+                title = "duplicate"
+            case .lifecycleOrQuality:
+                title = "lifecycle/quality"
+            }
+            return "\(title): \(counts[reason, default: 0])"
+        }.joined(separator: ", ")
     }
 
     private var zoneRanges: [String] {
@@ -2667,7 +2696,7 @@ private struct WorkoutHistoryCard: View {
                                         .foregroundColor(.orange)
                                 }
                                 if let healthKitID = entry.healthKitWorkoutIdentifier {
-                                    Text("HealthKit: \(healthKitID.uuidString.lowercased())")
+                                    Text(healthKitLinkageText(for: entry, identifier: healthKitID))
                                         .font(.caption2.monospaced())
                                         .foregroundColor(.secondary)
                                         .textSelection(.enabled)
@@ -2734,6 +2763,16 @@ private struct WorkoutHistoryCard: View {
         let lifecycle = entry.quality.lifecycleState
         let grade = entry.quality.analysisGrade.map { " · \($0)" } ?? ""
         return "\(origin) · \(lifecycle)\(grade)"
+    }
+
+    private func healthKitLinkageText(
+        for entry: WorkoutHistoryProjection,
+        identifier: UUID
+    ) -> String {
+        let provenance = entry.quality.provenance.contains(
+            "telemetry-v2-imported-exact-healthkit-linkage"
+        ) ? " · exact import linkage" : " · native linkage"
+        return "HealthKit: \(identifier.uuidString.lowercased())\(provenance)"
     }
 }
 

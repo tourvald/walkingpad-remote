@@ -144,7 +144,9 @@ incomplete, uncertain, duplicate-candidate, and low-quality records remain
 queryable with explicit provenance and quality. Statistics consume only
 available fields from identity-safe, non-duplicate records; adaptation
 eligibility remains a separate, stricter decision and imported evidence remains
-adaptation-ineligible.
+adaptation-ineligible. Excluded queryable workouts make aggregate completeness
+partial and expose a reason-class count without changing valid totals or
+substituting zero.
 
 The V2 developer export is a read-only bundle containing versioned raw JSONL,
 normalized CSV, session-summary JSONL/CSV, and a manifest describing schema,

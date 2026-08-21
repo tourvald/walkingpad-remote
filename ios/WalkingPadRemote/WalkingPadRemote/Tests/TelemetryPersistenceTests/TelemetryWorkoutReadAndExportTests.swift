@@ -182,7 +182,8 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
             batchSize: 50
         )
         XCTAssertEqual(statistics.queryableWorkoutCount, 10)
-        XCTAssertLessThanOrEqual(statistics.diagnostics.storeFetchCount, 4)
+        XCTAssertLessThanOrEqual(statistics.diagnostics.storeFetchCount, 24)
+        XCTAssertLessThanOrEqual(statistics.diagnostics.maximumStoreFetchLimit, 101)
         XCTAssertEqual(statistics.diagnostics.hydratedTimeSeriesRecordCount, 0)
     }
 
@@ -301,6 +302,219 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
         XCTAssertNil(item.zoneSeconds)
         XCTAssertFalse(item.quality.adaptationEligible)
         XCTAssertTrue(item.quality.includedInStatistics)
+    }
+
+    func testExactImportedDuplicateEnrichesNativeHealthKitLinkageInHistoryAndExport() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let startedAt = Date(timeIntervalSince1970: 1_900_150_000)
+        let native = session(index: 80, profile: "profile-historical", startedAt: startedAt)
+        let healthKitIdentifier = uuid(880_001)
+        try await store.insertSession(native)
+
+        let sourceID = "source-historical-healthkit"
+        try await importCandidates(
+            [
+                LegacyWorkoutCandidateDraft(
+                    candidateID: "candidate-historical-healthkit",
+                    sourceItemIdentityKey: "source-item-historical-healthkit",
+                    sourceID: sourceID,
+                    origin: .jsonl,
+                    profileLocalIdentifier: "profile-historical",
+                    workoutIdentifier: nil,
+                    healthKitWorkoutIdentifier: healthKitIdentifier.uuidString.lowercased(),
+                    stableLegacySessionIdentifier: native.sessionID.description,
+                    startedAt: startedAt,
+                    endedAt: startedAt.addingTimeInterval(600),
+                    identityUncertain: false,
+                    possibleDuplicate: false,
+                    summary: importedSummary(
+                        malformedRecordCount: 0,
+                        complete: true,
+                        warnings: []
+                    )
+                ),
+            ],
+            sourceID: sourceID,
+            store: store,
+            now: startedAt
+        )
+
+        let page = try await store.fetchWorkoutHistoryPage(
+            filter: WorkoutReadFilter(profileScope: .exact("profile-historical")),
+            after: nil,
+            limit: 10
+        )
+        let item = try XCTUnwrap(page.items.first)
+        XCTAssertEqual(page.items.count, 1)
+        XCTAssertEqual(item.origin, .nativeV2)
+        XCTAssertEqual(item.healthKitWorkoutIdentifier, healthKitIdentifier)
+        XCTAssertTrue(
+            item.quality.provenance.contains("telemetry-v2-imported-exact-healthkit-linkage")
+        )
+
+        let artifact = try await store.exportWorkouts(
+            WorkoutExportRequest(
+                filter: WorkoutReadFilter(profileScope: .exact("profile-historical")),
+                selection: .all,
+                batchSize: 10
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: artifact.directoryURL) }
+        let summary = try String(
+            contentsOf: artifact.directoryURL.appendingPathComponent("session_summary_v1.jsonl"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(summary.lowercased().contains(healthKitIdentifier.uuidString.lowercased()))
+        XCTAssertTrue(summary.contains("telemetry-v2-imported-exact-healthkit-linkage"))
+    }
+
+    func testConflictingExactImportedHealthKitEvidenceDoesNotEnrichNativeLinkage() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let startedAt = Date(timeIntervalSince1970: 1_900_160_000)
+        let native = session(index: 81, profile: "profile-conflict", startedAt: startedAt)
+        try await store.insertSession(native)
+
+        let sourceID = "source-conflicting-healthkit"
+        let candidates: [LegacyWorkoutCandidateDraft] = [
+            LegacyWorkoutCandidateDraft(
+                candidateID: "candidate-conflicting-healthkit-a",
+                sourceItemIdentityKey: "source-item-conflicting-healthkit-a",
+                sourceID: sourceID,
+                origin: .jsonl,
+                profileLocalIdentifier: "profile-conflict",
+                workoutIdentifier: nil,
+                healthKitWorkoutIdentifier: uuid(881_001).uuidString.lowercased(),
+                stableLegacySessionIdentifier: native.sessionID.description,
+                startedAt: startedAt,
+                endedAt: startedAt.addingTimeInterval(600),
+                identityUncertain: false,
+                possibleDuplicate: false,
+                summary: importedSummary(
+                    malformedRecordCount: 0,
+                    complete: true,
+                    warnings: []
+                )
+            ),
+            LegacyWorkoutCandidateDraft(
+                candidateID: "candidate-conflicting-healthkit-b",
+                sourceItemIdentityKey: "source-item-conflicting-healthkit-b",
+                sourceID: sourceID,
+                origin: .workoutHistory,
+                profileLocalIdentifier: "profile-conflict",
+                workoutIdentifier: nil,
+                healthKitWorkoutIdentifier: uuid(881_002).uuidString.lowercased(),
+                stableLegacySessionIdentifier: native.sessionID.description,
+                startedAt: startedAt,
+                endedAt: startedAt.addingTimeInterval(600),
+                identityUncertain: false,
+                possibleDuplicate: false,
+                summary: importedSummary(
+                    malformedRecordCount: 0,
+                    complete: true,
+                    warnings: []
+                )
+            ),
+        ]
+        try await importCandidates(
+            candidates,
+            sourceID: sourceID,
+            store: store,
+            now: startedAt
+        )
+
+        let page = try await store.fetchWorkoutHistoryPage(
+            filter: WorkoutReadFilter(profileScope: .exact("profile-conflict")),
+            after: nil,
+            limit: 10
+        )
+        let item = try XCTUnwrap(page.items.first { $0.origin == .nativeV2 })
+        XCTAssertNil(item.healthKitWorkoutIdentifier)
+        XCTAssertTrue(item.quality.warnings.contains("conflicting-healthkit-workout-identifier"))
+        XCTAssertTrue(
+            item.quality.provenance.contains("telemetry-v2-imported-exact-healthkit-linkage")
+        )
+    }
+
+    func testStatisticsExclusionAloneMarksPartialWithoutChangingSafeTotals() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let startedAt = Date(timeIntervalSince1970: 1_900_170_000)
+        let sourceID = "source-statistics-exclusion"
+        let safeSummary = LegacyWorkoutCandidateSummary(
+            timestampDerivedDurationMicroseconds: 600_000_000,
+            legacySummaryDurationSeconds: nil,
+            targetBeatsPerMinute: 135,
+            timestampDerivedAverageHeartRateBeatsPerMinute: 130,
+            legacySummaryAverageHeartRateBeatsPerMinute: nil,
+            legacyEstimatedAverageSpeedKilometresPerHour: 5.0,
+            timestampDerivedZoneMicroseconds: [
+                60_000_000, 120_000_000, 180_000_000, 120_000_000, 120_000_000,
+            ],
+            legacySummaryZoneSeconds: nil,
+            heartRateCoveredMicroseconds: 600_000_000,
+            heartRateUncoveredMicroseconds: 0,
+            heartRateSampleCount: 600,
+            missingTimestampCount: 0,
+            malformedRecordCount: 0,
+            ignoredStepFieldCount: 0,
+            legacySessionEvidenceComplete: true,
+            warnings: [],
+            conflicts: []
+        )
+        try await importCandidates(
+            [
+                LegacyWorkoutCandidateDraft(
+                    candidateID: "candidate-statistics-safe",
+                    sourceItemIdentityKey: "source-item-statistics-safe",
+                    sourceID: sourceID,
+                    origin: .jsonl,
+                    profileLocalIdentifier: "profile-statistics",
+                    workoutIdentifier: "workout-statistics-safe",
+                    healthKitWorkoutIdentifier: nil,
+                    stableLegacySessionIdentifier: nil,
+                    startedAt: startedAt,
+                    endedAt: startedAt.addingTimeInterval(600),
+                    identityUncertain: false,
+                    possibleDuplicate: false,
+                    summary: safeSummary
+                ),
+                LegacyWorkoutCandidateDraft(
+                    candidateID: "candidate-statistics-uncertain",
+                    sourceItemIdentityKey: "source-item-statistics-uncertain",
+                    sourceID: sourceID,
+                    origin: .jsonl,
+                    profileLocalIdentifier: "profile-statistics",
+                    workoutIdentifier: nil,
+                    healthKitWorkoutIdentifier: nil,
+                    stableLegacySessionIdentifier: nil,
+                    startedAt: startedAt.addingTimeInterval(-900),
+                    endedAt: nil,
+                    identityUncertain: true,
+                    possibleDuplicate: false,
+                    summary: importedSummary(
+                        malformedRecordCount: 0,
+                        complete: true,
+                        warnings: []
+                    )
+                ),
+            ],
+            sourceID: sourceID,
+            store: store,
+            now: startedAt
+        )
+
+        let statistics = try await store.fetchWorkoutStatistics(
+            filter: WorkoutReadFilter(profileScope: .exact("profile-statistics")),
+            batchSize: 10
+        )
+        XCTAssertEqual(statistics.queryableWorkoutCount, 2)
+        XCTAssertEqual(statistics.includedWorkoutCount, 1)
+        XCTAssertEqual(statistics.excludedWorkoutCount, 1)
+        XCTAssertEqual(statistics.totalDurationSeconds, 600)
+        XCTAssertEqual(statistics.zoneSeconds, [60, 120, 180, 120, 120])
+        XCTAssertEqual(statistics.workoutsWithUnavailableDuration, 0)
+        XCTAssertEqual(statistics.workoutsWithUnavailableZones, 0)
+        XCTAssertEqual(statistics.exclusionReasonCounts, [.identity: 1])
+        XCTAssertTrue(statistics.isPartial)
     }
 
     func testExportStreamsBatchesOmitsUnnecessaryIdentifiersAndManifestRoundTrips() async throws {
@@ -585,6 +799,41 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
             warnings: warnings,
             conflicts: []
         )
+    }
+
+    private func importCandidates(
+        _ candidates: [LegacyWorkoutCandidateDraft],
+        sourceID: String,
+        store: TelemetryStore,
+        now: Date
+    ) async throws {
+        let definition = LegacyMigrationSourceDefinition(
+            sourceID: sourceID,
+            kind: .jsonl,
+            contentHashDigest: String(repeating: "e", count: 64),
+            locator: "\(sourceID).jsonl",
+            exactProfileLocalIdentifier: candidates.first?.profileLocalIdentifier
+        )
+        _ = try await store.beginLegacyMigrationSource(
+            definition,
+            importerVersion: LegacyTelemetryMigrator.importerVersion,
+            emptyAggregateStatePayload: Data("{}".utf8),
+            now: now
+        )
+        _ = try await store.commitLegacyMigrationBatch(
+            sourceID: sourceID,
+            records: [],
+            candidates: candidates,
+            checkpointByteOffset: 100,
+            checkpointRecordIndex: Int64(candidates.count),
+            parsedRecordCount: Int64(candidates.count),
+            malformedRecordCount: 0,
+            warningCount: 0,
+            aggregateStatePayload: Data("{}".utf8),
+            completing: true,
+            now: now
+        )
+        _ = try await store.reconcileLegacyWorkoutCandidates()
     }
 
     private func uuid(_ value: Int) -> UUID {
