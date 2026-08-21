@@ -507,12 +507,9 @@ extension TelemetryStore {
             code: "conflicting-stable-session-identifier",
             into: &conflicts
         )
-        appendConflict(
-            lhs.profileLocalIdentifier,
-            rhs.profileLocalIdentifier,
-            code: "conflicting-profile-ownership",
-            into: &conflicts
-        )
+        if lhs.profileLocalIdentifier != rhs.profileLocalIdentifier {
+            conflicts.append("conflicting-profile-ownership")
+        }
         return conflicts.sorted()
     }
 
@@ -549,6 +546,34 @@ extension TelemetryStore {
                 try Self.decode([String].self, from: existing.candidateIDsPayload)
             )
         }
+        var absorbedProvisionalWorkouts: [TelemetryLegacyImportedWorkoutV2] = []
+        var absorbedImportedWorkoutIDs: Set<String> = []
+        var pendingCandidateIDs = candidateIDs.sorted()
+        var pendingIndex = 0
+        while pendingIndex < pendingCandidateIDs.count {
+            let candidateID = pendingCandidateIDs[pendingIndex]
+            pendingIndex += 1
+            let provisionalKey = "candidate:\(candidateID)"
+            guard provisionalKey != canonicalIdentityKey,
+                  let provisional = try importedWorkoutModel(provisionalKey),
+                  absorbedImportedWorkoutIDs.insert(provisional.importedWorkoutID).inserted else {
+                continue
+            }
+            absorbedProvisionalWorkouts.append(provisional)
+            let provisionalCandidateIDs = try Self.decode(
+                [String].self,
+                from: provisional.candidateIDsPayload
+            )
+            for absorbedCandidateID in provisionalCandidateIDs
+            where candidateIDs.insert(absorbedCandidateID).inserted {
+                guard candidateIDs.count <= 256 else {
+                    throw TelemetryStoreError.conflictingStableIdentity(
+                        "legacy-imported-workout-candidate-limit"
+                    )
+                }
+                pendingCandidateIDs.append(absorbedCandidateID)
+            }
+        }
         guard candidateIDs.count <= 256 else {
             throw TelemetryStoreError.conflictingStableIdentity(
                 "legacy-imported-workout-candidate-limit"
@@ -580,6 +605,8 @@ extension TelemetryStore {
             .max() ?? candidates.compactMap(\.endedAt).max()
         let candidatePayload = try Self.encode(candidateIDs.sorted())
         let summaryPayload = try Self.encode(resolved)
+        let retainedPossibleDuplicate = possibleDuplicate
+            || absorbedProvisionalWorkouts.contains(where: \.possibleDuplicate)
 
         if let existing {
             try explicitTransaction {
@@ -587,10 +614,14 @@ extension TelemetryStore {
                 existing.startedAt = startedAt
                 existing.endedAt = endedAt
                 existing.identityStatusKey = finalStatus.rawValue
-                existing.possibleDuplicate = existing.possibleDuplicate || possibleDuplicate
+                existing.possibleDuplicate = existing.possibleDuplicate
+                    || retainedPossibleDuplicate
                 existing.adaptationQualityEligible = false
                 existing.candidateIDsPayload = candidatePayload
                 existing.resolvedSummaryPayload = summaryPayload
+                for provisional in absorbedProvisionalWorkouts {
+                    modelContext.delete(provisional)
+                }
             }
             return false
         }
@@ -603,14 +634,17 @@ extension TelemetryStore {
                     startedAt: startedAt,
                     endedAt: endedAt,
                     identityStatusKey: finalStatus.rawValue,
-                    possibleDuplicate: possibleDuplicate,
+                    possibleDuplicate: retainedPossibleDuplicate,
                     adaptationQualityEligible: false,
                     candidateIDsPayload: candidatePayload,
                     resolvedSummaryPayload: summaryPayload
                 )
             )
+            for provisional in absorbedProvisionalWorkouts {
+                modelContext.delete(provisional)
+            }
         }
-        return true
+        return absorbedProvisionalWorkouts.isEmpty
     }
 
     private func resolveSummary(
@@ -704,11 +738,11 @@ extension TelemetryStore {
         }
         var conflicts = summaries.flatMap(\.summary.conflicts)
         var warnings = Set(summaries.flatMap(\.summary.warnings))
-        let duration = resolvedValue(durationValues, preferredPrefix: "legacy-jsonl-timestamp-derived")
+        let duration = resolvedValue(durationValues, preferredPrefix: "legacy-jsonl")
         let target = resolvedValue(targetValues, preferredPrefix: "legacy-jsonl")
         let averageHR = resolvedValue(
             averageHeartRateValues,
-            preferredPrefix: "legacy-jsonl-timestamp-derived"
+            preferredPrefix: "legacy-jsonl"
         )
         let speed = resolvedValue(speedValues, preferredPrefix: "legacy-jsonl")
         let zones = resolvedValue(zoneValues, preferredPrefix: "legacy-jsonl-timestamp-derived")
