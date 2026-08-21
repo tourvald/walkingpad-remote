@@ -135,6 +135,31 @@ import gates. At its completion:
 The shadow writer MUST NOT gain product fields or features, drive UI/analysis,
 delete V2 evidence, or become a permanent fallback.
 
+The accepted #35 implementation exposes history through a stable, bounded
+profile/date keyset cursor. History pages project persisted session and latest
+usable analysis rows only; list loading MUST NOT hydrate HR, treadmill, event,
+or frame time series. Statistics use the same profile/date scope and preserve
+missing values as unavailable rather than synthesizing zero. Imported,
+incomplete, uncertain, duplicate-candidate, and low-quality records remain
+queryable with explicit provenance and quality. Statistics consume only
+available fields from identity-safe, non-duplicate records; adaptation
+eligibility remains a separate, stricter decision and imported evidence remains
+adaptation-ineligible.
+
+The V2 developer export is a read-only bundle containing versioned raw JSONL,
+normalized CSV, session-summary JSONL/CSV, and a manifest describing schema,
+algorithm/analyzer versions, quality, omitted identifiers, and the health-data
+privacy warning. Export reads are streamed in bounded batches. Cancellation or
+failure may remove only the temporary export bundle and MUST preserve V2 and
+legacy source evidence. HealthKit workout UUID/version association remains an
+explicit, conflict-checked V2 session link and is visible in history/export
+projections.
+
+This cutover does not change the deployed SwiftData schema version. It remains
+compatible with the accepted #34 store and importer. Legacy JSONL and
+`workout_history_v1` evidence, the isolated shadow writer, and importer/parity
+support remain until #37 evidence and #36 retirement authorize removal.
+
 ## Physical real-evidence gate (#37)
 
 Gate #37 consumes ordinary real workout evidence supplied by the user/PM for

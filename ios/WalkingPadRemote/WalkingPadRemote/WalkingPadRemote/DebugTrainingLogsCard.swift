@@ -40,9 +40,6 @@ struct DebugTrainingLogsCard: View {
     let onToggleTestRun: () -> Void
     let onExportRaw: (TrainingLogCsvExportScope) -> Void
     let onExportSessionSummary: (TrainingLogCsvExportScope) -> Void
-    let onClear: () -> Void
-
-    @State private var showClearConfirmation = false
 
     private let metricColumns = [
         GridItem(.flexible(), spacing: 10),
@@ -81,7 +78,9 @@ struct DebugTrainingLogsCard: View {
                 }
 
                 metricsSection(title: "Активный профиль", items: presentation.profileMetrics)
-                metricsSection(title: "Всё устройство", items: presentation.deviceMetrics)
+                if !presentation.deviceMetrics.isEmpty {
+                    metricsSection(title: "Всё устройство", items: presentation.deviceMetrics)
+                }
                 metricsSection(
                     title: "Telemetry V2 Writer",
                     items: presentation.writerHealthMetrics
@@ -132,18 +131,9 @@ struct DebugTrainingLogsCard: View {
                     .disabled(!presentation.canExportSessionSummary)
                 }
 
-                Button {
-                    showClearConfirmation = true
-                } label: {
-                    DebugActionTileLabel(
-                        title: "Clear Training Logs",
-                        subtitle: presentation.clearSubtitle,
-                        tint: .red,
-                        enabled: presentation.canClear
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(!presentation.canClear)
+                Text(presentation.clearSubtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
 
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(presentation.detailLines.enumerated()), id: \.offset) { _, line in
@@ -159,14 +149,6 @@ struct DebugTrainingLogsCard: View {
                         .foregroundColor(.secondary)
                 }
             }
-        }
-        .alert("Clear Training Logs?", isPresented: $showClearConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Clear", role: .destructive) {
-                onClear()
-            }
-        } message: {
-            Text(presentation.clearConfirmationMessage)
         }
     }
 

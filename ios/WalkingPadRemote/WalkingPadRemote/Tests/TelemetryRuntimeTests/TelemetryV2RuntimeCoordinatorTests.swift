@@ -7,6 +7,80 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
+    func testReadProjectionFailureCannotChangeRuntimeLifecycleOrSelectedControlOutput() async throws {
+        let persistence = RuntimePersistence()
+        let coordinator = TelemetryV2RuntimeCoordinator { persistence }
+        coordinator.prepareStoreAndRecover()
+        try await eventually { coordinator.status == .idle }
+
+        do {
+            _ = try await coordinator.fetchWorkoutHistoryPage(
+                filter: WorkoutReadFilter(profileScope: .exact("profile-30")),
+                after: nil,
+                limit: 50
+            )
+            XCTFail("The injected read failure must be surfaced")
+        } catch let error as TelemetryWorkoutReadError {
+            XCTAssertEqual(error, .unavailable("injected-read-failure"))
+        }
+        XCTAssertEqual(coordinator.status, .idle)
+
+        coordinator.beginSession(Self.descriptor())
+        try await eventually {
+            if case .active = coordinator.status { return true }
+            return false
+        }
+        let selected = Issue50ProductionDecisionFixture.ControlOutput(
+            desiredSpeedKilometresPerHour: 4.1,
+            deviceTargetSpeedKilometresPerHour: 4.1,
+            commandLabel: "SPEED 4.1 km/h (HR)"
+        )
+        do {
+            _ = try await coordinator.fetchWorkoutStatistics(
+                filter: WorkoutReadFilter(profileScope: .exact("profile-30")),
+                batchSize: 50
+            )
+            XCTFail("The injected statistics failure must be surfaced")
+        } catch let error as TelemetryWorkoutReadError {
+            XCTAssertEqual(error, .unavailable("injected-read-failure"))
+        }
+        let output = Self.alreadySelectedControlOutput(selected) { nil }
+        XCTAssertEqual(output, selected)
+        if case .active = coordinator.status {
+            // Read failure is diagnostic-only and cannot stop or degrade the recorder lifecycle.
+        } else {
+            XCTFail("Read projection failure must not change active runtime lifecycle")
+        }
+
+        coordinator.endSession(reason: "read-failure-isolation")
+        try await eventually { await persistence.finalizations.count == 1 }
+    }
+
+    func testReadBeforeFailedStorePreparationSurfacesExplicitUnavailableError() async throws {
+        enum FactoryFailure: Error { case unavailable }
+        let coordinator = TelemetryV2RuntimeCoordinator {
+            throw FactoryFailure.unavailable
+        }
+
+        do {
+            _ = try await coordinator.fetchWorkoutHistoryPage(
+                filter: WorkoutReadFilter(profileScope: .exact("profile-30")),
+                after: nil,
+                limit: 50
+            )
+            XCTFail("Store preparation failure must be explicit")
+        } catch let error as TelemetryWorkoutReadError {
+            guard case let .unavailable(reason) = error else {
+                return XCTFail("Unexpected read error: \(error)")
+            }
+            XCTAssertTrue(reason.hasPrefix("store-or-recovery-failed:"))
+        }
+        guard case .unavailable = coordinator.status else {
+            return XCTFail("Read failure must preserve the explicit runtime diagnostic")
+        }
+    }
+
+
     func testLegacyMigrationRunsOnceInBackgroundAndCannotOwnRuntimeLifecycle() async throws {
         let persistence = RuntimePersistence(
             suspendMigration: true,
@@ -1158,7 +1232,8 @@ private final class ManualRuntimeClock: TelemetryV2RuntimeClock, @unchecked Send
 private actor RuntimePersistence:
     TelemetryRecorderPersistence,
     TelemetryPostWorkoutAnalysisCapability,
-    LegacyTelemetryMigrationCapability
+    LegacyTelemetryMigrationCapability,
+    TelemetryWorkoutReadCapability
 {
     struct Snapshot: Sendable {
         let headers: [WorkoutSessionRecord]
@@ -1236,6 +1311,25 @@ private actor RuntimePersistence:
             throw TelemetryPersistenceOperationError.terminal(code: "test-finalize")
         }
         finalizations.append(finalization)
+    }
+
+    func fetchWorkoutHistoryPage(
+        filter: WorkoutReadFilter,
+        after cursor: WorkoutHistoryCursor?,
+        limit: Int
+    ) async throws -> WorkoutHistoryPage {
+        throw TelemetryWorkoutReadError.unavailable("injected-read-failure")
+    }
+
+    func fetchWorkoutStatistics(
+        filter: WorkoutReadFilter,
+        batchSize: Int
+    ) async throws -> WorkoutStatisticsProjection {
+        throw TelemetryWorkoutReadError.unavailable("injected-read-failure")
+    }
+
+    func exportWorkouts(_ request: WorkoutExportRequest) async throws -> WorkoutExportArtifact {
+        throw TelemetryWorkoutReadError.unavailable("injected-read-failure")
     }
 
     func unfinishedSessions() async throws -> [WorkoutSessionRecord] {

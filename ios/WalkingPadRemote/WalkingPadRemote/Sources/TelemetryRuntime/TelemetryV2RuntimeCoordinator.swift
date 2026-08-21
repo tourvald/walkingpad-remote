@@ -371,6 +371,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         @Sendable () throws -> LegacyTelemetryMigrationRequest
     public typealias StatusHandler = @Sendable (TelemetryV2RuntimeStatus) -> Void
     public typealias WriterHealthHandler = @Sendable (TelemetryV2WriterHealthSnapshot) -> Void
+    public typealias ProjectionChangeHandler = @Sendable () -> Void
 
     fileprivate struct PendingHeartRateControlDecision: Sendable {
         let decisionID: DecisionID
@@ -506,6 +507,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private let persistenceFactory: PersistenceFactory
     private let statusHandler: StatusHandler?
     private let writerHealthHandler: WriterHealthHandler?
+    private let projectionChangeHandler: ProjectionChangeHandler?
     private let runtimeClock: any TelemetryV2RuntimeClock
     private let installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?
     private var persistence: (any TelemetryRecorderPersistence)?
@@ -524,13 +526,15 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         persistenceFactory: @escaping PersistenceFactory,
         runtimeClock: any TelemetryV2RuntimeClock = ContinuousTelemetryV2RuntimeClock(),
         statusHandler: StatusHandler? = nil,
-        writerHealthHandler: WriterHealthHandler? = nil
+        writerHealthHandler: WriterHealthHandler? = nil,
+        projectionChangeHandler: ProjectionChangeHandler? = nil
     ) {
         self.init(
             persistenceFactory: persistenceFactory,
             runtimeClock: runtimeClock,
             statusHandler: statusHandler,
             writerHealthHandler: writerHealthHandler,
+            projectionChangeHandler: projectionChangeHandler,
             installationDidPublishForTesting: nil
         )
     }
@@ -540,12 +544,14 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         runtimeClock: any TelemetryV2RuntimeClock = ContinuousTelemetryV2RuntimeClock(),
         statusHandler: StatusHandler? = nil,
         writerHealthHandler: WriterHealthHandler? = nil,
+        projectionChangeHandler: ProjectionChangeHandler? = nil,
         installationDidPublishForTesting: @escaping @Sendable (SessionID) -> Void
     ) {
         self.persistenceFactory = persistenceFactory
         self.runtimeClock = runtimeClock
         self.statusHandler = statusHandler
         self.writerHealthHandler = writerHealthHandler
+        self.projectionChangeHandler = projectionChangeHandler
         self.installationDidPublishForTesting = installationDidPublishForTesting
     }
 
@@ -554,12 +560,14 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         runtimeClock: any TelemetryV2RuntimeClock,
         statusHandler: StatusHandler?,
         writerHealthHandler: WriterHealthHandler?,
+        projectionChangeHandler: ProjectionChangeHandler?,
         installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?
     ) {
         self.persistenceFactory = persistenceFactory
         self.runtimeClock = runtimeClock
         self.statusHandler = statusHandler
         self.writerHealthHandler = writerHealthHandler
+        self.projectionChangeHandler = projectionChangeHandler
         self.installationDidPublishForTesting = installationDidPublishForTesting
     }
 
@@ -569,6 +577,79 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
 
     public var writerHealthSnapshot: TelemetryV2WriterHealthSnapshot {
         withLock { storedWriterHealthSnapshot }
+    }
+
+    public func fetchWorkoutHistoryPage(
+        filter: WorkoutReadFilter,
+        after cursor: WorkoutHistoryCursor?,
+        limit: Int
+    ) async throws -> WorkoutHistoryPage {
+        let reader = try await requireWorkoutReadCapability()
+        return try await reader.fetchWorkoutHistoryPage(
+            filter: filter,
+            after: cursor,
+            limit: limit
+        )
+    }
+
+    public func fetchWorkoutStatistics(
+        filter: WorkoutReadFilter,
+        batchSize: Int = 100
+    ) async throws -> WorkoutStatisticsProjection {
+        let reader = try await requireWorkoutReadCapability()
+        return try await reader.fetchWorkoutStatistics(
+            filter: filter,
+            batchSize: batchSize
+        )
+    }
+
+    public func exportWorkouts(
+        _ request: WorkoutExportRequest
+    ) async throws -> WorkoutExportArtifact {
+        let reader = try await requireWorkoutReadCapability()
+        return try await reader.exportWorkouts(request)
+    }
+
+    public func associateHealthKitWorkout(
+        sessionID: SessionID,
+        workoutIdentifier: UUID
+    ) async throws {
+        let linkage = try await requireHealthKitWorkoutLinkageCapability()
+        try await linkage.associateHealthKitWorkout(
+            sessionID: sessionID,
+            workoutIdentifier: workoutIdentifier
+        )
+        projectionChangeHandler?()
+    }
+
+    private func requireWorkoutReadCapability() async throws
+        -> any TelemetryWorkoutReadCapability
+    {
+        prepareStoreAndRecover()
+        for _ in 0..<250 {
+            try Task.checkCancellation()
+            if let reader = workoutReadCapability() { return reader }
+            if case let .unavailable(reason) = status {
+                throw TelemetryWorkoutReadError.unavailable(reason)
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw TelemetryWorkoutReadError.unavailable("telemetry-v2-store-prepare-timeout")
+    }
+
+    private func requireHealthKitWorkoutLinkageCapability() async throws
+        -> any TelemetryHealthKitWorkoutLinkageCapability
+    {
+        prepareStoreAndRecover()
+        for _ in 0..<250 {
+            try Task.checkCancellation()
+            if let linkage = healthKitWorkoutLinkageCapability() { return linkage }
+            if case let .unavailable(reason) = status {
+                throw TelemetryWorkoutReadError.unavailable(reason)
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw TelemetryWorkoutReadError.unavailable("telemetry-v2-store-prepare-timeout")
     }
 
     public func prepareStoreAndRecover() {
@@ -589,6 +670,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 if let analyzer = persistence as? any TelemetryPostWorkoutAnalysisCapability {
                     _ = await analyzer.resumePendingWorkoutAnalyses()
                 }
+                self?.projectionChangeHandler?()
             } catch {
                 self?.storePreparationFailed(error)
             }
@@ -667,6 +749,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             if let analyzer = self?.postWorkoutAnalysisCapability() {
                 _ = await analyzer.analyzeTerminalWorkout(sessionID: session.sessionID)
             }
+            self?.projectionChangeHandler?()
         }
     }
 
@@ -816,6 +899,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         Task.detached(priority: .utility) {
             guard let request = try? work.1() else { return }
             _ = await work.0.migrateLegacyTelemetry(request)
+            self.projectionChangeHandler?()
         }
     }
 
@@ -928,6 +1012,16 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             guard activeSession?.generation == generation else { return nil }
             return activeSession?.session
         }
+    }
+
+    private func workoutReadCapability() -> (any TelemetryWorkoutReadCapability)? {
+        withLock { persistence as? any TelemetryWorkoutReadCapability }
+    }
+
+    private func healthKitWorkoutLinkageCapability()
+        -> (any TelemetryHealthKitWorkoutLinkageCapability)?
+    {
+        withLock { persistence as? any TelemetryHealthKitWorkoutLinkageCapability }
     }
 
     private func postWorkoutAnalysisCapability()

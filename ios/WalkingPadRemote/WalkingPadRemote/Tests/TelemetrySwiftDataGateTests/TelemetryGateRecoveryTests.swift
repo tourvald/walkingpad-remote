@@ -113,6 +113,14 @@ final class TelemetryGateRecoveryTests: XCTestCase {
     }
 
     private func crashWorkerExecutableURL() throws -> URL {
+        let testProductsDirectory = Bundle(for: Self.self).bundleURL
+            .deletingLastPathComponent()
+        let colocatedWorker = testProductsDirectory
+            .appendingPathComponent("TelemetryGateCrashWorker", isDirectory: false)
+        if FileManager.default.isExecutableFile(atPath: colocatedWorker.path) {
+            return colocatedWorker
+        }
+
         let buildRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build", isDirectory: true)
         guard let enumerator = FileManager.default.enumerator(
