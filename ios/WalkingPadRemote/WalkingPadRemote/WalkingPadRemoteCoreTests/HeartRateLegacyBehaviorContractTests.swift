@@ -291,20 +291,104 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(hubBody.contains("onStart()"))
         XCTAssertFalse(hubBody.contains("BluetoothManager"))
 
-        XCTAssertTrue(contentBody.contains("private var isTrainingHubPreviewLaunch: Bool"))
+        XCTAssertTrue(contentBody.contains("private var isTrainingPreviewLaunch: Bool"))
+        XCTAssertTrue(contentBody.contains("--training-hub-preview="))
+        XCTAssertTrue(contentBody.contains("--active-workout-preview="))
         XCTAssertEqual(
-            contentBody.components(separatedBy: "guard !isTrainingHubPreviewLaunch else { return }").count - 1,
+            contentBody.components(separatedBy: "guard !isTrainingPreviewLaunch else { return }").count - 1,
             2
         )
         assertOrdered(
             [
-                "guard !isTrainingHubPreviewLaunch else { return }",
+                "guard !isTrainingPreviewLaunch else { return }",
                 "manager.start()",
-                "guard !isTrainingHubPreviewLaunch else { return }",
+                "guard !isTrainingPreviewLaunch else { return }",
                 "manager.pingWatch()",
             ],
             in: contentBody
         )
+    }
+
+    func testActiveWorkoutShellIsObservationalSparseAndTransportFree() throws {
+        let mapping = try functionBody(
+            "private func makeHRControlActivePresentation(",
+            in: contentViewSource
+        )
+        let shell = try functionBody(
+            "private struct ActiveWorkoutShell: View",
+            in: contentViewSource
+        )
+        let scale = try functionBody(
+            "private struct TrainingZoneScale: View",
+            in: contentViewSource
+        )
+        let controlView = try functionBody(
+            "private struct ControlSwipeView: View",
+            in: contentViewSource
+        )
+        let fixtures = try functionBody(
+            "private func activeWorkoutPreviewPresentation(named name: String)",
+            in: contentViewSource
+        )
+
+        XCTAssertTrue(mapping.contains("currentHeartRateBPM"))
+        XCTAssertTrue(mapping.contains("factualHeartRate < selectedRange.lowerBound"))
+        XCTAssertTrue(mapping.contains("factualHeartRate > selectedRange.upperBound"))
+        XCTAssertTrue(mapping.contains("selectedRange.lowerBound)–\\(selectedRange.upperBound) bpm"))
+        XCTAssertTrue(mapping.contains("≤ \\(cooldownTargetBPM) bpm"))
+        XCTAssertTrue(mapping.contains("title: \"Скорость\""))
+        XCTAssertTrue(mapping.contains("title: \"Прошло\""))
+        for forbidden in [
+            "hrTargetBPM", "deadband", "predictor", "hrDecision", "Telemetry",
+            "watchReachable", "Apple Watch", "steps", "average", "beatsPerMeter",
+        ] {
+            XCTAssertFalse(mapping.contains(forbidden), "Active mapping contains \(forbidden)")
+        }
+
+        XCTAssertTrue(shell.contains("presentation.primaryValue"))
+        XCTAssertTrue(shell.contains("TrainingZoneScale("))
+        XCTAssertTrue(shell.contains("presentation.statusTitle"))
+        XCTAssertTrue(shell.contains("Button(\"+5 мин\")"))
+        XCTAssertTrue(shell.contains(".controlSize(.large)"))
+        XCTAssertTrue(shell.contains(".frame(height: 48)"))
+        XCTAssertTrue(shell.contains("Label(\"Стоп\""))
+        XCTAssertTrue(shell.contains("guard !presentation.isPreview else { return }"))
+        XCTAssertFalse(shell.contains("BluetoothManager"))
+        for removedFocusDetail in [
+            "Решение алгоритма", "След. решение", "Прогноз", "Удары/м",
+            "Средн. пульс", "Средняя скорость", "Шаги", "arrow.up.arrow.down",
+        ] {
+            XCTAssertFalse(shell.contains(removedFocusDetail), removedFocusDetail)
+        }
+
+        XCTAssertTrue(scale.contains("liveMarkerBPM"))
+        XCTAssertTrue(scale.contains("targetThresholdBPM"))
+        XCTAssertTrue(scale.contains("accessibilityReduceMotion"))
+        XCTAssertFalse(scale.contains("BluetoothManager"))
+        XCTAssertFalse(scale.contains("manager."))
+        XCTAssertFalse(scale.contains("sendTreadmill"))
+
+        XCTAssertTrue(controlView.contains("makeHRControlActivePresentation("))
+        XCTAssertTrue(controlView.contains("HRDomainService.cooldownSpeedSnapshot("))
+        XCTAssertTrue(controlView.contains("appReportedSpeedKmh: manager.deviceReportedAppSpeedKmh"))
+        XCTAssertTrue(controlView.contains("rawReportedSpeedKmh: manager.deviceReportedSpeedKmh"))
+        XCTAssertTrue(controlView.contains("factualSpeedKmh: manager.isConnected ? factualSpeedKmh : nil"))
+        XCTAssertTrue(controlView.contains("onExtend: { manager.extendHrSession(minutes: 5) }"))
+        XCTAssertTrue(controlView.contains("onStop: { manager.stopHrControl() }"))
+        XCTAssertFalse(controlView.contains("CommonInfoCard()"))
+        XCTAssertFalse(controlView.contains("HRControlPanel"))
+        XCTAssertFalse(controlView.contains("applewatch"))
+
+        for fixture in [
+            "active-below", "active-in-zone", "active-above", "active-known-source",
+            "active-no-hr", "active-no-speed", "active-disconnected",
+            "cooldown-above", "cooldown-reached", "active-intervals", "active-weekly-zones",
+        ] {
+            XCTAssertTrue(fixtures.contains("case \"\(fixture)\""), fixture)
+        }
+        XCTAssertFalse(fixtures.contains("startHrControl"))
+        XCTAssertFalse(fixtures.contains("stopHrControl"))
+        XCTAssertFalse(fixtures.contains("sendTreadmill"))
     }
 
     func testLegacyMigrationIsStartupOnlyAndCannotEnterControlOrSafetyPaths() throws {
