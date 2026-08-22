@@ -44,13 +44,16 @@ struct ContentView: View {
         ProcessInfo.processInfo.arguments.contains {
             $0.hasPrefix("--training-hub-preview=")
                 || $0.hasPrefix("--active-workout-preview=")
+                || $0.hasPrefix("--training-result-preview=")
         }
     }
     #endif
 
     var body: some View {
         TabView(selection: rootTabSelection) {
-            ControlSwipeView()
+            ControlSwipeView {
+                selectedRootTabRaw = RootTab.stats.rawValue
+            }
                 .environmentObject(manager)
                 .tabItem {
                     Label("Тренировка", systemImage: "figure.run.circle")
@@ -196,6 +199,85 @@ private struct TrainingHubPresentation {
         self.targetThresholdBPM = targetThresholdBPM
         self.showsExtendAction = showsExtendAction
     }
+}
+
+private struct TrainingDistanceReading {
+    let peripheralID: UUID
+    let connectionEpoch: UUID
+    let counter10m: Int
+}
+
+private struct TrainingSessionPresentationAnchor {
+    let nativeProjectionIDs: Set<String>?
+    let distanceStart: TrainingDistanceReading?
+}
+
+private struct PendingTrainingResult {
+    let nativeProjectionIDs: Set<String>?
+    let projectionGenerationAtEnd: UInt
+    let distanceKilometres: Double?
+}
+
+private struct ResolvedTrainingResult {
+    let projection: WorkoutHistoryProjection
+    let distanceKilometres: Double?
+}
+
+private func formattedWorkoutResultDuration(_ seconds: Double) -> String {
+    let total = max(0, Int(seconds.rounded()))
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
+    let remainingSeconds = total % 60
+    if hours > 0 {
+        return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+    }
+    return String(format: "%d:%02d", minutes, remainingSeconds)
+}
+
+private func factualWorkoutResultValue(_ seconds: Double?) -> Double? {
+    guard let seconds, seconds.isFinite, seconds >= 0 else { return nil }
+    return seconds
+}
+
+private struct TrainingEndingStatus {
+    let title: String
+    let systemImage: String
+    let tint: Color
+}
+
+private func trainingEndingStatus(from rawStatus: String) -> TrainingEndingStatus? {
+    guard !rawStatus.isEmpty else { return nil }
+    if rawStatus.contains("confirmed by device") {
+        return TrainingEndingStatus(
+            title: "Дорожка остановлена",
+            systemImage: "checkmark.circle.fill",
+            tint: .green
+        )
+    }
+    if rawStatus.contains("confirming") {
+        return TrainingEndingStatus(
+            title: "Проверяем остановку дорожки",
+            systemImage: "hourglass",
+            tint: .orange
+        )
+    }
+    if rawStatus.contains("not sent") {
+        return TrainingEndingStatus(
+            title: "Команда остановки не отправлена",
+            systemImage: "exclamationmark.triangle.fill",
+            tint: .red
+        )
+    }
+    if rawStatus.contains("unconfirmed")
+        || rawStatus.contains("confirmation unavailable")
+    {
+        return TrainingEndingStatus(
+            title: "Остановка дорожки не подтверждена",
+            systemImage: "exclamationmark.triangle.fill",
+            tint: .red
+        )
+    }
+    return nil
 }
 
 private func makeTrainingTargetSegments(
@@ -571,6 +653,112 @@ private func activeWorkoutPreviewPresentation(named name: String) -> TrainingHub
         return nil
     }
 }
+
+private enum TrainingResultPreview {
+    case ending(String)
+    case summary(ResolvedTrainingResult)
+    case unavailable
+}
+
+private func trainingResultPreview(named name: String) -> TrainingResultPreview? {
+    let completeProjection = WorkoutHistoryProjection(
+        id: "native:00000000-0000-0000-0000-000000000059",
+        origin: .nativeV2,
+        startedAt: Date(timeIntervalSince1970: 1_787_400_000),
+        endedAt: Date(timeIntervalSince1970: 1_787_401_845),
+        durationSeconds: 1_845,
+        targetHeartRate: 152,
+        averageHeartRate: 146,
+        averageSpeed: WorkoutSpeedProjection(
+            kilometresPerHour: 4.7,
+            evidenceKind: .factual,
+            provenance: "telemetry-v2-analysis-factual"
+        ),
+        beatsPerMetre: nil,
+        zoneSeconds: [75, 260, 930, 490, 90],
+        healthKitWorkoutIdentifier: nil,
+        telemetrySchemaVersion: "1.0.0",
+        appVersion: "1.0",
+        buildNumber: "1",
+        algorithmVersion: "legacy-hr-control-2026-08",
+        analyzerVersion: "workout-analyzer-v1",
+        quality: WorkoutProjectionQuality(
+            lifecycleState: "completed",
+            recorderComplete: true,
+            analysisGrade: "high",
+            identityStatus: "exact",
+            possibleDuplicate: false,
+            adaptationEligible: true,
+            includedInStatistics: true,
+            provenance: ["telemetry-v2-native"],
+            unavailableMetrics: ["beatsPerMetre"],
+            warnings: []
+        )
+    )
+
+    switch name {
+    case "ending-confirming":
+        return .ending("stop requested • confirming")
+    case "ending-confirmed":
+        return .ending("stop confirmed by device")
+    case "summary-complete":
+        return .summary(
+            ResolvedTrainingResult(
+                projection: completeProjection,
+                distanceKilometres: 2.43
+            )
+        )
+    case "summary-duration-fallback":
+        return .summary(
+            ResolvedTrainingResult(
+                projection: completeProjection,
+                distanceKilometres: nil
+            )
+        )
+    case "summary-partial":
+        return .summary(
+            ResolvedTrainingResult(
+                projection: WorkoutHistoryProjection(
+                    id: "native:00000000-0000-0000-0000-000000000060",
+                    origin: .nativeV2,
+                    startedAt: completeProjection.startedAt,
+                    endedAt: completeProjection.endedAt,
+                    durationSeconds: completeProjection.durationSeconds,
+                    targetHeartRate: completeProjection.targetHeartRate,
+                    averageHeartRate: nil,
+                    averageSpeed: nil,
+                    beatsPerMetre: nil,
+                    zoneSeconds: [75, nil, 930, nil, 90],
+                    healthKitWorkoutIdentifier: nil,
+                    telemetrySchemaVersion: completeProjection.telemetrySchemaVersion,
+                    appVersion: completeProjection.appVersion,
+                    buildNumber: completeProjection.buildNumber,
+                    algorithmVersion: completeProjection.algorithmVersion,
+                    analyzerVersion: completeProjection.analyzerVersion,
+                    quality: WorkoutProjectionQuality(
+                        lifecycleState: "completed",
+                        recorderComplete: true,
+                        analysisGrade: "partial",
+                        identityStatus: "exact",
+                        possibleDuplicate: false,
+                        adaptationEligible: false,
+                        includedInStatistics: true,
+                        provenance: ["telemetry-v2-native"],
+                        unavailableMetrics: [
+                            "averageHeartRate", "averageFactualSpeed", "beatsPerMetre"
+                        ],
+                        warnings: []
+                    )
+                ),
+                distanceKilometres: nil
+            )
+        )
+    case "summary-unavailable":
+        return .unavailable
+    default:
+        return nil
+    }
+}
 #endif
 
 private struct TrainingReadinessStrip: View {
@@ -657,6 +845,21 @@ private struct TrainingZoneScale: View {
         liveMarkerBPM != nil || targetThresholdBPM != nil
     }
 
+    private var aggregateAccessibilityValue: String {
+        var parts: [String] = []
+        if let selectedSegmentID,
+           let selected = segments.first(where: { $0.id == selectedSegmentID }) {
+            parts.append("Выбрана зона \(selected.id + 1), \(selected.rangeText)")
+        }
+        if let targetThresholdBPM {
+            parts.append("Цель заминки не выше \(targetThresholdBPM) ударов в минуту")
+        }
+        if let liveMarkerBPM {
+            parts.append("Текущий пульс \(liveMarkerBPM) ударов в минуту")
+        }
+        return parts.isEmpty ? "Данные недоступны" : parts.joined(separator: ". ")
+    }
+
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .topLeading) {
@@ -711,7 +914,9 @@ private struct TrainingZoneScale: View {
             }
         }
         .frame(height: hasMarkerLayer ? 64 : 44)
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: interactive ? .contain : .ignore)
+        .accessibilityLabel("Пульсовые зоны")
+        .accessibilityValue(aggregateAccessibilityValue)
     }
 
     private func segmentContent(
@@ -737,6 +942,7 @@ private struct TrainingZoneScale: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Зона \(segment.id + 1), \(segment.rangeText)")
         .accessibilityValue(isSelected ? "Выбрана" : "Не выбрана")
+        .accessibilityHidden(!interactive)
     }
 
     private func markerX(for bpm: Int, width: CGFloat) -> CGFloat {
@@ -1188,15 +1394,395 @@ private struct ActiveWorkoutShell: View {
     }
 }
 
+private struct TrainingWorkoutEndingView: View {
+    let stopStatusText: String
+
+    @AccessibilityFocusState private var headingFocused: Bool
+
+    var body: some View {
+        VStack {
+            Spacer(minLength: 24)
+            VStack(spacing: 16) {
+                Text("Завершаем тренировку…")
+                    .font(.system(.title, design: .rounded, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityFocused($headingFocused)
+
+                if let status = trainingEndingStatus(from: stopStatusText) {
+                    Label(status.title, systemImage: status.systemImage)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(status.tint)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(status.tint.opacity(0.12), in: Capsule(style: .continuous))
+                        .accessibilityElement(children: .combine)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(24)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.horizontal, 16)
+            Spacer(minLength: 24)
+        }
+        .onAppear { headingFocused = true }
+    }
+}
+
+private struct TrainingWorkoutSummaryView: View {
+    private struct SecondaryMetric: Identifiable {
+        let id: String
+        let title: String
+        let value: String
+        let systemImage: String
+    }
+
+    private struct ZoneResult: Identifiable {
+        let id: Int
+        let seconds: Double?
+        let share: Double?
+    }
+
+    let result: ResolvedTrainingResult
+    let onDone: () -> Void
+    let onOpenStatistics: () -> Void
+
+    @ScaledMetric(relativeTo: .largeTitle) private var heroValueSize: CGFloat = 62
+    @AccessibilityFocusState private var headingFocused: Bool
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private var durationSeconds: Double? {
+        factualWorkoutResultValue(result.projection.durationSeconds)
+    }
+
+    private var factualAverageSpeed: WorkoutSpeedProjection? {
+        guard let speed = result.projection.averageSpeed,
+              speed.evidenceKind == .factual,
+              speed.kilometresPerHour.isFinite,
+              speed.kilometresPerHour >= 0 else { return nil }
+        return speed
+    }
+
+    private var averageHeartRate: Double? {
+        factualWorkoutResultValue(result.projection.averageHeartRate)
+    }
+
+    private var normalizedZoneValues: [Double?]? {
+        guard let values = result.projection.zoneSeconds, values.count == 5 else { return nil }
+        return values.map(factualWorkoutResultValue)
+    }
+
+    private var zoneResults: [ZoneResult]? {
+        guard let values = normalizedZoneValues else { return nil }
+        let completeValues = values.compactMap { $0 }
+        let total = completeValues.count == 5 ? completeValues.reduce(0, +) : 0
+        return values.enumerated().map { index, seconds in
+            ZoneResult(
+                id: index,
+                seconds: seconds,
+                share: total > 0 ? seconds.map { $0 / total } : nil
+            )
+        }
+    }
+
+    private var isPartial: Bool {
+        result.projection.quality.lifecycleState != "completed"
+            || result.projection.quality.recorderComplete == false
+            || durationSeconds == nil
+            || averageHeartRate == nil
+            || factualAverageSpeed == nil
+            || normalizedZoneValues == nil
+            || normalizedZoneValues?.contains(where: { $0 == nil }) == true
+    }
+
+    private var secondaryMetrics: [SecondaryMetric] {
+        var metrics: [SecondaryMetric] = []
+        if result.distanceKilometres != nil, let durationSeconds {
+            metrics.append(
+                SecondaryMetric(
+                    id: "duration",
+                    title: "Продолжительность",
+                    value: formattedWorkoutResultDuration(durationSeconds),
+                    systemImage: "stopwatch"
+                )
+            )
+        }
+        if let averageHeartRate {
+            metrics.append(
+                SecondaryMetric(
+                    id: "averageHeartRate",
+                    title: "Средний пульс",
+                    value: "\(Int(averageHeartRate.rounded())) bpm",
+                    systemImage: "heart.fill"
+                )
+            )
+        }
+        if let factualAverageSpeed {
+            metrics.append(
+                SecondaryMetric(
+                    id: "averageSpeed",
+                    title: "Средняя скорость",
+                    value: String(format: "%.1f км/ч", factualAverageSpeed.kilometresPerHour),
+                    systemImage: "speedometer"
+                )
+            )
+        }
+        return metrics
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                VStack(spacing: 5) {
+                    Text("Итог тренировки")
+                        .font(.title2.weight(.bold))
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityFocused($headingFocused)
+                    if let startedAt = result.projection.startedAt {
+                        Text(Self.dateFormatter.string(from: startedAt))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                hero
+
+                if isPartial {
+                    Label("Часть данных недоступна", systemImage: "info.circle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityElement(children: .combine)
+                }
+
+                if !secondaryMetrics.isEmpty {
+                    secondaryMetricsSection
+                }
+
+                zonesSection
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 16)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            actions
+        }
+        .onAppear { headingFocused = true }
+    }
+
+    @ViewBuilder
+    private var hero: some View {
+        if let distance = result.distanceKilometres,
+           distance.isFinite,
+           distance >= 0 {
+            heroCard(
+                value: String(format: "%.2f км", locale: Locale.current, distance),
+                label: "Дистанция"
+            )
+        } else if let durationSeconds {
+            heroCard(
+                value: formattedWorkoutResultDuration(durationSeconds),
+                label: "Продолжительность"
+            )
+        }
+    }
+
+    private func heroCard(value: String, label: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.system(size: heroValueSize, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            Text(label)
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 20)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
+    }
+
+    private var secondaryMetricsSection: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { secondaryMetricItems }
+            VStack(spacing: 8) { secondaryMetricItems }
+        }
+    }
+
+    @ViewBuilder
+    private var secondaryMetricItems: some View {
+        ForEach(secondaryMetrics) { metric in
+            HStack(spacing: 9) {
+                Image(systemName: metric.systemImage)
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(metric.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(metric.value)
+                        .font(.headline.weight(.semibold))
+                        .monospacedDigit()
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+            .padding(.horizontal, 12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(metric.title)
+            .accessibilityValue(metric.value)
+        }
+    }
+
+    private var zonesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Пульсовые зоны")
+                .font(.headline.weight(.semibold))
+
+            if let zoneResults {
+                ForEach(zoneResults) { zone in
+                    zoneRow(zone)
+                }
+            } else {
+                Text("Данные по пульсовым зонам недоступны")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Данные по пульсовым зонам недоступны")
+            }
+        }
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func zoneRow(_ zone: ZoneResult) -> some View {
+        let title = "Z\(zone.id + 1)"
+        let value = zone.seconds.map(formattedWorkoutResultDuration) ?? "Недоступно"
+        return VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text(title)
+                        .font(.subheadline.weight(.bold))
+                    Spacer()
+                    Text(value)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.bold))
+                    Text(value)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                }
+            }
+
+            if let share = zone.share {
+                ProgressView(value: min(1, max(0, share)))
+                    .tint(hrZoneColor(zone.id + 1))
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Зона \(zone.id + 1)")
+        .accessibilityValue(zone.seconds == nil ? "Недоступно" : value)
+    }
+
+    private var actions: some View {
+        VStack(spacing: 8) {
+            Button("Готово", action: onDone)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
+            Button("Открыть статистику", action: onOpenStatistics)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+    }
+}
+
+private struct TrainingWorkoutUnavailableView: View {
+    let onDone: () -> Void
+    let onOpenStatistics: () -> Void
+
+    @AccessibilityFocusState private var headingFocused: Bool
+
+    var body: some View {
+        VStack {
+            Spacer(minLength: 24)
+            VStack(spacing: 10) {
+                Text("Итог пока недоступен")
+                    .font(.system(.title, design: .rounded, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityFocused($headingFocused)
+                Text("Не удалось точно определить результат этой тренировки.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.horizontal, 16)
+            Spacer(minLength: 24)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 8) {
+                Button("Готово", action: onDone)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity)
+                Button("Открыть статистику", action: onOpenStatistics)
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+            .background(.ultraThinMaterial)
+        }
+        .onAppear { headingFocused = true }
+    }
+}
+
 private struct ControlSwipeView: View {
     @EnvironmentObject private var manager: BluetoothManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showDevicePicker = false
     @State private var showConnectError = false
     @State private var presentSuggestedPicker = false
     @State private var showInfoToast = false
     @State private var showDurationSheet = false
     @State private var showParameters = false
+    @State private var sessionPresentationAnchor: TrainingSessionPresentationAnchor?
+    @State private var pendingTrainingResult: PendingTrainingResult?
+    @State private var resolvedTrainingResult: ResolvedTrainingResult?
+    @State private var trainingResultUnavailable = false
+    let onOpenStatistics: () -> Void
     private let heroAccent: Color = .orange
+
+    init(onOpenStatistics: @escaping () -> Void) {
+        self.onOpenStatistics = onOpenStatistics
+    }
 
     private var productionTrainingHubPresentation: TrainingHubPresentation {
         makeHRControlTrainingHubPresentation(
@@ -1273,6 +1859,234 @@ private struct ControlSwipeView: View {
         return productionActiveWorkoutPresentation
     }
 
+    #if DEBUG
+    private var resultPreview: TrainingResultPreview? {
+        guard let argument = ProcessInfo.processInfo.arguments.first(where: {
+            $0.hasPrefix("--training-result-preview=")
+        }) else { return nil }
+        let name = String(argument.dropFirst("--training-result-preview=".count))
+        return trainingResultPreview(named: name)
+    }
+    #endif
+
+    private var flowTransitionID: String {
+        #if DEBUG
+        if let resultPreview {
+            switch resultPreview {
+            case .ending: return "preview-ending"
+            case .summary: return "preview-summary"
+            case .unavailable: return "preview-unavailable"
+            }
+        }
+        #endif
+        if resolvedTrainingResult != nil { return "summary" }
+        if trainingResultUnavailable { return "summary-unavailable" }
+        if pendingTrainingResult != nil { return "ending" }
+        if activeWorkoutPresentation != nil { return "active" }
+        return "hub"
+    }
+
+    private var usesCompactNavigationTitle: Bool {
+        flowTransitionID != "hub"
+    }
+
+    @ViewBuilder
+    private var trainingFlowContent: some View {
+        #if DEBUG
+        if let resultPreview {
+            switch resultPreview {
+            case .ending(let status):
+                TrainingWorkoutEndingView(stopStatusText: status)
+            case .summary(let result):
+                TrainingWorkoutSummaryView(
+                    result: result,
+                    onDone: {},
+                    onOpenStatistics: {}
+                )
+            case .unavailable:
+                TrainingWorkoutUnavailableView(onDone: {}, onOpenStatistics: {})
+            }
+        } else {
+            productionTrainingFlowContent
+        }
+        #else
+        productionTrainingFlowContent
+        #endif
+    }
+
+    @ViewBuilder
+    private var productionTrainingFlowContent: some View {
+        if let resolvedTrainingResult {
+            TrainingWorkoutSummaryView(
+                result: resolvedTrainingResult,
+                onDone: clearTrainingResultPresentation,
+                onOpenStatistics: openStatistics
+            )
+        } else if trainingResultUnavailable {
+            TrainingWorkoutUnavailableView(
+                onDone: clearTrainingResultPresentation,
+                onOpenStatistics: openStatistics
+            )
+        } else if pendingTrainingResult != nil {
+            TrainingWorkoutEndingView(stopStatusText: manager.stopTruthStatusText)
+        } else if let activePresentation = activeWorkoutPresentation {
+            ActiveWorkoutShell(
+                presentation: activePresentation,
+                onExtend: { manager.extendHrSession(minutes: 5) },
+                onStop: { manager.stopHrControl() }
+            )
+        } else {
+            trainingHub
+        }
+    }
+
+    private var trainingHub: some View {
+        TrainingHubView(
+            presentation: trainingHubPresentation,
+            onTreadmillTap: { showDevicePicker = true },
+            onZoneTap: { zoneIndex in
+                let ranges = hrZoneRanges(for: manager)
+                guard ranges.indices.contains(zoneIndex) else { return }
+                manager.hrTargetBPM = hrZoneTargetBpm(
+                    zone: zoneIndex + 1,
+                    range: ranges[zoneIndex]
+                )
+            },
+            onDurationTap: { showDurationSheet = true },
+            onSettingsTap: { showParameters = true },
+            onStart: { manager.startHrControl() }
+        )
+    }
+
+    private func currentFactualDistanceReading() -> TrainingDistanceReading? {
+        guard manager.isConnected,
+              let peripheralID = manager.connectedPeripheralId,
+              let connectionEpoch = manager.controllerUnitsTruth.connectionEpoch,
+              manager.controllerUnitsTruth.status == .valid,
+              manager.controllerUnitsTruth.units == .metric,
+              manager.deviceReportedChecksumOk,
+              !manager.deviceReportedRawHex.isEmpty,
+              manager.deviceReportedDistance10m >= 0,
+              Double(manager.lastNotifyAgeSeconds) <= StopObservationPolicy.freshnessInterval
+        else {
+            return nil
+        }
+        return TrainingDistanceReading(
+            peripheralID: peripheralID,
+            connectionEpoch: connectionEpoch,
+            counter10m: manager.deviceReportedDistance10m
+        )
+    }
+
+    private func factualSessionDistanceKilometres(
+        from start: TrainingDistanceReading?,
+        to end: TrainingDistanceReading?
+    ) -> Double? {
+        guard let start,
+              let end,
+              start.peripheralID == end.peripheralID,
+              start.connectionEpoch == end.connectionEpoch,
+              end.counter10m >= start.counter10m else {
+            return nil
+        }
+        return Double(end.counter10m - start.counter10m) * 10.0 / 1_000.0
+    }
+
+    private func beginTrainingPresentationSession() {
+        let nativeProjectionIDs: Set<String>? = manager.telemetryV2WorkoutHistoryState == .loaded
+            ? Set(
+                manager.telemetryV2WorkoutHistory
+                    .filter { $0.origin == .nativeV2 }
+                    .map(\.id)
+            )
+            : nil
+        sessionPresentationAnchor = TrainingSessionPresentationAnchor(
+            nativeProjectionIDs: nativeProjectionIDs,
+            distanceStart: currentFactualDistanceReading()
+        )
+        pendingTrainingResult = nil
+        resolvedTrainingResult = nil
+        trainingResultUnavailable = false
+    }
+
+    private func finishTrainingPresentationSession() {
+        guard let anchor = sessionPresentationAnchor else {
+            showUnavailableTrainingResult()
+            return
+        }
+        let distance = factualSessionDistanceKilometres(
+            from: anchor.distanceStart,
+            to: currentFactualDistanceReading()
+        )
+        pendingTrainingResult = PendingTrainingResult(
+            nativeProjectionIDs: anchor.nativeProjectionIDs,
+            projectionGenerationAtEnd: manager.telemetryV2ProjectionGeneration,
+            distanceKilometres: distance
+        )
+        sessionPresentationAnchor = nil
+        resolvedTrainingResult = nil
+        trainingResultUnavailable = false
+        resolveTrainingResultIfPossible()
+    }
+
+    private func resolveTrainingResultIfPossible() {
+        guard let pendingTrainingResult else { return }
+        guard let baselineIDs = pendingTrainingResult.nativeProjectionIDs else {
+            showUnavailableTrainingResult()
+            return
+        }
+        if case .failed = manager.telemetryV2WorkoutHistoryState {
+            showUnavailableTrainingResult()
+            return
+        }
+        guard manager.telemetryV2ProjectionGeneration
+                > pendingTrainingResult.projectionGenerationAtEnd,
+              manager.telemetryV2WorkoutHistoryState == .loaded else {
+            return
+        }
+        let candidates = manager.telemetryV2WorkoutHistory.filter {
+            $0.origin == .nativeV2 && !baselineIDs.contains($0.id)
+        }
+        guard candidates.count == 1, let projection = candidates.first else {
+            showUnavailableTrainingResult()
+            return
+        }
+        resolvedTrainingResult = ResolvedTrainingResult(
+            projection: projection,
+            distanceKilometres: pendingTrainingResult.distanceKilometres
+        )
+        self.pendingTrainingResult = nil
+        trainingResultUnavailable = false
+    }
+
+    private func resolveTerminalTelemetryFailureIfNeeded(_ status: String) {
+        guard pendingTrainingResult != nil else { return }
+        if status.hasPrefix("unavailable")
+            || status.contains("ended-before-recorder-ready")
+            || status.contains("session-start-failed")
+        {
+            showUnavailableTrainingResult()
+        }
+    }
+
+    private func showUnavailableTrainingResult() {
+        pendingTrainingResult = nil
+        resolvedTrainingResult = nil
+        trainingResultUnavailable = true
+    }
+
+    private func clearTrainingResultPresentation() {
+        sessionPresentationAnchor = nil
+        pendingTrainingResult = nil
+        resolvedTrainingResult = nil
+        trainingResultUnavailable = false
+    }
+
+    private func openStatistics() {
+        clearTrainingResultPresentation()
+        onOpenStatistics()
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -1297,32 +2111,16 @@ private struct ControlSwipeView: View {
                     .offset(x: -140, y: 220)
                     .allowsHitTesting(false)
 
-                if let activePresentation = activeWorkoutPresentation {
-                    ActiveWorkoutShell(
-                        presentation: activePresentation,
-                        onExtend: { manager.extendHrSession(minutes: 5) },
-                        onStop: { manager.stopHrControl() }
-                    )
-                } else {
-                    TrainingHubView(
-                        presentation: trainingHubPresentation,
-                        onTreadmillTap: { showDevicePicker = true },
-                        onZoneTap: { zoneIndex in
-                            let ranges = hrZoneRanges(for: manager)
-                            guard ranges.indices.contains(zoneIndex) else { return }
-                            manager.hrTargetBPM = hrZoneTargetBpm(
-                                zone: zoneIndex + 1,
-                                range: ranges[zoneIndex]
-                            )
-                        },
-                        onDurationTap: { showDurationSheet = true },
-                        onSettingsTap: { showParameters = true },
-                        onStart: { manager.startHrControl() }
-                    )
-                }
+                trainingFlowContent
+                    .id(flowTransitionID)
+                    .transition(.opacity)
             }
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 0.2),
+                value: flowTransitionID
+            )
             .navigationTitle("Тренировка")
-            .navigationBarTitleDisplayMode(activeWorkoutPresentation == nil ? .large : .inline)
+            .navigationBarTitleDisplayMode(usesCompactNavigationTitle ? .inline : .large)
             .navigationDestination(isPresented: $showParameters) {
                 HRParametersFormView()
                     .environmentObject(manager)
@@ -1336,6 +2134,25 @@ private struct ControlSwipeView: View {
             .sheet(isPresented: $showDevicePicker) {
                 DevicePickerView()
                     .environmentObject(manager)
+            }
+            .onChange(of: manager.isHrControlRunning) { wasRunning, isRunning in
+                if isRunning {
+                    beginTrainingPresentationSession()
+                } else if wasRunning {
+                    finishTrainingPresentationSession()
+                }
+            }
+            .onChange(of: manager.telemetryV2ProjectionGeneration) { _, _ in
+                resolveTrainingResultIfPossible()
+            }
+            .onChange(of: manager.telemetryV2WorkoutHistoryState) { _, _ in
+                resolveTrainingResultIfPossible()
+            }
+            .onChange(of: manager.telemetryV2WorkoutHistory.map(\.id)) { _, _ in
+                resolveTrainingResultIfPossible()
+            }
+            .onChange(of: manager.telemetryV2StatusText) { _, status in
+                resolveTerminalTelemetryFailureIfNeeded(status)
             }
             .onChange(of: manager.connectErrorMessage) { _, newValue in
                 if newValue != nil { showConnectError = true }
@@ -1367,154 +2184,6 @@ private struct ControlSwipeView: View {
         }
     }
 
-}
-
-private struct ManualView: View {
-    @EnvironmentObject private var manager: BluetoothManager
-    @State private var showDisconnectAlert = false
-    let embedded: Bool
-
-    private struct SpeedBounds {
-        let min: Double
-        let max: Double
-        let increment: Double
-    }
-
-    private var speedBounds: SpeedBounds {
-        let rawMin = manager.treadmillMinSpeedKmh
-        let rawMax = manager.treadmillMaxSpeedKmh
-        let rawInc = manager.treadmillSpeedIncrementKmh
-
-        let minV = (rawMin.isFinite && rawMin > 0.0) ? rawMin : 0.5
-        let maxV = (rawMax.isFinite && rawMax >= minV) ? rawMax : max(12.0, minV)
-        let incV = (rawInc.isFinite && rawInc > 0.0) ? rawInc : 0.1
-
-        // UI-friendly caps; do not assume high-end treadmill limits.
-        let cappedMax = min(maxV, 25.0)
-        let cappedInc = min(max(incV, 0.1), 1.0)
-        return SpeedBounds(min: minV, max: cappedMax, increment: cappedInc)
-    }
-
-    private var currentSpeed: Double { max(0.0, min(speedBounds.max, manager.speedKmh)) }
-    private var targetSpeed: Double { max(speedBounds.min, min(speedBounds.max, manager.desiredSpeedKmh)) }
-
-    private var targetSpeedBinding: Binding<Double> {
-        Binding(
-            get: { targetSpeed },
-            set: {
-                let step = speedBounds.increment
-                let snapped = ($0 / step).rounded() * step
-                manager.setTargetSpeedFromSlider(max(speedBounds.min, min(speedBounds.max, snapped)))
-            }
-        )
-    }
-
-    init(embedded: Bool = false) {
-        self.embedded = embedded
-    }
-
-    @ViewBuilder
-    private var controlCard: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Control")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Target speed")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(String(format: "%.1f km/h", targetSpeed))
-                            .font(.caption.weight(.semibold))
-                    }
-
-                    Slider(value: targetSpeedBinding, in: speedBounds.min...speedBounds.max)
-
-                    HStack {
-                        Text(String(format: "%.1f", speedBounds.min))
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text(String(format: "%.1f", speedBounds.max))
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                HStack(spacing: 12) {
-                    Button {
-                        manager.manualGo(targetSpeed: max(speedBounds.min, targetSpeed))
-                    } label: {
-                        Label("GO", systemImage: "play.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!manager.isConnected)
-                    .opacity(manager.isConnected ? 1.0 : 0.5)
-
-                    Button("Stop") {
-                        manager.manualStop()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!manager.isConnected)
-                    .opacity(manager.isConnected ? 1.0 : 0.5)
-                }
-
-                HStack(spacing: 12) {
-                    Button("− Speed") {
-                        manager.adjustSpeed(delta: -speedBounds.increment)
-                    }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
-
-                    Button("+ Speed") {
-                        manager.adjustSpeed(delta: speedBounds.increment)
-                    }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
-                }
-                .controlSize(.large)
-
-                Text(String(format: "Actual %.1f  ·  Target %.1f  ·  AppSet %.1f", currentSpeed, targetSpeed, manager.deviceTargetSpeedKmh))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                if manager.loggingEnabled && !manager.lastCommandLine.isEmpty {
-                    Text(manager.lastCommandLine)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-    }
-
-    var body: some View {
-        Group {
-            if embedded {
-                controlCard
-            } else {
-                NavigationStack {
-                    ScrollView {
-                        VStack(spacing: 16) {
-                            StatusPillsRow(showDisconnectAlert: $showDisconnectAlert)
-                                .environmentObject(manager)
-
-                            CommonInfoCard()
-                                .environmentObject(manager)
-
-                            controlCard
-                        }
-                        .padding()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .navigationTitle("Пульт")
-                    .navigationBarTitleDisplayMode(.inline)
-                }
-            }
-        }
-    }
 }
 
 private func hrZoneColor(_ zone: Int) -> Color {

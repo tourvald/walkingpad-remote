@@ -294,6 +294,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(contentBody.contains("private var isTrainingPreviewLaunch: Bool"))
         XCTAssertTrue(contentBody.contains("--training-hub-preview="))
         XCTAssertTrue(contentBody.contains("--active-workout-preview="))
+        XCTAssertTrue(contentBody.contains("--training-result-preview="))
         XCTAssertEqual(
             contentBody.components(separatedBy: "guard !isTrainingPreviewLaunch else { return }").count - 1,
             2
@@ -416,6 +417,126 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(fixtures.contains("startHrControl"))
         XCTAssertFalse(fixtures.contains("stopHrControl"))
         XCTAssertFalse(fixtures.contains("sendTreadmill"))
+    }
+
+    func testWorkoutResultFlowUsesExactNativeProjectionAndFactualPresentationData() throws {
+        let ending = try functionBody(
+            "private struct TrainingWorkoutEndingView: View",
+            in: contentViewSource
+        )
+        let summary = try functionBody(
+            "private struct TrainingWorkoutSummaryView: View",
+            in: contentViewSource
+        )
+        let unavailable = try functionBody(
+            "private struct TrainingWorkoutUnavailableView: View",
+            in: contentViewSource
+        )
+        let fixtures = try functionBody(
+            "private func trainingResultPreview(named name: String)",
+            in: contentViewSource
+        )
+        let controlView = try functionBody(
+            "private struct ControlSwipeView: View",
+            in: contentViewSource
+        )
+        let distanceReading = try functionBody(
+            "private func currentFactualDistanceReading()",
+            in: contentViewSource
+        )
+        let distanceDelta = try functionBody(
+            "private func factualSessionDistanceKilometres(",
+            in: contentViewSource
+        )
+        let begin = try functionBody(
+            "private func beginTrainingPresentationSession()",
+            in: contentViewSource
+        )
+        let finish = try functionBody(
+            "private func finishTrainingPresentationSession()",
+            in: contentViewSource
+        )
+        let resolve = try functionBody(
+            "private func resolveTrainingResultIfPossible()",
+            in: contentViewSource
+        )
+
+        XCTAssertTrue(ending.contains("Text(\"Завершаем тренировку…\")"))
+        XCTAssertTrue(ending.contains("trainingEndingStatus(from: stopStatusText)"))
+        for fabricatedEndingDetail in [
+            "Подготавливаем итог", "Сохраняем", "ProgressView", "Timer", "asyncAfter",
+        ] {
+            XCTAssertFalse(ending.contains(fabricatedEndingDetail), fabricatedEndingDetail)
+        }
+
+        XCTAssertTrue(summary.contains("result.distanceKilometres"))
+        XCTAssertTrue(summary.contains("result.projection.durationSeconds"))
+        XCTAssertTrue(summary.contains("result.projection.averageHeartRate"))
+        XCTAssertTrue(summary.contains("speed.evidenceKind == .factual"))
+        XCTAssertTrue(summary.contains("result.projection.zoneSeconds"))
+        XCTAssertTrue(summary.contains("values.count == 5"))
+        XCTAssertTrue(summary.contains("formattedWorkoutResultDuration"))
+        XCTAssertTrue(summary.contains("Button(\"Готово\", action: onDone)"))
+        XCTAssertTrue(summary.contains("Button(\"Открыть статистику\", action: onOpenStatistics)"))
+        XCTAssertTrue(summary.contains("accessibilityLabel(\"Зона "))
+        XCTAssertFalse(summary.contains("lowerBound"))
+        XCTAssertFalse(summary.contains("upperBound"))
+        XCTAssertFalse(summary.contains("BluetoothManager"))
+        XCTAssertFalse(summary.contains("distKm"))
+        XCTAssertFalse(unavailable.contains("projection."))
+        XCTAssertFalse(unavailable.contains("distanceKilometres"))
+
+        for fixture in [
+            "ending-confirming", "ending-confirmed", "summary-complete",
+            "summary-duration-fallback", "summary-partial", "summary-unavailable",
+        ] {
+            XCTAssertTrue(fixtures.contains("case \"\(fixture)\""), fixture)
+        }
+
+        assertOrdered(
+            [
+                "manager.isConnected",
+                "manager.connectedPeripheralId",
+                "manager.controllerUnitsTruth.connectionEpoch",
+                "manager.controllerUnitsTruth.status == .valid",
+                "manager.controllerUnitsTruth.units == .metric",
+                "manager.deviceReportedChecksumOk",
+                "!manager.deviceReportedRawHex.isEmpty",
+                "manager.deviceReportedDistance10m >= 0",
+                "StopObservationPolicy.freshnessInterval",
+                "counter10m: manager.deviceReportedDistance10m",
+            ],
+            in: distanceReading
+        )
+        XCTAssertTrue(distanceDelta.contains("start.peripheralID == end.peripheralID"))
+        XCTAssertTrue(distanceDelta.contains("start.connectionEpoch == end.connectionEpoch"))
+        XCTAssertTrue(distanceDelta.contains("end.counter10m >= start.counter10m"))
+        XCTAssertTrue(distanceDelta.contains("* 10.0 / 1_000.0"))
+        XCTAssertFalse(distanceDelta.contains("speed"))
+        XCTAssertFalse(distanceDelta.contains("distKm"))
+
+        XCTAssertTrue(begin.contains("manager.telemetryV2WorkoutHistoryState == .loaded"))
+        XCTAssertTrue(begin.contains(".filter { $0.origin == .nativeV2 }"))
+        XCTAssertTrue(begin.contains(".map(\\.id)"))
+        XCTAssertTrue(finish.contains("projectionGenerationAtEnd: manager.telemetryV2ProjectionGeneration"))
+        XCTAssertTrue(resolve.contains("manager.telemetryV2ProjectionGeneration"))
+        XCTAssertTrue(resolve.contains("> pendingTrainingResult.projectionGenerationAtEnd"))
+        XCTAssertTrue(resolve.contains("$0.origin == .nativeV2 && !baselineIDs.contains($0.id)"))
+        XCTAssertTrue(resolve.contains("candidates.count == 1"))
+        XCTAssertFalse(resolve.contains("sorted"))
+        XCTAssertFalse(resolve.contains("last"))
+        XCTAssertFalse(resolve.contains("first(where"))
+
+        XCTAssertTrue(controlView.contains("onDone: clearTrainingResultPresentation"))
+        XCTAssertTrue(controlView.contains("onOpenStatistics: openStatistics"))
+        XCTAssertTrue(controlView.contains("onOpenStatistics()"))
+        XCTAssertTrue(controlView.contains("reduceMotion ? nil"))
+        for forbiddenRuntimeMutation in [
+            "manager.distKm", "manager.workoutHistory =", "manager.telemetryV2WorkoutHistory =",
+            "sendTreadmill", "startTrainingStructuredLog", "endTelemetryV2Session",
+        ] {
+            XCTAssertFalse(controlView.contains(forbiddenRuntimeMutation), forbiddenRuntimeMutation)
+        }
     }
 
     func testLegacyMigrationIsStartupOnlyAndCannotEnterControlOrSafetyPaths() throws {
