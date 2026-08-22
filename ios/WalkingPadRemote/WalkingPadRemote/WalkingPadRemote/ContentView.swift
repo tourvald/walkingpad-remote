@@ -40,9 +40,10 @@ struct ContentView: View {
     }
 
     #if DEBUG
-    private var isTrainingHubPreviewLaunch: Bool {
+    private var isTrainingPreviewLaunch: Bool {
         ProcessInfo.processInfo.arguments.contains {
             $0.hasPrefix("--training-hub-preview=")
+                || $0.hasPrefix("--active-workout-preview=")
         }
     }
     #endif
@@ -78,13 +79,13 @@ struct ContentView: View {
         }
         .onAppear {
             #if DEBUG
-            guard !isTrainingHubPreviewLaunch else { return }
+            guard !isTrainingPreviewLaunch else { return }
             #endif
             manager.start()
         }
         .onChange(of: scenePhase) { _, phase in
             #if DEBUG
-            guard !isTrainingHubPreviewLaunch else { return }
+            guard !isTrainingPreviewLaunch else { return }
             #endif
             if phase == .active {
                 manager.pingWatch()
@@ -122,6 +123,8 @@ private struct TrainingHubPresentation {
         let id: Int
         let title: String
         let rangeText: String
+        let lowerBound: Int
+        let upperBound: Int
         let tint: Color
     }
 
@@ -137,6 +140,77 @@ private struct TrainingHubPresentation {
     let startBlocker: String?
     let isPreparing: Bool
     let isPreview: Bool
+
+    let phaseTitle: String?
+    let primaryValue: String?
+    let primaryUnit: String?
+    let statusTitle: String?
+    let statusSystemImage: String?
+    let statusTint: Color
+    let liveMarkerBPM: Int?
+    let targetThresholdBPM: Int?
+    let showsExtendAction: Bool
+
+    init(
+        modeTitle: String,
+        modeSystemImage: String,
+        targetTitle: String,
+        targetValue: String,
+        targetSegments: [TargetSegment],
+        selectedSegmentID: Int?,
+        metrics: [Metric],
+        readiness: [Readiness],
+        startEnabled: Bool,
+        startBlocker: String?,
+        isPreparing: Bool,
+        isPreview: Bool,
+        phaseTitle: String? = nil,
+        primaryValue: String? = nil,
+        primaryUnit: String? = nil,
+        statusTitle: String? = nil,
+        statusSystemImage: String? = nil,
+        statusTint: Color = .secondary,
+        liveMarkerBPM: Int? = nil,
+        targetThresholdBPM: Int? = nil,
+        showsExtendAction: Bool = false
+    ) {
+        self.modeTitle = modeTitle
+        self.modeSystemImage = modeSystemImage
+        self.targetTitle = targetTitle
+        self.targetValue = targetValue
+        self.targetSegments = targetSegments
+        self.selectedSegmentID = selectedSegmentID
+        self.metrics = metrics
+        self.readiness = readiness
+        self.startEnabled = startEnabled
+        self.startBlocker = startBlocker
+        self.isPreparing = isPreparing
+        self.isPreview = isPreview
+        self.phaseTitle = phaseTitle
+        self.primaryValue = primaryValue
+        self.primaryUnit = primaryUnit
+        self.statusTitle = statusTitle
+        self.statusSystemImage = statusSystemImage
+        self.statusTint = statusTint
+        self.liveMarkerBPM = liveMarkerBPM
+        self.targetThresholdBPM = targetThresholdBPM
+        self.showsExtendAction = showsExtendAction
+    }
+}
+
+private func makeTrainingTargetSegments(
+    zoneRanges: [ClosedRange<Int>]
+) -> [TrainingHubPresentation.TargetSegment] {
+    zoneRanges.enumerated().map { index, range in
+        TrainingHubPresentation.TargetSegment(
+            id: index,
+            title: "Z\(index + 1)",
+            rangeText: "\(range.lowerBound)–\(range.upperBound) bpm",
+            lowerBound: range.lowerBound,
+            upperBound: range.upperBound,
+            tint: hrZoneColor(index + 1)
+        )
+    }
 }
 
 private func makeHRControlTrainingHubPresentation(
@@ -174,14 +248,7 @@ private func makeHRControlTrainingHubPresentation(
         modeSystemImage: "heart.text.square.fill",
         targetTitle: "Зона \(safeZoneIndex + 1)",
         targetValue: "\(targetRange.lowerBound)–\(targetRange.upperBound) bpm",
-        targetSegments: zoneRanges.enumerated().map { index, range in
-            TrainingHubPresentation.TargetSegment(
-                id: index,
-                title: "Z\(index + 1)",
-                rangeText: "\(range.lowerBound)–\(range.upperBound) bpm",
-                tint: hrZoneColor(index + 1)
-            )
-        },
+        targetSegments: makeTrainingTargetSegments(zoneRanges: zoneRanges),
         selectedSegmentID: safeZoneIndex,
         metrics: [
             .init(id: "duration", title: "Время", value: "\(durationMinutes) мин", systemImage: "clock"),
@@ -213,6 +280,117 @@ private func makeHRControlTrainingHubPresentation(
         startBlocker: startBlocker,
         isPreparing: isPreparing,
         isPreview: isPreview
+    )
+}
+
+private func formattedTrainingElapsed(_ totalSeconds: Int) -> String {
+    let safeSeconds = max(0, totalSeconds)
+    let hours = safeSeconds / 3600
+    let minutes = (safeSeconds % 3600) / 60
+    let seconds = safeSeconds % 60
+    if hours > 0 {
+        return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+    }
+    return String(format: "%02d:%02d", minutes, seconds)
+}
+
+private func makeHRControlActivePresentation(
+    treadmillConnected: Bool,
+    hrFresh: Bool,
+    currentHeartRateBPM: Int?,
+    heartRateSourceLabel: String?,
+    targetZoneIndex: Int,
+    zoneRanges: [ClosedRange<Int>],
+    factualSpeedKmh: Double?,
+    elapsedSeconds: Int,
+    isCooldown: Bool,
+    cooldownTargetBPM: Int,
+    canExtend: Bool,
+    isPreview: Bool = false
+) -> TrainingHubPresentation {
+    let fallbackRange = 60...220
+    let safeZoneIndex = zoneRanges.isEmpty
+        ? 0
+        : max(0, min(zoneRanges.count - 1, targetZoneIndex))
+    let selectedRange = zoneRanges.indices.contains(safeZoneIndex)
+        ? zoneRanges[safeZoneIndex]
+        : fallbackRange
+    let factualHeartRate = hrFresh ? currentHeartRateBPM : nil
+
+    let status: (title: String, symbol: String, tint: Color) = {
+        guard let factualHeartRate else {
+            return ("Пульс недоступен", "waveform.path.ecg.slash", .orange)
+        }
+        if isCooldown {
+            return factualHeartRate <= cooldownTargetBPM
+                ? ("Цель достигнута", "checkmark.circle.fill", .green)
+                : ("Выше цели", "arrow.up.circle.fill", .orange)
+        }
+        if factualHeartRate < selectedRange.lowerBound {
+            return ("Ниже зоны", "arrow.down.circle.fill", .blue)
+        }
+        if factualHeartRate > selectedRange.upperBound {
+            return ("Выше зоны", "arrow.up.circle.fill", .orange)
+        }
+        return ("В зоне", "checkmark.circle.fill", .green)
+    }()
+
+    return TrainingHubPresentation(
+        modeTitle: "HR‑контроль",
+        modeSystemImage: "heart.text.square.fill",
+        targetTitle: isCooldown ? "Заминка" : "Зона \(safeZoneIndex + 1)",
+        targetValue: isCooldown
+            ? "≤ \(cooldownTargetBPM) bpm"
+            : "\(selectedRange.lowerBound)–\(selectedRange.upperBound) bpm",
+        targetSegments: makeTrainingTargetSegments(zoneRanges: zoneRanges),
+        selectedSegmentID: isCooldown ? nil : safeZoneIndex,
+        metrics: [
+            .init(
+                id: "speed",
+                title: "Скорость",
+                value: factualSpeedKmh.map { String(format: "%.1f км/ч", $0) } ?? "—",
+                systemImage: "speedometer"
+            ),
+            .init(
+                id: "elapsed",
+                title: "Прошло",
+                value: formattedTrainingElapsed(elapsedSeconds),
+                systemImage: "stopwatch"
+            )
+        ],
+        readiness: [
+            .init(
+                id: "treadmill",
+                title: "Дорожка",
+                value: treadmillConnected ? "Готова" : "Нет",
+                sourceLabel: nil,
+                systemImage: "figure.walk.motion",
+                tint: treadmillConnected ? .green : .orange,
+                isReady: treadmillConnected
+            ),
+            .init(
+                id: "heartRate",
+                title: "Пульс",
+                value: factualHeartRate == nil ? "Нет" : "Доступен",
+                sourceLabel: factualHeartRate == nil ? nil : heartRateSourceLabel,
+                systemImage: "heart.fill",
+                tint: factualHeartRate == nil ? .orange : .green,
+                isReady: factualHeartRate != nil
+            )
+        ],
+        startEnabled: false,
+        startBlocker: nil,
+        isPreparing: false,
+        isPreview: isPreview,
+        phaseTitle: isCooldown ? "ЗАМИНКА" : "ТРЕНИРОВКА",
+        primaryValue: factualHeartRate.map(String.init) ?? "—",
+        primaryUnit: factualHeartRate == nil ? nil : "bpm",
+        statusTitle: status.title,
+        statusSystemImage: status.symbol,
+        statusTint: status.tint,
+        liveMarkerBPM: factualHeartRate,
+        targetThresholdBPM: isCooldown ? cooldownTargetBPM : nil,
+        showsExtendAction: !isCooldown && canExtend
     )
 }
 
@@ -294,47 +472,124 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
         return nil
     }
 }
-#endif
 
-private struct TrainingHubView: View {
-    let presentation: TrainingHubPresentation
-    let onTreadmillTap: () -> Void
-    let onZoneTap: (Int) -> Void
-    let onDurationTap: () -> Void
-    let onSettingsTap: () -> Void
-    let onStart: () -> Void
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                readinessRow
-                hero
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 12)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            startArea
-        }
+private func activeWorkoutPreviewPresentation(named name: String) -> TrainingHubPresentation? {
+    let ranges = [60...134, 135...146, 147...158, 159...170, 171...220]
+    let hrControl: (
+        Bool,
+        Bool,
+        Int?,
+        String?,
+        Double?,
+        Bool,
+        Int
+    ) -> TrainingHubPresentation = { treadmillReady, hrReady, bpm, source, speed, cooldown, cooldownTarget in
+        return makeHRControlActivePresentation(
+            treadmillConnected: treadmillReady,
+            hrFresh: hrReady,
+            currentHeartRateBPM: bpm,
+            heartRateSourceLabel: source,
+            targetZoneIndex: 2,
+            zoneRanges: ranges,
+            factualSpeedKmh: speed,
+            elapsedSeconds: 18 * 60 + 42,
+            isCooldown: cooldown,
+            cooldownTargetBPM: cooldownTarget,
+            canExtend: !cooldown,
+            isPreview: true
+        )
     }
 
-    private var readinessRow: some View {
+    switch name {
+    case "active-below":
+        return hrControl(true, true, 140, nil, 4.4, false, 115)
+    case "active-in-zone":
+        return hrControl(true, true, 152, nil, 4.4, false, 115)
+    case "active-above":
+        return hrControl(true, true, 166, nil, 4.2, false, 115)
+    case "active-known-source":
+        return hrControl(true, true, 152, "HealthKit", 4.4, false, 115)
+    case "active-no-hr":
+        return hrControl(true, false, nil, nil, 3.8, false, 115)
+    case "active-no-speed":
+        return hrControl(true, true, 152, nil, nil, false, 115)
+    case "active-disconnected":
+        return hrControl(false, true, 152, nil, nil, false, 115)
+    case "cooldown-above":
+        return hrControl(true, true, 124, nil, 3.0, true, 115)
+    case "cooldown-reached":
+        return hrControl(true, true, 110, nil, 2.0, true, 115)
+    case "active-intervals":
+        return TrainingHubPresentation(
+            modeTitle: "Интервалы",
+            modeSystemImage: "repeat",
+            targetTitle: "Работа 2/4",
+            targetValue: "3:00",
+            targetSegments: [],
+            selectedSegmentID: nil,
+            metrics: [
+                .init(id: "speed", title: "Скорость", value: "5.0 км/ч", systemImage: "speedometer"),
+                .init(id: "elapsed", title: "Прошло", value: "12:30", systemImage: "stopwatch")
+            ],
+            readiness: hrControl(true, true, 152, nil, 5.0, false, 115).readiness,
+            startEnabled: false,
+            startBlocker: nil,
+            isPreparing: false,
+            isPreview: true,
+            phaseTitle: "РАБОТА 2/4",
+            primaryValue: "02:14",
+            primaryUnit: nil,
+            statusTitle: "Работа",
+            statusSystemImage: "figure.run",
+            statusTint: .orange
+        )
+    case "active-weekly-zones":
+        return TrainingHubPresentation(
+            modeTitle: "Недельные зоны",
+            modeSystemImage: "calendar",
+            targetTitle: "Зона 5",
+            targetValue: "осталось 3 мин",
+            targetSegments: [],
+            selectedSegmentID: nil,
+            metrics: [
+                .init(id: "speed", title: "Скорость", value: "4.8 км/ч", systemImage: "speedometer"),
+                .init(id: "elapsed", title: "Прошло", value: "21:05", systemImage: "stopwatch")
+            ],
+            readiness: hrControl(true, true, 174, nil, 4.8, false, 115).readiness,
+            startEnabled: false,
+            startBlocker: nil,
+            isPreparing: false,
+            isPreview: true,
+            phaseTitle: "ЗОНА 5",
+            primaryValue: "3",
+            primaryUnit: "мин",
+            statusTitle: "Осталось за неделю",
+            statusSystemImage: "calendar.badge.clock",
+            statusTint: .red
+        )
+    default:
+        return nil
+    }
+}
+#endif
+
+private struct TrainingReadinessStrip: View {
+    let items: [TrainingHubPresentation.Readiness]
+    let treadmillInteractive: Bool
+    let onTreadmillTap: () -> Void
+
+    var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) {
-                readinessChips
-            }
-            VStack(spacing: 6) {
-                readinessChips
-            }
+            HStack(spacing: 8) { readinessItems }
+            VStack(spacing: 6) { readinessItems }
         }
     }
 
     @ViewBuilder
-    private var readinessChips: some View {
-        ForEach(presentation.readiness) { item in
+    private var readinessItems: some View {
+        ForEach(items) { item in
             let chip = readinessChip(item)
-            if item.id == "treadmill", !presentation.isPreview {
+            if item.id == "treadmill", treadmillInteractive {
                 Button(action: onTreadmillTap) { chip }
                     .buttonStyle(.plain)
             } else {
@@ -385,6 +640,152 @@ private struct TrainingHubView: View {
             [item.title, item.value, item.sourceLabel].compactMap { $0 }.joined(separator: ", ")
         )
         .accessibilityValue(item.isReady ? "Готово" : "Недоступно")
+    }
+}
+
+private struct TrainingZoneScale: View {
+    let segments: [TrainingHubPresentation.TargetSegment]
+    let selectedSegmentID: Int?
+    let liveMarkerBPM: Int?
+    let targetThresholdBPM: Int?
+    let interactive: Bool
+    let onSegmentTap: (Int) -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var hasMarkerLayer: Bool {
+        liveMarkerBPM != nil || targetThresholdBPM != nil
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                HStack(spacing: 5) {
+                    ForEach(segments) { segment in
+                        let isSelected = segment.id == selectedSegmentID
+                        if interactive {
+                            Button {
+                                onSegmentTap(segment.id)
+                            } label: {
+                                segmentContent(segment, isSelected: isSelected)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Выбирает целевой диапазон пульса")
+                        } else {
+                            segmentContent(segment, isSelected: isSelected)
+                        }
+                    }
+                }
+                .padding(.top, hasMarkerLayer ? 20 : 0)
+
+                if let targetThresholdBPM {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.5))
+                        .frame(width: 2, height: 30)
+                        .position(
+                            x: markerX(for: targetThresholdBPM, width: proxy.size.width),
+                            y: 36
+                        )
+                        .accessibilityHidden(true)
+                }
+
+                if let liveMarkerBPM {
+                    VStack(spacing: 0) {
+                        Image(systemName: "triangle.fill")
+                            .font(.caption2.weight(.bold))
+                            .rotationEffect(.degrees(180))
+                        Rectangle()
+                            .frame(width: 2, height: 13)
+                    }
+                    .foregroundStyle(Color.primary)
+                    .position(
+                        x: markerX(for: liveMarkerBPM, width: proxy.size.width),
+                        y: 12
+                    )
+                    .animation(
+                        reduceMotion ? nil : .snappy(duration: 0.25),
+                        value: liveMarkerBPM
+                    )
+                    .accessibilityHidden(true)
+                }
+            }
+        }
+        .frame(height: hasMarkerLayer ? 64 : 44)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func segmentContent(
+        _ segment: TrainingHubPresentation.TargetSegment,
+        isSelected: Bool
+    ) -> some View {
+        VStack(spacing: 5) {
+            Text(segment.title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+            Capsule(style: .continuous)
+                .fill(segment.tint.opacity(isSelected ? 0.92 : 0.24))
+                .frame(height: isSelected ? 16 : 10)
+                .overlay {
+                    if isSelected {
+                        Capsule(style: .continuous)
+                            .stroke(Color.primary.opacity(0.65), lineWidth: 2)
+                    }
+                }
+        }
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Зона \(segment.id + 1), \(segment.rangeText)")
+        .accessibilityValue(isSelected ? "Выбрана" : "Не выбрана")
+    }
+
+    private func markerX(for bpm: Int, width: CGFloat) -> CGFloat {
+        guard !segments.isEmpty else { return width / 2 }
+        let position: Double
+        if bpm <= segments[0].lowerBound {
+            position = 0
+        } else if bpm >= segments[segments.count - 1].upperBound {
+            position = 1
+        } else if let index = segments.firstIndex(where: {
+            bpm >= $0.lowerBound && bpm <= $0.upperBound
+        }) {
+            let segment = segments[index]
+            let span = max(1, segment.upperBound - segment.lowerBound)
+            let fraction = Double(bpm - segment.lowerBound) / Double(span)
+            position = (Double(index) + fraction) / Double(segments.count)
+        } else {
+            position = 0
+        }
+        let inset: CGFloat = 7
+        return min(max(inset, width * position), max(inset, width - inset))
+    }
+}
+
+private struct TrainingHubView: View {
+    let presentation: TrainingHubPresentation
+    let onTreadmillTap: () -> Void
+    let onZoneTap: (Int) -> Void
+    let onDurationTap: () -> Void
+    let onSettingsTap: () -> Void
+    let onStart: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                TrainingReadinessStrip(
+                    items: presentation.readiness,
+                    treadmillInteractive: !presentation.isPreview,
+                    onTreadmillTap: onTreadmillTap
+                )
+                hero
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            startArea
+        }
     }
 
     private var hero: some View {
@@ -495,36 +896,14 @@ private struct TrainingHubView: View {
     }
 
     private var targetScale: some View {
-        HStack(spacing: 5) {
-            ForEach(presentation.targetSegments) { segment in
-                let isSelected = segment.id == presentation.selectedSegmentID
-                Button {
-                    guard !presentation.isPreview else { return }
-                    onZoneTap(segment.id)
-                } label: {
-                    VStack(spacing: 5) {
-                        Text(segment.title)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                        Capsule(style: .continuous)
-                            .fill(segment.tint.opacity(isSelected ? 0.92 : 0.24))
-                            .frame(height: isSelected ? 16 : 10)
-                            .overlay {
-                                if isSelected {
-                                    Capsule(style: .continuous)
-                                        .stroke(Color.primary.opacity(0.65), lineWidth: 2)
-                                }
-                            }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Зона \(segment.id + 1), \(segment.rangeText)")
-                .accessibilityValue(isSelected ? "Выбрана" : "Не выбрана")
-                .accessibilityHint("Выбирает целевой диапазон пульса")
-            }
-        }
+        TrainingZoneScale(
+            segments: presentation.targetSegments,
+            selectedSegmentID: presentation.selectedSegmentID,
+            liveMarkerBPM: nil,
+            targetThresholdBPM: nil,
+            interactive: !presentation.isPreview,
+            onSegmentTap: onZoneTap
+        )
     }
 
     @ViewBuilder
@@ -604,6 +983,211 @@ private struct TrainingHubView: View {
     }
 }
 
+private struct ActiveWorkoutShell: View {
+    let presentation: TrainingHubPresentation
+    let onExtend: () -> Void
+    let onStop: () -> Void
+
+    @ScaledMetric(relativeTo: .largeTitle) private var primaryValueSize: CGFloat = 86
+    @State private var showExtendConfirm = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                phaseRow
+                TrainingReadinessStrip(
+                    items: presentation.readiness,
+                    treadmillInteractive: false,
+                    onTreadmillTap: {}
+                )
+                liveHero
+                secondaryMetrics
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            controls
+        }
+        .alert("Добавить 5 минут?", isPresented: $showExtendConfirm) {
+            Button("Добавить") {
+                guard !presentation.isPreview else { return }
+                onExtend()
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Тренировка будет продлена на 5 минут.")
+        }
+    }
+
+    private var phaseRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: presentation.modeSystemImage)
+                .foregroundStyle(Color.accentColor)
+            Text(presentation.phaseTitle ?? presentation.modeTitle)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var liveHero: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(presentation.primaryValue ?? "—")
+                    .font(.system(size: primaryValueSize, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+                    .contentTransition(.numericText())
+                if let unit = presentation.primaryUnit {
+                    Text(unit)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Текущий пульс")
+            .accessibilityValue(
+                [presentation.primaryValue, presentation.primaryUnit]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+            )
+
+            if !presentation.targetSegments.isEmpty {
+                TrainingZoneScale(
+                    segments: presentation.targetSegments,
+                    selectedSegmentID: presentation.selectedSegmentID,
+                    liveMarkerBPM: presentation.liveMarkerBPM,
+                    targetThresholdBPM: presentation.targetThresholdBPM,
+                    interactive: false,
+                    onSegmentTap: { _ in }
+                )
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 10) {
+                    targetSummary
+                    Spacer(minLength: 8)
+                    relationStatus
+                }
+                VStack(spacing: 8) {
+                    targetSummary
+                    relationStatus
+                }
+            }
+        }
+        .padding(18)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(presentation.statusTint.opacity(0.22), lineWidth: 1)
+        }
+    }
+
+    private var targetSummary: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(presentation.targetTitle)
+                .font(.subheadline.weight(.semibold))
+            Text(presentation.targetValue)
+                .font(.headline.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Цель")
+    }
+
+    private var relationStatus: some View {
+        Label(
+            presentation.statusTitle ?? "Статус недоступен",
+            systemImage: presentation.statusSystemImage ?? "questionmark.circle"
+        )
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(presentation.statusTint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(presentation.statusTint.opacity(0.12), in: Capsule(style: .continuous))
+        .accessibilityLabel(presentation.statusTitle ?? "Статус недоступен")
+    }
+
+    private var secondaryMetrics: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { metricItems }
+            VStack(spacing: 8) { metricItems }
+        }
+    }
+
+    @ViewBuilder
+    private var metricItems: some View {
+        ForEach(presentation.metrics) { metric in
+            HStack(spacing: 10) {
+                Image(systemName: metric.systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(metric.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(metric.value)
+                        .font(.title3.weight(.semibold))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+            .padding(.horizontal, 12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var controls: some View {
+        VStack(spacing: 8) {
+            Group {
+                if presentation.showsExtendAction {
+                    Button("+5 мин") {
+                        guard !presentation.isPreview else { return }
+                        showExtendConfirm = true
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .accessibilityLabel("Продлить тренировку на 5 минут")
+                } else {
+                    Color.clear
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(height: 48)
+
+            Button {
+                guard !presentation.isPreview else { return }
+                onStop()
+            } label: {
+                Label("Стоп", systemImage: "stop.fill")
+                    .font(.headline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(.red)
+            .accessibilityLabel("Остановить HR-контроль")
+            .accessibilityHint("Запускает существующий процесс остановки тренировки")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+    }
+}
+
 private struct ControlSwipeView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @State private var showDevicePicker = false
@@ -613,25 +1197,6 @@ private struct ControlSwipeView: View {
     @State private var showDurationSheet = false
     @State private var showParameters = false
     private let heroAccent: Color = .orange
-
-    private var watchStatusLabel: String {
-        if manager.hrStreamingActive {
-            return "HR активен"
-        }
-        return manager.watchReachable ? "Часы онлайн" : "Часы офлайн"
-    }
-
-    private var connectionStatusLabel: String {
-        manager.isConnected ? "Подключено" : "Не подключено"
-    }
-
-    private var connectionStatusColor: Color {
-        manager.isConnected ? .green : .secondary
-    }
-
-    private var watchStatusColor: Color {
-        manager.hrStreamingActive ? .green : (manager.watchReachable ? .orange : .secondary)
-    }
 
     private var productionTrainingHubPresentation: TrainingHubPresentation {
         makeHRControlTrainingHubPresentation(
@@ -664,6 +1229,50 @@ private struct ControlSwipeView: View {
         return productionTrainingHubPresentation
     }
 
+    private var productionActiveWorkoutPresentation: TrainingHubPresentation {
+        let factualSpeedKmh: Double? = {
+            guard manager.isConnected else { return nil }
+            if manager.deviceReportedAppSpeedKmh > 0.05 {
+                return manager.deviceReportedAppSpeedKmh
+            }
+            if manager.deviceReportedSpeedKmh > 0.05 {
+                return manager.deviceReportedSpeedKmh
+            }
+            return nil
+        }()
+
+        return makeHRControlActivePresentation(
+            treadmillConnected: manager.isConnected,
+            hrFresh: manager.hrStreamingActive,
+            currentHeartRateBPM: manager.hrStreamingActive && manager.heartRateBPM > 0
+                ? manager.heartRateBPM
+                : nil,
+            heartRateSourceLabel: nil,
+            targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
+            zoneRanges: hrZoneRanges(for: manager),
+            factualSpeedKmh: factualSpeedKmh,
+            elapsedSeconds: manager.timeSec,
+            isCooldown: manager.hrRemainingSeconds <= 0,
+            cooldownTargetBPM: manager.hrCooldownTargetBpm,
+            canExtend: manager.canExtendHrSession
+        )
+    }
+
+    private var activeWorkoutPresentation: TrainingHubPresentation? {
+        #if DEBUG
+        if let argument = ProcessInfo.processInfo.arguments.first(where: {
+            $0.hasPrefix("--active-workout-preview=")
+        }) {
+            let name = String(argument.dropFirst("--active-workout-preview=".count))
+            if let preview = activeWorkoutPreviewPresentation(named: name) {
+                return preview
+            }
+        }
+        #endif
+        guard manager.isHrControlRunning else { return nil }
+        return productionActiveWorkoutPresentation
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -688,37 +1297,12 @@ private struct ControlSwipeView: View {
                     .offset(x: -140, y: 220)
                     .allowsHitTesting(false)
 
-                if manager.isHrControlRunning {
-                    VStack(spacing: 12) {
-                        HStack(spacing: 10) {
-                            controlHeroMetric(
-                                icon: "antenna.radiowaves.left.and.right",
-                                title: "Дорожка",
-                                value: connectionStatusLabel,
-                                tint: connectionStatusColor
-                            )
-                            controlHeroMetric(
-                                icon: "applewatch",
-                                title: "Часы",
-                                value: watchStatusLabel,
-                                tint: watchStatusColor
-                            )
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
-
-                        CommonInfoCard()
-                            .environmentObject(manager)
-                            .padding(.horizontal, 12)
-
-                        ScrollView {
-                            HRControlPanel()
-                                .environmentObject(manager)
-                                .padding(.horizontal, 12)
-                                .padding(.bottom)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    }
+                if let activePresentation = activeWorkoutPresentation {
+                    ActiveWorkoutShell(
+                        presentation: activePresentation,
+                        onExtend: { manager.extendHrSession(minutes: 5) },
+                        onStop: { manager.stopHrControl() }
+                    )
                 } else {
                     TrainingHubView(
                         presentation: trainingHubPresentation,
@@ -738,7 +1322,7 @@ private struct ControlSwipeView: View {
                 }
             }
             .navigationTitle("Тренировка")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(activeWorkoutPresentation == nil ? .large : .inline)
             .navigationDestination(isPresented: $showParameters) {
                 HRParametersFormView()
                     .environmentObject(manager)
@@ -783,60 +1367,6 @@ private struct ControlSwipeView: View {
         }
     }
 
-    @ViewBuilder
-    private func controlHeroMetric(
-        icon: String,
-        title: String,
-        value: String,
-        tint: Color,
-        action: (() -> Void)? = nil
-    ) -> some View {
-        let content = HStack(alignment: .top, spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(tint.opacity(0.16))
-                    .frame(width: 24, height: 24)
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(tint)
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                Text(value)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color(.systemBackground).opacity(0.72), tint.opacity(0.06)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(tint.opacity(0.2), lineWidth: 1)
-        )
-        .shadow(color: tint.opacity(0.08), radius: 8, x: 0, y: 4)
-
-        if let action {
-            Button(action: action) {
-                content
-            }
-            .buttonStyle(.plain)
-        } else {
-            content
-        }
-    }
 }
 
 private struct ManualView: View {
@@ -1411,324 +1941,6 @@ private func hrAdaptiveDecisionPreview(
         details: String(format: "Δ %d bpm -> шаг %+.1f км/ч", diff, delta),
         color: diff > 0 ? .orange : .green
     )
-}
-
-private struct HRControlPanel: View {
-    @EnvironmentObject private var manager: BluetoothManager
-    private let debugPreview: HRControlPanelPreviewState?
-    @State private var showExtendConfirm = false
-
-    init(debugPreview: HRControlPanelPreviewState? = nil) {
-        self.debugPreview = debugPreview
-    }
-
-    var body: some View {
-        let isPreviewMode = (debugPreview != nil)
-        let hrNextDecisionSeconds = debugPreview?.hrNextDecisionSeconds ?? manager.hrNextDecisionSeconds
-        let hrPredictorStatusLine = debugPreview?.hrPredictorStatusLine ?? manager.hrPredictorStatusLine
-        let hrDecisionDetails = debugPreview?.hrDecisionDetails ?? manager.hrDecisionDetails
-        let hrRemainingSeconds = debugPreview?.hrRemainingSeconds ?? manager.hrRemainingSeconds
-        let hrCooldownRemainingSeconds = debugPreview?.hrCooldownRemainingSeconds ?? manager.hrCooldownRemainingSeconds
-        let hrProgress = debugPreview?.hrProgress ?? manager.hrProgress
-        let hrCooldownProgress = debugPreview?.hrCooldownProgress ?? manager.hrCooldownProgress
-        let hrStreamingActive = debugPreview?.hrStreamingActive ?? manager.hrStreamingActive
-        let hrStatusLine = debugPreview?.hrStatusLine ?? manager.hrStatusLine
-        let canExtendHrSession = debugPreview?.canExtendHrSession ?? manager.canExtendHrSession
-        let hrSessionMaxMinutes = debugPreview?.hrSessionMaxMinutes ?? manager.hrSessionMaxMinutes
-
-        Card {
-            VStack(alignment: .leading, spacing: 14) {
-                runningStatusSection(
-                    isPreviewMode: isPreviewMode,
-                    hrNextDecisionSeconds: hrNextDecisionSeconds,
-                    hrPredictorStatusLine: hrPredictorStatusLine,
-                    hrDecisionDetails: hrDecisionDetails,
-                    hrRemainingSeconds: hrRemainingSeconds,
-                    hrCooldownRemainingSeconds: hrCooldownRemainingSeconds,
-                    hrProgress: hrProgress,
-                    hrCooldownProgress: hrCooldownProgress,
-                    canExtendHrSession: canExtendHrSession,
-                    hrSessionMaxMinutes: hrSessionMaxMinutes
-                )
-
-                if !hrStreamingActive {
-                    Label("Нет сигнала пульса", systemImage: "waveform.path.ecg")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.orange.opacity(0.14))
-                        )
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
-                        )
-                }
-
-                if !hrStatusLine.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "info.circle.fill")
-                            .foregroundStyle(.secondary)
-                        Text(hrStatusLine)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(.secondarySystemGroupedBackground))
-                    )
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func progressBar(value: Double, height: CGFloat = 6) -> some View {
-        let clamped = min(1.0, max(0.0, value))
-        ProgressView(value: clamped)
-            .progressViewStyle(.linear)
-            .tint(.accentColor)
-            .frame(height: height)
-            .frame(maxWidth: .infinity)
-            .clipShape(Capsule(style: .continuous))
-    }
-
-    @ViewBuilder
-    private func runningMetaChip(title: String, systemImage: String, tint: Color) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(tint)
-            .monospacedDigit()
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(tint.opacity(0.16))
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .stroke(tint.opacity(0.34), lineWidth: 1)
-            )
-    }
-
-    @ViewBuilder
-    private func runningStatusSection(
-        isPreviewMode: Bool,
-        hrNextDecisionSeconds: Int,
-        hrPredictorStatusLine: String,
-        hrDecisionDetails: String,
-        hrRemainingSeconds: Int,
-        hrCooldownRemainingSeconds: Int,
-        hrProgress: Double,
-        hrCooldownProgress: Double,
-        canExtendHrSession: Bool,
-        hrSessionMaxMinutes: Int
-    ) -> some View {
-        let isMainSession = hrRemainingSeconds > 0
-        let stageTitle = isMainSession ? "Тренировка" : "Заминка"
-        let stageSymbol = isMainSession ? "figure.run" : "wind"
-        let stageTint: Color = isMainSession ? .accentColor : .mint
-        let remainingSeconds = isMainSession ? hrRemainingSeconds : hrCooldownRemainingSeconds
-        let stageProgress = min(1.0, max(0.0, isMainSession ? hrProgress : hrCooldownProgress))
-        let stageProgressPercent = Int((stageProgress * 100).rounded())
-        let decisionText = hrDecisionDetails.isEmpty ? "Ожидание следующего решения" : hrDecisionDetails
-
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Прогресс сессии")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Text("\(stageProgressPercent)%")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(.secondary)
-                        .monospacedDigit()
-                }
-                progressBar(value: stageProgress, height: 10)
-            }
-
-            HStack(spacing: 8) {
-                runningMetaChip(title: stageTitle.uppercased(), systemImage: stageSymbol, tint: stageTint)
-                if hrNextDecisionSeconds > 0 {
-                    runningMetaChip(
-                        title: "След. решение через \(hrNextDecisionSeconds)с",
-                        systemImage: "timer",
-                        tint: stageTint
-                    )
-                }
-            }
-
-            if !hrPredictorStatusLine.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "waveform.path.ecg")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(stageTint)
-                    Text(hrPredictorStatusLine)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineSpacing(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(.systemBackground).opacity(0.66))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(stageTint.opacity(0.2), lineWidth: 1)
-                )
-            }
-
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Осталось")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(formattedDuration(remainingSeconds))
-                        .font(.system(size: 42, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                    Text(isMainSession ? "до заминки" : "до завершения")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(.systemBackground).opacity(0.72))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(stageTint.opacity(0.16), lineWidth: 1)
-                )
-                if isMainSession {
-                    VStack(alignment: .trailing, spacing: 6) {
-                        ExtendTimeButton(enabled: canExtendHrSession && !isPreviewMode) {
-                            showExtendConfirm = true
-                        }
-                        .disabled(!canExtendHrSession || isPreviewMode)
-
-                        ActionTileButton(
-                            title: "Стоп",
-                            subtitle: "Остановить",
-                            enabled: !isPreviewMode,
-                            tint: .red,
-                            accessibilityLabel: "Остановить HR-контроль",
-                            accessibilityHint: "Завершает текущую сессию HR-контроля"
-                        ) {
-                            if !isPreviewMode {
-                                manager.stopHrControl()
-                            }
-                        }
-
-                        if !canExtendHrSession {
-                            Text("Лимит \(hrSessionMaxMinutes) мин")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Label("Решение алгоритма", systemImage: "brain.head.profile")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(stageTint)
-                Text(decisionText)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(.primary)
-                    .lineSpacing(2)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [stageTint.opacity(0.12), Color(.secondarySystemGroupedBackground)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(stageTint.opacity(0.2), lineWidth: 1)
-            )
-
-            if !isMainSession {
-                ActionTileButton(
-                    title: "Стоп",
-                    subtitle: "Остановить",
-                    enabled: !isPreviewMode,
-                    tint: .red,
-                    fullWidth: true,
-                    accessibilityLabel: "Остановить HR-контроль",
-                    accessibilityHint: "Завершает текущую сессию HR-контроля"
-                ) {
-                    if !isPreviewMode {
-                        manager.stopHrControl()
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            stageTint.opacity(0.16),
-                            Color(.secondarySystemGroupedBackground),
-                            Color(.secondarySystemGroupedBackground)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(stageTint.opacity(0.3), lineWidth: 1)
-        )
-        .shadow(color: stageTint.opacity(0.1), radius: 12, x: 0, y: 6)
-        .alert("Добавить 5 минут?", isPresented: $showExtendConfirm) {
-            Button("Добавить") {
-                if !isPreviewMode {
-                    manager.extendHrSession(minutes: 5)
-                }
-            }
-            Button("Отмена", role: .cancel) {}
-        } message: {
-            Text("Тренировка будет продлена на 5 минут.")
-        }
-    }
-
-    private func formattedDuration(_ totalSeconds: Int) -> String {
-        let safeSeconds = max(0, totalSeconds)
-        let hours = safeSeconds / 3600
-        let minutes = (safeSeconds % 3600) / 60
-        let seconds = safeSeconds % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        }
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
 }
 
 private struct HRDurationWheelSheet: View {
@@ -2968,21 +3180,6 @@ private enum HrControlPreviewMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-private struct HRControlPanelPreviewState {
-    let isHrControlRunning: Bool
-    let hrNextDecisionSeconds: Int
-    let hrPredictorStatusLine: String
-    let hrDecisionDetails: String
-    let hrRemainingSeconds: Int
-    let hrCooldownRemainingSeconds: Int
-    let hrProgress: Double
-    let hrCooldownProgress: Double
-    let hrStreamingActive: Bool
-    let hrStatusLine: String
-    let canExtendHrSession: Bool
-    let hrSessionMaxMinutes: Int
-}
-
 private struct DebugView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @State private var showHrControlPreview = false
@@ -3152,39 +3349,22 @@ private struct DebugView: View {
         )
     }
 
-    private var hrControlPreviewState: HRControlPanelPreviewState {
-        switch hrControlPreviewMode {
-        case .workout:
-            return HRControlPanelPreviewState(
-                isHrControlRunning: true,
-                hrNextDecisionSeconds: 7,
-                hrPredictorStatusLine: "HR 132 / цель 140 · тренд +1.8 bpm/мин · прогноз 135",
-                hrDecisionDetails: "HR 132 / цель 140 (Δ -8) · шаг UP-L2 0.2 км/ч · скорость 4.4 → +0.2 км/ч",
-                hrRemainingSeconds: 8 * 60,
-                hrCooldownRemainingSeconds: 0,
-                hrProgress: 0.62,
-                hrCooldownProgress: 0,
-                hrStreamingActive: !previewNoHrSignal,
-                hrStatusLine: previewNoHrSignal ? "HR‑контроль: нет сигнала" : "HR‑контроль: увеличиваем скорость",
-                canExtendHrSession: true,
-                hrSessionMaxMinutes: manager.hrSessionMaxMinutes
-            )
-        case .cooldown:
-            return HRControlPanelPreviewState(
-                isHrControlRunning: true,
-                hrNextDecisionSeconds: 0,
-                hrPredictorStatusLine: "HR 119 / цель 100 · тренд -2.5 bpm/мин · прогноз 116",
-                hrDecisionDetails: "Заминка: HR 119 / цель 100 · скорость 3.7 · стаб 11/20с",
-                hrRemainingSeconds: 0,
-                hrCooldownRemainingSeconds: 2 * 60,
-                hrProgress: 1.0,
-                hrCooldownProgress: 0.58,
-                hrStreamingActive: !previewNoHrSignal,
-                hrStatusLine: "Заминка",
-                canExtendHrSession: false,
-                hrSessionMaxMinutes: manager.hrSessionMaxMinutes
-            )
-        }
+    private var hrControlPreviewPresentation: TrainingHubPresentation {
+        let isCooldown = hrControlPreviewMode == .cooldown
+        return makeHRControlActivePresentation(
+            treadmillConnected: true,
+            hrFresh: !previewNoHrSignal,
+            currentHeartRateBPM: previewNoHrSignal ? nil : (isCooldown ? 124 : 152),
+            heartRateSourceLabel: nil,
+            targetZoneIndex: 2,
+            zoneRanges: [60...134, 135...146, 147...158, 159...170, 171...220],
+            factualSpeedKmh: isCooldown ? 3.0 : 4.4,
+            elapsedSeconds: 18 * 60 + 42,
+            isCooldown: isCooldown,
+            cooldownTargetBPM: 115,
+            canExtend: !isCooldown,
+            isPreview: true
+        )
     }
 
     var body: some View {
@@ -3214,8 +3394,12 @@ private struct DebugView: View {
                                 Toggle("Симулировать отсутствие сигнала пульса", isOn: $previewNoHrSignal)
                                     .toggleStyle(.switch)
 
-                                HRControlPanel(debugPreview: hrControlPreviewState)
-                                    .environmentObject(manager)
+                                ActiveWorkoutShell(
+                                    presentation: hrControlPreviewPresentation,
+                                    onExtend: {},
+                                    onStop: {}
+                                )
+                                .frame(height: 690)
                             }
                         }
                     }
