@@ -290,6 +290,33 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(hubBody.contains("guard !presentation.isPreview else { return }"))
         XCTAssertTrue(hubBody.contains("onStart()"))
         XCTAssertFalse(hubBody.contains("BluetoothManager"))
+        XCTAssertFalse(hubBody.contains(".safeAreaInset"))
+        assertOrdered(
+            [
+                "TrainingReadinessStrip(",
+                "hero",
+                "startArea",
+                ".padding(.top, 6)",
+            ],
+            in: hubBody
+        )
+
+        let controlView = try functionBody(
+            "private struct ControlSwipeView: View",
+            in: contentViewSource
+        )
+        XCTAssertTrue(controlView.contains(".navigationTitle(\"Тренировка\")"))
+        XCTAssertTrue(controlView.contains(".navigationBarTitleDisplayMode(.inline)"))
+        XCTAssertTrue(
+            controlView.contains(
+                ".toolbar(usesCompactNavigationTitle ? .visible : .hidden, for: .navigationBar)"
+            )
+        )
+        XCTAssertFalse(
+            controlView.contains(
+                ".navigationBarTitleDisplayMode(usesCompactNavigationTitle ? .inline : .large)"
+            )
+        )
 
         XCTAssertTrue(contentBody.contains("private var isTrainingPreviewLaunch: Bool"))
         XCTAssertTrue(contentBody.contains("--training-hub-preview="))

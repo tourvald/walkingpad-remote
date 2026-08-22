@@ -984,13 +984,12 @@ private struct TrainingHubView: View {
                     onTreadmillTap: onTreadmillTap
                 )
                 hero
+                startArea
+                    .padding(.top, 6)
             }
             .padding(.horizontal, 16)
             .padding(.top, 4)
-            .padding(.bottom, 12)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            startArea
+            .padding(.bottom, 20)
         }
     }
 
@@ -1182,10 +1181,6 @@ private struct TrainingHubView: View {
                 .accessibilityHint("Запускает HR-контроль с выбранной целевой зоной")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
     }
 }
 
@@ -2120,7 +2115,8 @@ private struct ControlSwipeView: View {
                 value: flowTransitionID
             )
             .navigationTitle("Тренировка")
-            .navigationBarTitleDisplayMode(usesCompactNavigationTitle ? .inline : .large)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(usesCompactNavigationTitle ? .visible : .hidden, for: .navigationBar)
             .navigationDestination(isPresented: $showParameters) {
                 HRParametersFormView()
                     .environmentObject(manager)

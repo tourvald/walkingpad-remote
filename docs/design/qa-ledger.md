@@ -1,6 +1,21 @@
 # Redesign QA ledger
 
-Status: passed for the frozen Issue #59 presentation scope.
+Status: passed for the binding Issue #64 compact continuous preflight correction.
+
+## Issue #64 — compact continuous preflight
+
+| Pass | State / form factor | Severity | Finding | Evidence | Owner path | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline | Ready / iPhone 17 Pro Max / light | P0 | The idle navigation title is absent; readiness, configuration, and Start form one top-aligned scroll composition with no flexible band between the card and CTA. | `/private/tmp/issue64-qa/tall-ready-unknown-source-light.png` plus source contract | `ContentView.swift` | Pass |
+| Baseline | Treadmill unavailable and HR unavailable / iPhone 17 Pro Max / light | P0 | The blocker remains immediately above the disabled primary action and is visually continuous with the configuration card. | `/private/tmp/issue64-qa/tall-treadmill-unavailable-light.png`, `/private/tmp/issue64-qa/tall-hr-unavailable-light.png` | `ContentView.swift` | Pass |
+| Baseline | Ready / iPhone 17 Pro Max / dark | P1 | The continuous hierarchy, configuration material, and primary action retain semantic contrast without recreating a detached footer. | `/private/tmp/issue64-qa/tall-ready-dark.png` | `ContentView.swift` | Pass |
+| Baseline | Ready / iPhone 17 Pro Max / Accessibility XL | P1 | Readiness, the full configuration, and Start remain readable and reachable in the natural scroll flow with no clipped text. | `/private/tmp/issue64-qa/tall-ready-axxl.png` | `ContentView.swift` | Pass |
+| Baseline | Ready / iPhone SE (3rd generation) / default type | P1 | The shorter portrait layout keeps the full preflight and primary action coherent; the existing scroll view provides overflow behavior rather than fixed spacer geometry. | `/private/tmp/issue64-qa/short-ready-light.png` plus source inspection | `ContentView.swift` | Pass |
+| Baseline | Treadmill unavailable / iPhone SE (3rd generation) / Accessibility XL | P1 | Large content naturally exceeds the compact viewport without horizontal clipping; blocker and Start remain later in the same scroll source order. | `/private/tmp/issue64-qa/short-treadmill-unavailable-axxl.png` plus source contract | `ContentView.swift` | Pass |
+| Regression | Active, cooldown, ending, and summary / iPhone 17 Pro Max / light | P0 | Non-idle shells preserve their accepted content, fixed actions, and compact `Тренировка` navigation behavior; only the idle Hub hides the navigation bar. | `/private/tmp/issue64-qa/tall-active-in-zone-light.png`, `/private/tmp/issue64-qa/tall-cooldown-above-light.png`, `/private/tmp/issue64-qa/tall-ending-confirming-light-retry.png`, `/private/tmp/issue64-qa/tall-summary-complete-light.png` | `ContentView.swift` | Pass |
+| Final review | Runtime and transport boundary | P0 | The diff is limited to SwiftUI composition, one source-contract test, and this ledger; Start still invokes the existing callback and no runtime, BLE, telemetry, persistence, or safety file changed. | Scope checker and base-to-head diff | `ContentView.swift`, `HeartRateLegacyBehaviorContractTests.swift` | Pass |
+
+No visual correction pass was required. The compact-height Accessibility XL screenshot records the expected initial viewport; reachability is additionally enforced by the unchanged outer `ScrollView` and the source-order contract (`readiness → hero → startArea`).
 
 ## Issue #59 — workout ending and result
 
