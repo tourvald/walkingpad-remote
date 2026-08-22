@@ -3462,18 +3462,16 @@ private struct WorkoutStatsView: View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(0..<5, id: \.self) { idx in
                 let seconds = zoneSeconds.flatMap { idx < $0.count ? $0[idx] : nil }
-                let actualMinutes = seconds.map { Int($0 / 60.0) }
                 let monthPlan = idx < manager.zonePlanMinutes.count ? manager.zonePlanMinutes[idx] : 0
-                let planMinutes = scope == .week ? Int(round(Double(monthPlan) / 4.0)) : monthPlan
-                let progress = actualMinutes.map {
-                    planMinutes > 0 ? min(1.0, Double($0) / Double(planMinutes)) : 0
-                }
+                let planSeconds = ZonePlanProgress.planSeconds(
+                    monthlyPlanMinutes: monthPlan,
+                    isWeekly: scope == .week
+                )
                 ZoneSummaryRow(
                     title: "Зона \(idx + 1)",
                     rangeText: zoneRangeText(index: idx),
-                    actualMinutes: actualMinutes,
-                    planMinutes: planMinutes,
-                    progress: progress,
+                    actualSeconds: seconds,
+                    planSeconds: planSeconds,
                     color: zoneColor(index: idx)
                 )
             }
@@ -3580,13 +3578,19 @@ private struct WorkoutStatsView: View {
 private struct ZoneSummaryRow: View {
     let title: String
     let rangeText: String
-    let actualMinutes: Int?
-    let planMinutes: Int
-    let progress: Double?
+    let actualSeconds: Double?
+    let planSeconds: Double
     let color: Color
 
     var body: some View {
-        let achieved = planMinutes > 0 && (actualMinutes ?? -1) >= planMinutes
+        let progress = ZonePlanProgress.rawProgress(
+            actualSeconds: actualSeconds,
+            planSeconds: planSeconds
+        )
+        let achieved = ZonePlanProgress.isAchieved(
+            actualSeconds: actualSeconds,
+            planSeconds: planSeconds
+        )
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
@@ -3603,14 +3607,14 @@ private struct ZoneSummaryRow: View {
                 }
             }
             HStack(spacing: 6) {
-                Text(actualMinutes.map { "Факт \($0) мин" } ?? "Факт —")
+                Text("Факт \(ZonePlanProgress.durationText(seconds: actualSeconds))")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Text("·")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                if planMinutes > 0 {
-                    Text("План \(planMinutes) мин")
+                if planSeconds > 0 {
+                    Text("План \(ZonePlanProgress.durationText(seconds: planSeconds))")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 } else {
@@ -3619,8 +3623,8 @@ private struct ZoneSummaryRow: View {
                         .foregroundColor(.secondary)
                 }
             }
-            if planMinutes > 0, let progress {
-                ProgressView(value: min(1.0, max(0.0, progress)))
+            if let displayedProgress = ZonePlanProgress.displayedProgress(progress) {
+                ProgressView(value: displayedProgress)
                     .progressViewStyle(.linear)
                     .tint(color)
             }
