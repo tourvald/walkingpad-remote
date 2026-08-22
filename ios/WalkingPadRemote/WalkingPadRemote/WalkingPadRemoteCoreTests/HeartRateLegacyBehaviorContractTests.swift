@@ -338,6 +338,8 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(mapping.contains("≤ \\(cooldownTargetBPM) bpm"))
         XCTAssertTrue(mapping.contains("title: \"Скорость\""))
         XCTAssertTrue(mapping.contains("title: \"Прошло\""))
+        XCTAssertTrue(mapping.contains("factualSpeedKmh.map"))
+        XCTAssertTrue(mapping.contains("?? \"—\""))
         for forbidden in [
             "hrTargetBPM", "deadband", "predictor", "hrDecision", "Telemetry",
             "watchReachable", "Apple Watch", "steps", "average", "beatsPerMeter",
@@ -369,10 +371,29 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(scale.contains("sendTreadmill"))
 
         XCTAssertTrue(controlView.contains("makeHRControlActivePresentation("))
-        XCTAssertTrue(controlView.contains("HRDomainService.cooldownSpeedSnapshot("))
-        XCTAssertTrue(controlView.contains("appReportedSpeedKmh: manager.deviceReportedAppSpeedKmh"))
-        XCTAssertTrue(controlView.contains("rawReportedSpeedKmh: manager.deviceReportedSpeedKmh"))
-        XCTAssertTrue(controlView.contains("factualSpeedKmh: manager.isConnected ? factualSpeedKmh : nil"))
+        assertOrdered(
+            [
+                "guard manager.isConnected else { return nil }",
+                "if manager.deviceReportedAppSpeedKmh > 0.05",
+                "return manager.deviceReportedAppSpeedKmh",
+                "if manager.deviceReportedSpeedKmh > 0.05",
+                "return manager.deviceReportedSpeedKmh",
+                "factualSpeedKmh: factualSpeedKmh",
+            ],
+            in: controlView
+        )
+        for forbiddenSpeedFallback in [
+            "HRDomainService.cooldownSpeedSnapshot(",
+            "currentActualSpeedKmh:",
+            "manager.speedKmh",
+            "manager.desiredSpeedKmh",
+            "manager.deviceTargetSpeedKmh",
+        ] {
+            XCTAssertFalse(
+                controlView.contains(forbiddenSpeedFallback),
+                "Active presentation contains \(forbiddenSpeedFallback)"
+            )
+        }
         XCTAssertTrue(controlView.contains("onExtend: { manager.extendHrSession(minutes: 5) }"))
         XCTAssertTrue(controlView.contains("onStop: { manager.stopHrControl() }"))
         XCTAssertFalse(controlView.contains("CommonInfoCard()"))
@@ -386,6 +407,12 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         ] {
             XCTAssertTrue(fixtures.contains("case \"\(fixture)\""), fixture)
         }
+        XCTAssertTrue(
+            fixtures.contains(
+                "case \"active-no-speed\":\n" +
+                "        return hrControl(true, true, 152, nil, nil, false, 115)"
+            )
+        )
         XCTAssertFalse(fixtures.contains("startHrControl"))
         XCTAssertFalse(fixtures.contains("stopHrControl"))
         XCTAssertFalse(fixtures.contains("sendTreadmill"))

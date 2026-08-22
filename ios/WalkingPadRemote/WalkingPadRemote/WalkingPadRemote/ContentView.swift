@@ -1230,13 +1230,16 @@ private struct ControlSwipeView: View {
     }
 
     private var productionActiveWorkoutPresentation: TrainingHubPresentation {
-        let factualSpeedKmh = HRDomainService.cooldownSpeedSnapshot(
-            desiredSpeedKmh: manager.desiredSpeedKmh,
-            deviceTargetSpeedKmh: manager.deviceTargetSpeedKmh,
-            appReportedSpeedKmh: manager.deviceReportedAppSpeedKmh,
-            rawReportedSpeedKmh: manager.deviceReportedSpeedKmh,
-            currentActualSpeedKmh: manager.speedKmh
-        ).factualSpeedKmh
+        let factualSpeedKmh: Double? = {
+            guard manager.isConnected else { return nil }
+            if manager.deviceReportedAppSpeedKmh > 0.05 {
+                return manager.deviceReportedAppSpeedKmh
+            }
+            if manager.deviceReportedSpeedKmh > 0.05 {
+                return manager.deviceReportedSpeedKmh
+            }
+            return nil
+        }()
 
         return makeHRControlActivePresentation(
             treadmillConnected: manager.isConnected,
@@ -1247,7 +1250,7 @@ private struct ControlSwipeView: View {
             heartRateSourceLabel: nil,
             targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
             zoneRanges: hrZoneRanges(for: manager),
-            factualSpeedKmh: manager.isConnected ? factualSpeedKmh : nil,
+            factualSpeedKmh: factualSpeedKmh,
             elapsedSeconds: manager.timeSec,
             isCooldown: manager.hrRemainingSeconds <= 0,
             cooldownTargetBPM: manager.hrCooldownTargetBpm,
