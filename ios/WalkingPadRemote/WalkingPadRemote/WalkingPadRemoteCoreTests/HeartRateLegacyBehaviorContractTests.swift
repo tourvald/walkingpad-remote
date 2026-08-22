@@ -204,7 +204,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
 
         XCTAssertTrue(
             contentViewSource.contains(
-                "let canStartHrControl = manager.isHrControlStartAffordanceAvailable"
+                "startEnabled: manager.isHrControlStartAffordanceAvailable"
             )
         )
         XCTAssertFalse(
@@ -212,7 +212,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "manager.isHrControlStartAllowed && manager.watchReachable && manager.hrStreamingActive"
             )
         )
-        XCTAssertTrue(contentViewSource.contains("enabled: !isPreviewMode && canStartHrControl"))
+        XCTAssertTrue(contentViewSource.contains("onStart: { manager.startHrControl() }"))
 
         assertOrdered(
             [
@@ -228,6 +228,82 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "startWithSpeed",
             ],
             in: start
+        )
+    }
+
+    func testTrainingHubPresentationStaysGenericAndPreviewOnlyModesCannotStart() throws {
+        let mapping = try functionBody(
+            "private func makeHRControlTrainingHubPresentation(",
+            in: contentViewSource
+        )
+        let production = try functionBody(
+            "private var productionTrainingHubPresentation: TrainingHubPresentation",
+            in: contentViewSource
+        )
+        let previewFixtures = try functionBody(
+            "private func trainingHubPreviewPresentation(named name: String)",
+            in: contentViewSource
+        )
+        let hubBody = try functionBody(
+            "private struct TrainingHubView: View",
+            in: contentViewSource
+        )
+        let contentBody = try functionBody(
+            "struct ContentView: View",
+            in: contentViewSource
+        )
+
+        XCTAssertTrue(mapping.contains("targetTitle: \"Зона "))
+        XCTAssertTrue(mapping.contains("targetValue: \"\\(targetRange.lowerBound)–\\(targetRange.upperBound) bpm\""))
+        XCTAssertTrue(mapping.contains("title: \"Пульс\""))
+        XCTAssertTrue(mapping.contains("heartRateSourceLabel"))
+        XCTAssertFalse(mapping.contains("watchReachable"))
+        XCTAssertFalse(mapping.contains("Apple Watch"))
+        XCTAssertFalse(mapping.contains("Telemetry"))
+        XCTAssertFalse(mapping.contains("history"))
+
+        XCTAssertTrue(production.contains("startEnabled: manager.isHrControlStartAffordanceAvailable"))
+        XCTAssertTrue(production.contains("heartRateSourceLabel: nil"))
+        XCTAssertFalse(production.contains("watchReachable"))
+        XCTAssertFalse(production.contains("telemetry"))
+
+        for fixture in [
+            "ready-unknown-source",
+            "ready-known-source",
+            "treadmill-unavailable",
+            "hr-unavailable",
+            "preparing",
+            "intervals",
+            "weekly-zones",
+        ] {
+            XCTAssertTrue(previewFixtures.contains("case \"\(fixture)\""), fixture)
+        }
+        XCTAssertTrue(previewFixtures.contains("modeTitle: \"Интервалы\""))
+        XCTAssertTrue(previewFixtures.contains("modeTitle: \"Недельные зоны\""))
+        XCTAssertTrue(previewFixtures.contains("startEnabled: false"))
+        XCTAssertTrue(previewFixtures.contains("isPreview: true"))
+        XCTAssertFalse(previewFixtures.contains("startHrControl"))
+        XCTAssertFalse(previewFixtures.contains("sendTreadmill"))
+
+        XCTAssertTrue(hubBody.contains("Label(\"Интервалы · Скоро\""))
+        XCTAssertTrue(hubBody.contains(".disabled(true)"))
+        XCTAssertTrue(hubBody.contains("guard !presentation.isPreview else { return }"))
+        XCTAssertTrue(hubBody.contains("onStart()"))
+        XCTAssertFalse(hubBody.contains("BluetoothManager"))
+
+        XCTAssertTrue(contentBody.contains("private var isTrainingHubPreviewLaunch: Bool"))
+        XCTAssertEqual(
+            contentBody.components(separatedBy: "guard !isTrainingHubPreviewLaunch else { return }").count - 1,
+            2
+        )
+        assertOrdered(
+            [
+                "guard !isTrainingHubPreviewLaunch else { return }",
+                "manager.start()",
+                "guard !isTrainingHubPreviewLaunch else { return }",
+                "manager.pingWatch()",
+            ],
+            in: contentBody
         )
     }
 
