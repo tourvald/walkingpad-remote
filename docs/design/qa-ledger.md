@@ -1,6 +1,26 @@
 # Redesign QA ledger
 
-Status: passed for the frozen Issue #58 presentation scope.
+Status: passed for the frozen Issue #59 presentation scope.
+
+## Issue #59 — workout ending and result
+
+| Pass | State / form factor | Severity | Finding | Evidence | Owner path | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline | Ending, confirming / confirmed stop, iPhone 17, light | P0 | Ending shows only `Завершаем тренировку…` plus the existing factual stop-truth interpretation; there is no save progress, fabricated preparation stage, timer, or delay. | `/private/tmp/issue59-qa/iphone-ending-confirming-light.png` plus source contract | `ContentView.swift` | Pass |
+| Baseline | Accepted Hub / active / cooldown flow, iPhone 17, light | P0 | The new presentation wrapper preserves the accepted Training Hub, factual active HR shell, target-zone scale, pinned Stop, and cooldown threshold presentation. | `/private/tmp/issue59-qa/iphone-training-hub-preview-ready-unknown-source-light.png`, `/private/tmp/issue59-qa/iphone-active-workout-preview-active-in-zone-light.png`, `/private/tmp/issue59-qa/iphone-active-workout-preview-cooldown-above-light.png` | `ContentView.swift` | Pass |
+| Baseline | Complete same-session result, iPhone 17, light | P0 | Factual same-connection distance is the hero; duration, average HR, factual average speed, and exact Z1–Z5 durations remain subordinate. | `/private/tmp/issue59-qa/iphone-summary-complete-light.png` | `ContentView.swift` | Pass |
+| Baseline | Distance unavailable, iPhone 17, light | P0 | Duration becomes the hero without substituting legacy distance or integrating speed. | `/private/tmp/issue59-qa/iphone-summary-duration-fallback-light.png` plus source contract | `ContentView.swift` | Pass |
+| Baseline | Partial / unavailable projection, iPhone 17, light | P0 | Missing projection facts stay unavailable, partial zones remain individually labelled, and the fully unavailable state shows no workout numbers. | `/private/tmp/issue59-qa/iphone-summary-partial-light.png`, `/private/tmp/issue59-qa/iphone-summary-unavailable-light.png` | `ContentView.swift` | Pass |
+| Baseline | Exact result identity and distance boundaries | P0 | Presentation snapshots pre-session native V2 IDs, waits for a post-end projection generation, requires exactly one new native V2 ID, and accepts a distance delta only for the same peripheral and connection epoch with fresh checksum-valid metric evidence. | Focused source contract and exact-base inspection | `ContentView.swift`, `HeartRateLegacyBehaviorContractTests.swift` | Pass |
+| Baseline | Complete result, iPhone 17, dark | P1 | Distance, secondary facts, zone rows, and both actions retain semantic contrast in dark appearance. | `/private/tmp/issue59-qa/iphone-summary-complete-dark.png` | `ContentView.swift` | Pass |
+| Baseline | Complete / partial result, iPhone 17, Accessibility XL | P1 | Dynamic Type enlarges the hierarchy without hiding facts permanently; result content scrolls while `Готово` and `Открыть статистику` remain fixed and readable. | `/private/tmp/issue59-qa/iphone-summary-complete-axxl.png`, `/private/tmp/issue59-qa/iphone-summary-partial-axxl-confirm.png` | `ContentView.swift` | Pass |
+| Baseline | Complete result, iPad, regular width | P1 | The distance-first hierarchy, all three secondary metrics, and all five zone durations remain coherent at regular width. | `/private/tmp/issue59-qa/ipad-summary-complete-light.png` | `ContentView.swift` | Pass |
+| Final review | VoiceOver order, non-colour state, Reduce Motion, and actions | P2 | Headers receive accessibility focus, metric and zone values have explicit labels, unavailable states use text, flow animation is disabled under Reduce Motion, `Готово` clears presentation state, and statistics uses the existing root tab. | Source inspection plus focused source contract | `ContentView.swift` | Pass |
+| Final review | Compact-height attempt | P3 | The headless Simulator host still exposes no supported orientation command. Portrait scrolling, pinned actions, regular-width iPad, and Accessibility XL were verified instead. | Same `simctl` limitation recorded for Issues #56 and #58 | QA environment | Accepted limitation; no P0–P2 finding. |
+
+No visual correction pass was required. The first full SwiftPM run reused a scratch directory and produced one `TelemetryV2RuntimeCoordinatorTests` timeout; the exact single test passed on exact base and on head with a fresh scratch directory, and the fresh full suite passed.
+
+DEBUG result fixtures are covered by `HeartRateLegacyBehaviorContractTests`: fixture launches skip manager lifecycle startup, fixture actions are no-ops, exact projection matching never selects the newest workout heuristically, and the presentation flow contains no control, stop, telemetry, or persistence mutation.
 
 ## Issue #58 — active HR Control and cooldown
 
