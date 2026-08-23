@@ -59,7 +59,7 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
 
         assertOrdered([
             "observation.isQualifying(",
-            "nativeHeartRateSafetyFacts(now: now).permitsCommit",
+            "RuntimePolicy.permitsProductionCommit(",
             "hrTargetBPM = intent.targetBPM",
             "hrDurationMinutes = intent.durationMinutes",
             "nativeHealthKitWorkoutCommitted = true",
@@ -72,6 +72,27 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
             "startWithSpeed",
         ], in: productionStart)
         XCTAssertEqual(productionStart.components(separatedBy: "isHrControlRunning = true").count - 1, 1)
+    }
+
+    func testRuntimeSafetyFixesUseBehavioralPoliciesAtProductionBoundaries() throws {
+        let safety = try functionBody(
+            "private func nativeHeartRateSafetyFacts(",
+            in: managerSource
+        )
+        let warm = try functionBody(
+            "private func warmNativeHeartRateProviderIfPossible()",
+            in: managerSource
+        )
+        let collection = try functionBody(
+            "private func startNativeHeartRateCollection(",
+            in: managerSource
+        )
+        XCTAssertTrue(safety.contains("RuntimePolicy.stopInProgress("))
+        XCTAssertTrue(safety.contains("RuntimePolicy\n                .hasConflictingWorkout("))
+        XCTAssertTrue(warm.contains("RuntimePolicy.canWarmPrepare("))
+        XCTAssertTrue(warm.contains("providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle"))
+        XCTAssertTrue(collection.contains("collectionStarted("))
+        XCTAssertTrue(collection.contains("now: Date()"))
     }
 
     func testNativeHeartRateMarksFreshImmediatelyAndLegacyWatchCannotRace() throws {

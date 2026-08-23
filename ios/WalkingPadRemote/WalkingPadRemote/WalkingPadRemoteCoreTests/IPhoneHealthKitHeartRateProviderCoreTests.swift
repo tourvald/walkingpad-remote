@@ -144,6 +144,48 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.finishCount, 1)
     }
 
+    func testRapidHubWarmDuringCommittedFinishLeavesProviderUntouched() async throws {
+        let (provider, driver) = makeProvider()
+        try await provider.prepare(configuration: "walking")
+        try await provider.start()
+        driver.calls.removeAll()
+        driver.suspendStoppedTransition = true
+
+        let finish = Task {
+            try await provider.finish(at: Date(timeIntervalSince1970: 5_010))
+        }
+        await driver.waitUntilStoppedTransitionIsPending()
+
+        let shouldWarm = NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
+            isTrainingHubVisible: true,
+            appActivity: .active,
+            isHrControlRunning: false,
+            nativeWorkoutCommitted: true,
+            nativeWorkoutFinishInFlight: true,
+            providerIsIdle: provider.state == .idle,
+            providerIsSupported: true
+        )
+        if shouldWarm {
+            try await provider.prepare(configuration: "unexpected-warm")
+        }
+
+        XCTAssertFalse(shouldWarm)
+        XCTAssertEqual(provider.state, .finishing)
+        XCTAssertEqual(driver.calls, ["stopActivity"])
+        XCTAssertEqual(driver.discardCount, 0)
+        XCTAssertEqual(driver.finishCount, 0)
+        XCTAssertEqual(driver.resetCount, 0)
+
+        driver.sendStoppedTransition(at: Date(timeIntervalSince1970: 5_011))
+        _ = try await finish.value
+
+        XCTAssertEqual(provider.state, .idle)
+        XCTAssertEqual(driver.finishCount, 1)
+        XCTAssertEqual(driver.discardCount, 0)
+        XCTAssertEqual(driver.resetCount, 1)
+        XCTAssertEqual(driver.createdConfigurations, ["walking"])
+    }
+
     func testUnavailableFinishedWorkoutEndsSessionWithoutDiscardOrRetry() async throws {
         let (provider, driver) = makeProvider()
         try await provider.prepare(configuration: "walking")

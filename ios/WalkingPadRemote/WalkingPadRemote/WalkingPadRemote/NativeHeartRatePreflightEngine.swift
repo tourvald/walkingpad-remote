@@ -3,6 +3,65 @@ import Foundation
 struct NativeHeartRatePreflightEngine {
     static let timeoutSeconds: TimeInterval = 30
 
+    enum RuntimePolicy {
+        static func stopInProgress(
+            hasObservationLifecycle: Bool,
+            observationHasFinalResult: Bool,
+            hasUnavailableAttempt: Bool
+        ) -> Bool {
+            (hasObservationLifecycle && !observationHasFinalResult)
+                || hasUnavailableAttempt
+        }
+
+        static func hasConflictingWorkout(
+            isHrControlRunning: Bool,
+            treadmillTestRunIsActive: Bool,
+            nativeWorkoutCommitted: Bool,
+            nativeFlowOwnsController: Bool,
+            nativeWorkoutFinishInFlight: Bool
+        ) -> Bool {
+            isHrControlRunning
+                || treadmillTestRunIsActive
+                || nativeWorkoutFinishInFlight
+                || (nativeWorkoutCommitted && !nativeFlowOwnsController)
+        }
+
+        static func canWarmPrepare(
+            isTrainingHubVisible: Bool,
+            appActivity: AppActivity,
+            isHrControlRunning: Bool,
+            nativeWorkoutCommitted: Bool,
+            nativeWorkoutFinishInFlight: Bool,
+            providerIsIdle: Bool,
+            providerIsSupported: Bool
+        ) -> Bool {
+            isTrainingHubVisible
+                && appActivity == .active
+                && !isHrControlRunning
+                && !nativeWorkoutCommitted
+                && !nativeWorkoutFinishInFlight
+                && providerIsIdle
+                && providerIsSupported
+        }
+
+        static func permitsProductionCommit(
+            intent: Intent,
+            now: Date,
+            flowOwnsController: Bool,
+            nativeWorkoutAlreadyCommitted: Bool,
+            providerIsCollecting: Bool,
+            observationIsQualifying: Bool,
+            safety: SafetyFacts
+        ) -> Bool {
+            flowOwnsController
+                && !nativeWorkoutAlreadyCommitted
+                && providerIsCollecting
+                && observationIsQualifying
+                && now < intent.requestedAt.addingTimeInterval(timeoutSeconds)
+                && safety.permitsCommit
+        }
+    }
+
     struct Intent: Equatable {
         let id: UUID
         let targetBPM: Int
@@ -153,6 +212,9 @@ struct NativeHeartRatePreflightEngine {
             phase = .prepared
             return []
         case .preparing(let intent):
+            guard !deadlineReached(for: intent, now: date) else {
+                return cancel(reason: .timeout)
+            }
             phase = .starting(intent, acquisitionStartedAt: date)
             return [.startCollection(intent: intent, acquisitionStartedAt: date)]
         case .idle, .prepared, .starting, .waiting:
@@ -162,18 +224,23 @@ struct NativeHeartRatePreflightEngine {
 
     mutating func collectionStarted(
         intentID: UUID,
-        acquisitionStartedAt: Date
-    ) {
+        acquisitionStartedAt: Date,
+        now: Date
+    ) -> [Effect] {
         guard case .starting(let intent, let expectedStart) = phase,
               intent.id == intentID,
               expectedStart == acquisitionStartedAt else {
-            return
+            return []
+        }
+        guard !deadlineReached(for: intent, now: now) else {
+            return cancel(reason: .timeout)
         }
         phase = .waiting(
             intent,
             acquisitionStartedAt: acquisitionStartedAt,
             observation: nil
         )
+        return []
     }
 
     mutating func receive(
@@ -182,6 +249,10 @@ struct NativeHeartRatePreflightEngine {
         now: Date,
         freshnessLimit: TimeInterval
     ) -> [Effect] {
+        guard let intent = currentIntent else { return [] }
+        guard !deadlineReached(for: intent, now: now) else {
+            return cancel(reason: .timeout)
+        }
         guard case .waiting(let intent, let acquisitionStartedAt, _) = phase,
               observation.isQualifying(
                 collectionStartedAt: acquisitionStartedAt,
@@ -204,6 +275,9 @@ struct NativeHeartRatePreflightEngine {
         freshnessLimit: TimeInterval
     ) -> [Effect] {
         guard ownsUncommittedWorkout else { return [] }
+        if let intent = currentIntent, deadlineReached(for: intent, now: now) {
+            return cancel(reason: .timeout)
+        }
         if safety.appActivity == .background {
             return cancel(reason: .appBackgrounded)
         }
@@ -218,7 +292,7 @@ struct NativeHeartRatePreflightEngine {
 
     mutating func tick(now: Date) -> [Effect] {
         guard let intent = currentIntent,
-              now.timeIntervalSince(intent.requestedAt) >= Self.timeoutSeconds else {
+              deadlineReached(for: intent, now: now) else {
             return []
         }
         return cancel(reason: .timeout)
@@ -246,12 +320,17 @@ struct NativeHeartRatePreflightEngine {
         now: Date,
         freshnessLimit: TimeInterval
     ) -> [Effect] {
-        guard safety.permitsCommit,
-              case .waiting(
+        guard case .waiting(
                 let intent,
                 let acquisitionStartedAt,
                 let observation?
-              ) = phase,
+              ) = phase else {
+            return []
+        }
+        guard !deadlineReached(for: intent, now: now) else {
+            return cancel(reason: .timeout)
+        }
+        guard safety.permitsCommit,
               observation.isQualifying(
                 collectionStartedAt: acquisitionStartedAt,
                 now: now,
@@ -265,5 +344,9 @@ struct NativeHeartRatePreflightEngine {
             observation: observation,
             acquisitionStartedAt: acquisitionStartedAt
         )]
+    }
+
+    private func deadlineReached(for intent: Intent, now: Date) -> Bool {
+        now >= intent.requestedAt.addingTimeInterval(Self.timeoutSeconds)
     }
 }

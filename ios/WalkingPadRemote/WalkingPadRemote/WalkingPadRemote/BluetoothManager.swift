@@ -4238,35 +4238,53 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 #endif
             return nativeHeartRateAppActivity
         }()
-        let stopInProgress = stopObservationLifecycle?.finalResult == nil
-            || unavailableStopAttempt != nil
+        let stopInProgress = NativeHeartRatePreflightEngine.RuntimePolicy.stopInProgress(
+            hasObservationLifecycle: stopObservationLifecycle != nil,
+            observationHasFinalResult: stopObservationLifecycle?.finalResult != nil,
+            hasUnavailableAttempt: unavailableStopAttempt != nil
+        )
         return NativeHeartRatePreflightEngine.SafetyFacts(
             appActivity: effectiveAppActivity,
             treadmillControlReady: isTreadmillControlReady,
             transportValid: nativeHeartRateTransportIsValid,
             controllerUnitsAllowed: controllerUnitsGateDecision(now: now).allowed,
-            hasConflictingWorkout: isHrControlRunning
-                || treadmillTestRunIsActive
-                || nativeHealthKitWorkoutCommitted
-                || nativeHealthKitWorkoutFinishInFlight,
+            hasConflictingWorkout: NativeHeartRatePreflightEngine.RuntimePolicy
+                .hasConflictingWorkout(
+                    isHrControlRunning: isHrControlRunning,
+                    treadmillTestRunIsActive: treadmillTestRunIsActive,
+                    nativeWorkoutCommitted: nativeHealthKitWorkoutCommitted,
+                    nativeFlowOwnsController: nativeHeartRateFlowOwnsController,
+                    nativeWorkoutFinishInFlight: nativeHealthKitWorkoutFinishInFlight
+                ),
             stopInProgress: stopInProgress,
             telemetryAvailability: .healthy
         )
     }
 
     private func warmNativeHeartRateProviderIfPossible() {
-        guard isTrainingHubVisible,
-              nativeHeartRateAppActivity == .active,
-              !isHrControlRunning,
-              IPhoneHealthKitLiveHeartRateProvider.isSupported else { return }
+        guard NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
+            isTrainingHubVisible: isTrainingHubVisible,
+            appActivity: nativeHeartRateAppActivity,
+            isHrControlRunning: isHrControlRunning,
+            nativeWorkoutCommitted: nativeHealthKitWorkoutCommitted,
+            nativeWorkoutFinishInFlight: nativeHealthKitWorkoutFinishInFlight,
+            providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle,
+            providerIsSupported: IPhoneHealthKitLiveHeartRateProvider.isSupported
+        ) else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
             let canPrepare = await iPhoneHealthKitHeartRateProvider
                 .canPrepareWithoutAuthorizationPrompt()
             guard canPrepare,
-                  isTrainingHubVisible,
-                  nativeHeartRateAppActivity == .active,
-                  !isHrControlRunning else { return }
+                  NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
+                    isTrainingHubVisible: isTrainingHubVisible,
+                    appActivity: nativeHeartRateAppActivity,
+                    isHrControlRunning: isHrControlRunning,
+                    nativeWorkoutCommitted: nativeHealthKitWorkoutCommitted,
+                    nativeWorkoutFinishInFlight: nativeHealthKitWorkoutFinishInFlight,
+                    providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle,
+                    providerIsSupported: IPhoneHealthKitLiveHeartRateProvider.isSupported
+                  ) else { return }
             applyNativeHeartRatePreflightEffects(
                 nativeHeartRatePreflightEngine.requestWarmPreparation()
             )
@@ -4334,10 +4352,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard let self else { return }
             do {
                 try await iPhoneHealthKitHeartRateProvider.start(at: acquisitionStartedAt)
-                nativeHeartRatePreflightEngine.collectionStarted(
+                let effects = nativeHeartRatePreflightEngine.collectionStarted(
                     intentID: intent.id,
-                    acquisitionStartedAt: acquisitionStartedAt
+                    acquisitionStartedAt: acquisitionStartedAt,
+                    now: Date()
                 )
+                applyNativeHeartRatePreflightEffects(effects)
+                guard nativeHeartRatePreflightEngine.hasStartIntent else { return }
                 nativeHealthKitAcquisitionStartedAt = acquisitionStartedAt
                 nativeHeartRateLogger.info("collection_started")
                 appendLog("Native HR collection started: intent=\(intent.id.uuidString)")
@@ -4400,15 +4421,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         acquisitionStartedAt: Date
     ) {
         let now = Date()
-        guard nativeHeartRateFlowOwnsController,
-              !nativeHealthKitWorkoutCommitted,
-              iPhoneHealthKitHeartRateProvider.state == .collecting,
-              observation.isQualifying(
-                collectionStartedAt: acquisitionStartedAt,
-                now: now,
-                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
-              ),
-              nativeHeartRateSafetyFacts(now: now).permitsCommit else {
+        let observationIsQualifying = observation.isQualifying(
+            collectionStartedAt: acquisitionStartedAt,
+            now: now,
+            freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+        )
+        guard NativeHeartRatePreflightEngine.RuntimePolicy.permitsProductionCommit(
+            intent: intent,
+            now: now,
+            flowOwnsController: nativeHeartRateFlowOwnsController,
+            nativeWorkoutAlreadyCommitted: nativeHealthKitWorkoutCommitted,
+            providerIsCollecting: iPhoneHealthKitHeartRateProvider.state == .collecting,
+            observationIsQualifying: observationIsQualifying,
+            safety: nativeHeartRateSafetyFacts(now: now)
+        ) else {
             abortNativeHeartRateFlow(reason: .superseded)
             return
         }

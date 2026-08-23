@@ -150,6 +150,216 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         ])
     }
 
+    func testHeartRateAtDeadlineCannotCommitWithoutTimerTick() {
+        var engine = waitingEngine()
+
+        XCTAssertEqual(engine.receive(
+            nativeObservation(
+                measuredAt: now.addingTimeInterval(30),
+                receivedAt: now.addingTimeInterval(30)
+            ),
+            safety: safeFacts(),
+            now: now.addingTimeInterval(30),
+            freshnessLimit: 7
+        ), [.discard(reason: .timeout)])
+    }
+
+    func testHeartRateAfterDeadlineCannotCommitWithoutTimerTick() {
+        var engine = waitingEngine()
+
+        XCTAssertEqual(engine.receive(
+            nativeObservation(
+                measuredAt: now.addingTimeInterval(31),
+                receivedAt: now.addingTimeInterval(31)
+            ),
+            safety: safeFacts(),
+            now: now.addingTimeInterval(31),
+            freshnessLimit: 7
+        ), [.discard(reason: .timeout)])
+    }
+
+    func testDeferredInactiveToActiveAtDeadlineTimesOutInsteadOfCommitting() {
+        var engine = waitingEngine()
+        XCTAssertEqual(engine.receive(
+            nativeObservation(),
+            safety: safeFacts(appActivity: .inactive),
+            now: now.addingTimeInterval(2),
+            freshnessLimit: 40
+        ), [])
+
+        XCTAssertEqual(engine.safetyChanged(
+            safeFacts(),
+            now: now.addingTimeInterval(30),
+            freshnessLimit: 40
+        ), [.discard(reason: .timeout)])
+    }
+
+    func testPreparationCompletingAtDeadlineTimesOutBeforeCollection() {
+        var engine = NativeHeartRatePreflightEngine()
+        let intent = makeIntent()
+        XCTAssertEqual(engine.requestStart(intent: intent, safety: safeFacts()), [.prepare])
+
+        XCTAssertEqual(engine.providerPrepared(
+            at: now.addingTimeInterval(30)
+        ), [.discard(reason: .timeout)])
+    }
+
+    func testCollectionCompletingAtDeadlineTimesOutBeforeWaitingForHeartRate() {
+        var engine = preparedEngine()
+        let intent = makeIntent()
+        _ = engine.requestStart(intent: intent, safety: safeFacts())
+
+        XCTAssertEqual(engine.collectionStarted(
+            intentID: intent.id,
+            acquisitionStartedAt: intent.requestedAt,
+            now: now.addingTimeInterval(30)
+        ), [.discard(reason: .timeout)])
+    }
+
+    func testRuntimeStopPolicyAllowsCleanIdleAndBlocksUnresolvedStop() {
+        XCTAssertFalse(NativeHeartRatePreflightEngine.RuntimePolicy.stopInProgress(
+            hasObservationLifecycle: false,
+            observationHasFinalResult: false,
+            hasUnavailableAttempt: false
+        ))
+        XCTAssertTrue(NativeHeartRatePreflightEngine.RuntimePolicy.stopInProgress(
+            hasObservationLifecycle: true,
+            observationHasFinalResult: false,
+            hasUnavailableAttempt: false
+        ))
+
+        var engine = preparedEngine()
+        XCTAssertEqual(engine.requestStart(
+            intent: makeIntent(),
+            safety: safeFacts(stopInProgress: false)
+        ).count, 1)
+        var blockedEngine = preparedEngine()
+        XCTAssertEqual(blockedEngine.requestStart(
+            intent: makeIntent(),
+            safety: safeFacts(stopInProgress: true)
+        ), [])
+    }
+
+    func testFreshNativeHeartRateCrossesProductionCommitSeamExactlyOnce() {
+        var engine = waitingEngine()
+        let observation = nativeObservation()
+        let effects = engine.receive(
+            observation,
+            safety: safeFacts(),
+            now: now.addingTimeInterval(2),
+            freshnessLimit: 7
+        )
+        guard case .commit(let intent, let committedObservation, let startedAt) = effects.first else {
+            return XCTFail("Expected engine commit")
+        }
+
+        var nativeWorkoutCommitted = false
+        var productionStartCount = 0
+        for _ in 0..<2 {
+            let safety = safeFacts(hasConflictingWorkout:
+                NativeHeartRatePreflightEngine.RuntimePolicy.hasConflictingWorkout(
+                    isHrControlRunning: false,
+                    treadmillTestRunIsActive: false,
+                    nativeWorkoutCommitted: nativeWorkoutCommitted,
+                    nativeFlowOwnsController: true,
+                    nativeWorkoutFinishInFlight: false
+                )
+            )
+            let permitted = NativeHeartRatePreflightEngine.RuntimePolicy
+                .permitsProductionCommit(
+                    intent: intent,
+                    now: now.addingTimeInterval(2),
+                    flowOwnsController: true,
+                    nativeWorkoutAlreadyCommitted: nativeWorkoutCommitted,
+                    providerIsCollecting: true,
+                    observationIsQualifying: committedObservation.isQualifying(
+                        collectionStartedAt: startedAt,
+                        now: now.addingTimeInterval(2),
+                        freshnessLimit: 7
+                    ),
+                    safety: safety
+                )
+            if permitted {
+                nativeWorkoutCommitted = true
+                let postClaimSafety = safeFacts(hasConflictingWorkout:
+                    NativeHeartRatePreflightEngine.RuntimePolicy.hasConflictingWorkout(
+                        isHrControlRunning: false,
+                        treadmillTestRunIsActive: false,
+                        nativeWorkoutCommitted: nativeWorkoutCommitted,
+                        nativeFlowOwnsController: true,
+                        nativeWorkoutFinishInFlight: false
+                    )
+                )
+                if postClaimSafety.permitsCommit {
+                    productionStartCount += 1
+                }
+            }
+        }
+
+        XCTAssertEqual(productionStartCount, 1)
+    }
+
+    func testProductionCommitSeamRechecksDeadlineAfterEngineCommitEffect() {
+        var engine = waitingEngine()
+        let beforeDeadline = now.addingTimeInterval(29.9)
+        let effects = engine.receive(
+            nativeObservation(
+                measuredAt: beforeDeadline,
+                receivedAt: beforeDeadline
+            ),
+            safety: safeFacts(),
+            now: beforeDeadline,
+            freshnessLimit: 7
+        )
+        guard case .commit(let intent, let observation, let startedAt) = effects.first else {
+            return XCTFail("Expected engine commit before deadline")
+        }
+
+        XCTAssertFalse(NativeHeartRatePreflightEngine.RuntimePolicy.permitsProductionCommit(
+            intent: intent,
+            now: now.addingTimeInterval(30),
+            flowOwnsController: true,
+            nativeWorkoutAlreadyCommitted: false,
+            providerIsCollecting: true,
+            observationIsQualifying: observation.isQualifying(
+                collectionStartedAt: startedAt,
+                now: beforeDeadline,
+                freshnessLimit: 7
+            ),
+            safety: safeFacts()
+        ))
+    }
+
+    func testRapidStopToHubWarmCannotInterfereWithCommittedFinish() {
+        XCTAssertFalse(NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
+            isTrainingHubVisible: true,
+            appActivity: .active,
+            isHrControlRunning: false,
+            nativeWorkoutCommitted: true,
+            nativeWorkoutFinishInFlight: true,
+            providerIsIdle: false,
+            providerIsSupported: true
+        ))
+        XCTAssertFalse(NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
+            isTrainingHubVisible: true,
+            appActivity: .active,
+            isHrControlRunning: false,
+            nativeWorkoutCommitted: false,
+            nativeWorkoutFinishInFlight: false,
+            providerIsIdle: false,
+            providerIsSupported: true
+        ))
+        XCTAssertTrue(NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
+            isTrainingHubVisible: true,
+            appActivity: .active,
+            isHrControlRunning: false,
+            nativeWorkoutCommitted: false,
+            nativeWorkoutFinishInFlight: false,
+            providerIsIdle: true,
+            providerIsSupported: true
+        ))
+    }
+
     func testFrozenIntentIsReturnedAtCommit() {
         var engine = waitingEngine(targetBPM: 151, durationMinutes: 45)
 
@@ -220,9 +430,10 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         var engine = preparedEngine()
         let intent = makeIntent(targetBPM: targetBPM, durationMinutes: durationMinutes)
         _ = engine.requestStart(intent: intent, safety: safeFacts())
-        engine.collectionStarted(
+        _ = engine.collectionStarted(
             intentID: intent.id,
-            acquisitionStartedAt: intent.requestedAt
+            acquisitionStartedAt: intent.requestedAt,
+            now: intent.requestedAt
         )
         return engine
     }
@@ -255,6 +466,8 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
     private func safeFacts(
         appActivity: NativeHeartRatePreflightEngine.AppActivity = .active,
         treadmillControlReady: Bool = true,
+        hasConflictingWorkout: Bool = false,
+        stopInProgress: Bool = false,
         telemetryAvailability: NativeHeartRatePreflightEngine.TelemetryAvailability = .healthy
     ) -> NativeHeartRatePreflightEngine.SafetyFacts {
         .init(
@@ -262,8 +475,8 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
             treadmillControlReady: treadmillControlReady,
             transportValid: true,
             controllerUnitsAllowed: true,
-            hasConflictingWorkout: false,
-            stopInProgress: false,
+            hasConflictingWorkout: hasConflictingWorkout,
+            stopInProgress: stopInProgress,
             telemetryAvailability: telemetryAvailability
         )
     }
