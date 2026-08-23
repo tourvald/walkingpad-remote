@@ -41,6 +41,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Validate Codex governance
+        run: python scripts/check_codex_governance.py
+
       - name: Compile Python entrypoints
         run: |
           python -m compileall \

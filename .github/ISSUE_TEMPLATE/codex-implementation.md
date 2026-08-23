@@ -18,8 +18,7 @@ Describe the task-specific outcome.
 
 ## Accepted behavior contract
 
-State the current owner, behavior to preserve, allowed mutations, failure
-behavior, and positive/negative regression requirements.
+State the current owner, behavior to preserve/change, allowed mutations, failure behavior, and important regressions.
 
 ## Required changes
 
@@ -42,14 +41,13 @@ behavior, and positive/negative regression requirements.
 - [Repository constitution](../../AGENTS.md)
 - [Codex/GitHub workflow ownership](../../docs/engineering/codex-github-workflow.md)
 - [WalkingPad PR lifecycle](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md)
-- Add only directly relevant subsystem and domain contracts.
+- For code changes add `walkingpad-minimal-code`.
+- Add `walkingpad-ios-redesign`, `walkingpad-performance`, `walkingpad-safety-change`, hardware/evidence skills, or domain docs only when this Issue actually triggers them.
 
 ## Current binding decisions
 
-- None at creation. Add links to later active PM decisions and integrate their
-  settled task-specific requirements into this body without deleting comments.
+- None at creation. Link later active PM decisions and integrate settled task-specific requirements without deleting comment history.
 
 ## Task-specific hard stops
 
-- Stop for PM when satisfying this Issue requires scope or behavior not
-  explicitly authorized above.
+- Stop for PM when satisfying this Issue requires scope, behavior, hardware/device action, or destructive work not explicitly authorized above.

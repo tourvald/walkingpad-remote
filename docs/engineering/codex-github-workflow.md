@@ -1,85 +1,94 @@
 # Codex and GitHub contract ownership
 
-Status: canonical governance map for repository work.
+Status: canonical governance map for ChatGPT -> GitHub -> Codex development.
 
-This document explains where project knowledge belongs. It intentionally does
-not duplicate the implementation sequence owned by
-[`walkingpad-pr-lifecycle`](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md).
+This document defines where project knowledge and workflow rules belong. It links to canonical owners instead of duplicating their procedures.
 
 ## Canonical owners
 
 | Concern | Canonical owner | Keep out of |
 | --- | --- | --- |
-| Repository authority, safety boundaries, documentation map | root [`AGENTS.md`](../../AGENTS.md) | child Issues and launch prompts |
-| Detailed branch/worktree/review/Draft PR/CI/correction workflow | [`walkingpad-pr-lifecycle`](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md) | root instructions and Issue bodies |
-| Subtree-specific engineering rules | nearest nested `AGENTS.md` | unrelated subtrees and root history |
+| Repository authority and treadmill safety boundaries | root [`AGENTS.md`](../../AGENTS.md) | Issue boilerplate and launch prompts |
+| Normal exact-base implementation through one Draft PR | [`walkingpad-pr-lifecycle`](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md) | root instructions and Issue bodies |
+| Minimal code discipline | [`walkingpad-minimal-code`](../../.agents/skills/walkingpad-minimal-code/SKILL.md) | docs-only work |
+| Independent Draft PR / PM review and conditional merge | [`walkingpad-pr-review`](../../.agents/skills/walkingpad-pr-review/SKILL.md) | implementation context/transcripts |
+| Evidence-based runtime optimization | [`walkingpad-performance`](../../.agents/skills/walkingpad-performance/SKILL.md) | ordinary changes without a measured/explicit performance goal |
+| Native iOS redesign | [`walkingpad-ios-redesign`](../../.agents/skills/walkingpad-ios-redesign/SKILL.md) | non-UI work |
+| Safety-critical runtime/control/data changes | [`walkingpad-safety-change`](../../.agents/skills/walkingpad-safety-change/SKILL.md) | ordinary UI/logic changes |
+| Physical controller experiments | [`walkingpad-hardware-experiment`](../../.agents/skills/walkingpad-hardware-experiment/SKILL.md) | normal implementation/review |
+| Read-only captures/evidence | [`walkingpad-evidence-analysis`](../../.agents/skills/walkingpad-evidence-analysis/SKILL.md) | code-writing tasks |
 | Cross-Issue Telemetry V2 semantics | [`docs/telemetry-v2/`](../telemetry-v2/index.md) | repeated Issue boilerplate |
-| Task goal, accepted behavior, tests, non-goals, hard stops | current Issue body | global docs unless the decision is durable across Issues |
-| Later task-specific PM decisions | linked owner comments and integrated current body | rewritten or deleted comment history |
-| Historical implementation context | Git/Issue/PR history and archived docs | default launch context |
+| Task behavior/tests/non-goals/hard stops | current Issue/task | global docs unless durable across tasks |
+| Later task-specific decisions | linked PM/user comments plus integrated current body | rewritten/deleted comment history |
+| Historical context | Git/Issue/PR history and archive | default launch context |
 
-When two sources differ, apply the precedence rules in the root constitution and
-the relevant domain index. Escalate instead of guessing when the difference
-changes safety, scope, or accepted behavior.
+When authoritative current sources materially conflict, stop and surface the conflict rather than silently choosing one.
 
 ## Progressive disclosure
 
-Start with the current Issue, its `Current binding decisions`, the applicable
-contract links, and current code/tests. Read a predecessor Issue, PR, commit, or
-archived document only when a named ambiguity cannot be resolved from those
-sources. Record the ambiguity that justified the historical lookup.
+Start with the current Issue/task, active decisions, root/nested instructions, current code/tests, and only the skills/domain docs required by the current role.
 
-Successful logs are evidence to summarize, not context to reproduce. A review
-packet should contain the contract, exact base/head, complete diff, changed-file
-scope, and concise check results. A correction should start from the exact
-finding and inspect the resulting delta; accepted repository archaeology is not
-repeated without a new reason.
+Read predecessor Issues, PRs, commits, archived notes, broad docs, or long logs only when a named ambiguity cannot be resolved from current authoritative sources. Successful logs are evidence to summarize, not context to reproduce.
 
-## Issue body shape
+A review packet contains the task contract, exact base/head, complete base-to-head diff, changed-file scope, and concise verification evidence. A correction starts from the exact finding and changed delta rather than replaying repository archaeology or the implementation transcript.
 
-Implementation Issues should contain only task-specific material plus:
+## Task-to-skill routing
 
-- `Applicable contracts`: links to root/subsystem instructions, the lifecycle
-  skill, and relevant canonical domain docs;
-- `Current binding decisions`: links to active comments whose decisions remain
-  relevant, with settled requirements integrated into the body;
-- explicit predecessor/dependency state, behavior contract, tests, non-goals,
-  done criteria, and hard stops where the task needs them.
+- code `implement`: `walkingpad-pr-lifecycle` + `walkingpad-minimal-code`;
+- docs/governance-only `implement`: `walkingpad-pr-lifecycle` only;
+- visual/interaction `implement`: add `walkingpad-ios-redesign`;
+- explicit/measured runtime optimization: add `walkingpad-performance`;
+- safety-critical implementation/review: add `walkingpad-safety-change`;
+- physical experiment: `walkingpad-hardware-experiment` under its own authorization;
+- evidence/capture investigation: `walkingpad-evidence-analysis`;
+- `review`: `walkingpad-pr-review`; code diffs also use `walkingpad-minimal-code`.
 
-Do not paste repository-global Telemetry invariants or the standard lifecycle
-into each Issue. Comments remain audit history; integrating a decision into the
-body does not delete or rewrite the original comment.
+Do not load all skills preemptively. A skill is conditional context, not a repository handbook.
 
-The template at
-[`codex-implementation.md`](../../.github/ISSUE_TEMPLATE/codex-implementation.md)
-implements this shape.
+## Implementation Issue shape
 
-## Thin launch prompt
+Implementation Issues contain task-specific material plus:
 
-A launch prompt identifies the repository, Issue number, execution role, and
-required terminal verdict. It directs Codex to the current Issue, active
-decisions, root/nested instructions, and applicable skill. It may restate a
-task-specific hard boundary when omission would be risky, but does not copy the
-Issue body, global invariants, or detailed lifecycle.
+- goal and accepted behavior;
+- required changes/tests;
+- non-goals and definition of done;
+- `Applicable contracts` linking only directly relevant owners;
+- `Current binding decisions` linking later active decisions;
+- task-specific hard stops.
 
-## Review and correction evidence
+Do not paste standard lifecycle, global safety/Telemetry invariants, or unrelated domain rules into each Issue. Use [`.github/ISSUE_TEMPLATE/codex-implementation.md`](../../.github/ISSUE_TEMPLATE/codex-implementation.md).
 
-Review findings use priority and exact file/line or GitHub metadata references.
-The reviewer receives the base-to-head diff rather than a full transcript.
-Corrections describe the finding, the bounded delta, and checks rerun because of
-that delta. Required full checks and exact-head CI remain mandatory regardless
-of context size or token use.
+## Thin launch prompts
 
-## GitHub metadata updates
+A launch prompt identifies repository, task, role, base policy, and terminal outcome. It points to the Issue and repository routing instead of copying them.
 
-For an authorized Issue-body change:
+Normal implementation:
 
-1. read the complete current body and comments;
-2. record the pre-update body identity;
-3. update only the authorized Issue;
-4. read it back and verify the expected sections, links, and task semantics;
-5. never delete PM comments to make the body appear cleaner.
+```text
+Repository: tourvald/walkingpad-remote
+Issue: #<N>
+Role: implement
+Base: live main  # or exact SHA when fixed
+Follow Issue + AGENTS routing. Stop at one verified Draft PR.
+```
 
-GitHub does not provide one transaction spanning multiple Issues. A multi-Issue
-governance edit is auditable when every Issue is verified individually and the
-handoff enumerates the changed Issue numbers.
+PM review:
+
+```text
+Repository: tourvald/walkingpad-remote
+PR: #<N>
+Role: review
+Review exact base/head via walkingpad-pr-review.
+```
+
+Only add an unusual task-specific hard stop when omission would be risky. Do not repeat the Issue body, global invariants, standard checks, or lifecycle steps.
+
+## Review, correction, and handoff
+
+Review uses exact base/head and the complete diff, not implementation transcripts. Findings identify priority, exact location/metadata, consequence, evidence, and smallest safe correction. After a correction, inspect the new delta and rerun only checks invalidated by the delta plus mandatory gates.
+
+Implementation handoff is concise: Issue/PR, exact base/head, changed files, checks/CI, and remaining risks. Required full checks and exact-head CI remain mandatory regardless of context size or token use.
+
+## GitHub metadata discipline
+
+For an authorized Issue-body update, read the complete current body and relevant active comments, update only the authorized Issue, preserve comment history, and read the result back. One task should normally map to one Issue, one `codex/...` branch, and one Draft PR.
