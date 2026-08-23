@@ -43,8 +43,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private var treadmillProtocol: TreadmillProtocol = .unknown
+    private var treadmillProtocolService: CBService?
+    private var treadmillProtocolConnection: TreadmillControlConnectionIdentity?
     private var ftmsHasControl: Bool = false
     private var ftmsControlRequestInFlight: Bool = false
+    private var ftmsControlRequestConnection: TreadmillControlConnectionIdentity?
     private var ftmsDidReadSupportedSpeedRange: Bool = false
     private var fitShowDidRequestInitialStatus: Bool = false
     private var shouldBeScanning: Bool = false
@@ -94,7 +97,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     // Peripheral/characteristics
     private var connectedPeripheral: CBPeripheral?
     private var commandCharacteristic: CBCharacteristic?
+    private var commandCharacteristicConnection: TreadmillControlConnectionIdentity?
     private var notifyCharacteristic: CBCharacteristic?
+    private var notifyCharacteristicConnection: TreadmillControlConnectionIdentity?
+    private var rememberedValidatedTreadmillConnection: TreadmillControlConnectionIdentity?
+    private var characteristicConnections: [ObjectIdentifier: TreadmillControlConnectionIdentity] = [:]
     private var extraNotifyCharacteristics: [CBCharacteristic] = []
     private var supportedServiceUuids: [CBUUID] { [serviceFE00, serviceFTMS, serviceFitShow] }
 
@@ -103,6 +110,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var displayDeviceName: String? = nil
     @Published var deviceName: String = ""
     @Published var isConnected: Bool = false
+    @Published private(set) var isTreadmillControlReady: Bool = false
     @Published var connectedPeripheralId: UUID? = nil
     // Best-effort capabilities (defaults are safe fallbacks; FTMS can override them).
     @Published var treadmillMinSpeedKmh: Double = 0.5
@@ -942,7 +950,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     var isHrControlStartAffordanceAvailable: Bool {
         HRDomainService.heartRateStartAffordanceAvailable(
-            treadmillConnected: isConnected,
+            treadmillConnected: isTreadmillControlReady,
             currentHeartRateVisible: hrStreamingActive
         )
     }
@@ -1195,6 +1203,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrCooldownProgress = presentation.progress
 
         case .setSpeed(let speedEffect):
+            guard isTreadmillControlReady else {
+                appendLog("Cooldown speed skipped: treadmill control not ready")
+                return
+            }
             let old = deviceTargetSpeedKmh
             desiredSpeedKmh = speedEffect.targetKmh
             deviceTargetSpeedKmh = speedEffect.targetKmh
@@ -2217,6 +2229,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("AutoConnect skipped: suppressed by user action")
             return
         }
+        if let cancellingConnectionPeripheralId {
+            appendLog("AutoConnect skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
+            return
+        }
 
         // If we have known peripherals saved, prefer connecting to them
         if !knownPeripherals.isEmpty {
@@ -2330,6 +2346,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             case .poweredOff:
                 self.appendLog("Bluetooth poweredOff; stopping scan and clearing discoveries")
                 self.cancelTreadmillTestRunForConnectionInvalidation()
+                self.resetProtocolState()
+                self.recomputeHrStartAllowed()
                 self.stopDiscoveryScan()
                 self.discoveredPeripherals = []
                 self.discoveredMap.removeAll()
@@ -2406,8 +2424,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 central.cancelPeripheralConnection(peripheral)
                 return
             }
-            if self.cancellingConnectionPeripheralId == peripheralID || self.autoConnectSuppressed {
-                self.cancellingConnectionPeripheralId = peripheralID
+            if self.cancellingConnectionPeripheralId != nil || self.autoConnectSuppressed {
+                if self.cancellingConnectionPeripheralId == nil {
+                    self.cancellingConnectionPeripheralId = peripheralID
+                }
                 self.connectTimeoutWorkItem?.cancel()
                 self.connectTimeoutWorkItem = nil
                 self.appendLog("Rejecting completed connection after cancellation for \(peripheralID.uuidString)")
@@ -2451,12 +2471,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.connectionStateText = "Connected"
             self.startTelemetry()
             self.recomputeHrStartAllowed()
-            if !self.knownPeripherals.contains(where: { $0.id == peripheral.identifier }) {
-                let display = peripheral.name ?? "Device"
-                self.knownPeripherals.append(KnownPeripheral(id: peripheral.identifier, name: display))
-                self.saveKnownPeripherals()
-            }
-            self.saveLastSuccessfulPeripheral(peripheral.identifier)
         }
     }
 
@@ -2627,6 +2641,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         connectTimeoutWorkItem = nil
         DispatchQueue.main.async {
             self.isConnected = false
+            self.resetProtocolState()
             self.connectedPeripheralId = nil
             self.connectionStateText = "Disconnected"
             self.displayDeviceName = nil
@@ -2635,6 +2650,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.resetSessionStats()
             self.stopTelemetry()
             self.isHrControlRunning = false
+            self.recomputeHrStartAllowed()
             _ = self.telemetryV2Coordinator.observeEvent(
                 .connectionTransition(
                     ConnectionTransition(
@@ -2656,6 +2672,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         autoConnectSuppressed = false
         // Prevent duplicate connection attempts
         if isConnected { appendLog("Connect known skipped: already connected"); return }
+        if let cancellingConnectionPeripheralId {
+            appendLog("Connect known skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
+            return
+        }
         if let inProgress = connectingPeripheralId {
             appendLog("Connect known skipped: connection in progress to \(inProgress.uuidString)")
             if inProgress == id { return }
@@ -2706,6 +2726,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         // Prevent duplicate connection attempts
         if isConnected { appendLog("Connect discovered skipped: already connected"); return }
+        if let cancellingConnectionPeripheralId {
+            appendLog("Connect discovered skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
+            return
+        }
         if let inProgress = connectingPeripheralId {
             // Ignore repeated taps while a connection is in progress (including same target)
             appendLog("Connect discovered skipped: connection in progress to \(inProgress.uuidString)")
@@ -3014,11 +3038,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         guard !treadmillTestRunService.isActive,
               !isHrControlRunning,
-              isConnected,
+              isTreadmillControlReady,
               connectedPeripheralId != nil,
               controllerUnitsConnectionEpoch != nil,
-              commandCharacteristic != nil,
-              treadmillProtocol != .unknown,
               unitsDecision.allowed,
               treadmillMinSpeedKmh <= 1.0,
               treadmillMaxSpeedKmh >= 3.0 else {
@@ -3040,7 +3062,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if isHrControlRunning {
             return "Недоступно во время HR-контроля"
         }
-        if commandCharacteristic == nil || treadmillProtocol == .unknown {
+        if !isTreadmillControlReady {
             return "Дождитесь готовности управления"
         }
         let unitsDecision = ControllerUnitsSafetyPolicy.evaluate(
@@ -3102,7 +3124,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func currentTreadmillTestRunContext() -> TreadmillTestRunConnectionContext? {
-        guard isConnected,
+        guard isTreadmillControlReady,
               let peripheralID = connectedPeripheralId,
               let connectionEpoch = controllerUnitsConnectionEpoch else {
             return nil
@@ -3206,8 +3228,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func startWithSpeed(_ kmh: Double) {
-        guard isConnected else {
-            infoToastMessage = "Не подключено к дорожке"
+        guard isTreadmillControlReady else {
+            infoToastMessage = isConnected
+                ? "Дождитесь готовности управления дорожкой"
+                : "Не подключено к дорожке"
             return
         }
         endStopObservationForNewMotion()
@@ -3234,6 +3258,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 writeCommand(
                     modePacket,
                     label: "MODE MANUAL",
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("mode_manual"),
                         decision: telemetryDecision
@@ -3246,6 +3271,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     startPacket,
                     label: "START",
                     after: 0.2,
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("start"),
                         decision: telemetryDecision
@@ -3255,6 +3281,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     buildWalkingPadSetSpeedPacket(kmh: v),
                     label: String(format: "SPEED %.1f km/h", v),
                     after: 0.45,
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: treadmillSetSpeedCommandKind(v),
                         decision: telemetryDecision
@@ -3265,6 +3292,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     buildWalkingPadSetSpeedPacket(kmh: v),
                     label: String(format: "SPEED %.1f km/h", v),
                     after: 0.2,
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: treadmillSetSpeedCommandKind(v),
                         decision: telemetryDecision
@@ -3279,6 +3307,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     buildFtmsStartOrResumePacket(),
                     label: "FTMS START/RESUME",
                     after: 0.2,
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("start"),
                         decision: telemetryDecision
@@ -3288,6 +3317,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     buildFtmsSetSpeedPacket(kmh: v),
                     label: String(format: "SPEED %.1f km/h (FTMS)", v),
                     after: 0.45,
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: treadmillSetSpeedCommandKind(v),
                         decision: telemetryDecision
@@ -3298,6 +3328,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     buildFtmsSetSpeedPacket(kmh: v),
                     label: String(format: "SPEED %.1f km/h (FTMS)", v),
                     after: 0.2,
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: treadmillSetSpeedCommandKind(v),
                         decision: telemetryDecision
@@ -3310,6 +3341,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 writeCommand(
                     buildFitShowStartOrResumePacket(),
                     label: "FitShow START/RESUME",
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("start"),
                         decision: telemetryDecision
@@ -3319,6 +3351,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     buildFitShowSetSpeedPacket(kmh: v, incline: 0),
                     label: String(format: "SPEED %.1f km/h (FitShow)", v),
                     after: 0.35,
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: treadmillSetSpeedCommandKind(v),
                         decision: telemetryDecision
@@ -3329,6 +3362,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     buildFitShowSetSpeedPacket(kmh: v, incline: 0),
                     label: String(format: "SPEED %.1f km/h (FitShow)", v),
                     after: 0.2,
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: treadmillSetSpeedCommandKind(v),
                         decision: telemetryDecision
@@ -3929,7 +3963,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     func setTargetSpeedFromSlider(_ kmh: Double) {
         let v = clampRunningSpeedKmh(kmh)
         desiredSpeedKmh = v
-        guard isConnected else { return }
+        guard isTreadmillControlReady else { return }
         let isRunning = deviceTargetSpeedKmh > 0.1 || speedKmh > 0.2
         guard isRunning else { return }
         let old = deviceTargetSpeedKmh
@@ -3949,7 +3983,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
     func adjustSpeed(delta: Double) {
-        guard isConnected else { return }
+        guard isTreadmillControlReady else { return }
         let base = (deviceTargetSpeedKmh > 0.1) ? deviceTargetSpeedKmh : (speedKmh > 0.1 ? speedKmh : desiredSpeedKmh)
         let v = clampAnySpeedKmh(base + delta)
         guard abs(v - base) >= 0.01 else { return }
@@ -3998,7 +4032,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         // legacy WalkingPad units gate before any automated motion can start.
         let existingGatesAllowStart = HRDomainService
             .heartRateRuntimePrerequisitesAllowStart(
-                treadmillConnected: isConnected,
+                treadmillConnected: isTreadmillControlReady,
                 watchReachable: watchReachable,
                 currentHeartRateVisible: hrStreamingActive
             )
@@ -4006,6 +4040,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             isHrControlRunning = false
             if !isConnected {
                 hrControlStartBlockReasonText = "Нет подключения к дорожке"
+            } else if !isTreadmillControlReady {
+                hrControlStartBlockReasonText = "Дождитесь готовности управления дорожкой"
             } else if !watchReachable {
                 hrControlStartBlockReasonText = "Часы недоступны — откройте приложение на Apple Watch и дождитесь соединения."
             } else if !hrStreamingActive {
@@ -4145,7 +4181,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let now = Date()
         let existingGatesAllowStart = HRDomainService
             .heartRateRuntimePrerequisitesAllowStart(
-                treadmillConnected: isConnected,
+                treadmillConnected: isTreadmillControlReady,
                 watchReachable: watchReachable,
                 currentHeartRateVisible: hrStreamingActive
             )
@@ -4167,6 +4203,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             )
             if !isConnected {
                 hrControlStartBlockReasonText = "Нет подключения к дорожке"
+            } else if !isTreadmillControlReady {
+                hrControlStartBlockReasonText = "Дождитесь готовности управления дорожкой"
             } else if !watchReachable {
                 hrControlStartBlockReasonText = "Часы недоступны — откройте приложение на Apple Watch и дождитесь соединения."
             } else if !hrStreamingActive {
@@ -4331,18 +4369,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 if hrNextDecisionSeconds <= 0 {
                     hrNextDecisionSeconds = hrDecisionIntervalSeconds
 
-                    guard isConnected else {
+                    guard isTreadmillControlReady else {
                         let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
                         logTrainingEvent("hr_control_failed", fields: [
-                            "reason": "no_connection",
+                            "reason": "control_not_ready",
                             "elapsed_s": elapsed ?? 0
                         ])
-                        stopTrainingStructuredLog(reason: "hr_no_connection")
+                        stopTrainingStructuredLog(reason: "hr_control_not_ready")
                         hrControlFailed = true
-                        infoToastMessage = "HR‑контроль остановлен — нет подключения. Остановка дорожки запрошена, но ещё не подтверждена."
-                        appendLog("HR control stopped: no connection")
+                        infoToastMessage = "HR‑контроль остановлен — дорожка не готова к управлению. Остановка запрошена, но ещё не подтверждена."
+                        appendLog("HR control stopped: treadmill control not ready")
                         isHrControlRunning = false
-                        hrStatusLine = "HR‑контроль остановлен — нет подключения"
+                        hrStatusLine = "HR‑контроль остановлен — дорожка не готова"
                         hrNextDecisionSeconds = 0
                         hrRemainingSeconds = 0
                         hrProgress = 0
@@ -4354,8 +4392,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         hrControlStartedAt = nil
                         hrControlStartedBelt = false
                         sendWatchCommand("stop_hr")
-                        stopBeltWithToggle(reason: "hr_no_connection")
-                        endTelemetryV2Session(reason: "hr_no_connection")
+                        stopBeltWithToggle(reason: "hr_control_not_ready")
+                        endTelemetryV2Session(reason: "hr_control_not_ready")
                         return
                     }
                     guard hrStreamingActive, heartRateBPM > 0 else {
@@ -4691,6 +4729,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ data: Data,
         label: String,
         highPriority: Bool = false,
+        requiresControlReadiness: Bool = false,
         telemetryRequest: TreadmillCommandTelemetryRequest? = nil
     ) {
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
@@ -4703,6 +4742,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             data,
             label: label,
             highPriority: highPriority,
+            requiresControlReadiness: requiresControlReadiness,
             telemetryRequest: telemetryRequest
         )
     }
@@ -4739,9 +4779,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ data: Data,
         label: String,
         highPriority: Bool,
+        requiresControlReadiness: Bool,
         telemetryRequest: TreadmillCommandTelemetryRequest?
     ) {
-        let command = CommandQueueService.Command(data: data, label: label)
+        let command = CommandQueueService.Command(
+            data: data,
+            label: label,
+            requiresControlReadiness: requiresControlReadiness
+        )
         let request = telemetryRequest ?? treadmillCommandRequest(kind: .other(label))
         let telemetryEvidence = treadmillTelemetryConnectionEpoch.map {
             TreadmillCommandEnqueuedEvidence(
@@ -4911,6 +4956,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 contentsOf: self.performWrite(
                     next.data,
                     label: next.label,
+                    requiresControlReadiness: next.requiresControlReadiness,
                     telemetryEvidence: telemetryEvidence
                 )
             )
@@ -4928,8 +4974,24 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func performWrite(
         _ data: Data,
         label: String,
+        requiresControlReadiness: Bool,
         telemetryEvidence: TreadmillCommandEnqueuedEvidence?
     ) -> [TreadmillTelemetryEvidence] {
+        if requiresControlReadiness && !isTreadmillControlReady {
+            appendLog("WRITE SKIPPED (control not ready): \(label)")
+            return [
+                .commandFailed(
+                    TreadmillCommandFailureObservation(
+                        commandID: telemetryEvidence?.commandID,
+                        decisionID: telemetryEvidence?.decisionID,
+                        attemptID: nil,
+                        connectionEpoch: telemetryEvidence?.connectionEpoch,
+                        occurredAt: Date(),
+                        reason: .transportUnavailable
+                    )
+                )
+            ]
+        }
         guard isConnected else {
             appendLog("WRITE SKIPPED (not connected): \(label)")
             if label == "STOP" {
@@ -5131,17 +5193,27 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func resetProtocolState() {
-        let cancelledTelemetry = treadmillCommandTelemetrySidecar.clear()
+        let cancelledTelemetry = resetCommandQueue(
+            reason: "connection epoch reset",
+            observeTelemetryImmediately: false
+        )
         treadmillCommandAttemptNumbers.removeAll()
         latestTreadmillObservationEvidence = nil
         activeTreadmillStopTelemetryChain = nil
         treadmillProtocol = .unknown
+        treadmillProtocolService = nil
+        treadmillProtocolConnection = nil
         ftmsHasControl = false
         ftmsControlRequestInFlight = false
+        ftmsControlRequestConnection = nil
         ftmsDidReadSupportedSpeedRange = false
         fitShowDidRequestInitialStatus = false
         commandCharacteristic = nil
+        commandCharacteristicConnection = nil
         notifyCharacteristic = nil
+        notifyCharacteristicConnection = nil
+        rememberedValidatedTreadmillConnection = nil
+        characteristicConnections.removeAll()
         extraNotifyCharacteristics.removeAll()
         lastLoggedActualSpeedKmh = nil
         treadmillMinSpeedKmh = 0.5
@@ -5161,10 +5233,141 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         controllerUnitsTruth = controllerUnitsTruthTracker.state
         lastControllerUnitsQueryAt = nil
         lastControllerUnitsQueryTrigger = nil
+        isTreadmillControlReady = false
         observeCancelledTreadmillCommands(
             cancelledTelemetry,
             reason: .other("connection_epoch_reset")
         )
+    }
+
+    private var currentTreadmillControlConnection: TreadmillControlConnectionIdentity? {
+        guard isConnected,
+              let peripheralID = connectedPeripheralId,
+              connectedPeripheral?.identifier == peripheralID,
+              let epoch = controllerUnitsConnectionEpoch else {
+            return nil
+        }
+        return TreadmillControlConnectionIdentity(
+            peripheralID: peripheralID,
+            epoch: epoch
+        )
+    }
+
+    private var treadmillControlProtocolKind: TreadmillControlProtocolKind {
+        switch treadmillProtocol {
+        case .walkingPad: return .walkingPad
+        case .ftms: return .ftms
+        case .fitShow: return .fitShow
+        case .unknown: return .unknown
+        }
+    }
+
+    private var treadmillControlTelemetryRole: TreadmillControlTransportRole? {
+        switch treadmillProtocol {
+        case .walkingPad where notifyCharacteristic?.uuid == charFE01:
+            return .walkingPadTelemetry
+        case .ftms where notifyCharacteristic?.uuid == ftmsCharTreadmillData:
+            return .ftmsTelemetry
+        case .fitShow where notifyCharacteristic?.uuid == fitShowCharRx:
+            return .fitShowTelemetry
+        case .walkingPad, .ftms, .fitShow, .unknown:
+            return nil
+        }
+    }
+
+    private var treadmillControlCommandRole: TreadmillControlTransportRole? {
+        switch treadmillProtocol {
+        case .walkingPad where commandCharacteristic?.uuid == charFE02:
+            return .walkingPadCommand
+        case .ftms where commandCharacteristic?.uuid == ftmsCharControlPoint:
+            return .ftmsCommand
+        case .fitShow where commandCharacteristic?.uuid == fitShowCharTx:
+            return .fitShowCommand
+        case .walkingPad, .ftms, .fitShow, .unknown:
+            return nil
+        }
+    }
+
+    private func recomputeTreadmillControlReadiness() {
+        let telemetryEvidence = treadmillControlTelemetryRole.flatMap { role in
+            notifyCharacteristicConnection.map {
+                TreadmillControlTransportEvidence(
+                    role: role,
+                    connection: $0,
+                    isUsable: notifyCharacteristic?.isNotifying == true
+                )
+            }
+        }
+        let commandEvidence = treadmillControlCommandRole.flatMap { role in
+            commandCharacteristicConnection.map {
+                TreadmillControlTransportEvidence(
+                    role: role,
+                    connection: $0,
+                    isUsable: commandCharacteristic.map {
+                        $0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse)
+                    } ?? false
+                )
+            }
+        }
+        let ready = TreadmillControlReadinessPolicy.isReady(
+            TreadmillControlReadinessSnapshot(
+                currentConnection: currentTreadmillControlConnection,
+                protocolKind: treadmillControlProtocolKind,
+                protocolConnection: treadmillProtocolConnection,
+                telemetry: telemetryEvidence,
+                command: commandEvidence
+            )
+        )
+        let becameReady = ready && !isTreadmillControlReady
+        isTreadmillControlReady = ready
+        recomputeHrStartAllowed()
+        if becameReady {
+            rememberCurrentValidatedTreadmill()
+        }
+    }
+
+    private func invalidateTreadmillControlReadinessEvidence(
+        includingProtocol: Bool = false
+    ) {
+        if includingProtocol {
+            treadmillProtocolService = nil
+            treadmillProtocolConnection = nil
+        }
+        commandCharacteristicConnection = nil
+        notifyCharacteristicConnection = nil
+        ftmsHasControl = false
+        ftmsControlRequestInFlight = false
+        ftmsControlRequestConnection = nil
+        recomputeTreadmillControlReadiness()
+    }
+
+    private func registerCurrentCharacteristic(_ characteristic: CBCharacteristic) {
+        guard let connection = currentTreadmillControlConnection else { return }
+        characteristicConnections[ObjectIdentifier(characteristic)] = connection
+    }
+
+    private func isCurrentCharacteristicCallback(_ characteristic: CBCharacteristic) -> Bool {
+        TreadmillControlReadinessPolicy.isCurrentCallback(
+            characteristicConnections[ObjectIdentifier(characteristic)],
+            currentConnection: currentTreadmillControlConnection
+        )
+    }
+
+    private func rememberCurrentValidatedTreadmill() {
+        guard isTreadmillControlReady,
+              let connection = currentTreadmillControlConnection,
+              rememberedValidatedTreadmillConnection != connection,
+              let peripheral = connectedPeripheral,
+              peripheral.identifier == connectedPeripheralId else {
+            return
+        }
+        rememberedValidatedTreadmillConnection = connection
+        if !knownPeripherals.contains(where: { $0.id == peripheral.identifier }) {
+            let display = peripheral.name ?? "Device"
+            knownPeripherals.append(KnownPeripheral(id: peripheral.identifier, name: display))
+            saveKnownPeripherals()
+        }
+        saveLastSuccessfulPeripheral(peripheral.identifier)
     }
 
     private var controllerUnitsTruthRequired: Bool {
@@ -5371,7 +5574,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("FTMS request control skipped: control point not ready")
             return
         }
+        guard let connection = currentTreadmillControlConnection,
+              commandCharacteristicConnection == connection else {
+            appendLog("FTMS request control skipped: stale control point context")
+            return
+        }
         ftmsControlRequestInFlight = true
+        ftmsControlRequestConnection = connection
         writeCommand(
             buildFtmsRequestControlPacket(),
             label: "FTMS REQUEST CONTROL",
@@ -5408,6 +5617,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         label: String,
         decision: TreadmillControlDecisionEvidence? = nil
     ) {
+        guard isTreadmillControlReady else {
+            appendLog("Set speed skipped: treadmill control not ready")
+            return
+        }
         if kmh > 0.1 {
             endStopObservationForNewMotion()
         }
@@ -5416,6 +5629,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             writeCommand(
                 buildWalkingPadSetSpeedPacket(kmh: kmh),
                 label: label,
+                requiresControlReadiness: true,
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
@@ -5427,6 +5641,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 writeCommand(
                     buildFtmsStartOrResumePacket(),
                     label: "FTMS START/RESUME (auto)",
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("auto_start"),
                         decision: decision
@@ -5436,6 +5651,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             writeCommand(
                 buildFtmsSetSpeedPacket(kmh: kmh),
                 label: label,
+                requiresControlReadiness: true,
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
@@ -5446,6 +5662,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 writeCommand(
                     buildFitShowStartOrResumePacket(),
                     label: "FitShow START/RESUME (auto)",
+                    requiresControlReadiness: true,
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("auto_start"),
                         decision: decision
@@ -5455,6 +5672,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             writeCommand(
                 buildFitShowSetSpeedPacket(kmh: kmh, incline: 0),
                 label: label,
+                requiresControlReadiness: true,
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
@@ -6316,6 +6534,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ data: Data,
         label: String,
         after delay: TimeInterval,
+        requiresControlReadiness: Bool = false,
         telemetryRequest: TreadmillCommandTelemetryRequest? = nil
     ) {
         let epoch = commandQueueEpoch
@@ -6325,6 +6544,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.writeCommand(
                 data,
                 label: label,
+                requiresControlReadiness: requiresControlReadiness,
                 telemetryRequest: telemetryRequest
             )
         }
@@ -6363,13 +6583,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     // MARK: - CBPeripheralDelegate
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        if let error { appendLog("Discover services error: \(error.localizedDescription)") }
+        guard peripheral === connectedPeripheral,
+              peripheral.identifier == connectedPeripheralId else {
+            appendLog("Ignoring services from stale peripheral \(peripheral.identifier.uuidString)")
+            return
+        }
+        if let error {
+            appendLog("Discover services error: \(error.localizedDescription)")
+            invalidateTreadmillControlReadinessEvidence(includingProtocol: true)
+            return
+        }
         guard let services = peripheral.services, !services.isEmpty else {
             appendLog("No services discovered")
+            invalidateTreadmillControlReadinessEvidence(includingProtocol: true)
             return
         }
         let discoveredUuids = Set(services.map { $0.uuid })
         let selected = selectTreadmillProtocol(from: discoveredUuids)
+        treadmillProtocolService = services.first { service in
+            switch selected {
+            case .walkingPad: return service.uuid == serviceFE00
+            case .ftms: return service.uuid == serviceFTMS
+            case .fitShow: return service.uuid == serviceFitShow
+            case .unknown: return false
+            }
+        }
+        treadmillProtocolConnection = currentTreadmillControlConnection
         if treadmillProtocol != selected {
             treadmillProtocol = selected
             appendLog("Treadmill protocol selected: \(selected.rawValue)")
@@ -6379,6 +6618,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ])
             recomputeHrStartAllowed()
         }
+        recomputeTreadmillControlReadiness()
         for s in services {
             appendLog("Service discovered: \(s.uuid.uuidString)")
             if supportedServiceUuids.contains(s.uuid) {
@@ -6388,14 +6628,34 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        if let error { appendLog("Discover characteristics error: \(error.localizedDescription)") }
+        guard peripheral === connectedPeripheral,
+              peripheral.identifier == connectedPeripheralId,
+              service === treadmillProtocolService else {
+            appendLog("Ignoring characteristics outside current treadmill transport")
+            return
+        }
+        if let error {
+            appendLog("Discover characteristics error: \(error.localizedDescription)")
+            invalidateTreadmillControlReadinessEvidence()
+            return
+        }
         guard let chars = service.characteristics else {
             appendLog("No characteristics for service \(service.uuid.uuidString)")
+            invalidateTreadmillControlReadinessEvidence()
             return
         }
         for c in chars {
             appendLog("Char: \(c.uuid.uuidString) props=\(c.properties)")
         }
+        commandCharacteristic = nil
+        commandCharacteristicConnection = nil
+        notifyCharacteristic = nil
+        notifyCharacteristicConnection = nil
+        characteristicConnections.removeAll()
+        extraNotifyCharacteristics.removeAll()
+        ftmsHasControl = false
+        ftmsControlRequestInFlight = false
+        ftmsControlRequestConnection = nil
 
         switch treadmillProtocol {
         case .walkingPad:
@@ -6405,6 +6665,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
             if let n = notify {
                 notifyCharacteristic = n
+                registerCurrentCharacteristic(n)
                 stopObservationStreamID = UUID()
                 subscribe(peripheral, to: n, label: "FE01")
             } else {
@@ -6412,6 +6673,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             if let w = write {
                 commandCharacteristic = w
+                registerCurrentCharacteristic(w)
+                commandCharacteristicConnection = currentTreadmillControlConnection
                 appendLog("WalkingPad: command characteristic set to \(w.uuid.uuidString)")
                 requestInitialControllerUnitsTruthIfReady()
             } else {
@@ -6421,25 +6684,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         case .ftms:
             guard service.uuid == serviceFTMS else { return }
             if let dataChar = chars.first(where: { $0.uuid == ftmsCharTreadmillData && ($0.properties.contains(.notify) || $0.properties.contains(.indicate)) }) {
+                notifyCharacteristic = dataChar
+                registerCurrentCharacteristic(dataChar)
                 subscribe(peripheral, to: dataChar, label: "FTMS treadmill data")
             } else {
                 appendLog("FTMS: treadmill data characteristic not found")
             }
             if let statusChar = chars.first(where: { $0.uuid == ftmsCharMachineStatus && ($0.properties.contains(.notify) || $0.properties.contains(.indicate)) }) {
+                registerCurrentCharacteristic(statusChar)
                 subscribe(peripheral, to: statusChar, label: "FTMS machine status")
             }
-            if let cpChar = chars.first(where: { $0.uuid == ftmsCharControlPoint && ($0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse)) }) {
+            if let cpChar = chars.first(where: {
+                $0.uuid == ftmsCharControlPoint
+                    && $0.properties.contains(.write)
+                    && ($0.properties.contains(.notify) || $0.properties.contains(.indicate))
+            }) {
                 commandCharacteristic = cpChar
+                registerCurrentCharacteristic(cpChar)
                 appendLog("FTMS: control point set to \(cpChar.uuid.uuidString)")
-                if cpChar.properties.contains(.notify) || cpChar.properties.contains(.indicate) {
-                    subscribe(peripheral, to: cpChar, label: "FTMS control point indications")
-                }
+                subscribe(peripheral, to: cpChar, label: "FTMS control point indications")
             } else {
                 appendLog("FTMS: control point characteristic not found")
             }
             if !ftmsDidReadSupportedSpeedRange {
                 if let rangeChar = chars.first(where: { $0.uuid == ftmsCharSupportedSpeedRange && $0.properties.contains(.read) }) {
                     ftmsDidReadSupportedSpeedRange = true
+                    registerCurrentCharacteristic(rangeChar)
                     appendLog("FTMS: reading supported speed range (2AD4)")
                     peripheral.readValue(for: rangeChar)
                 } else if chars.contains(where: { $0.uuid == ftmsCharSupportedSpeedRange }) {
@@ -6451,12 +6721,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         case .fitShow:
             guard service.uuid == serviceFitShow else { return }
             if let rx = chars.first(where: { $0.uuid == fitShowCharRx && ($0.properties.contains(.notify) || $0.properties.contains(.indicate)) }) {
+                notifyCharacteristic = rx
+                registerCurrentCharacteristic(rx)
                 subscribe(peripheral, to: rx, label: "FitShow RX")
             } else {
                 appendLog("FitShow: RX characteristic (FFF1) not found")
             }
             if let tx = chars.first(where: { $0.uuid == fitShowCharTx && ($0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse)) }) {
                 commandCharacteristic = tx
+                registerCurrentCharacteristic(tx)
+                commandCharacteristicConnection = currentTreadmillControlConnection
                 appendLog("FitShow: TX characteristic set to \(tx.uuid.uuidString)")
                 if !fitShowDidRequestInitialStatus {
                     fitShowDidRequestInitialStatus = true
@@ -6471,25 +6745,55 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             // No-op. We only support known treadmill protocols.
             return
         }
+        recomputeTreadmillControlReadiness()
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral === connectedPeripheral,
+              peripheral.identifier == connectedPeripheralId else {
+            return
+        }
+        let isRequiredTelemetry = characteristic === notifyCharacteristic
+        let isFtmsControlPoint = treadmillProtocol == .ftms
+            && characteristic === commandCharacteristic
+            && characteristic.uuid == ftmsCharControlPoint
+        guard (isRequiredTelemetry || isFtmsControlPoint),
+              isCurrentCharacteristicCallback(characteristic) else {
+            return
+        }
         if let error {
             appendLog("Notify state error for \(characteristic.uuid.uuidString): \(error.localizedDescription)")
+            if isRequiredTelemetry { notifyCharacteristicConnection = nil }
+            if isFtmsControlPoint { commandCharacteristicConnection = nil }
+            recomputeTreadmillControlReadiness()
             return
         }
-        guard treadmillProtocol == .walkingPad,
-              characteristic.uuid == charFE01,
-              characteristic.isNotifying,
-              peripheral.identifier == connectedPeripheralId,
-              characteristic === notifyCharacteristic else {
-            return
+        if isRequiredTelemetry {
+            notifyCharacteristicConnection = characteristic.isNotifying
+                ? currentTreadmillControlConnection
+                : nil
         }
-        appendLog("WalkingPad: FE01 notifications active")
-        requestInitialControllerUnitsTruthIfReady()
+        if isFtmsControlPoint {
+            commandCharacteristicConnection = characteristic.isNotifying
+                ? currentTreadmillControlConnection
+                : nil
+        }
+        recomputeTreadmillControlReadiness()
+        if treadmillProtocol == .walkingPad,
+           characteristic.uuid == charFE01,
+           characteristic.isNotifying {
+            appendLog("WalkingPad: FE01 notifications active")
+            requestInitialControllerUnitsTruthIfReady()
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral === connectedPeripheral,
+              peripheral.identifier == connectedPeripheralId,
+              isCurrentCharacteristicCallback(characteristic) else {
+            appendLog("Ignoring value update from stale peripheral \(peripheral.identifier.uuidString)")
+            return
+        }
         if let error {
             appendLog("Notify update error from \(characteristic.uuid.uuidString): \(error.localizedDescription)")
             logTrainingEvent("notify_update_error", fields: [
@@ -6764,7 +7068,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 ])
             } else if characteristic.uuid == ftmsCharControlPoint, let resp = parseFtmsControlPointResponse(data) {
                 if resp.requestedOpcode == 0x00 {
+                    guard ftmsControlRequestInFlight,
+                          ftmsControlRequestConnection == currentTreadmillControlConnection,
+                          characteristic === commandCharacteristic else {
+                        appendLog("Ignoring FTMS control response without a current pending request")
+                        return
+                    }
                     ftmsControlRequestInFlight = false
+                    ftmsControlRequestConnection = nil
                     if resp.resultCode == 0x01 {
                         ftmsHasControl = true
                     }
@@ -6804,6 +7115,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral === connectedPeripheral,
+              peripheral.identifier == connectedPeripheralId,
+              characteristic === commandCharacteristic,
+              isCurrentCharacteristicCallback(characteristic) else {
+            appendLog("Ignoring write result from stale treadmill transport")
+            return
+        }
         if let error {
             appendLog("Write to \(characteristic.uuid.uuidString) failed: \(error.localizedDescription)")
             logTrainingEvent("command_write_result", fields: [
@@ -6831,6 +7149,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 )
             )
         }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        guard peripheral === connectedPeripheral,
+              peripheral.identifier == connectedPeripheralId,
+              let selectedService = treadmillProtocolService,
+              invalidatedServices.contains(where: { $0 === selectedService }) else {
+            return
+        }
+        appendLog("Selected treadmill service invalidated")
+        treadmillProtocolService = nil
+        commandCharacteristic = nil
+        notifyCharacteristic = nil
+        extraNotifyCharacteristics.removeAll()
+        characteristicConnections.removeAll()
+        invalidateTreadmillControlReadinessEvidence(includingProtocol: true)
     }
 }
 
