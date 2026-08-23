@@ -109,7 +109,9 @@ final class IPhoneHealthKitLiveHeartRateProvider {
     }
 
     func finish(
-        at date: Date = Date()
+        at date: Date = Date(),
+        recoveredStoppedAt: Date? = nil,
+        persistStoppedAt: (Date) -> Bool = { _ in true }
     ) async throws -> IPhoneHealthKitWorkoutFinishOutcome<HKWorkout> {
         let finishedContext = runtimeFailureContext
         defer {
@@ -117,7 +119,11 @@ final class IPhoneHealthKitLiveHeartRateProvider {
                 runtimeFailureContext = nil
             }
         }
-        return try await core.finish(at: date)
+        return try await core.finish(
+            at: date,
+            recoveredStoppedAt: recoveredStoppedAt,
+            persistStoppedAt: persistStoppedAt
+        )
     }
 }
 
@@ -245,7 +251,6 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
         case .stopped:
             activityStarted = false
             collectionStarted = true
-            stoppedAt = recoveredSession.endDate ?? Date()
         case .notStarted, .prepared:
             activityStarted = false
             collectionStarted = false
@@ -295,9 +300,7 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
 
     func stopActivity(at date: Date) {
         guard let session else { return }
-        if session.state == .stopped {
-            stoppedAt = session.endDate ?? date
-        } else if session.state == .running || session.state == .paused {
+        if session.state == .running || session.state == .paused {
             session.stopActivity(with: date)
         }
     }

@@ -16,7 +16,7 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         XCTAssertTrue(app.contains("handleActiveWorkoutRecovery(session: session, error: error)"))
     }
 
-    func testMissingAppleRecoveryFlagReconcilesOnlyDurableFinishingMarker() throws {
+    func testMissingAppleRecoveryFlagClearsPreflightButRetainsFinishUntilSavedProof() throws {
         let app = try source("WalkingPadRemote/WalkingPadRemoteApp.swift")
         let manager = try source("WalkingPadRemote/BluetoothManager.swift")
         let configuration = try functionBody(
@@ -38,15 +38,27 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         XCTAssertTrue(reconcile.contains("!nativeHeartRateFlowOwnsController"))
         XCTAssertTrue(reconcile.contains("!nativeHealthKitWorkoutFinishInFlight"))
         XCTAssertTrue(reconcile.contains("resolveWithoutActiveRecoveryRequest"))
+        XCTAssertTrue(reconcile.contains("case .discardPreflight"))
         XCTAssertTrue(reconcile.contains("case .reconcileFinished(let record)"))
-        assertOrdered([
-            "retainDeferredNativeHealthKitLinkage(",
-            "clearNativeWorkoutRecoveryRecord()",
-            "resolveDeferredNativeHealthKitLinkageIfPossible()",
-        ], in: reconcile)
+        XCTAssertTrue(reconcile.contains("healthKitStopActivityAt"))
+        let finishedBranch = try XCTUnwrap(
+            reconcile.components(
+                separatedBy: "case .reconcileFinished(let record):"
+            ).last
+        )
+        XCTAssertTrue(finishedBranch.contains("retainDeferredNativeHealthKitLinkage("))
+        XCTAssertTrue(finishedBranch.contains("resolveDeferredNativeHealthKitLinkageIfPossible()"))
+        XCTAssertFalse(finishedBranch.contains("clearNativeWorkoutRecoveryRecord()"))
         for token in ["stopBelt", "sendTreadmill", "writeCommand", "enqueue"] {
             XCTAssertFalse(reconcile.contains(token), token)
         }
+
+        let idle = try functionBody(
+            "private func completeNativeWorkoutRecoveryToIdle()",
+            in: manager
+        )
+        XCTAssertTrue(idle.contains("isNativeHeartRatePreflightActive = false"))
+        XCTAssertTrue(idle.contains("recomputeHrStartAllowed()"))
     }
 
     func testRecoveredProviderReusesAssociatedBuilderAndOnlyRecreatesDataSource() throws {
@@ -275,7 +287,7 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         XCTAssertTrue(callback.contains(
             "guard !didHandleActiveWorkoutRecoveryCallback else { return }"
         ))
-        XCTAssertTrue(finish.contains("if terminalCompletionSucceeded"))
+        XCTAssertTrue(finish.contains("if terminalSaveProven"))
         XCTAssertTrue(finish.contains(
             "guard pendingNativeWorkoutStopTerminalRequest == nil else { return }"
         ))
@@ -285,6 +297,99 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
             finish.components(separatedBy: "clearNativeWorkoutRecoveryRecord()").count - 1,
             1
         )
+    }
+
+    func testStoppedRecoveryPersistsTruthBeforeCollectionEndAndNeverUsesRelaunchFallback() throws {
+        let provider = try source(
+            "WalkingPadRemote/IPhoneHealthKitLiveHeartRateProvider.swift"
+        )
+        let core = try source("WalkingPadRemote/IPhoneHealthKitHeartRateProviderCore.swift")
+        let recovery = try functionBody("func recoverWorkout(", in: provider)
+        let stop = try functionBody("func stopActivity(at date: Date)", in: provider)
+
+        XCTAssertFalse(recovery.contains("endDate ?? Date()"))
+        XCTAssertFalse(stop.contains("endDate ?? date"))
+        assertOrdered([
+            "persistStoppedAt(stoppedAt)",
+            "driver.endCollection(at: stoppedAt)",
+            "driver.finishWorkout()",
+        ], in: core)
+        XCTAssertTrue(core.contains("missingRecoveredStopDate"))
+    }
+
+    func testDurationExtensionAndLegacyIdentityPersistBeforeRuntimeExposure() throws {
+        let manager = try source("WalkingPadRemote/BluetoothManager.swift")
+        let extend = try functionBody("func extendHrSession(", in: manager)
+        let legacy = try functionBody(
+            "private func recordHrWorkoutIfNeeded(durationOverride: Int?, failed: Bool?)",
+            in: manager
+        )
+
+        assertOrdered([
+            "recoveryRecord.planningDuration(seconds: newTotalSeconds)",
+            "hrSessionTotalSeconds = newTotalSeconds",
+        ], in: extend)
+        assertOrdered([
+            "recoveryRecord.linkingLegacyWorkout(id: entry.id)",
+            "legacyShadowWorkoutHistory.insert(entry, at: 0)",
+            "hrWorkoutRecorded = true",
+        ], in: legacy)
+    }
+
+    func testDeferredSavedProofClearsOnlyAfterExactWorkoutMatch() throws {
+        let manager = try source("WalkingPadRemote/BluetoothManager.swift")
+        let resolve = try functionBody(
+            "private func resolveDeferredNativeHealthKitLinkageIfPossible()",
+            in: manager
+        )
+        let complete = try functionBody(
+            "private func completeRecoveredFinishIfProven(",
+            in: manager
+        )
+
+        assertOrdered([
+            "guard error == nil else",
+            "NativeWorkoutSavedProofPolicy.uniqueMatch(",
+            "guard let workout else { return }",
+            "completeRecoveredFinishIfProven(linkage: linkage)",
+        ], in: resolve)
+        XCTAssertFalse(resolve.contains("clearNativeWorkoutRecoveryRecord()"))
+        XCTAssertTrue(complete.contains("record.phase == .finishing"))
+        XCTAssertTrue(complete.contains("record.appWorkoutID == recoveryAppWorkoutID"))
+        XCTAssertTrue(complete.contains("clearNativeWorkoutRecoveryRecord()"))
+
+        let becameActive = try functionBody(
+            "func nativeHeartRateAppBecameActive()",
+            in: manager
+        )
+        XCTAssertTrue(becameActive.contains(
+            "resolveDeferredNativeHealthKitLinkageIfPossible()"
+        ))
+
+        let link = try functionBody(
+            "private func linkDeferredNativeHealthKitWorkout(",
+            in: manager
+        )
+        assertOrdered([
+            "guard let index = entries.firstIndex",
+            "NativeWorkoutLegacyLinkPolicy.canLink(",
+            "return false",
+        ], in: link)
+
+        let directLink = try functionBody(
+            "private func linkNativeHealthKitWorkout(",
+            in: manager
+        )
+        XCTAssertTrue(directLink.contains("linkDeferredNativeHealthKitWorkout("))
+
+        let finish = try functionBody(
+            "private func finishNativeHealthKitWorkoutIfNeeded()",
+            in: manager
+        )
+        assertOrdered([
+            "guard linkNativeHealthKitWorkout(",
+            "terminalSaveProven = true",
+        ], in: finish)
     }
 
     private func source(_ relativePath: String) throws -> String {

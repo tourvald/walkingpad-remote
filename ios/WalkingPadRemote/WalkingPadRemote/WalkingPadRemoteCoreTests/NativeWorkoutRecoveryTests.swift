@@ -74,6 +74,29 @@ final class NativeWorkoutRecoveryTests: XCTestCase {
         XCTAssertEqual(store.load(), .invalid)
     }
 
+    func testExistingSchemaV1RecordWithoutNewOptionalFieldsStillDecodes() throws {
+        let committed = makeCommitted(makePreflight(), latency: 2)
+        let encoded = try JSONEncoder().encode(committed)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "plannedDurationSeconds")
+        object.removeValue(forKey: "healthKitStopActivityAt")
+        object.removeValue(forKey: "legacyWorkoutID")
+
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(
+            NativeWorkoutRecoveryRecord.self,
+            from: legacyData
+        )
+
+        XCTAssertNil(decoded.plannedDurationSeconds)
+        XCTAssertNil(decoded.healthKitStopActivityAt)
+        XCTAssertNil(decoded.legacyWorkoutID)
+        XCTAssertEqual(decoded.effectivePlannedDurationSeconds, 1_800)
+        XCTAssertTrue(decoded.isStructurallyValid)
+    }
+
     func testOnlyExactlyLinkedCommittedIndoorWalkingSessionRestores() {
         let preflight = makePreflight()
         let committed = makeCommitted(preflight, latency: 3)
@@ -172,11 +195,42 @@ final class NativeWorkoutRecoveryTests: XCTestCase {
 
         XCTAssertEqual(committed.targetBPM, 145)
         XCTAssertEqual(committed.durationMinutes, 30)
+        XCTAssertEqual(committed.effectivePlannedDurationSeconds, 1_800)
         XCTAssertEqual(committed.controlledWorkoutStartedAt, controlledStart)
         XCTAssertEqual(committed.profileID, profileID)
         XCTAssertEqual(committed.legacySessionID, legacySessionID)
         XCTAssertEqual(committed.telemetrySessionID, telemetrySessionID)
         XCTAssertTrue(committed.isStructurallyValid)
+    }
+
+    func testExtendedDurationIsDurableAtExactSecondPrecision() throws {
+        let preflight = makePreflight()
+        let committed = makeCommitted(preflight, latency: 2)
+        let extended = committed.planningDuration(seconds: 35 * 60)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = NativeWorkoutRecoveryStore(
+            fileURL: directory.appendingPathComponent("recovery.json")
+        )
+
+        try store.save(extended)
+
+        XCTAssertEqual(extended.durationMinutes, 35)
+        XCTAssertEqual(extended.effectivePlannedDurationSeconds, 2_100)
+        XCTAssertEqual(store.load(), .record(extended))
+    }
+
+    func testLegacyWorkoutIdentitySurvivesTerminalRecoveryWithoutGuessing() {
+        let committed = makeCommitted(makePreflight(), latency: 2)
+        let legacyWorkoutID = UUID()
+        let linked = committed.linkingLegacyWorkout(id: legacyWorkoutID)
+        let finishing = linked.finishing(
+            requestedAt: linked.acquisitionStartedAt.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(finishing.legacyWorkoutID, legacyWorkoutID)
+        XCTAssertTrue(finishing.isStructurallyValid)
     }
 
     func testCommittedRecordRejectsContradictoryPreflightTiming() {
@@ -215,15 +269,17 @@ final class NativeWorkoutRecoveryTests: XCTestCase {
         XCTAssertFalse(invalid.isStructurallyValid)
     }
 
-    func testNoActiveRecoveryRequestReconcilesOnlyDurableFinishingPhase() {
+    func testNoActiveRecoveryRequestClearsPreflightAndReconcilesOnlyProvenFinishBoundary() {
         let preflight = makePreflight()
         let committed = makeCommitted(preflight, latency: 2)
         let stopping = committed.stopping(
             requestedAt: preflight.acquisitionStartedAt.addingTimeInterval(60)
         )
-        let finishing = stopping.finishing(
+        let unfinished = stopping.finishing(
             requestedAt: preflight.acquisitionStartedAt.addingTimeInterval(60)
         )
+        let stoppedAt = preflight.acquisitionStartedAt.addingTimeInterval(61)
+        let finishing = unfinished.recordingHealthKitStopActivity(at: stoppedAt)
 
         XCTAssertEqual(
             NativeWorkoutRecoveryPolicy.resolveWithoutActiveRecoveryRequest(
@@ -231,12 +287,18 @@ final class NativeWorkoutRecoveryTests: XCTestCase {
             ),
             .reconcileFinished(finishing)
         )
+        XCTAssertEqual(
+            NativeWorkoutRecoveryPolicy.resolveWithoutActiveRecoveryRequest(
+                loadResult: .record(preflight)
+            ),
+            .discardPreflight(preflight)
+        )
         for loadResult in [
             NativeWorkoutRecoveryLoadResult.missing,
             .invalid,
-            .record(preflight),
             .record(committed),
             .record(stopping),
+            .record(unfinished),
         ] {
             XCTAssertEqual(
                 NativeWorkoutRecoveryPolicy.resolveWithoutActiveRecoveryRequest(
@@ -245,6 +307,68 @@ final class NativeWorkoutRecoveryTests: XCTestCase {
                 .retainFailClosed
             )
         }
+    }
+
+    func testSavedWorkoutProofRequiresExactAppOwnedStartAndDurableStopTimes() {
+        let preflight = makePreflight()
+        let stoppedAt = preflight.acquisitionStartedAt.addingTimeInterval(600)
+        let finishing = makeCommitted(preflight, latency: 2)
+            .finishing(requestedAt: stoppedAt)
+            .recordingHealthKitStopActivity(at: stoppedAt)
+
+        XCTAssertTrue(NativeWorkoutSavedProofPolicy.matches(
+            record: finishing,
+            workoutStartedAt: preflight.acquisitionStartedAt,
+            workoutEndedAt: stoppedAt,
+            isWalking: true,
+            sourceMatchesApp: true
+        ))
+        XCTAssertFalse(NativeWorkoutSavedProofPolicy.matches(
+            record: finishing,
+            workoutStartedAt: preflight.acquisitionStartedAt,
+            workoutEndedAt: stoppedAt.addingTimeInterval(3_600),
+            isWalking: true,
+            sourceMatchesApp: true
+        ))
+        XCTAssertFalse(NativeWorkoutSavedProofPolicy.matches(
+            record: finishing,
+            workoutStartedAt: preflight.acquisitionStartedAt,
+            workoutEndedAt: stoppedAt,
+            isWalking: true,
+            sourceMatchesApp: false
+        ))
+    }
+
+    func testSavedWorkoutProofRequiresExactlyOneMatchingCandidate() {
+        XCTAssertNil(NativeWorkoutSavedProofPolicy.uniqueMatch(
+            in: [1, 2, 3],
+            matching: { _ in false }
+        ))
+        XCTAssertEqual(NativeWorkoutSavedProofPolicy.uniqueMatch(
+            in: [1, 2, 3],
+            matching: { $0 == 2 }
+        ), 2)
+        XCTAssertNil(NativeWorkoutSavedProofPolicy.uniqueMatch(
+            in: [1, 2, 3],
+            matching: { $0 >= 2 }
+        ))
+    }
+
+    func testLegacyWorkoutLinkRequiresExactMissingOrSameUUIDState() {
+        let expected = UUID()
+
+        XCTAssertTrue(NativeWorkoutLegacyLinkPolicy.canLink(
+            existingWorkoutUUID: nil,
+            expectedWorkoutUUID: expected
+        ))
+        XCTAssertTrue(NativeWorkoutLegacyLinkPolicy.canLink(
+            existingWorkoutUUID: expected.uuidString,
+            expectedWorkoutUUID: expected
+        ))
+        XCTAssertFalse(NativeWorkoutLegacyLinkPolicy.canLink(
+            existingWorkoutUUID: UUID().uuidString,
+            expectedWorkoutUUID: expected
+        ))
     }
 
     private func makePreflight() -> NativeWorkoutRecoveryRecord {

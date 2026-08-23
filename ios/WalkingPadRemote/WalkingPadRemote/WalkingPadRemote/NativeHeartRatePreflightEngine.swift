@@ -8,9 +8,12 @@ struct IPhoneHealthKitRuntimeFailureContext: Equatable {
 struct DeferredNativeHealthKitLinkage: Codable, Equatable {
     let acquisitionStartedAt: Date
     let finishRequestedAt: Date
+    let healthKitStoppedAt: Date?
     let profileID: UUID?
     let telemetrySessionID: UUID?
     let linksLegacyWorkout: Bool
+    let legacyWorkoutID: UUID?
+    let recoveryAppWorkoutID: UUID?
 }
 
 struct NativeWorkoutRecoveryRecord: Codable, Equatable {
@@ -28,12 +31,15 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
     let phase: Phase
     let targetBPM: Int
     let durationMinutes: Int
+    let plannedDurationSeconds: Int?
     let acquisitionStartedAt: Date
     let controlledWorkoutStartedAt: Date?
     let terminalRequestedAt: Date?
+    let healthKitStopActivityAt: Date?
     let profileID: UUID?
     let legacySessionID: UUID?
     let telemetrySessionID: UUID?
+    let legacyWorkoutID: UUID?
 
     static func preflight(
         appWorkoutID: UUID,
@@ -48,12 +54,15 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
             phase: .preflight,
             targetBPM: targetBPM,
             durationMinutes: durationMinutes,
+            plannedDurationSeconds: durationMinutes * 60,
             acquisitionStartedAt: acquisitionStartedAt,
             controlledWorkoutStartedAt: nil,
             terminalRequestedAt: nil,
+            healthKitStopActivityAt: nil,
             profileID: profileID,
             legacySessionID: nil,
-            telemetrySessionID: nil
+            telemetrySessionID: nil,
+            legacyWorkoutID: nil
         )
     }
 
@@ -69,12 +78,15 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
             phase: .committed,
             targetBPM: targetBPM,
             durationMinutes: durationMinutes,
+            plannedDurationSeconds: plannedDurationSeconds,
             acquisitionStartedAt: acquisitionStartedAt,
             controlledWorkoutStartedAt: controlledWorkoutStartedAt,
             terminalRequestedAt: nil,
+            healthKitStopActivityAt: nil,
             profileID: profileID,
             legacySessionID: legacySessionID,
-            telemetrySessionID: telemetrySessionID
+            telemetrySessionID: telemetrySessionID,
+            legacyWorkoutID: nil
         )
     }
 
@@ -85,12 +97,15 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
             phase: .finishing,
             targetBPM: targetBPM,
             durationMinutes: durationMinutes,
+            plannedDurationSeconds: plannedDurationSeconds,
             acquisitionStartedAt: acquisitionStartedAt,
             controlledWorkoutStartedAt: controlledWorkoutStartedAt,
             terminalRequestedAt: requestedAt,
+            healthKitStopActivityAt: healthKitStopActivityAt,
             profileID: profileID,
             legacySessionID: legacySessionID,
-            telemetrySessionID: telemetrySessionID
+            telemetrySessionID: telemetrySessionID,
+            legacyWorkoutID: legacyWorkoutID
         )
     }
 
@@ -101,27 +116,94 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
             phase: .stopping,
             targetBPM: targetBPM,
             durationMinutes: durationMinutes,
+            plannedDurationSeconds: plannedDurationSeconds,
             acquisitionStartedAt: acquisitionStartedAt,
             controlledWorkoutStartedAt: controlledWorkoutStartedAt,
             terminalRequestedAt: requestedAt,
+            healthKitStopActivityAt: nil,
             profileID: profileID,
             legacySessionID: legacySessionID,
-            telemetrySessionID: telemetrySessionID
+            telemetrySessionID: telemetrySessionID,
+            legacyWorkoutID: legacyWorkoutID
         )
+    }
+
+    func planningDuration(seconds: Int) -> Self {
+        Self(
+            schemaVersion: schemaVersion,
+            appWorkoutID: appWorkoutID,
+            phase: phase,
+            targetBPM: targetBPM,
+            durationMinutes: max(1, (seconds + 59) / 60),
+            plannedDurationSeconds: seconds,
+            acquisitionStartedAt: acquisitionStartedAt,
+            controlledWorkoutStartedAt: controlledWorkoutStartedAt,
+            terminalRequestedAt: terminalRequestedAt,
+            healthKitStopActivityAt: healthKitStopActivityAt,
+            profileID: profileID,
+            legacySessionID: legacySessionID,
+            telemetrySessionID: telemetrySessionID,
+            legacyWorkoutID: legacyWorkoutID
+        )
+    }
+
+    func linkingLegacyWorkout(id: UUID) -> Self {
+        Self(
+            schemaVersion: schemaVersion,
+            appWorkoutID: appWorkoutID,
+            phase: phase,
+            targetBPM: targetBPM,
+            durationMinutes: durationMinutes,
+            plannedDurationSeconds: plannedDurationSeconds,
+            acquisitionStartedAt: acquisitionStartedAt,
+            controlledWorkoutStartedAt: controlledWorkoutStartedAt,
+            terminalRequestedAt: terminalRequestedAt,
+            healthKitStopActivityAt: healthKitStopActivityAt,
+            profileID: profileID,
+            legacySessionID: legacySessionID,
+            telemetrySessionID: telemetrySessionID,
+            legacyWorkoutID: id
+        )
+    }
+
+    func recordingHealthKitStopActivity(at date: Date) -> Self {
+        Self(
+            schemaVersion: schemaVersion,
+            appWorkoutID: appWorkoutID,
+            phase: phase,
+            targetBPM: targetBPM,
+            durationMinutes: durationMinutes,
+            plannedDurationSeconds: plannedDurationSeconds,
+            acquisitionStartedAt: acquisitionStartedAt,
+            controlledWorkoutStartedAt: controlledWorkoutStartedAt,
+            terminalRequestedAt: terminalRequestedAt,
+            healthKitStopActivityAt: date,
+            profileID: profileID,
+            legacySessionID: legacySessionID,
+            telemetrySessionID: telemetrySessionID,
+            legacyWorkoutID: legacyWorkoutID
+        )
+    }
+
+    var effectivePlannedDurationSeconds: Int {
+        plannedDurationSeconds ?? durationMinutes * 60
     }
 
     var isStructurallyValid: Bool {
         guard schemaVersion == Self.currentSchemaVersion,
               (40...240).contains(targetBPM),
-              (1...120).contains(durationMinutes) else {
+              (1...120).contains(durationMinutes),
+              (60...(120 * 60)).contains(effectivePlannedDurationSeconds) else {
             return false
         }
         switch phase {
         case .preflight:
             return controlledWorkoutStartedAt == nil
                 && terminalRequestedAt == nil
+                && healthKitStopActivityAt == nil
                 && legacySessionID == nil
                 && telemetrySessionID == nil
+                && legacyWorkoutID == nil
         case .committed, .stopping, .finishing:
             guard let controlledWorkoutStartedAt,
                   let legacySessionID,
@@ -138,10 +220,20 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
                 terminalIsValid = false
             case .committed:
                 terminalIsValid = terminalRequestedAt == nil
-            case .stopping, .finishing:
-                terminalIsValid = terminalRequestedAt.map {
+                    && healthKitStopActivityAt == nil
+            case .stopping:
+                terminalIsValid = (terminalRequestedAt.map {
                     $0 >= controlledWorkoutStartedAt
-                } ?? false
+                } ?? false) && healthKitStopActivityAt == nil
+            case .finishing:
+                guard let terminalRequestedAt else {
+                    terminalIsValid = false
+                    break
+                }
+                terminalIsValid = terminalRequestedAt >= controlledWorkoutStartedAt
+                    && (healthKitStopActivityAt.map {
+                        $0 >= terminalRequestedAt
+                    } ?? true)
             }
             return preflightLatency >= 0
                 && preflightLatency <= NativeHeartRatePreflightEngine.timeoutSeconds
@@ -221,6 +313,7 @@ enum NativeWorkoutRecoveryResolution: Equatable {
 
 enum NativeWorkoutNoActiveRecoveryResolution: Equatable {
     case retainFailClosed
+    case discardPreflight(NativeWorkoutRecoveryRecord)
     case reconcileFinished(NativeWorkoutRecoveryRecord)
 }
 
@@ -253,11 +346,59 @@ enum NativeWorkoutRecoveryPolicy {
         loadResult: NativeWorkoutRecoveryLoadResult
     ) -> NativeWorkoutNoActiveRecoveryResolution {
         guard case .record(let record) = loadResult,
-              record.phase == .finishing,
               record.isStructurallyValid else {
             return .retainFailClosed
         }
+        if record.phase == .preflight {
+            return .discardPreflight(record)
+        }
+        guard record.phase == .finishing,
+              record.healthKitStopActivityAt != nil else {
+            return .retainFailClosed
+        }
         return .reconcileFinished(record)
+    }
+}
+
+enum NativeWorkoutSavedProofPolicy {
+    static func matches(
+        record: NativeWorkoutRecoveryRecord,
+        workoutStartedAt: Date,
+        workoutEndedAt: Date,
+        isWalking: Bool,
+        sourceMatchesApp: Bool
+    ) -> Bool {
+        guard record.phase == .finishing,
+              record.isStructurallyValid,
+              let stoppedAt = record.healthKitStopActivityAt,
+              isWalking,
+              sourceMatchesApp else {
+            return false
+        }
+        return abs(workoutStartedAt.timeIntervalSince(record.acquisitionStartedAt)) <= 5
+            && abs(workoutEndedAt.timeIntervalSince(stoppedAt)) <= 15
+    }
+
+    static func uniqueMatch<Candidate>(
+        in candidates: [Candidate],
+        matching matches: (Candidate) -> Bool
+    ) -> Candidate? {
+        var uniqueMatch: Candidate?
+        for candidate in candidates where matches(candidate) {
+            guard uniqueMatch == nil else { return nil }
+            uniqueMatch = candidate
+        }
+        return uniqueMatch
+    }
+}
+
+enum NativeWorkoutLegacyLinkPolicy {
+    static func canLink(
+        existingWorkoutUUID: String?,
+        expectedWorkoutUUID: UUID
+    ) -> Bool {
+        existingWorkoutUUID == nil
+            || existingWorkoutUUID == expectedWorkoutUUID.uuidString
     }
 }
 

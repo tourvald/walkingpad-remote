@@ -41,6 +41,8 @@ enum IPhoneHealthKitHeartRateProviderError: Error, Equatable {
         actual: IPhoneHealthKitHeartRateProviderState
     )
     case operationCancelled
+    case missingRecoveredStopDate
+    case stopDatePersistenceFailed
 }
 
 enum IPhoneHealthKitWorkoutFinishOutcome<Workout> {
@@ -73,6 +75,7 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
     private var ownsWorkout = false
     private var activityStarted = false
     private var collectionStarted = false
+    private var stoppedAtForFinish: Date?
 
     private(set) var state: IPhoneHealthKitHeartRateProviderState = .idle
     var onObservation: ObservationHandler?
@@ -192,7 +195,9 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
     }
 
     func finish(
-        at date: Date
+        at date: Date,
+        recoveredStoppedAt: Date? = nil,
+        persistStoppedAt: (Date) -> Bool = { _ in true }
     ) async throws -> IPhoneHealthKitWorkoutFinishOutcome<Driver.Workout> {
         guard state == .collecting else {
             throw IPhoneHealthKitHeartRateProviderError.invalidTransition(
@@ -201,13 +206,29 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
             )
         }
 
+        if !activityStarted,
+           stoppedAtForFinish == nil,
+           recoveredStoppedAt == nil {
+            throw IPhoneHealthKitHeartRateProviderError.missingRecoveredStopDate
+        }
+
         let operationGeneration = generation
         state = .finishing
-        driver.stopActivity(at: date)
-
         do {
-            let stoppedAt = try await driver.waitForStoppedTransition()
+            let stoppedAt: Date
+            if let exactStoppedAt = stoppedAtForFinish ?? recoveredStoppedAt {
+                stoppedAt = exactStoppedAt
+            } else {
+                driver.stopActivity(at: date)
+                stoppedAt = try await driver.waitForStoppedTransition()
+                stoppedAtForFinish = stoppedAt
+            }
             try requireCurrent(operationGeneration, state: .finishing)
+            guard persistStoppedAt(stoppedAt) else {
+                state = .collecting
+                activityStarted = false
+                throw IPhoneHealthKitHeartRateProviderError.stopDatePersistenceFailed
+            }
             activityStarted = false
             try await driver.endCollection(at: stoppedAt)
             try requireCurrent(operationGeneration, state: .finishing)
@@ -221,6 +242,10 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
             }
             return .savedWorkoutUnavailable
         } catch {
+            if error as? IPhoneHealthKitHeartRateProviderError
+                == .stopDatePersistenceFailed {
+                throw error
+            }
             if operationGeneration == generation {
                 await discardOwnedWorkout(at: date)
             }
@@ -265,6 +290,7 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
         ownsWorkout = false
         activityStarted = false
         collectionStarted = false
+        stoppedAtForFinish = nil
         state = .idle
     }
 }

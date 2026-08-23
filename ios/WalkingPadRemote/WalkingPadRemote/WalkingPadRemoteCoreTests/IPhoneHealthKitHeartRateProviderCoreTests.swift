@@ -227,6 +227,91 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.finishCount, 1)
     }
 
+    func testRecoveredStoppedWorkoutUsesDurableStopDateInsteadOfRelaunchTime() async throws {
+        let (provider, driver) = makeProvider()
+        driver.recoveredLifecycle = IPhoneHealthKitRecoveredWorkoutLifecycle(
+            activityStarted: false,
+            collectionStarted: true,
+            startedAt: Date(timeIntervalSince1970: 6_000)
+        )
+        _ = try provider.recover(UUID())
+        driver.calls.removeAll()
+        let originalStoppedAt = Date(timeIntervalSince1970: 6_900)
+        let relaunchedAt = originalStoppedAt.addingTimeInterval(3_600)
+        var persistedDates: [Date] = []
+
+        _ = try await provider.finish(
+            at: relaunchedAt,
+            recoveredStoppedAt: originalStoppedAt,
+            persistStoppedAt: {
+                persistedDates.append($0)
+                return true
+            }
+        )
+
+        XCTAssertEqual(persistedDates, [originalStoppedAt])
+        XCTAssertEqual(driver.endCollectionDates, [originalStoppedAt])
+        XCTAssertEqual(driver.stopActivityCount, 0)
+        XCTAssertFalse(driver.endCollectionDates.contains(relaunchedAt))
+    }
+
+    func testRecoveredStoppedWorkoutWithoutDurableStopDateRemainsOwnedFailClosed() async throws {
+        let (provider, driver) = makeProvider()
+        driver.recoveredLifecycle = IPhoneHealthKitRecoveredWorkoutLifecycle(
+            activityStarted: false,
+            collectionStarted: true,
+            startedAt: Date(timeIntervalSince1970: 7_000)
+        )
+        _ = try provider.recover(UUID())
+        driver.calls.removeAll()
+
+        await XCTAssertThrowsErrorAsync(
+            try await provider.finish(at: Date(timeIntervalSince1970: 10_600))
+        ) { error in
+            XCTAssertEqual(
+                error as? IPhoneHealthKitHeartRateProviderError,
+                .missingRecoveredStopDate
+            )
+        }
+
+        XCTAssertEqual(provider.state, .collecting)
+        XCTAssertTrue(driver.calls.isEmpty)
+        XCTAssertEqual(driver.endCollectionCount, 0)
+        XCTAssertEqual(driver.finishCount, 0)
+        XCTAssertEqual(driver.discardCount, 0)
+    }
+
+    func testStopDateMustPersistBeforeEndCollection() async throws {
+        let (provider, driver) = makeProvider()
+        try await provider.prepare(configuration: "walking")
+        try await provider.start()
+        driver.calls.removeAll()
+
+        await XCTAssertThrowsErrorAsync(
+            try await provider.finish(
+                at: Date(timeIntervalSince1970: 7_100),
+                persistStoppedAt: { _ in
+                    driver.calls.append("persistStoppedAt")
+                    return false
+                }
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? IPhoneHealthKitHeartRateProviderError,
+                .stopDatePersistenceFailed
+            )
+        }
+
+        XCTAssertEqual(
+            driver.calls,
+            ["stopActivity", "stoppedTransition", "persistStoppedAt"]
+        )
+        XCTAssertEqual(provider.state, .collecting)
+        XCTAssertEqual(driver.endCollectionCount, 0)
+        XCTAssertEqual(driver.finishCount, 0)
+        XCTAssertEqual(driver.discardCount, 0)
+    }
+
     func testRapidHubWarmDuringCommittedFinishLeavesProviderUntouched() async throws {
         let (provider, driver) = makeProvider()
         try await provider.prepare(configuration: "walking")

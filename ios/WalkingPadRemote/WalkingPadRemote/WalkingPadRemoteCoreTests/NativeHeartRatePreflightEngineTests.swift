@@ -468,18 +468,24 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         let linkageA = DeferredNativeHealthKitLinkage(
             acquisitionStartedAt: now,
             finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: nil,
             profileID: profileA,
             telemetrySessionID: telemetrySessionA,
-            linksLegacyWorkout: true
+            linksLegacyWorkout: true,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil
         )
         let profileB = UUID()
         let telemetrySessionB = UUID()
         let linkageB = DeferredNativeHealthKitLinkage(
             acquisitionStartedAt: now.addingTimeInterval(60),
             finishRequestedAt: now.addingTimeInterval(90),
+            healthKitStoppedAt: nil,
             profileID: profileB,
             telemetrySessionID: telemetrySessionB,
-            linksLegacyWorkout: true
+            linksLegacyWorkout: true,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil
         )
         var pending = [linkageA, linkageB]
 
