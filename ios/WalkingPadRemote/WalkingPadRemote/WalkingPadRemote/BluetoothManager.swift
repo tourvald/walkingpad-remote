@@ -52,7 +52,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var autoConnectPendingWorkItem: DispatchWorkItem?
     private var knownDiscoveryGraceWorkItem: DispatchWorkItem?
     private var knownDiscoveryGraceCompleted = false
-    private var autoConnectFailedPeripheralIDs: Set<UUID> = []
+    private var autoConnectRetryPolicy = AutoConnectRetryPolicy()
     private var connectTimeoutWorkItem: DispatchWorkItem?
 #if canImport(WatchConnectivity)
     private var wcSession: WCSession?
@@ -2006,7 +2006,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     func start() {
         ensureCentral()
         autoConnectSuppressed = false
-        autoConnectFailedPeripheralIDs.removeAll()
+        autoConnectRetryPolicy.reset()
         knownDiscoveryGraceWorkItem?.cancel()
         knownDiscoveryGraceWorkItem = nil
         knownDiscoveryGraceCompleted = false
@@ -2130,7 +2130,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     // Auto-connect policy helper
     private var orderedAutoConnectCandidateIDs: [UUID] {
         var ordered = knownPeripherals.map(\.id).filter {
-            !autoConnectFailedPeripheralIDs.contains($0)
+            !autoConnectRetryPolicy.failedPeripheralIDs.contains($0)
         }
         if let lastSuccessfulPeripheralID,
            let index = ordered.firstIndex(of: lastSuccessfulPeripheralID) {
@@ -2138,6 +2138,24 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ordered.insert(lastSuccessfulPeripheralID, at: 0)
         }
         return ordered
+    }
+
+    private func markAutoConnectCandidateFailed(_ peripheralID: UUID) {
+        autoConnectRetryPolicy.markFailed(peripheralID)
+    }
+
+    private func rearmAutoConnectCandidateAfterFreshDiscovery(
+        peripheralID: UUID,
+        now: Date = Date()
+    ) -> Bool {
+        let didRearm = autoConnectRetryPolicy.rearmAfterFreshDiscovery(
+            peripheralID: peripheralID,
+            knownPeripheralIDs: Set(knownPeripherals.map(\.id)),
+            now: now
+        )
+        guard didRearm else { return false }
+        appendLog("AutoConnect: re-armed known candidate after fresh discovery id=\(peripheralID.uuidString)")
+        return true
     }
 
     private func preferredKnownPeripheral(from peripherals: [CBPeripheral]) -> CBPeripheral? {
@@ -2346,7 +2364,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 if self.autoConnectSuppressed {
                     return
                 }
-                if self.preferredKnownDiscoveredPeripheral() != nil {
+                let rearmedKnownCandidate = self.rearmAutoConnectCandidateAfterFreshDiscovery(
+                    peripheralID: id
+                )
+                if rearmedKnownCandidate || self.preferredKnownDiscoveredPeripheral() != nil {
                     self.autoConnectPendingWorkItem?.cancel()
                     self.autoConnectPendingWorkItem = nil
                     self.attemptAutoConnectIfNeeded()
@@ -2408,7 +2429,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.connectingPeripheral = nil
             self.cancellingConnectionPeripheralId = nil
             self.connectingAttemptIsAutomatic = false
-            self.autoConnectFailedPeripheralIDs.removeAll()
+            self.autoConnectRetryPolicy.reset()
             self.connectErrorMessage = nil
             self.isConnected = true
             central.stopScan()
@@ -2454,7 +2475,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.isConnected = false
             self.connectionStateText = "Disconnected"
             if wasAutomatic {
-                self.autoConnectFailedPeripheralIDs.insert(peripheral.identifier)
+                self.markAutoConnectCandidateFailed(peripheral.identifier)
             } else {
                 self.connectErrorMessage = error?.localizedDescription ?? "Failed to connect"
             }
@@ -2495,7 +2516,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 let shouldContinueAutoConnect = self.connectingAttemptIsAutomatic
                     && !self.autoConnectSuppressed
                 if shouldContinueAutoConnect {
-                    self.autoConnectFailedPeripheralIDs.insert(peripheralID)
+                    self.markAutoConnectCandidateFailed(peripheralID)
                 }
                 self.connectingPeripheralId = nil
                 self.connectingPeripheral = nil
@@ -2725,6 +2746,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.lastSuccessfulPeripheralID = nil
                 UserDefaults.standard.removeObject(forKey: self.lastSuccessfulPeripheralStoreKey)
             }
+            self.autoConnectRetryPolicy.forget(id)
             self.discoveredPeripherals = self.discoveredPeripherals.map { item in
                 guard item.id == id else { return item }
                 return DiscoveredPeripheral(

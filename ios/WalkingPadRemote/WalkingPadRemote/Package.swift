@@ -131,6 +131,7 @@ let package = Package(
                 "WalkingPadRemoteApp.swift"
             ],
             sources: [
+                "AutoConnectRetryPolicy.swift",
                 "BLETransportCodec.swift",
                 "ControllerUnitsSafetyPolicy.swift",
                 "CooldownRuntimeEngine.swift",

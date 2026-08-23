@@ -122,7 +122,7 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
             [
                 "let wasAutomatic = self.connectingAttemptIsAutomatic",
                 "if wasAutomatic",
-                "self.autoConnectFailedPeripheralIDs.insert",
+                "self.markAutoConnectCandidateFailed",
                 "self.connectErrorMessage = error?.localizedDescription",
                 "self.connectingPeripheralId = nil",
                 "self.attemptAutoConnectIfNeeded()",
@@ -132,8 +132,41 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertTrue(timeout.contains("if !self.connectingAttemptIsAutomatic"))
         XCTAssertTrue(timeout.contains("self.connectErrorMessage = \"Connection timeout\""))
         XCTAssertTrue(disconnect.contains("shouldContinueAutoConnect"))
-        XCTAssertTrue(disconnect.contains("self.autoConnectFailedPeripheralIDs.insert"))
+        XCTAssertTrue(disconnect.contains("self.markAutoConnectCandidateFailed"))
         XCTAssertTrue(disconnect.contains("self.attemptAutoConnectIfNeeded()"))
+    }
+
+    func testExhaustedKnownRoundRearmsOneFreshDiscoveryAfterCooldown() throws {
+        let markFailed = try functionBody(
+            "private func markAutoConnectCandidateFailed(_ peripheralID: UUID)",
+            in: managerSource
+        )
+        let rearm = try functionBody(
+            "private func rearmAutoConnectCandidateAfterFreshDiscovery(",
+            in: managerSource
+        )
+        let discovery = try functionBody(
+            "func centralManager(_ central: CBCentralManager,\n                        didDiscover peripheral: CBPeripheral,",
+            in: managerSource
+        )
+
+        XCTAssertTrue(markFailed.contains("autoConnectRetryPolicy.markFailed(peripheralID)"))
+        XCTAssertTrue(rearm.contains("autoConnectRetryPolicy.rearmAfterFreshDiscovery"))
+        XCTAssertTrue(rearm.contains("knownPeripheralIDs: Set(knownPeripherals.map(\\.id))"))
+        XCTAssertEqual(
+            discovery.components(separatedBy: "rearmAutoConnectCandidateAfterFreshDiscovery(").count - 1,
+            1
+        )
+        XCTAssertTrue(
+            discovery.contains("if rearmedKnownCandidate || self.preferredKnownDiscoveredPeripheral() != nil")
+        )
+        assertOrdered(
+            [
+                "rearmAutoConnectCandidateAfterFreshDiscovery(",
+                "self.attemptAutoConnectIfNeeded()",
+            ],
+            in: discovery
+        )
     }
 
     func testSuccessfulConnectionAndAlertDismissalConsumeStaleErrors() throws {
