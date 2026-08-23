@@ -95,6 +95,72 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
         XCTAssertTrue(collection.contains("now: Date()"))
     }
 
+    func testProviderAsyncWorkIsGenerationBoundAndRetryWaitsForCleanup() throws {
+        let start = try functionBody("func startHrControl()", in: managerSource)
+        let prepare = try functionBody(
+            "private func prepareNativeHeartRateProvider()",
+            in: managerSource
+        )
+        let collection = try functionBody(
+            "private func startNativeHeartRateCollection(",
+            in: managerSource
+        )
+        let discard = try functionBody(
+            "private func discardNativeHeartRatePreflight(",
+            in: managerSource
+        )
+        let delivery = try functionBody(
+            "private func handleNativeHeartRateObservation(",
+            in: managerSource
+        )
+
+        XCTAssertTrue(start.contains("!nativeHeartRateProviderLifecycle.cleanupInFlight"))
+        XCTAssertTrue(start.contains("bindAttempt(intent.id)"))
+        XCTAssertTrue(prepare.contains("beginProviderLifecycle()"))
+        XCTAssertTrue(prepare.contains("acceptsProviderCompletion("))
+        XCTAssertTrue(collection.contains("attemptID: intent.id"))
+        assertOrdered([
+            "beginCleanup()",
+            "iPhoneHealthKitHeartRateProvider.discard",
+            "completeCleanup(",
+            "recomputeHrStartAllowed()",
+        ], in: discard)
+        assertOrdered([
+            "acceptsObservation(",
+            "HRDomainService.applyHeartRateDelivery(",
+        ], in: delivery)
+    }
+
+    func testExactQualifyingNormalizationIsEnqueuedBeforeMotionAndThenReferenced() throws {
+        let delivery = try functionBody(
+            "private func handleNativeHeartRateObservation(",
+            in: managerSource
+        )
+        let productionStart = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)",
+            in: managerSource
+        )
+        let persist = try functionBody(
+            "private func persistQualifyingNativeHeartRateBeforeMotion()",
+            in: managerSource
+        )
+
+        XCTAssertTrue(delivery.contains("let normalization = normalizeHeartRateDelivery("))
+        XCTAssertTrue(delivery.contains("pendingNativePreflightHeartRate = normalization"))
+        assertOrdered([
+            "beginTelemetryV2Session(legacySessionID: legacySessionID)",
+            "persistQualifyingNativeHeartRateBeforeMotion()",
+            "startWithSpeed",
+        ], in: productionStart)
+        assertOrdered([
+            "let result = pendingNativePreflightHeartRate",
+            "heartRateTelemetrySink?.observeHeartRate(result)",
+            "latestHeartRateDelivery = result.delivery",
+            "inputs: [result.delivery.causalReference]",
+        ], in: persist)
+        XCTAssertFalse(persist.contains("heartRateObservationNormalizer.normalize"))
+    }
+
     func testNativeHeartRateMarksFreshImmediatelyAndLegacyWatchCannotRace() throws {
         let nativeDelivery = try functionBody(
             "private func handleNativeHeartRateObservation(",

@@ -107,6 +107,44 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.finishCount, 0)
     }
 
+    func testCollectionCleanupIgnoresLateSampleAndAllowsFreshAttempt() async throws {
+        let (provider, driver) = makeProvider()
+        var observations: [HeartRateProviderObservation] = []
+        provider.onObservation = { observations.append($0) }
+        try await provider.prepare(configuration: "attempt-a")
+        try await provider.start()
+
+        await provider.discard(at: Date(timeIntervalSince1970: 4_100))
+        provider.receive(IPhoneHealthKitHeartRateSample(
+            beatsPerMinute: 155,
+            measurementInterval: DateInterval(
+                start: Date(timeIntervalSince1970: 4_099),
+                duration: 1
+            ),
+            callbackObservedAt: Date(timeIntervalSince1970: 4_101),
+            receivedAt: Date(timeIntervalSince1970: 4_101)
+        ))
+
+        XCTAssertEqual(provider.state, .idle)
+        XCTAssertTrue(observations.isEmpty)
+
+        try await provider.prepare(configuration: "attempt-b")
+        try await provider.start()
+        provider.receive(IPhoneHealthKitHeartRateSample(
+            beatsPerMinute: 141,
+            measurementInterval: DateInterval(
+                start: Date(timeIntervalSince1970: 4_102),
+                duration: 1
+            ),
+            callbackObservedAt: Date(timeIntervalSince1970: 4_103),
+            receivedAt: Date(timeIntervalSince1970: 4_103)
+        ))
+
+        XCTAssertEqual(observations.map(\.beatsPerMinute), [141])
+        XCTAssertEqual(driver.createdConfigurations, ["attempt-a", "attempt-b"])
+        XCTAssertEqual(driver.discardCount, 1)
+    }
+
     func testCommittedFinishWaitsForStoppedTransitionAndUsesItsDate() async throws {
         let (provider, driver) = makeProvider()
         try await provider.prepare(configuration: "walking")

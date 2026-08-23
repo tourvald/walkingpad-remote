@@ -1,5 +1,59 @@
 import Foundation
 
+struct NativeHeartRateProviderLifecycle: Equatable {
+    private(set) var generation: UInt64 = 0
+    private(set) var attemptID: UUID?
+    private(set) var cleanupGeneration: UInt64?
+
+    var cleanupInFlight: Bool { cleanupGeneration != nil }
+
+    mutating func bindAttempt(_ attemptID: UUID) {
+        guard !cleanupInFlight else { return }
+        self.attemptID = attemptID
+    }
+
+    mutating func beginProviderLifecycle() -> UInt64 {
+        precondition(!cleanupInFlight)
+        generation &+= 1
+        return generation
+    }
+
+    func acceptsProviderCompletion(
+        generation: UInt64,
+        attemptID expectedAttemptID: UUID? = nil
+    ) -> Bool {
+        guard !cleanupInFlight, generation == self.generation else { return false }
+        guard let expectedAttemptID else { return true }
+        return attemptID == expectedAttemptID
+    }
+
+    func acceptsObservation(providerIsCollecting: Bool) -> Bool {
+        !cleanupInFlight && attemptID != nil && providerIsCollecting
+    }
+
+    mutating func beginCleanup() -> UInt64 {
+        generation &+= 1
+        attemptID = nil
+        cleanupGeneration = generation
+        return generation
+    }
+
+    mutating func completeCleanup(
+        generation: UInt64,
+        providerIsIdle: Bool
+    ) -> Bool {
+        guard cleanupGeneration == generation, providerIsIdle else { return false }
+        cleanupGeneration = nil
+        return true
+    }
+
+    mutating func releaseCommittedProvider() {
+        generation &+= 1
+        attemptID = nil
+        cleanupGeneration = nil
+    }
+}
+
 struct NativeHeartRatePreflightEngine {
     static let timeoutSeconds: TimeInterval = 30
 
@@ -178,6 +232,11 @@ struct NativeHeartRatePreflightEngine {
     }
 
     var ownsUncommittedWorkout: Bool { phase != .idle }
+
+    var pendingObservation: Observation? {
+        guard case .waiting(_, _, let observation) = phase else { return nil }
+        return observation
+    }
 
     mutating func requestWarmPreparation() -> [Effect] {
         guard phase == .idle else { return [] }

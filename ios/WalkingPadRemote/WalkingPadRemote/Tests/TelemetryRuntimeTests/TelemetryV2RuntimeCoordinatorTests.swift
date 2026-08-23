@@ -7,6 +7,103 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
+    func testQualifyingPreflightResultKeepsExactIDsAndPrecedesItsCausalUse() async throws {
+        let persistence = RuntimePersistence()
+        let factoryGate = DispatchSemaphore(value: 0)
+        let startedAt = Date(timeIntervalSince1970: 9_000)
+        let coordinator = TelemetryV2RuntimeCoordinator {
+            factoryGate.wait()
+            return persistence
+        }
+        coordinator.beginSession(Self.descriptor(startedAt: startedAt))
+
+        let canonicalID = HeartRateCanonicalObservationID(
+            rawValue: UUID(uuidString: "61000000-0000-0000-0000-000000000001")!
+        )
+        let deliveryID = HeartRateDeliveryID(
+            rawValue: UUID(uuidString: "62000000-0000-0000-0000-000000000001")!
+        )
+        let measuredAt = startedAt.addingTimeInterval(0.25)
+        let callbackAt = startedAt.addingTimeInterval(0.4)
+        let receivedAt = startedAt.addingTimeInterval(0.5)
+        let recordedAt = startedAt.addingTimeInterval(0.6)
+        var normalizer = HeartRateObservationNormalizer()
+        let exactResult = normalizer.normalize(
+            HeartRateProviderObservation(
+                source: HeartRateProviderIdentity(
+                    kind: .healthKitSelected,
+                    stableLocalKey: "iphone-healthkit-selected"
+                ),
+                beatsPerMinute: 143,
+                providerSequence: nil,
+                providerNativeIdentity: nil,
+                measuredAt: measuredAt,
+                sourceCallbackObservedAt: callbackAt,
+                sourceClockRelationship: .receiverComparable,
+                receivedAt: receivedAt,
+                metadataQuality: []
+            ),
+            canonicalObservationID: canonicalID,
+            deliveryID: deliveryID,
+            recordedAt: recordedAt
+        )
+
+        XCTAssertEqual(coordinator.observeHeartRate(exactResult), .accepted)
+        XCTAssertEqual(coordinator.observeControlUse(HeartRateControlUseEvidence(
+            kind: .speedDecision,
+            inputs: [exactResult.delivery.causalReference],
+            occurredAt: startedAt.addingTimeInterval(0.7)
+        )), .accepted)
+
+        factoryGate.signal()
+        try await eventually {
+            if case .active = coordinator.status { return true }
+            return false
+        }
+        coordinator.endSession(reason: "preflight-evidence-test")
+        try await eventually { await persistence.finalizations.count == 1 }
+
+        let records = await persistence.snapshot().records
+        let persistedHeartRate = try XCTUnwrap(records.compactMap { record -> HeartRateObservation? in
+            guard case let .heartRate(observation) = record else { return nil }
+            return observation
+        }.first)
+        XCTAssertEqual(persistedHeartRate.observationID.rawValue, canonicalID.rawValue)
+        XCTAssertEqual(persistedHeartRate.timestamp.measuredAt, measuredAt)
+        XCTAssertEqual(persistedHeartRate.timestamp.receivedAt, receivedAt)
+        XCTAssertEqual(persistedHeartRate.timestamp.recordedAt, recordedAt)
+
+        let heartRateEvidence = records.compactMap { record -> HeartRateRuntimeEvidence? in
+            guard case let .event(event) = record,
+                  case let .heartRateEvidence(evidence) = event.payload.payload else {
+                return nil
+            }
+            return evidence
+        }
+        guard case let .delivery(persistedResult) = heartRateEvidence.first else {
+            return XCTFail("Expected exact delivery before causal use")
+        }
+        XCTAssertEqual(persistedResult.delivery.deliveryID, deliveryID)
+        XCTAssertEqual(
+            persistedResult.delivery.canonicalObservationID,
+            canonicalID
+        )
+        XCTAssertEqual(persistedResult.delivery.sourceCallbackObservedAt, callbackAt)
+        XCTAssertEqual(persistedResult.delivery.receivedAt, receivedAt)
+        XCTAssertEqual(persistedResult.delivery.recordedAt, recordedAt)
+        XCTAssertEqual(persistedResult.canonicalObservation?.measuredAt, measuredAt)
+        XCTAssertEqual(
+            persistedResult.canonicalObservation?.sourceCallbackObservedAt,
+            callbackAt
+        )
+        XCTAssertEqual(persistedResult.canonicalObservation?.receivedAt, receivedAt)
+        XCTAssertEqual(persistedResult.canonicalObservation?.recordedAt, recordedAt)
+        guard case let .controlUse(controlUse) = heartRateEvidence.last else {
+            return XCTFail("Expected causal use after delivery")
+        }
+        XCTAssertEqual(controlUse.inputs, [exactResult.delivery.causalReference])
+    }
+
     func testReadProjectionFailureCannotChangeRuntimeLifecycleOrSelectedControlOutput() async throws {
         let persistence = RuntimePersistence()
         let coordinator = TelemetryV2RuntimeCoordinator { persistence }

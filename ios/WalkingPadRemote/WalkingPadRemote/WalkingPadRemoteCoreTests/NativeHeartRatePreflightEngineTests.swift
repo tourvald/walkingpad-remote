@@ -360,6 +360,87 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         ))
     }
 
+    func testCancelDuringPrepareBlocksRetryUntilProviderCleanupIsIdle() {
+        var lifecycle = NativeHeartRateProviderLifecycle()
+        let attemptA = UUID()
+        lifecycle.bindAttempt(attemptA)
+        let prepareGeneration = lifecycle.beginProviderLifecycle()
+
+        let cleanupGeneration = lifecycle.beginCleanup()
+
+        XCTAssertTrue(lifecycle.cleanupInFlight)
+        XCTAssertFalse(lifecycle.acceptsProviderCompletion(
+            generation: prepareGeneration,
+            attemptID: attemptA
+        ))
+        XCTAssertFalse(lifecycle.completeCleanup(
+            generation: cleanupGeneration,
+            providerIsIdle: false
+        ))
+        XCTAssertTrue(lifecycle.cleanupInFlight)
+        XCTAssertTrue(lifecycle.completeCleanup(
+            generation: cleanupGeneration,
+            providerIsIdle: true
+        ))
+        XCTAssertFalse(lifecycle.cleanupInFlight)
+    }
+
+    func testTimeoutDuringCollectionRejectsLateObservationAndCompletion() {
+        var lifecycle = NativeHeartRateProviderLifecycle()
+        let attemptA = UUID()
+        lifecycle.bindAttempt(attemptA)
+        let collectionGeneration = lifecycle.beginProviderLifecycle()
+        XCTAssertTrue(lifecycle.acceptsObservation(providerIsCollecting: true))
+
+        let cleanupGeneration = lifecycle.beginCleanup()
+
+        XCTAssertFalse(lifecycle.acceptsObservation(providerIsCollecting: true))
+        XCTAssertFalse(lifecycle.acceptsProviderCompletion(
+            generation: collectionGeneration,
+            attemptID: attemptA
+        ))
+        XCTAssertTrue(lifecycle.completeCleanup(
+            generation: cleanupGeneration,
+            providerIsIdle: true
+        ))
+    }
+
+    func testStaleAttemptCompletionCannotAffectNewAttempt() {
+        var lifecycle = NativeHeartRateProviderLifecycle()
+        let attemptA = UUID()
+        lifecycle.bindAttempt(attemptA)
+        let generationA = lifecycle.beginProviderLifecycle()
+        let cleanupGeneration = lifecycle.beginCleanup()
+        XCTAssertTrue(lifecycle.completeCleanup(
+            generation: cleanupGeneration,
+            providerIsIdle: true
+        ))
+
+        let attemptB = UUID()
+        lifecycle.bindAttempt(attemptB)
+        let generationB = lifecycle.beginProviderLifecycle()
+
+        XCTAssertFalse(lifecycle.acceptsProviderCompletion(
+            generation: generationA,
+            attemptID: attemptA
+        ))
+        XCTAssertTrue(lifecycle.acceptsProviderCompletion(
+            generation: generationB,
+            attemptID: attemptB
+        ))
+        XCTAssertTrue(lifecycle.acceptsObservation(providerIsCollecting: true))
+    }
+
+    func testLateObservationAfterCancelCannotRegainOwnership() {
+        var lifecycle = NativeHeartRateProviderLifecycle()
+        lifecycle.bindAttempt(UUID())
+        _ = lifecycle.beginProviderLifecycle()
+        _ = lifecycle.beginCleanup()
+
+        XCTAssertNil(lifecycle.attemptID)
+        XCTAssertFalse(lifecycle.acceptsObservation(providerIsCollecting: true))
+    }
+
     func testFrozenIntentIsReturnedAtCommit() {
         var engine = waitingEngine(targetBPM: 151, durationMinutes: 45)
 

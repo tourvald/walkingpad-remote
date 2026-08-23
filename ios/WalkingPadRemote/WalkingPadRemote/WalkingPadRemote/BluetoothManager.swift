@@ -31,7 +31,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self?.handleNativeHeartRateObservation(observation)
         }
         provider.onFailure = { [weak self] in
-            self?.nativeHeartRateProviderFailed()
+            guard let self else { return }
+            self.nativeHeartRateProviderFailed(
+                generation: self.nativeHeartRateProviderLifecycle.generation
+            )
         }
         return provider
     }()
@@ -980,6 +983,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var nativeHeartRateAppActivity: NativeHeartRatePreflightEngine.AppActivity = .inactive
     private var isTrainingHubVisible = false
     private var nativeHeartRateFlowOwnsController = false
+    private var nativeHeartRateProviderLifecycle = NativeHeartRateProviderLifecycle()
     private var nativeHealthKitWorkoutCommitted = false
     private var nativeHealthKitWorkoutFinishInFlight = false
     private var nativePreflightCommitTimestamps: (
@@ -987,6 +991,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         measuredAt: Date?,
         receivedAt: Date
     )?
+    private var pendingNativePreflightHeartRate: HeartRateNormalizationResult?
 
     var isHrControlStartAffordanceAvailable: Bool {
         isHrControlStartAllowed && !isNativeHeartRatePreflightActive
@@ -4065,7 +4070,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func startHrControl() {
         guard !isHrControlRunning,
-              !nativeHeartRatePreflightEngine.hasStartIntent else { return }
+              !nativeHeartRatePreflightEngine.hasStartIntent,
+              !nativeHeartRateProviderLifecycle.cleanupInFlight else { return }
         let now = Date()
         let intent = NativeHeartRatePreflightEngine.Intent(
             id: UUID(),
@@ -4082,6 +4088,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         nativeHeartRateFlowOwnsController = true
+        nativeHeartRateProviderLifecycle.bindAttempt(intent.id)
         isNativeHeartRateCurrent = false
         hrStreamingActive = false
         hrLastValueAt = nil
@@ -4201,6 +4208,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ].merging(controllerUnitsTelemetryFields(action: "hr_control_start")) { current, _ in current })
         nativePreflightCommitTimestamps = nil
         beginTelemetryV2Session(legacySessionID: legacySessionID)
+        persistQualifyingNativeHeartRateBeforeMotion()
         if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
             hrControlStartedBelt = true
             startWithSpeed(3.0)
@@ -4262,7 +4270,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func warmNativeHeartRateProviderIfPossible() {
-        guard NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
+        guard !nativeHeartRateProviderLifecycle.cleanupInFlight,
+              NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
             isTrainingHubVisible: isTrainingHubVisible,
             appActivity: nativeHeartRateAppActivity,
             isHrControlRunning: isHrControlRunning,
@@ -4276,6 +4285,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             let canPrepare = await iPhoneHealthKitHeartRateProvider
                 .canPrepareWithoutAuthorizationPrompt()
             guard canPrepare,
+                  !nativeHeartRateProviderLifecycle.cleanupInFlight,
                   NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
                     isTrainingHubVisible: isTrainingHubVisible,
                     appActivity: nativeHeartRateAppActivity,
@@ -4323,6 +4333,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func prepareNativeHeartRateProvider() {
+        let providerGeneration = nativeHeartRateProviderLifecycle.beginProviderLifecycle()
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .walking
         configuration.locationType = .indoor
@@ -4332,14 +4343,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 try await iPhoneHealthKitHeartRateProvider.prepare(
                     configuration: configuration
                 )
+                guard nativeHeartRateProviderLifecycle.acceptsProviderCompletion(
+                    generation: providerGeneration
+                ) else { return }
                 appendLog("Native HR session prepared")
                 nativeHeartRateLogger.info("session_prepared")
                 applyNativeHeartRatePreflightEffects(
                     nativeHeartRatePreflightEngine.providerPrepared(at: Date())
                 )
             } catch {
-                guard nativeHeartRatePreflightEngine.ownsUncommittedWorkout else { return }
-                nativeHeartRateProviderFailed()
+                nativeHeartRateProviderFailed(generation: providerGeneration)
             }
         }
     }
@@ -4348,10 +4361,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         intent: NativeHeartRatePreflightEngine.Intent,
         acquisitionStartedAt: Date
     ) {
+        let providerGeneration = nativeHeartRateProviderLifecycle.generation
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 try await iPhoneHealthKitHeartRateProvider.start(at: acquisitionStartedAt)
+                guard nativeHeartRateProviderLifecycle.acceptsProviderCompletion(
+                    generation: providerGeneration,
+                    attemptID: intent.id
+                ) else { return }
                 let effects = nativeHeartRatePreflightEngine.collectionStarted(
                     intentID: intent.id,
                     acquisitionStartedAt: acquisitionStartedAt,
@@ -4364,8 +4382,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 appendLog("Native HR collection started: intent=\(intent.id.uuidString)")
                 syncNativeHeartRatePreflightPresentation()
             } catch {
-                guard nativeHeartRatePreflightEngine.ownsUncommittedWorkout else { return }
-                nativeHeartRateProviderFailed()
+                nativeHeartRateProviderFailed(
+                    generation: providerGeneration,
+                    attemptID: intent.id
+                )
             }
         }
     }
@@ -4373,6 +4393,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func handleNativeHeartRateObservation(
         _ observation: HeartRateProviderObservation
     ) {
+        guard nativeHeartRateFlowOwnsController,
+              nativeHeartRateProviderLifecycle.acceptsObservation(
+                providerIsCollecting: iPhoneHealthKitHeartRateProvider.state == .collecting
+              ) else {
+            nativeHeartRateLogger.info("stale_observation_ignored")
+            return
+        }
         let now = Date()
         let factualDate = observation.measuredAt ?? observation.receivedAt
         let ageSeconds = max(0, Int(now.timeIntervalSince(factualDate)))
@@ -4392,7 +4419,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             staleThresholdSeconds: hrStaleThresholdSeconds
         )
         isNativeHeartRateCurrent = hrStreamingActive
-        observeHeartRateDelivery(observation, recordedAt: now)
+        let normalization = normalizeHeartRateDelivery(observation, recordedAt: now)
         appendLog("Native HR value: \(observation.beatsPerMinute)")
         logTrainingEvent("hr_sample", fields: [
             "hr_bpm": observation.beatsPerMinute,
@@ -4405,14 +4432,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             measuredAt: observation.measuredAt,
             receivedAt: observation.receivedAt
         )
-        applyNativeHeartRatePreflightEffects(
-            nativeHeartRatePreflightEngine.receive(
-                preflightObservation,
-                safety: nativeHeartRateSafetyFacts(now: now),
-                now: now,
-                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
-            )
+        let effects = nativeHeartRatePreflightEngine.receive(
+            preflightObservation,
+            safety: nativeHeartRateSafetyFacts(now: now),
+            now: now,
+            freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
         )
+        if nativeHeartRatePreflightEngine.pendingObservation == preflightObservation
+            || effects.contains(where: { effect in
+                guard case .commit(_, let observation, _) = effect else { return false }
+                return observation == preflightObservation
+            })
+        {
+            pendingNativePreflightHeartRate = normalization
+        } else if !nativeHeartRatePreflightEngine.hasStartIntent {
+            publishHeartRateNormalization(normalization)
+        }
+        applyNativeHeartRatePreflightEffects(effects)
     }
 
     private func commitNativeHeartRatePreflight(
@@ -4461,8 +4497,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         nativeHeartRateLogger.info("preflight_cancelled reason=\(reason.rawValue, privacy: .public)")
         nativeHeartRateFlowOwnsController = false
         isNativeHeartRateCurrent = false
+        hrStreamingActive = false
+        hrLastValueAt = nil
+        heartRateBPM = 0
+        pendingNativePreflightHeartRate = nil
+        let cleanupGeneration = nativeHeartRateProviderLifecycle.beginCleanup()
         Task { @MainActor [weak self] in
-            await self?.iPhoneHealthKitHeartRateProvider.discard(at: Date())
+            guard let self else { return }
+            await iPhoneHealthKitHeartRateProvider.discard(at: Date())
+            guard nativeHeartRateProviderLifecycle.completeCleanup(
+                generation: cleanupGeneration,
+                providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle
+            ) else { return }
+            recomputeHrStartAllowed()
+            warmNativeHeartRateProviderIfPossible()
         }
         if reason == .timeout || reason == .providerFailure {
             infoToastMessage = "Пульс не получен. Проверьте подключение и посадку датчика, а также доступ к данным «Здоровье»."
@@ -4475,17 +4523,36 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         nativeHealthKitWorkoutCommitted = false
         nativeHeartRateFlowOwnsController = false
         isNativeHeartRateCurrent = false
+        hrStreamingActive = false
+        hrLastValueAt = nil
+        heartRateBPM = 0
         nativePreflightCommitTimestamps = nil
+        pendingNativePreflightHeartRate = nil
         appendLog("Native HR flow aborted before motion: \(reason.rawValue)")
         nativeHeartRateLogger.info("preflight_aborted reason=\(reason.rawValue, privacy: .public)")
+        let cleanupGeneration = nativeHeartRateProviderLifecycle.beginCleanup()
         Task { @MainActor [weak self] in
-            await self?.iPhoneHealthKitHeartRateProvider.discard(at: Date())
+            guard let self else { return }
+            await iPhoneHealthKitHeartRateProvider.discard(at: Date())
+            guard nativeHeartRateProviderLifecycle.completeCleanup(
+                generation: cleanupGeneration,
+                providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle
+            ) else { return }
+            recomputeHrStartAllowed()
+            warmNativeHeartRateProviderIfPossible()
         }
         syncNativeHeartRatePreflightPresentation()
         recomputeHrStartAllowed()
     }
 
-    private func nativeHeartRateProviderFailed() {
+    private func nativeHeartRateProviderFailed(
+        generation: UInt64,
+        attemptID: UUID? = nil
+    ) {
+        guard nativeHeartRateProviderLifecycle.acceptsProviderCompletion(
+            generation: generation,
+            attemptID: attemptID
+        ) else { return }
         hrStreamingActive = false
         isNativeHeartRateCurrent = false
         hrLastValueAt = nil
@@ -4582,6 +4649,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let preflightGatesAllowStart = safety.permitsStartIntent
             && IPhoneHealthKitLiveHeartRateProvider.isSupported
             && !nativeHeartRatePreflightEngine.hasStartIntent
+            && !nativeHeartRateProviderLifecycle.cleanupInFlight
         let unitsDecision = controllerUnitsGateDecision(now: now)
         isHrControlStartAllowed = preflightGatesAllowStart
         if !preflightGatesAllowStart {
@@ -6485,6 +6553,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 nativeHeartRateFlowOwnsController = false
                 isNativeHeartRateCurrent = false
                 nativeHealthKitAcquisitionStartedAt = nil
+                nativeHeartRateProviderLifecycle.releaseCommittedProvider()
                 recomputeHrStartAllowed()
                 warmNativeHeartRateProviderIfPossible()
             }
@@ -6826,15 +6895,50 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ observation: HeartRateProviderObservation,
         recordedAt: Date
     ) {
-        let result = heartRateObservationNormalizer.normalize(
+        publishHeartRateNormalization(
+            normalizeHeartRateDelivery(observation, recordedAt: recordedAt)
+        )
+    }
+
+    private func normalizeHeartRateDelivery(
+        _ observation: HeartRateProviderObservation,
+        recordedAt: Date
+    ) -> HeartRateNormalizationResult {
+        heartRateObservationNormalizer.normalize(
             observation,
             canonicalObservationID: HeartRateCanonicalObservationID(),
             deliveryID: HeartRateDeliveryID(),
             recordedAt: recordedAt
         )
+    }
+
+    private func publishHeartRateNormalization(
+        _ result: HeartRateNormalizationResult
+    ) {
         latestHeartRateDelivery = result.delivery
         attachTelemetryDeliveryToLatestHrTrendSample(result.delivery)
         _ = heartRateTelemetrySink?.observeHeartRate(result)
+    }
+
+    private func persistQualifyingNativeHeartRateBeforeMotion() {
+        guard let result = pendingNativePreflightHeartRate else { return }
+        pendingNativePreflightHeartRate = nil
+        let disposition = heartRateTelemetrySink?.observeHeartRate(result) ?? .unavailable
+        guard disposition == .accepted else {
+            latestHeartRateDelivery = nil
+            return
+        }
+
+        latestHeartRateDelivery = result.delivery
+        let sampleDate = result.canonicalObservation?.measuredAt
+            ?? result.delivery.receivedAt
+        recordHrSample(result.delivery.beatsPerMinute, at: sampleDate)
+        attachTelemetryDeliveryToLatestHrTrendSample(result.delivery)
+        observeHeartRateControlUse(HeartRateControlUseEvidence(
+            kind: .speedDecision,
+            inputs: [result.delivery.causalReference],
+            occurredAt: Date()
+        ))
     }
 
     private func observeHeartRateSourceLifecycle(
