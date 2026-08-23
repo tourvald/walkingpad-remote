@@ -409,6 +409,14 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
             "func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?)",
             in: managerSource
         )
+        let writeUpdate = try functionBody(
+            "func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?)",
+            in: managerSource
+        )
+        let modifiedServices = try functionBody(
+            "func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService])",
+            in: managerSource
+        )
 
         XCTAssertTrue(managerSource.contains("@Published private(set) var isTreadmillControlReady: Bool = false"))
         assertOrdered(
@@ -432,7 +440,13 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertTrue(notification.contains("characteristic.isNotifying"))
         XCTAssertTrue(notification.contains("recomputeTreadmillControlReadiness()"))
         XCTAssertTrue(valueUpdate.contains("peripheral === connectedPeripheral"))
+        XCTAssertTrue(valueUpdate.contains("isCurrentCharacteristicCallback(characteristic)"))
         XCTAssertTrue(valueUpdate.contains("Ignoring value update from stale peripheral"))
+        XCTAssertTrue(valueUpdate.contains("ftmsControlRequestConnection == currentTreadmillControlConnection"))
+        XCTAssertTrue(writeUpdate.contains("characteristic === commandCharacteristic"))
+        XCTAssertTrue(writeUpdate.contains("isCurrentCharacteristicCallback(characteristic)"))
+        XCTAssertTrue(modifiedServices.contains("$0 === selectedService"))
+        XCTAssertTrue(modifiedServices.contains("invalidateTreadmillControlReadinessEvidence(includingProtocol: true)"))
     }
 
     func testProductionMotionUsesReadinessWhileStopRemainsLinkBased() throws {

@@ -36,6 +36,14 @@ struct TreadmillControlReadinessSnapshot: Equatable {
 }
 
 enum TreadmillControlReadinessPolicy {
+    static func isCurrentCallback(
+        _ callbackConnection: TreadmillControlConnectionIdentity?,
+        currentConnection: TreadmillControlConnectionIdentity?
+    ) -> Bool {
+        guard let currentConnection else { return false }
+        return callbackConnection == currentConnection
+    }
+
     static func isReady(_ snapshot: TreadmillControlReadinessSnapshot) -> Bool {
         guard let currentConnection = snapshot.currentConnection,
               snapshot.protocolConnection == currentConnection,

@@ -128,6 +128,35 @@ final class TreadmillControlReadinessPolicyTests: XCTestCase {
         ))
     }
 
+    func testCallbackContextMustMatchTheCurrentPeripheralAndEpoch() {
+        XCTAssertTrue(TreadmillControlReadinessPolicy.isCurrentCallback(
+            current,
+            currentConnection: current
+        ))
+
+        let stalePeripheral = TreadmillControlConnectionIdentity(
+            peripheralID: UUID(uuidString: "99999999-8888-7777-6666-555555555555")!,
+            epoch: current.epoch
+        )
+        XCTAssertFalse(TreadmillControlReadinessPolicy.isCurrentCallback(
+            stalePeripheral,
+            currentConnection: current
+        ))
+
+        let staleEpoch = TreadmillControlConnectionIdentity(
+            peripheralID: current.peripheralID,
+            epoch: UUID(uuidString: "00000000-1111-2222-3333-444444444444")!
+        )
+        XCTAssertFalse(TreadmillControlReadinessPolicy.isCurrentCallback(
+            staleEpoch,
+            currentConnection: current
+        ))
+        XCTAssertFalse(TreadmillControlReadinessPolicy.isCurrentCallback(
+            nil,
+            currentConnection: current
+        ))
+    }
+
     private func readySnapshot(
         protocolKind: TreadmillControlProtocolKind,
         telemetryRole: TreadmillControlTransportRole,
