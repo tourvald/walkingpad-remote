@@ -4,9 +4,13 @@ import TelemetryDomain
 protocol IPhoneHealthKitWorkoutLifecycleDriving: AnyObject {
     associatedtype Configuration
     associatedtype Workout
+    associatedtype RecoveredWorkout
 
     func requestAuthorization() async throws
     func createWorkout(configuration: Configuration) throws
+    func recoverWorkout(
+        _ recoveredWorkout: RecoveredWorkout
+    ) throws -> IPhoneHealthKitRecoveredWorkoutLifecycle
     func prepare() async throws
     func startActivity(at date: Date)
     func beginCollection(at date: Date) async throws
@@ -24,6 +28,7 @@ enum IPhoneHealthKitHeartRateProviderState: String, Equatable {
     case authorizing
     case preparing
     case prepared
+    case recovering
     case starting
     case collecting
     case resetting
@@ -50,6 +55,12 @@ struct IPhoneHealthKitHeartRateSample: Equatable {
     let measurementInterval: DateInterval?
     let callbackObservedAt: Date
     let receivedAt: Date
+}
+
+struct IPhoneHealthKitRecoveredWorkoutLifecycle: Equatable {
+    let activityStarted: Bool
+    let collectionStarted: Bool
+    let startedAt: Date?
 }
 
 @MainActor
@@ -103,6 +114,31 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
             if operationGeneration == generation {
                 await discardOwnedWorkout()
             }
+            throw error
+        }
+    }
+
+    func recover(
+        _ recoveredWorkout: Driver.RecoveredWorkout
+    ) throws -> IPhoneHealthKitRecoveredWorkoutLifecycle {
+        guard state == .idle else {
+            throw IPhoneHealthKitHeartRateProviderError.invalidTransition(
+                expected: .idle,
+                actual: state
+            )
+        }
+
+        generation &+= 1
+        state = .recovering
+        do {
+            let lifecycle = try driver.recoverWorkout(recoveredWorkout)
+            ownsWorkout = true
+            activityStarted = lifecycle.activityStarted
+            collectionStarted = lifecycle.collectionStarted
+            state = lifecycle.collectionStarted ? .collecting : .prepared
+            return lifecycle
+        } catch {
+            resetOwnership()
             throw error
         }
     }

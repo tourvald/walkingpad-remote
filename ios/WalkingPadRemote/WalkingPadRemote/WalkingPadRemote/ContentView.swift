@@ -402,6 +402,7 @@ private func makeHRControlActivePresentation(
     isCooldown: Bool,
     cooldownTargetBPM: Int,
     canExtend: Bool,
+    phaseTitleOverride: String? = nil,
     isPreview: Bool = false
 ) -> TrainingHubPresentation {
     let fallbackRange = 60...220
@@ -478,7 +479,7 @@ private func makeHRControlActivePresentation(
         startBlocker: nil,
         isPreparing: false,
         isPreview: isPreview,
-        phaseTitle: isCooldown ? "ЗАМИНКА" : "ТРЕНИРОВКА",
+        phaseTitle: phaseTitleOverride ?? (isCooldown ? "ЗАМИНКА" : "ТРЕНИРОВКА"),
         primaryValue: factualHeartRate.map(String.init) ?? "—",
         primaryUnit: factualHeartRate == nil ? nil : "bpm",
         statusTitle: status.title,
@@ -1301,6 +1302,7 @@ private struct ActiveWorkoutShell: View {
     let presentation: TrainingHubPresentation
     let onExtend: () -> Void
     let onStop: () -> Void
+    var stopEnabled = true
 
     @ScaledMetric(relativeTo: .largeTitle) private var primaryValueSize: CGFloat = 86
     @State private var showExtendConfirm = false
@@ -1492,8 +1494,13 @@ private struct ActiveWorkoutShell: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .tint(.red)
+            .disabled(!stopEnabled)
             .accessibilityLabel("Остановить HR-контроль")
-            .accessibilityHint("Запускает существующий процесс остановки тренировки")
+            .accessibilityHint(
+                stopEnabled
+                    ? "Запускает существующий процесс остановки тренировки"
+                    : "Доступно после восстановления управления дорожкой"
+            )
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -1944,10 +1951,11 @@ private struct ControlSwipeView: View {
             targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
             zoneRanges: hrZoneRanges(for: manager),
             factualSpeedKmh: factualSpeedKmh,
-            elapsedSeconds: manager.timeSec,
-            isCooldown: manager.hrRemainingSeconds <= 0,
+            elapsedSeconds: manager.presentedWorkoutElapsedSeconds,
+            isCooldown: manager.isHrControlRunning && manager.hrRemainingSeconds <= 0,
             cooldownTargetBPM: manager.hrCooldownTargetBpm,
-            canExtend: manager.canExtendHrSession
+            canExtend: manager.canExtendHrSession,
+            phaseTitleOverride: manager.presentedWorkoutPhaseTitle
         )
     }
 
@@ -1962,7 +1970,7 @@ private struct ControlSwipeView: View {
             }
         }
         #endif
-        guard manager.isHrControlRunning else { return nil }
+        guard manager.shouldPresentActiveWorkout else { return nil }
         return productionActiveWorkoutPresentation
     }
 
@@ -2040,7 +2048,8 @@ private struct ControlSwipeView: View {
             ActiveWorkoutShell(
                 presentation: activePresentation,
                 onExtend: { manager.extendHrSession(minutes: 5) },
-                onStop: { manager.stopHrControl() }
+                onStop: { manager.stopHrControl() },
+                stopEnabled: manager.canStopPresentedWorkout
             )
         } else {
             trainingHub

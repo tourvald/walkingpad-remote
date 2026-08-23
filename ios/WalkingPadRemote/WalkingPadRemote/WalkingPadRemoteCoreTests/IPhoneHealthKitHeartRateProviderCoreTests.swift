@@ -32,6 +32,51 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.beginCollectionCount, 1)
     }
 
+    func testRecoveryReusesExistingWorkoutWithoutCreatingReplacement() throws {
+        let (provider, driver) = makeProvider()
+        let recoveredID = UUID()
+        let startedAt = Date(timeIntervalSince1970: 1_500)
+        driver.recoveredLifecycle = IPhoneHealthKitRecoveredWorkoutLifecycle(
+            activityStarted: true,
+            collectionStarted: true,
+            startedAt: startedAt
+        )
+
+        let lifecycle = try provider.recover(recoveredID)
+        XCTAssertThrowsError(try provider.recover(recoveredID)) { error in
+            XCTAssertEqual(
+                error as? IPhoneHealthKitHeartRateProviderError,
+                .invalidTransition(expected: .idle, actual: .collecting)
+            )
+        }
+
+        XCTAssertEqual(lifecycle.startedAt, startedAt)
+        XCTAssertEqual(provider.state, .collecting)
+        XCTAssertEqual(driver.recoveredWorkouts, [recoveredID])
+        XCTAssertEqual(driver.calls, ["recover"])
+        XCTAssertTrue(driver.createdConfigurations.isEmpty)
+    }
+
+    func testRecoveredUncommittedWorkoutDiscardsWithoutFinishing() async throws {
+        let (provider, driver) = makeProvider()
+        driver.recoveredLifecycle = IPhoneHealthKitRecoveredWorkoutLifecycle(
+            activityStarted: false,
+            collectionStarted: false,
+            startedAt: nil
+        )
+        _ = try provider.recover(UUID())
+        XCTAssertEqual(provider.state, .prepared)
+        driver.calls.removeAll()
+
+        await provider.discard(at: Date(timeIntervalSince1970: 1_600))
+
+        XCTAssertEqual(provider.state, .idle)
+        XCTAssertEqual(driver.calls, ["discard", "endSession", "reset"])
+        XCTAssertEqual(driver.stopActivityCount, 0)
+        XCTAssertEqual(driver.endCollectionCount, 0)
+        XCTAssertEqual(driver.finishCount, 0)
+    }
+
     func testHeartRateCallbackEmitsOneTruthfulProviderObservation() async throws {
         let (provider, _) = makeProvider()
         try await provider.prepare(configuration: "walking")
@@ -372,11 +417,18 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
 private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleDriving {
     typealias Configuration = String
     typealias Workout = UUID
+    typealias RecoveredWorkout = UUID
 
     let workoutID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
     var finishedWorkout: UUID?
     var calls: [String] = []
     var createdConfigurations: [String] = []
+    var recoveredWorkouts: [UUID] = []
+    var recoveredLifecycle = IPhoneHealthKitRecoveredWorkoutLifecycle(
+        activityStarted: true,
+        collectionStarted: true,
+        startedAt: Date(timeIntervalSince1970: 1_000)
+    )
     var beginCollectionError: Error?
     var finishWorkoutError: Error?
     var suspendPrepare = false
@@ -404,6 +456,14 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
     func createWorkout(configuration: String) throws {
         calls.append("create:\(configuration)")
         createdConfigurations.append(configuration)
+    }
+
+    func recoverWorkout(
+        _ recoveredWorkout: UUID
+    ) throws -> IPhoneHealthKitRecoveredWorkoutLifecycle {
+        calls.append("recover")
+        recoveredWorkouts.append(recoveredWorkout)
+        return recoveredLifecycle
     }
 
     func prepare() async throws {

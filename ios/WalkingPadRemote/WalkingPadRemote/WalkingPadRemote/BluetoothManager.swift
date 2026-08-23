@@ -230,6 +230,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var deferredNativeHealthKitLinkages: [DeferredNativeHealthKitLinkage] = []
     private var nativeHealthKitAcquisitionStartedAt: Date?
     private var nativeHealthKitLinkageQueryInFlight = false
+    private lazy var nativeWorkoutRecoveryStore: NativeWorkoutRecoveryStore? = try? .applicationSupport(
+        bundleIdentifier: Bundle.main.bundleIdentifier ?? "sw.WalkingPadRemote"
+    )
+    private var nativeWorkoutRecoveryLoadResult: NativeWorkoutRecoveryLoadResult = .missing
+    private var activeNativeWorkoutRecoveryRecord: NativeWorkoutRecoveryRecord?
+    private var pendingActiveWorkoutRecoveryResult: (HKWorkoutSession?, Error?)?
+    private var didStartApplicationRuntime = false
+    private var activeWorkoutRecoveryAvailability: Bool?
+    private var activeWorkoutRecoveryRequestPending = false
+    private var didHandleActiveWorkoutRecoveryCallback = false
+    private var nativeWorkoutRecoverySessionRecovered = false
+    private var nativeWorkoutRecoveryStopRequested = false
+    private var pendingNativeWorkoutStopTerminalRequest: (
+        record: NativeWorkoutRecoveryRecord,
+        requestedAt: Date
+    )?
+    private var isRestoringNativeWorkoutRecoveryState = false
     private var hrControlFailed: Bool = false
     private let legacyWatchHeartRateSource = HeartRateProviderIdentity(
         kind: .legacyWatchWorkoutStream,
@@ -645,7 +662,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func selectUserProfile(id: UUID) {
         guard userProfiles.contains(where: { $0.id == id }) else { return }
-        guard !isHrControlRunning else {
+        guard !shouldPresentActiveWorkout else {
             infoToastMessage = "Во время активной тренировки профиль переключать нельзя."
             return
         }
@@ -665,7 +682,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func createUserProfile(named rawLabel: String) {
-        guard !isHrControlRunning else {
+        guard !shouldPresentActiveWorkout else {
             infoToastMessage = "Во время активной тренировки профиль менять нельзя."
             return
         }
@@ -695,7 +712,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func renameActiveUserProfile(to rawLabel: String) {
-        guard !isHrControlRunning else {
+        guard !shouldPresentActiveWorkout else {
             infoToastMessage = "Во время активной тренировки профиль менять нельзя."
             return
         }
@@ -715,7 +732,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func deleteActiveUserProfile() {
-        guard !isHrControlRunning else {
+        guard !shouldPresentActiveWorkout else {
             infoToastMessage = "Во время активной тренировки профиль менять нельзя."
             return
         }
@@ -972,6 +989,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var hrControlStartBlockReasonText: String? = nil
     @Published private(set) var isNativeHeartRatePreflightActive: Bool = false
     @Published private(set) var isNativeHeartRateCurrent: Bool = false
+    @Published private(set) var isNativeWorkoutRecoveryActive: Bool = false
+    @Published private(set) var nativeWorkoutRecoveryStatusText: String? = nil
 
     private var nativeHeartRatePreflightEngine = NativeHeartRatePreflightEngine()
     private var nativeHeartRateAppActivity: NativeHeartRatePreflightEngine.AppActivity = .inactive
@@ -998,11 +1017,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var hrCooldownProgress: Double = 0
     @Published var hrTargetBPM: Int = 130 {
         didSet {
+            guard !isRestoringNativeWorkoutRecoveryState else { return }
             sendHrTargetBpm()
             saveHrSettingsIfNeeded()
         }
     }
-    @Published var hrDurationMinutes: Int = 10 { didSet { saveHrSettingsIfNeeded() } }
+    @Published var hrDurationMinutes: Int = 10 {
+        didSet {
+            guard !isRestoringNativeWorkoutRecoveryState else { return }
+            saveHrSettingsIfNeeded()
+        }
+    }
     @Published var hrAdaptiveStepEnabled: Bool = true { didSet { saveHrSettingsIfNeeded() } }
     @Published var hrDecisionIntervalSeconds: Int = 10 { didSet { saveHrSettingsIfNeeded() } }
     @Published var hrSpeedStepKmh: Double = 0.5 { didSet { saveHrSettingsIfNeeded() } }
@@ -1571,11 +1596,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     @discardableResult
-    private func startTrainingStructuredLog(trigger: String) -> UUID? {
+    private func startTrainingStructuredLog(
+        trigger: String,
+        sessionID: UUID? = nil
+    ) -> UUID? {
         stopTrainingStructuredLog(reason: "restart_before_new_session")
-        guard let dir = trainingLogsDirectoryURL() else { return nil }
-
-        let sessionId = UUID().uuidString
+        let resolvedSessionID = sessionID
+            ?? (trigger == "start_hr"
+                ? activeNativeWorkoutRecoveryRecord?.legacySessionID
+                : nil)
+            ?? UUID()
+        guard let dir = trainingLogsDirectoryURL() else {
+            return resolvedSessionID
+        }
+        let sessionId = resolvedSessionID.uuidString
         let fileName = "hr_session_\(trainingLogTimestampFormatter.string(from: Date()))_\(sessionId).jsonl"
         let fileURL = dir.appendingPathComponent(fileName, isDirectory: false)
         FileManager.default.createFile(atPath: fileURL.path, contents: nil)
@@ -1606,10 +1640,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "zone_bounds": [hrZone1Max, hrZone2Max, hrZone3Max, hrZone4Max]
             ].merging(controllerUnitsTelemetryFields(action: "session_start")) { current, _ in current })
             scheduleTrainingLogsInventoryRefresh()
-            return UUID(uuidString: sessionId)
+            return resolvedSessionID
         } catch {
             appendLog("Training log file open error: \(error.localizedDescription)")
-            return nil
+            return resolvedSessionID
         }
     }
 
@@ -2051,6 +2085,338 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
+    func handleActiveWorkoutRecoveryRequest() {
+        guard !didHandleActiveWorkoutRecoveryCallback else { return }
+        activeWorkoutRecoveryRequestPending = true
+        isNativeWorkoutRecoveryActive = true
+        nativeWorkoutRecoveryStatusText = "Восстанавливаем тренировку…"
+        recomputeHrStartAllowed()
+    }
+
+    func handleActiveWorkoutRecoveryAvailability(recoveryRequested: Bool) {
+        if recoveryRequested {
+            activeWorkoutRecoveryAvailability = true
+            return
+        }
+        guard activeWorkoutRecoveryAvailability != true else { return }
+        activeWorkoutRecoveryAvailability = false
+        processNoActiveWorkoutRecoveryIfPossible()
+    }
+
+    func handleActiveWorkoutRecovery(
+        session: HKWorkoutSession?,
+        error: Error?
+    ) {
+        guard !didHandleActiveWorkoutRecoveryCallback else { return }
+        didHandleActiveWorkoutRecoveryCallback = true
+        activeWorkoutRecoveryRequestPending = false
+        pendingActiveWorkoutRecoveryResult = (session, error)
+        processPendingActiveWorkoutRecoveryIfPossible()
+    }
+
+    private var hasOutstandingNativeWorkoutRecovery: Bool {
+        if activeWorkoutRecoveryRequestPending || isNativeWorkoutRecoveryActive {
+            return true
+        }
+        switch nativeWorkoutRecoveryLoadResult {
+        case .missing:
+            return false
+        case .invalid, .record:
+            return true
+        }
+    }
+
+    private var blocksNonStopTreadmillMotion: Bool {
+        activeWorkoutRecoveryRequestPending
+            || isNativeWorkoutRecoveryActive
+            || pendingNativeWorkoutStopTerminalRequest != nil
+            || activeNativeWorkoutRecoveryRecord?.phase == .stopping
+            || activeNativeWorkoutRecoveryRecord?.phase == .finishing
+    }
+
+    private func loadNativeWorkoutRecoveryState() {
+        guard let nativeWorkoutRecoveryStore else {
+            nativeWorkoutRecoveryLoadResult = .invalid
+            isNativeWorkoutRecoveryActive = true
+            nativeWorkoutRecoveryStatusText = "Не удалось прочитать состояние восстановления"
+            return
+        }
+        nativeWorkoutRecoveryLoadResult = nativeWorkoutRecoveryStore.load()
+        guard case .record(let record) = nativeWorkoutRecoveryLoadResult else {
+            if case .invalid = nativeWorkoutRecoveryLoadResult {
+                isNativeWorkoutRecoveryActive = true
+                nativeWorkoutRecoveryStatusText = "Восстанавливаем тренировку…"
+            }
+            return
+        }
+        activeNativeWorkoutRecoveryRecord = record
+        switch record.phase {
+        case .preflight:
+            isNativeWorkoutRecoveryActive = true
+            nativeWorkoutRecoveryStatusText = "Восстанавливаем тренировку…"
+            isNativeHeartRatePreflightActive = true
+        case .committed, .stopping, .finishing:
+            restoreNativeWorkoutRecoveryPresentation(record)
+            isNativeWorkoutRecoveryActive = true
+            nativeWorkoutRecoveryStopRequested = record.phase == .finishing
+            nativeWorkoutRecoveryStatusText = record.phase == .finishing
+                ? "Завершаем восстановленную тренировку…"
+                : "Восстанавливаем тренировку…"
+        }
+    }
+
+    @discardableResult
+    private func persistNativeWorkoutRecoveryRecord(
+        _ record: NativeWorkoutRecoveryRecord
+    ) -> Bool {
+        guard let nativeWorkoutRecoveryStore else { return false }
+        do {
+            try nativeWorkoutRecoveryStore.save(record)
+            nativeWorkoutRecoveryLoadResult = .record(record)
+            activeNativeWorkoutRecoveryRecord = record
+            return true
+        } catch {
+            nativeHeartRateLogger.error("recovery_marker_write_failed")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func clearNativeWorkoutRecoveryRecord() -> Bool {
+        guard let nativeWorkoutRecoveryStore else { return false }
+        do {
+            try nativeWorkoutRecoveryStore.clear()
+            nativeWorkoutRecoveryLoadResult = .missing
+            activeNativeWorkoutRecoveryRecord = nil
+            return true
+        } catch {
+            nativeHeartRateLogger.error("recovery_marker_clear_failed")
+            return false
+        }
+    }
+
+    private func processPendingActiveWorkoutRecoveryIfPossible() {
+        guard didStartApplicationRuntime,
+              let result = pendingActiveWorkoutRecoveryResult else { return }
+        pendingActiveWorkoutRecoveryResult = nil
+        guard result.1 == nil, let recoveredSession = result.0 else {
+            handleUnavailableActiveWorkoutRecovery(error: result.1)
+            return
+        }
+
+        isNativeWorkoutRecoveryActive = true
+        isNativeHeartRatePreflightActive = false
+        nativeWorkoutRecoveryStatusText = "Восстанавливаем тренировку…"
+        let recoveryAttemptID: UUID = {
+            guard case .record(let record) = nativeWorkoutRecoveryLoadResult else {
+                return UUID()
+            }
+            return record.appWorkoutID
+        }()
+        nativeHeartRateProviderLifecycle.bindAttempt(recoveryAttemptID)
+        let providerGeneration = nativeHeartRateProviderLifecycle.beginProviderLifecycle()
+        do {
+            let lifecycle = try iPhoneHealthKitHeartRateProvider.recover(
+                recoveredSession,
+                failureContext: IPhoneHealthKitRuntimeFailureContext(
+                    providerGeneration: providerGeneration,
+                    attemptID: recoveryAttemptID
+                )
+            )
+            let configuration = recoveredSession.workoutConfiguration
+            let resolution = NativeWorkoutRecoveryPolicy.resolve(
+                loadResult: nativeWorkoutRecoveryLoadResult,
+                recoveredSessionStartedAt: lifecycle.startedAt,
+                recoveredCollectionStarted: lifecycle.collectionStarted,
+                configurationIsIndoorWalking: configuration.activityType == .walking
+                    && configuration.locationType == .indoor
+            )
+            switch resolution {
+            case .discard:
+                discardRecoveredUncommittedWorkout()
+            case .restore(let record):
+                restoreCommittedNativeWorkout(record)
+            case .finish(let record):
+                resumeFinishingNativeWorkout(record)
+            }
+        } catch {
+            nativeHeartRateLogger.error("active_workout_recovery_attach_failed")
+            let cleanupGeneration = nativeHeartRateProviderLifecycle.beginCleanup()
+            _ = nativeHeartRateProviderLifecycle.completeCleanup(
+                generation: cleanupGeneration,
+                providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle
+            )
+            handleUnavailableActiveWorkoutRecovery(error: error)
+        }
+    }
+
+    private func processNoActiveWorkoutRecoveryIfPossible() {
+        guard didStartApplicationRuntime,
+              activeWorkoutRecoveryAvailability == false,
+              !activeWorkoutRecoveryRequestPending,
+              !didHandleActiveWorkoutRecoveryCallback,
+              !nativeHealthKitWorkoutCommitted,
+              !nativeHeartRateFlowOwnsController,
+              !nativeHealthKitWorkoutFinishInFlight else { return }
+        let resolution = NativeWorkoutRecoveryPolicy
+            .resolveWithoutActiveRecoveryRequest(
+                loadResult: nativeWorkoutRecoveryLoadResult
+            )
+        guard case .reconcileFinished(let record) = resolution,
+              let finishRequestedAt = record.terminalRequestedAt else { return }
+
+        nativeHealthKitAcquisitionStartedAt = record.acquisitionStartedAt
+        pendingHealthkitWorkoutProfileID = record.profileID
+        pendingHealthkitTelemetryV2SessionID = record.telemetrySessionID.map {
+            SessionID(rawValue: $0)
+        }
+        retainDeferredNativeHealthKitLinkage(
+            finishRequestedAt: finishRequestedAt
+        )
+        guard clearNativeWorkoutRecoveryRecord() else {
+            isNativeWorkoutRecoveryActive = true
+            nativeWorkoutRecoveryStatusText = "Не удалось завершить восстановленную тренировку"
+            recomputeHrStartAllowed()
+            return
+        }
+
+        nativeHealthKitWorkoutCommitted = false
+        nativeHeartRateFlowOwnsController = false
+        isNativeHeartRateCurrent = false
+        hrStreamingActive = false
+        hrLastValueAt = nil
+        heartRateBPM = 0
+        nativeHealthKitAcquisitionStartedAt = nil
+        nativeWorkoutRecoverySessionRecovered = false
+        nativeWorkoutRecoveryStopRequested = false
+        isNativeWorkoutRecoveryActive = false
+        nativeWorkoutRecoveryStatusText = nil
+        hrControlStartedAt = nil
+        hrRemainingSeconds = 0
+        hrProgress = 0
+        recomputeHrStartAllowed()
+        resolveDeferredNativeHealthKitLinkageIfPossible()
+        warmNativeHeartRateProviderIfPossible()
+        nativeHeartRateLogger.info("finished_workout_reconciled_without_recovery_request")
+    }
+
+    private func discardRecoveredUncommittedWorkout() {
+        nativeHeartRateFlowOwnsController = false
+        nativeHealthKitWorkoutCommitted = false
+        isNativeHeartRateCurrent = false
+        hrStreamingActive = false
+        hrLastValueAt = nil
+        heartRateBPM = 0
+        let cleanupGeneration = nativeHeartRateProviderLifecycle.beginCleanup()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await iPhoneHealthKitHeartRateProvider.discard(at: Date())
+            guard nativeHeartRateProviderLifecycle.completeCleanup(
+                generation: cleanupGeneration,
+                providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle
+            ) else { return }
+            guard clearNativeWorkoutRecoveryRecord() else {
+                handleUnavailableActiveWorkoutRecovery(error: nil)
+                return
+            }
+            isNativeWorkoutRecoveryActive = false
+            isNativeHeartRatePreflightActive = false
+            nativeWorkoutRecoveryStatusText = nil
+            nativeWorkoutRecoverySessionRecovered = false
+            nativeWorkoutRecoveryStopRequested = false
+            recomputeHrStartAllowed()
+            warmNativeHeartRateProviderIfPossible()
+        }
+    }
+
+    private func restoreCommittedNativeWorkout(
+        _ record: NativeWorkoutRecoveryRecord
+    ) {
+        guard let controlledWorkoutStartedAt = record.controlledWorkoutStartedAt,
+              let profileID = record.profileID,
+              let telemetrySessionID = record.telemetrySessionID else {
+            discardRecoveredUncommittedWorkout()
+            return
+        }
+        activeNativeWorkoutRecoveryRecord = record
+        nativeWorkoutRecoveryLoadResult = .record(record)
+        nativeHealthKitWorkoutCommitted = true
+        nativeHeartRateFlowOwnsController = true
+        nativeWorkoutRecoverySessionRecovered = true
+        nativeWorkoutRecoveryStopRequested = false
+        nativeHealthKitAcquisitionStartedAt = record.acquisitionStartedAt
+        pendingHealthkitWorkoutProfileID = profileID
+        pendingHealthkitTelemetryV2SessionID = SessionID(rawValue: telemetrySessionID)
+        hrControlStartedAt = controlledWorkoutStartedAt
+        restoreNativeWorkoutRecoveryPresentation(record)
+        isNativeWorkoutRecoveryActive = true
+        nativeWorkoutRecoveryStatusText = "Тренировка восстановлена"
+        syncRecoveredWorkoutTiming()
+        recomputeHrStartAllowed()
+        nativeHeartRateLogger.info("active_workout_recovered_fail_closed")
+    }
+
+    private func resumeFinishingNativeWorkout(
+        _ record: NativeWorkoutRecoveryRecord
+    ) {
+        restoreCommittedNativeWorkout(record)
+        nativeWorkoutRecoveryStopRequested = true
+        nativeWorkoutRecoveryStatusText = "Завершаем восстановленную тренировку…"
+        finishNativeHealthKitWorkoutIfNeeded()
+    }
+
+    private func restoreNativeWorkoutRecoveryPresentation(
+        _ record: NativeWorkoutRecoveryRecord
+    ) {
+        isRestoringNativeWorkoutRecoveryState = true
+        hrTargetBPM = record.targetBPM
+        hrDurationMinutes = record.durationMinutes
+        isRestoringNativeWorkoutRecoveryState = false
+        hrSessionTotalSeconds = max(60, record.durationMinutes * 60)
+        hrControlStartedAt = record.controlledWorkoutStartedAt
+        syncRecoveredWorkoutTiming()
+    }
+
+    private func syncRecoveredWorkoutTiming(now: Date = Date()) {
+        guard let controlledWorkoutStartedAt = activeNativeWorkoutRecoveryRecord?
+                .controlledWorkoutStartedAt else { return }
+        let elapsed = max(0, Int(now.timeIntervalSince(controlledWorkoutStartedAt)))
+        hrRemainingSeconds = max(0, hrSessionTotalSeconds - elapsed)
+        hrProgress = hrSessionTotalSeconds > 0
+            ? min(1, Double(elapsed) / Double(hrSessionTotalSeconds))
+            : 0
+        hrNextDecisionSeconds = 0
+    }
+
+    private func handleUnavailableActiveWorkoutRecovery(error: Error?) {
+        nativeHeartRateFlowOwnsController = false
+        nativeWorkoutRecoverySessionRecovered = false
+        nativeWorkoutRecoveryStopRequested = false
+        isNativeHeartRateCurrent = false
+        hrStreamingActive = false
+        hrLastValueAt = nil
+        heartRateBPM = 0
+        switch nativeWorkoutRecoveryLoadResult {
+        case .missing:
+            isNativeWorkoutRecoveryActive = false
+            nativeWorkoutRecoveryStatusText = nil
+        case .record(let record) where record.phase == .preflight:
+            if clearNativeWorkoutRecoveryRecord() {
+                isNativeWorkoutRecoveryActive = false
+                isNativeHeartRatePreflightActive = false
+                nativeWorkoutRecoveryStatusText = nil
+            }
+        case .invalid, .record:
+            isNativeWorkoutRecoveryActive = true
+            nativeWorkoutRecoveryStatusText = "Не удалось восстановить тренировку"
+            infoToastMessage = "HealthKit не восстановил активную тренировку. Управление дорожкой не возобновлено."
+        }
+        if error != nil {
+            nativeHeartRateLogger.error("active_workout_recovery_failed")
+        }
+        recomputeHrStartAllowed()
+    }
+
     func start() {
         ensureCentral()
         autoConnectSuppressed = false
@@ -2065,12 +2431,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         loadHrSettings()
         loadZonePlan()
         loadLegacyShadowWorkoutHistory()
+        loadNativeWorkoutRecoveryState()
         refreshWorkoutHistoryFromV2(reset: true)
         refreshTrainingLogsInventory()
         setHeartRateTelemetrySink(telemetryV2Coordinator)
         setTreadmillTelemetrySink(telemetryV2Coordinator)
         telemetryV2Coordinator.prepareStoreAndRecover()
         scheduleLegacyTelemetryMigration()
+        didStartApplicationRuntime = true
+        processNoActiveWorkoutRecoveryIfPossible()
+        processPendingActiveWorkoutRecoveryIfPossible()
 #if canImport(WatchConnectivity)
         startWatchConnectivity()
 #endif
@@ -2858,6 +3228,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     func startStopTruthExperiment() {
         guard stopTruthExperimentController == nil,
               !stopTruthExperimentTerminalLatch,
+              !blocksNonStopTreadmillMotion,
               !isHrControlRunning,
               treadmillProtocol == .walkingPad,
               controllerUnitsQueryTransportReady,
@@ -3038,6 +3409,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         completion: @escaping (Result<StopTruthExperimentTransportReceipt, Error>) -> Void
     ) -> Bool {
         guard Thread.isMainThread,
+              !blocksNonStopTreadmillMotion,
               stopTruthExperimentController?.isActive == true,
               BLETransportCodec.validateStopTruthExperimentPacket(packet, role: role),
               treadmillProtocol == .walkingPad,
@@ -3073,6 +3445,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             requiresFreshMetricTruth: controllerUnitsTruthRequired
         )
         guard !treadmillTestRunService.isActive,
+              !blocksNonStopTreadmillMotion,
               !isHrControlRunning,
               isTreadmillControlReady,
               connectedPeripheralId != nil,
@@ -3255,7 +3628,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func manualStop() {
         logUiAction("STOP pressed (speed=\(String(format: "%.1f", speedKmh)), deviceTarget=\(String(format: "%.1f", deviceTargetSpeedKmh)), status=\(treadmillStatusText))")
-        if isHrControlRunning {
+        if isHrControlRunning || isNativeWorkoutRecoveryActive {
             appendLog("Manual stop while HR control active → ending training")
             stopHrControl()
             return
@@ -3264,6 +3637,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func startWithSpeed(_ kmh: Double) {
+        guard !blocksNonStopTreadmillMotion else {
+            infoToastMessage = "Сначала завершите восстановленную тренировку"
+            return
+        }
         guard isTreadmillControlReady else {
             infoToastMessage = isConnected
                 ? "Дождитесь готовности управления дорожкой"
@@ -3489,7 +3866,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return true
     }
 
-    private func stopBeltWithToggle(reason: String) {
+    @discardableResult
+    private func stopBeltWithToggle(reason: String) -> Bool {
+        beginNativeWorkoutStopTerminalRequestIfNeeded()
         let wasRunning = (deviceTargetSpeedKmh > 0.3) || (speedKmh > 0.3)
         let telemetryDecision = makeTreadmillDecision(
             source: .stop,
@@ -3505,6 +3884,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             telemetryDecision: telemetryDecision,
             telemetryRequest: telemetryRequest
         )
+        if !stopCommandWasEnqueued {
+            nativeWorkoutStopTransportInvocationFailedIfNeeded(
+                reason: "Stop не поставлен в очередь"
+            )
+        }
         let telemetryChain = telemetryDecision.map {
             TreadmillStopTelemetryChain(
                 decisionID: $0.decisionID,
@@ -3513,7 +3897,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         guard wasRunning else {
             beginStopObservation(source: reason, telemetryChain: telemetryChain)
-            return
+            return stopCommandWasEnqueued
         }
         switch treadmillProtocol {
         case .walkingPad:
@@ -3562,6 +3946,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
         }
         beginStopObservation(source: reason, telemetryChain: telemetryChain)
+        return stopCommandWasEnqueued
     }
 
     private func currentStopObservationContext() -> StopObservationContext? {
@@ -3997,6 +4382,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         activeTreadmillStopTelemetryChain = nil
     }
     func setTargetSpeedFromSlider(_ kmh: Double) {
+        guard !blocksNonStopTreadmillMotion else { return }
         let v = clampRunningSpeedKmh(kmh)
         desiredSpeedKmh = v
         guard isTreadmillControlReady else { return }
@@ -4020,6 +4406,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
     func adjustSpeed(delta: Double) {
         guard isTreadmillControlReady else { return }
+        guard !blocksNonStopTreadmillMotion else { return }
         let base = (deviceTargetSpeedKmh > 0.1) ? deviceTargetSpeedKmh : (speedKmh > 0.1 ? speedKmh : desiredSpeedKmh)
         let v = clampAnySpeedKmh(base + delta)
         guard abs(v - base) >= 0.01 else { return }
@@ -4046,6 +4433,40 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return hrSessionTotalSeconds < (hrMaxSessionMinutes * 60)
     }
 
+    var shouldPresentActiveWorkout: Bool {
+        if isHrControlRunning { return true }
+        guard isNativeWorkoutRecoveryActive,
+              case .record(let record) = nativeWorkoutRecoveryLoadResult else {
+            return false
+        }
+        return record.phase == .committed
+            || record.phase == .stopping
+            || record.phase == .finishing
+    }
+
+    var canStopPresentedWorkout: Bool {
+        guard isNativeWorkoutRecoveryActive else { return true }
+        guard case .record(let record) = nativeWorkoutRecoveryLoadResult,
+              record.phase == .committed || record.phase == .stopping else {
+            return false
+        }
+        return !nativeWorkoutRecoveryStopRequested
+            && isTreadmillControlReady
+    }
+
+    var presentedWorkoutElapsedSeconds: Int {
+        guard let hrControlStartedAt else { return timeSec }
+        return max(0, Int(Date().timeIntervalSince(hrControlStartedAt)))
+    }
+
+    var presentedWorkoutPhaseTitle: String? {
+        guard isNativeWorkoutRecoveryActive else { return nil }
+        if nativeWorkoutRecoveryStopRequested { return "ЗАВЕРШАЕМ" }
+        return nativeWorkoutRecoverySessionRecovered
+            ? "ВОССТАНОВЛЕНА"
+            : "ВОССТАНОВЛЕНИЕ"
+    }
+
     var hrSessionMaxMinutes: Int { hrMaxSessionMinutes }
 
     func extendHrSession(minutes: Int = 5) {
@@ -4064,6 +4485,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func startHrControl() {
         guard !isHrControlRunning,
+              !hasOutstandingNativeWorkoutRecovery,
               !nativeHeartRatePreflightEngine.hasStartIntent,
               !nativeHeartRateProviderLifecycle.cleanupInFlight else { return }
         let now = Date()
@@ -4105,7 +4527,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func trainingHubDidDisappear() {
         isTrainingHubVisible = false
-        guard !isHrControlRunning else { return }
+        guard !shouldPresentActiveWorkout else { return }
         applyNativeHeartRatePreflightEffects(
             nativeHeartRatePreflightEngine.cancel(reason: .hubLeft)
         )
@@ -4153,7 +4575,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let unitsDecision = controllerUnitsGateDecision()
         guard nativeHeartRateSafetyFacts().permitsCommit,
               unitsDecision.allowed,
-              nativeHealthKitWorkoutCommitted else {
+              nativeHealthKitWorkoutCommitted,
+              let controlledWorkoutStartedAt = activeNativeWorkoutRecoveryRecord?
+                .controlledWorkoutStartedAt,
+              activeNativeWorkoutRecoveryRecord?.legacySessionID != nil else {
             if !unitsDecision.allowed {
                 persistBlockedControllerUnitsStart(decision: unitsDecision)
                 retryControllerUnitsQueryAfterBlockedStart()
@@ -4175,7 +4600,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrRemainingSeconds = hrSessionTotalSeconds
         hrNextDecisionSeconds = hrDecisionIntervalSeconds
         hrProgress = 0
-        hrControlStartedAt = Date()
+        hrControlStartedAt = controlledWorkoutStartedAt
         hrDecisionDetails = ""
         hrPredictorStatusLine = ""
         hrWorkoutRecorded = false
@@ -4265,6 +4690,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func warmNativeHeartRateProviderIfPossible() {
         guard !nativeHeartRateProviderLifecycle.cleanupInFlight,
+              !hasOutstandingNativeWorkoutRecovery,
               NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
             isTrainingHubVisible: isTrainingHubVisible,
             appActivity: nativeHeartRateAppActivity,
@@ -4280,6 +4706,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 .canPrepareWithoutAuthorizationPrompt()
             guard canPrepare,
                   !nativeHeartRateProviderLifecycle.cleanupInFlight,
+                  !hasOutstandingNativeWorkoutRecovery,
                   NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
                     isTrainingHubVisible: isTrainingHubVisible,
                     appActivity: nativeHeartRateAppActivity,
@@ -4359,6 +4786,19 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         intent: NativeHeartRatePreflightEngine.Intent,
         acquisitionStartedAt: Date
     ) {
+        let recoveryRecord = NativeWorkoutRecoveryRecord.preflight(
+            appWorkoutID: intent.id,
+            targetBPM: intent.targetBPM,
+            durationMinutes: intent.durationMinutes,
+            acquisitionStartedAt: acquisitionStartedAt,
+            profileID: activeUserProfileID
+        )
+        guard persistNativeWorkoutRecoveryRecord(recoveryRecord) else {
+            applyNativeHeartRatePreflightEffects(
+                nativeHeartRatePreflightEngine.cancel(reason: .providerFailure)
+            )
+            return
+        }
         let providerGeneration = nativeHeartRateProviderLifecycle.generation
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -4479,6 +4919,30 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
+        guard case .record(let preflightRecord) = nativeWorkoutRecoveryLoadResult,
+              preflightRecord.phase == .preflight,
+              preflightRecord.appWorkoutID == intent.id,
+              preflightRecord.acquisitionStartedAt == acquisitionStartedAt,
+              let profileID = activeUserProfileID else {
+            abortNativeHeartRateFlow(reason: .superseded)
+            return
+        }
+        let controlledWorkoutStartedAt = now
+        let legacySessionID = UUID()
+        let telemetrySessionID = TelemetryV2SessionDescriptor.sessionID(
+            deterministicallyLinkedTo: legacySessionID
+        ).rawValue
+        let committedRecoveryRecord = preflightRecord.committed(
+            controlledWorkoutStartedAt: controlledWorkoutStartedAt,
+            profileID: profileID,
+            legacySessionID: legacySessionID,
+            telemetrySessionID: telemetrySessionID
+        )
+        guard persistNativeWorkoutRecoveryRecord(committedRecoveryRecord) else {
+            abortNativeHeartRateFlow(reason: .providerFailure)
+            return
+        }
+
         hrTargetBPM = intent.targetBPM
         hrDurationMinutes = intent.durationMinutes
         nativeHealthKitWorkoutCommitted = true
@@ -4513,6 +4977,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 generation: cleanupGeneration,
                 providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle
             ) else { return }
+            guard clearNativeWorkoutRecoveryRecord() else {
+                handleUnavailableActiveWorkoutRecovery(error: nil)
+                return
+            }
             recomputeHrStartAllowed()
             warmNativeHeartRateProviderIfPossible()
         }
@@ -4542,6 +5010,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 generation: cleanupGeneration,
                 providerIsIdle: iPhoneHealthKitHeartRateProvider.state == .idle
             ) else { return }
+            guard clearNativeWorkoutRecoveryRecord() else {
+                handleUnavailableActiveWorkoutRecovery(error: nil)
+                return
+            }
             recomputeHrStartAllowed()
             warmNativeHeartRateProviderIfPossible()
         }
@@ -4571,6 +5043,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
     func stopHrControl() {
+        if isNativeWorkoutRecoveryActive {
+            stopRecoveredNativeWorkout()
+            return
+        }
         let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
         appendLog("HR stop: elapsed=\(elapsed ?? 0)s")
         logTrainingEvent("hr_control_stop_requested", fields: [
@@ -4596,6 +5072,65 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopBeltWithToggle(reason: "hr")
         stopLegacyWatchHeartRateIfNeeded()
         endTelemetryV2Session(reason: "manual_stop")
+    }
+
+    private func stopRecoveredNativeWorkout() {
+        guard canStopPresentedWorkout else { return }
+        nativeWorkoutRecoveryStopRequested = true
+        nativeWorkoutRecoveryStatusText = "Завершаем восстановленную тренировку…"
+        appendLog("Recovered native workout stop requested")
+        stopBeltWithToggle(reason: "recovered_hr_manual_stop")
+    }
+
+    private func beginNativeWorkoutStopTerminalRequestIfNeeded() {
+        guard pendingNativeWorkoutStopTerminalRequest == nil,
+              let record = activeNativeWorkoutRecoveryRecord,
+              record.phase == .committed || record.phase == .stopping else {
+            return
+        }
+        let requestedAt = record.terminalRequestedAt ?? Date()
+        if record.phase == .committed,
+           !persistNativeWorkoutRecoveryRecord(
+                record.stopping(requestedAt: requestedAt)
+           ) {
+            nativeHeartRateLogger.error("stopping_marker_write_failed")
+        }
+        pendingNativeWorkoutStopTerminalRequest = (
+            record: record,
+            requestedAt: requestedAt
+        )
+    }
+
+    private func nativeWorkoutStopTransportInvokedIfNeeded() {
+        guard let pending = pendingNativeWorkoutStopTerminalRequest else { return }
+        pendingNativeWorkoutStopTerminalRequest = nil
+        guard nativeHealthKitWorkoutCommitted else {
+            nativeWorkoutRecoveryStopRequested = false
+            nativeWorkoutRecoveryStatusText = "Stop отправлен • HealthKit не восстановлен"
+            recomputeHrStartAllowed()
+            return
+        }
+        guard persistNativeWorkoutRecoveryRecord(
+            pending.record.finishing(requestedAt: pending.requestedAt)
+        ) else {
+            isNativeWorkoutRecoveryActive = true
+            nativeWorkoutRecoveryStopRequested = false
+            nativeWorkoutRecoveryStatusText = "Не удалось сохранить завершение тренировки"
+            infoToastMessage = "Stop отправлен, но завершение не сохранено. Проверьте дорожку и повторите Stop."
+            recomputeHrStartAllowed()
+            return
+        }
+        finishNativeHealthKitWorkoutIfNeeded()
+    }
+
+    private func nativeWorkoutStopTransportInvocationFailedIfNeeded(reason: String) {
+        guard pendingNativeWorkoutStopTerminalRequest != nil else { return }
+        pendingNativeWorkoutStopTerminalRequest = nil
+        isNativeWorkoutRecoveryActive = true
+        nativeWorkoutRecoveryStopRequested = false
+        nativeWorkoutRecoveryStatusText = "Stop не отправлен"
+        infoToastMessage = "\(reason). Проверьте подключение и повторите Stop."
+        recomputeHrStartAllowed()
     }
 
     private func stopLegacyWatchHeartRateIfNeeded() {
@@ -4652,6 +5187,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let safety = nativeHeartRateSafetyFacts(now: now)
         let preflightGatesAllowStart = safety.permitsStartIntent
             && IPhoneHealthKitLiveHeartRateProvider.isSupported
+            && !hasOutstandingNativeWorkoutRecovery
             && !nativeHeartRatePreflightEngine.hasStartIntent
             && !nativeHeartRateProviderLifecycle.cleanupInFlight
         let unitsDecision = controllerUnitsGateDecision(now: now)
@@ -4755,6 +5291,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         applyNativeHeartRatePreflightEffects(
             nativeHeartRatePreflightEngine.tick(now: Date())
         )
+        if isNativeWorkoutRecoveryActive {
+            syncRecoveredWorkoutTiming()
+        }
         defer {
             if isHrControlRunning {
                 _ = telemetryV2Coordinator.observeCurrentElapsedSecond()
@@ -5373,10 +5912,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard let self else { return }
             guard self.commandQueueEpoch == epoch else {
                 self.isCommandQueueProcessing = false
+                self.nativeWorkoutStopTransportInvocationFailedIfNeeded(
+                    reason: "Очередь Stop была сброшена"
+                )
                 return
             }
             guard !self.commandQueue.isEmpty else {
                 self.isCommandQueueProcessing = false
+                self.nativeWorkoutStopTransportInvocationFailedIfNeeded(
+                    reason: "Команда Stop отсутствует в очереди"
+                )
                 return
             }
             let next = self.commandQueue.removeFirst()
@@ -5446,6 +5991,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     ) -> [TreadmillTelemetryEvidence] {
         if requiresControlReadiness && !isTreadmillControlReady {
             appendLog("WRITE SKIPPED (control not ready): \(label)")
+            if label == "STOP" {
+                nativeWorkoutStopTransportInvocationFailedIfNeeded(
+                    reason: "Управление дорожкой потеряло готовность"
+                )
+            }
             return [
                 .commandFailed(
                     TreadmillCommandFailureObservation(
@@ -5463,6 +6013,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("WRITE SKIPPED (not connected): \(label)")
             if label == "STOP" {
                 markInitialStopCommandNotSent(reason: "not_connected")
+                nativeWorkoutStopTransportInvocationFailedIfNeeded(
+                    reason: "Дорожка отключилась до отправки Stop"
+                )
             }
             return [
                 .commandFailed(
@@ -5481,6 +6034,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("WRITE SKIPPED (no characteristic): \(label)")
             if label == "STOP" {
                 markInitialStopCommandNotSent(reason: "characteristic_unavailable")
+                nativeWorkoutStopTransportInvocationFailedIfNeeded(
+                    reason: "Канал управления недоступен для Stop"
+                )
             }
             return [
                 .commandFailed(
@@ -5513,6 +6069,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ])
         trackExpectedSpeedIfNeeded(label: label)
         p.writeValue(data, for: ch, type: type)
+        if label == "STOP" {
+            nativeWorkoutStopTransportInvokedIfNeeded()
+        }
         let sentAt = lastCommandSentAt ?? Date()
         let telemetryWriteType: TreadmillCommandWriteType = type == .withoutResponse
             ? .withoutResponse
@@ -6098,6 +6657,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         label: String,
         decision: TreadmillControlDecisionEvidence? = nil
     ) {
+        guard !blocksNonStopTreadmillMotion else {
+            appendLog("Set speed skipped: native workout recovery is fail-closed")
+            return
+        }
         guard isTreadmillControlReady else {
             appendLog("Set speed skipped: treadmill control not ready")
             return
@@ -6547,19 +7110,67 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func finishNativeHealthKitWorkoutIfNeeded() {
         guard nativeHealthKitWorkoutCommitted,
               !nativeHealthKitWorkoutFinishInFlight else { return }
-        nativeHealthKitWorkoutFinishInFlight = true
+        guard pendingNativeWorkoutStopTerminalRequest == nil else { return }
         let finishRequestedAt = Date()
+        guard let record = activeNativeWorkoutRecoveryRecord else {
+            isNativeWorkoutRecoveryActive = true
+            nativeWorkoutRecoveryStatusText = "Не удалось сохранить завершение тренировки"
+            recomputeHrStartAllowed()
+            return
+        }
+        if record.phase == .stopping {
+            return
+        }
+        if record.phase == .committed {
+            guard !isConnected else {
+                isNativeWorkoutRecoveryActive = true
+                nativeWorkoutRecoveryStatusText = "Stop не отправлен"
+                recomputeHrStartAllowed()
+                return
+            }
+            guard persistNativeWorkoutRecoveryRecord(
+                record.finishing(requestedAt: finishRequestedAt)
+            ) else {
+                isNativeWorkoutRecoveryActive = true
+                nativeWorkoutRecoveryStatusText = "Не удалось сохранить завершение тренировки"
+                recomputeHrStartAllowed()
+                return
+            }
+        } else if record.phase != .finishing {
+            isNativeWorkoutRecoveryActive = true
+            nativeWorkoutRecoveryStatusText = "Некорректное состояние завершения"
+            recomputeHrStartAllowed()
+            return
+        }
+        nativeHealthKitWorkoutFinishInFlight = true
         Task { @MainActor [weak self] in
             guard let self else { return }
+            var terminalCompletionSucceeded = false
             defer {
-                nativeHealthKitWorkoutCommitted = false
                 nativeHealthKitWorkoutFinishInFlight = false
                 nativeHeartRateFlowOwnsController = false
                 isNativeHeartRateCurrent = false
                 nativeHealthKitAcquisitionStartedAt = nil
                 nativeHeartRateProviderLifecycle.releaseCommittedProvider()
+                nativeWorkoutRecoverySessionRecovered = false
+                nativeWorkoutRecoveryStopRequested = false
+                if terminalCompletionSucceeded,
+                   clearNativeWorkoutRecoveryRecord() {
+                    nativeHealthKitWorkoutCommitted = false
+                    isNativeWorkoutRecoveryActive = false
+                    nativeWorkoutRecoveryStatusText = nil
+                    hrControlStartedAt = nil
+                    hrRemainingSeconds = 0
+                    hrProgress = 0
+                } else {
+                    nativeHealthKitWorkoutCommitted = true
+                    isNativeWorkoutRecoveryActive = true
+                    nativeWorkoutRecoveryStatusText = "Не удалось завершить восстановленную тренировку"
+                }
                 recomputeHrStartAllowed()
-                warmNativeHeartRateProviderIfPossible()
+                if !hasOutstandingNativeWorkoutRecovery {
+                    warmNativeHeartRateProviderIfPossible()
+                }
             }
             do {
                 switch try await iPhoneHealthKitHeartRateProvider.finish(at: finishRequestedAt) {
@@ -6583,6 +7194,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     resolveDeferredNativeHealthKitLinkageIfPossible()
                     nativeHeartRateLogger.info("workout_finished_deferred_link")
                 }
+                terminalCompletionSucceeded = true
             } catch {
                 appendLog("Native HealthKit workout finish failed: \(error.localizedDescription)")
                 nativeHeartRateLogger.error("workout_finish_failed")
