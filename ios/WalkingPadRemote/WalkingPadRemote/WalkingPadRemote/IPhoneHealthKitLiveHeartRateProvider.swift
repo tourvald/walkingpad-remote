@@ -6,6 +6,7 @@ import TelemetryDomain
 @MainActor
 final class IPhoneHealthKitLiveHeartRateProvider {
     typealias ObservationHandler = (HeartRateProviderObservation) -> Void
+    typealias FailureHandler = () -> Void
 
     private let driver: HealthKitLiveWorkoutDriver
     private let core: IPhoneHealthKitHeartRateProviderCore<HealthKitLiveWorkoutDriver>
@@ -14,6 +15,8 @@ final class IPhoneHealthKitLiveHeartRateProvider {
         get { core.onObservation }
         set { core.onObservation = newValue }
     }
+
+    var onFailure: FailureHandler?
 
     var state: IPhoneHealthKitHeartRateProviderState {
         core.state
@@ -29,11 +32,20 @@ final class IPhoneHealthKitLiveHeartRateProvider {
                 core?.receive(sample)
             }
         }
-        driver.onRuntimeFailure = { [weak core] in
+        driver.onRuntimeFailure = { [weak self, weak core] in
             Task { @MainActor in
                 await core?.resetAfterFailure()
+                self?.onFailure?()
             }
         }
+    }
+
+    static var isSupported: Bool {
+        HKHealthStore.isHealthDataAvailable()
+    }
+
+    func canPrepareWithoutAuthorizationPrompt() async -> Bool {
+        await driver.canPrepareWithoutAuthorizationPrompt()
     }
 
     func prepare(configuration: HKWorkoutConfiguration) async throws {
@@ -91,8 +103,25 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
             read: typesToRead
         )
 
-        guard status != .unnecessary else { return }
-        try await healthStore.requestAuthorization(toShare: typesToShare, read: typesToRead)
+        if status != .unnecessary {
+            try await healthStore.requestAuthorization(toShare: typesToShare, read: typesToRead)
+        }
+        guard healthStore.authorizationStatus(for: HKObjectType.workoutType()) == .sharingAuthorized else {
+            throw HealthKitLiveWorkoutDriverError.authorizationNotGranted
+        }
+    }
+
+    func canPrepareWithoutAuthorizationPrompt() async -> Bool {
+        guard HKHealthStore.isHealthDataAvailable(),
+              let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate),
+              healthStore.authorizationStatus(for: HKObjectType.workoutType()) == .sharingAuthorized else {
+            return false
+        }
+        let status = try? await healthStore.statusForAuthorizationRequest(
+            toShare: [HKObjectType.workoutType()],
+            read: [heartRateType]
+        )
+        return status == .unnecessary
     }
 
     func createWorkout(configuration: HKWorkoutConfiguration) throws {
@@ -105,10 +134,17 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
             configuration: configuration
         )
         let builder = session.associatedWorkoutBuilder()
-        builder.dataSource = HKLiveWorkoutDataSource(
+        let dataSource = HKLiveWorkoutDataSource(
             healthStore: healthStore,
             workoutConfiguration: configuration
         )
+        if let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) {
+            for quantityType in dataSource.typesToCollect where quantityType != heartRateType {
+                dataSource.disableCollection(for: quantityType)
+            }
+            dataSource.enableCollection(for: heartRateType, predicate: nil)
+        }
+        builder.dataSource = dataSource
         session.delegate = self
         builder.delegate = self
         self.session = session
@@ -326,6 +362,7 @@ extension HealthKitLiveWorkoutDriver: HKWorkoutSessionDelegate, HKLiveWorkoutBui
 
 @available(iOS 26.0, *)
 private enum HealthKitLiveWorkoutDriverError: LocalizedError {
+    case authorizationNotGranted
     case healthDataUnavailable
     case missingWorkout
     case operationCancelled
@@ -334,6 +371,8 @@ private enum HealthKitLiveWorkoutDriverError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .authorizationNotGranted:
+            "HealthKit workout access was not granted."
         case .healthDataUnavailable:
             "HealthKit data is unavailable on this device."
         case .missingWorkout:

@@ -104,18 +104,28 @@ final class DeterministicSemanticControlReplayTests: XCTestCase {
         XCTAssertTrue(tick.contains("HRDomainService.shouldStopForMissingHeartRateSignal("))
         XCTAssertTrue(tick.contains("CooldownRuntimeEngine.start("))
         XCTAssertTrue(tick.contains("CooldownRuntimeEngine.tick("))
-        XCTAssertTrue(
-            affordance.contains("HRDomainService.heartRateStartAffordanceAvailable(")
+        XCTAssertTrue(affordance.contains("isHrControlStartAllowed"))
+        let commit = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)",
+            in: manager
         )
         assertOrdered(
             [
-                "HRDomainService",
-                ".heartRateRuntimePrerequisitesAllowStart(",
-                "guard existingGatesAllowStart",
+                "nativeHeartRatePreflightEngine.requestStart(",
+                "guard nativeHeartRatePreflightEngine.hasStartIntent",
+                "nativeHeartRateFlowOwnsController = true",
+                "applyNativeHeartRatePreflightEffects(effects)",
+            ],
+            in: start
+        )
+        assertOrdered(
+            [
+                "controllerUnitsGateDecision()",
+                "guard nativeHeartRateSafetyFacts().permitsCommit",
                 "isHrControlRunning = true",
                 "startWithSpeed",
             ],
-            in: start
+            in: commit
         )
         XCTAssertTrue(stop.contains("stopBeltWithToggle(reason: \"hr\")"))
         XCTAssertTrue(disconnect.contains("self.isHrControlRunning = false"))

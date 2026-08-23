@@ -145,9 +145,12 @@ final class StopCommandBehaviorContractTests: XCTestCase {
         )
 
         let startBody = try functionBody("func startHrControl()")
-        XCTAssertTrue(startBody.contains("controllerUnitsGateDecision"))
-        XCTAssertTrue(startBody.contains("guard existingGatesAllowStart"))
-        XCTAssertTrue(startBody.contains("guard unitsDecision.allowed"))
+        let commitBody = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)"
+        )
+        XCTAssertTrue(startBody.contains("nativeHeartRatePreflightEngine.requestStart"))
+        XCTAssertTrue(commitBody.contains("controllerUnitsGateDecision"))
+        XCTAssertTrue(commitBody.contains("guard nativeHeartRateSafetyFacts().permitsCommit"))
     }
 
     func testStopTruthAnchorsToActualInitialWriteAndPersistsUnavailableOutcome() throws {

@@ -271,7 +271,7 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertFalse(manager.contains("IPhoneHealthKitLiveHeartRateProvider"))
+        XCTAssertTrue(manager.contains("IPhoneHealthKitLiveHeartRateProvider"))
         for forbidden in [
             "sendTreadmill", "WCSession", "watchReachable", "start_hr", "CoreBluetooth",
         ] {

@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import CoreBluetooth
 import HealthKit
+import OSLog
 import TelemetryDomain
 import TelemetryPersistence
 import TelemetryRuntime
@@ -16,10 +17,24 @@ import WatchConnectivity
 // Minimal stub to satisfy references in the UI. Replace with real implementation.
 final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private let telemetryPerformanceObservation = TelemetryV2PerformanceObservation()
+    private let nativeHeartRateLogger = Logger(
+        subsystem: "sw.WalkingPadRemote",
+        category: "NativeHeartRatePreflight"
+    )
 
     // CoreBluetooth
     private var central: CBCentralManager?
     private let healthStore = HKHealthStore()
+    private lazy var iPhoneHealthKitHeartRateProvider: IPhoneHealthKitLiveHeartRateProvider = {
+        let provider = IPhoneHealthKitLiveHeartRateProvider(healthStore: healthStore)
+        provider.onObservation = { [weak self] observation in
+            self?.handleNativeHeartRateObservation(observation)
+        }
+        provider.onFailure = { [weak self] in
+            self?.nativeHeartRateProviderFailed()
+        }
+        return provider
+    }()
     private let serviceFE00 = CBUUID(string: "FE00")
     private let serviceFTMS = CBUUID(string: "1826") // Fitness Machine Service
     private let serviceFitShow = CBUUID(string: "FFF0") // Common FitShow/FitMonster service
@@ -207,6 +222,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var pendingHealthkitWorkoutProfileID: UUID? = nil
     private var activeTelemetryV2SessionID: SessionID? = nil
     private var pendingHealthkitTelemetryV2SessionID: SessionID? = nil
+    private struct DeferredNativeHealthKitLinkage: Codable, Equatable {
+        let acquisitionStartedAt: Date
+        let finishRequestedAt: Date
+        let profileID: UUID?
+        let telemetrySessionID: UUID?
+        let linksLegacyWorkout: Bool
+    }
+    private let deferredNativeHealthKitLinkageStoreKey = "deferred_native_healthkit_linkage_v1"
+    private var deferredNativeHealthKitLinkages: [DeferredNativeHealthKitLinkage] = []
+    private var nativeHealthKitAcquisitionStartedAt: Date?
+    private var nativeHealthKitLinkageQueryInFlight = false
     private var hrControlFailed: Bool = false
     private let legacyWatchHeartRateSource = HeartRateProviderIdentity(
         kind: .legacyWatchWorkoutStream,
@@ -947,12 +973,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var isHrControlRunning: Bool = false
     @Published var isHrControlStartAllowed: Bool = false
     @Published var hrControlStartBlockReasonText: String? = nil
+    @Published private(set) var isNativeHeartRatePreflightActive: Bool = false
+    @Published private(set) var isNativeHeartRateCurrent: Bool = false
+
+    private var nativeHeartRatePreflightEngine = NativeHeartRatePreflightEngine()
+    private var nativeHeartRateAppActivity: NativeHeartRatePreflightEngine.AppActivity = .inactive
+    private var isTrainingHubVisible = false
+    private var nativeHeartRateFlowOwnsController = false
+    private var nativeHealthKitWorkoutCommitted = false
+    private var nativeHealthKitWorkoutFinishInFlight = false
+    private var nativePreflightCommitTimestamps: (
+        acquisitionStartedAt: Date,
+        measuredAt: Date?,
+        receivedAt: Date
+    )?
 
     var isHrControlStartAffordanceAvailable: Bool {
-        HRDomainService.heartRateStartAffordanceAvailable(
-            treadmillConnected: isTreadmillControlReady,
-            currentHeartRateVisible: hrStreamingActive
-        )
+        isHrControlStartAllowed && !isNativeHeartRatePreflightActive
     }
 
     @Published var hrNextDecisionSeconds: Int = 0
@@ -1243,7 +1280,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             stopTrainingStructuredLog(reason: completionEffect.structuredLogReason)
             if completionEffect.shouldStopWatch {
-                sendWatchCommand("stop_hr")
+                stopLegacyWatchHeartRateIfNeeded()
             }
             if completionEffect.shouldStopBelt {
                 stopBeltWithToggle(reason: "hr_cooldown_done")
@@ -4027,82 +4064,413 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func startHrControl() {
+        guard !isHrControlRunning,
+              !nativeHeartRatePreflightEngine.hasStartIntent else { return }
+        let now = Date()
+        let intent = NativeHeartRatePreflightEngine.Intent(
+            id: UUID(),
+            targetBPM: hrTargetBPM,
+            durationMinutes: hrDurationMinutes,
+            requestedAt: now
+        )
+        let effects = nativeHeartRatePreflightEngine.requestStart(
+            intent: intent,
+            safety: nativeHeartRateSafetyFacts(now: now)
+        )
+        guard nativeHeartRatePreflightEngine.hasStartIntent else {
+            recomputeHrStartAllowed()
+            return
+        }
+        nativeHeartRateFlowOwnsController = true
+        isNativeHeartRateCurrent = false
+        hrStreamingActive = false
+        hrLastValueAt = nil
+        heartRateBPM = 0
+        nativeHeartRateLogger.info("preflight_requested")
+        appendLog("Native HR preflight requested: intent=\(intent.id.uuidString)")
+        applyNativeHeartRatePreflightEffects(effects)
+    }
+
+    func cancelNativeHeartRatePreflight() {
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.cancel(reason: .user)
+        )
+    }
+
+    func trainingHubDidAppear() {
+        isTrainingHubVisible = true
+        warmNativeHeartRateProviderIfPossible()
+    }
+
+    func trainingHubDidDisappear() {
+        isTrainingHubVisible = false
         guard !isHrControlRunning else { return }
-        // Preserve the existing connection/watch/fresh-HR gates, then compose the
-        // legacy WalkingPad units gate before any automated motion can start.
-        let existingGatesAllowStart = HRDomainService
-            .heartRateRuntimePrerequisitesAllowStart(
-                treadmillConnected: isTreadmillControlReady,
-                watchReachable: watchReachable,
-                currentHeartRateVisible: hrStreamingActive
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.cancel(reason: .hubLeft)
+        )
+    }
+
+    func nativeHeartRateAppBecameActive() {
+        nativeHeartRateAppActivity = .active
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.safetyChanged(
+                nativeHeartRateSafetyFacts(),
+                now: Date(),
+                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
             )
-        guard existingGatesAllowStart else {
-            isHrControlRunning = false
-            if !isConnected {
-                hrControlStartBlockReasonText = "Нет подключения к дорожке"
-            } else if !isTreadmillControlReady {
-                hrControlStartBlockReasonText = "Дождитесь готовности управления дорожкой"
-            } else if !watchReachable {
-                hrControlStartBlockReasonText = "Часы недоступны — откройте приложение на Apple Watch и дождитесь соединения."
-            } else if !hrStreamingActive {
-                hrControlStartBlockReasonText = "Пульс недоступен — откройте приложение на Apple Watch и дождитесь передачи пульса."
-            }
-            return
-        }
+        )
+        warmNativeHeartRateProviderIfPossible()
+        resolveDeferredNativeHealthKitLinkageIfPossible()
+        recomputeHrStartAllowed()
+    }
 
+    func nativeHeartRateAppBecameInactive() {
+        nativeHeartRateAppActivity = .inactive
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.safetyChanged(
+                nativeHeartRateSafetyFacts(),
+                now: Date(),
+                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+            )
+        )
+        recomputeHrStartAllowed()
+    }
+
+    func nativeHeartRateAppEnteredBackground() {
+        nativeHeartRateAppActivity = .background
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.safetyChanged(
+                nativeHeartRateSafetyFacts(),
+                now: Date(),
+                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+            )
+        )
+        recomputeHrStartAllowed()
+    }
+
+    private func commitExistingHrControl(preflightLatencySeconds: TimeInterval) {
         let unitsDecision = controllerUnitsGateDecision()
-        guard unitsDecision.allowed else {
-            isHrControlRunning = false
-            hrControlStartBlockReasonText = unitsDecision.blockReason?.userMessage ?? "Единицы контроллера не подтверждены"
-            persistBlockedControllerUnitsStart(decision: unitsDecision)
-            retryControllerUnitsQueryAfterBlockedStart()
+        guard nativeHeartRateSafetyFacts().permitsCommit,
+              unitsDecision.allowed,
+              nativeHealthKitWorkoutCommitted else {
+            if !unitsDecision.allowed {
+                persistBlockedControllerUnitsStart(decision: unitsDecision)
+                retryControllerUnitsQueryAfterBlockedStart()
+            }
+            abortNativeHeartRateFlow(reason: .superseded)
             return
         }
 
-        if existingGatesAllowStart {
-            let adaptiveStepDescription = hrAdaptiveStepEnabled
-                ? "adaptive_levels=0.1/0.2/0.3/0.4"
-                : "step=\(String(format: "%.2f", hrSpeedStepKmh))"
-            appendLog("HR start: target=\(hrTargetBPM) duration=\(hrDurationMinutes)m interval=\(hrDecisionIntervalSeconds)s \(adaptiveStepDescription)")
-            // Reset all per-session counters before writing session_start telemetry snapshot.
-            resetSessionStats()
-            let legacySessionID = startTrainingStructuredLog(trigger: "start_hr")
-            isHrControlRunning = true
-            hrStatusLine = "HR‑контроль запущен"
-            hrSessionTotalSeconds = max(60, hrDurationMinutes * 60)
-            hrRemainingSeconds = hrSessionTotalSeconds
-            hrNextDecisionSeconds = hrDecisionIntervalSeconds
-            hrProgress = 0
-            hrControlStartedAt = Date()
-            hrDecisionDetails = ""
-            hrPredictorStatusLine = ""
-            hrWorkoutRecorded = false
-            hrTrendSamples.removeAll()
-            hrTrendEmaBpm = nil
-            hrNoDataSeconds = 0
-            hrControlFailed = false
-            clearCooldownRuntimeState()
-            // Ensure treadmill is running when HR control starts
-            hrControlStartedBelt = false
-            let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
-            logTrainingEvent("hr_control_started", fields: [
-                "target_bpm": hrTargetBPM,
-                "duration_s": hrSessionTotalSeconds,
-                "decision_interval_s": hrDecisionIntervalSeconds,
-                "adaptive_step_enabled": hrAdaptiveStepEnabled,
-                "max_step_kmh": hrSpeedStepKmh,
-                "adaptive_levels_kmh": adaptiveLevels,
-                "start_speed_kmh": speedKmh,
-                "device_target_kmh": deviceTargetSpeedKmh
-            ].merging(controllerUnitsTelemetryFields(action: "hr_control_start")) { current, _ in current })
-            beginTelemetryV2Session(legacySessionID: legacySessionID)
-            if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
-                hrControlStartedBelt = true
-                startWithSpeed(3.0)
-            } else if deviceTargetSpeedKmh <= 0.1 {
-                hrControlStartedBelt = true
-                startWithSpeed(desiredSpeedKmh)
+        let adaptiveStepDescription = hrAdaptiveStepEnabled
+            ? "adaptive_levels=0.1/0.2/0.3/0.4"
+            : "step=\(String(format: "%.2f", hrSpeedStepKmh))"
+        appendLog("HR start: target=\(hrTargetBPM) duration=\(hrDurationMinutes)m interval=\(hrDecisionIntervalSeconds)s \(adaptiveStepDescription)")
+        // Reset all per-session counters before writing session_start telemetry snapshot.
+        resetSessionStats()
+        let legacySessionID = startTrainingStructuredLog(trigger: "start_hr")
+        isHrControlRunning = true
+        hrStatusLine = "HR‑контроль запущен"
+        hrSessionTotalSeconds = max(60, hrDurationMinutes * 60)
+        hrRemainingSeconds = hrSessionTotalSeconds
+        hrNextDecisionSeconds = hrDecisionIntervalSeconds
+        hrProgress = 0
+        hrControlStartedAt = Date()
+        hrDecisionDetails = ""
+        hrPredictorStatusLine = ""
+        hrWorkoutRecorded = false
+        hrTrendSamples.removeAll()
+        hrTrendEmaBpm = nil
+        hrNoDataSeconds = 0
+        hrControlFailed = false
+        clearCooldownRuntimeState()
+        hrControlStartedBelt = false
+        let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
+        logTrainingEvent("hr_control_started", fields: [
+            "target_bpm": hrTargetBPM,
+            "duration_s": hrSessionTotalSeconds,
+            "decision_interval_s": hrDecisionIntervalSeconds,
+            "adaptive_step_enabled": hrAdaptiveStepEnabled,
+            "max_step_kmh": hrSpeedStepKmh,
+            "adaptive_levels_kmh": adaptiveLevels,
+            "start_speed_kmh": speedKmh,
+            "device_target_kmh": deviceTargetSpeedKmh,
+            "native_hr_preflight_latency_s": preflightLatencySeconds,
+            "native_hr_acquisition_started_at": nativePreflightCommitTimestamps?.acquisitionStartedAt.timeIntervalSince1970 ?? -1,
+            "native_hr_first_measured_at": nativePreflightCommitTimestamps?.measuredAt?.timeIntervalSince1970 ?? -1,
+            "native_hr_first_received_at": nativePreflightCommitTimestamps?.receivedAt.timeIntervalSince1970 ?? -1
+        ].merging(controllerUnitsTelemetryFields(action: "hr_control_start")) { current, _ in current })
+        nativePreflightCommitTimestamps = nil
+        beginTelemetryV2Session(legacySessionID: legacySessionID)
+        if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
+            hrControlStartedBelt = true
+            startWithSpeed(3.0)
+        } else if deviceTargetSpeedKmh <= 0.1 {
+            hrControlStartedBelt = true
+            startWithSpeed(desiredSpeedKmh)
+        }
+    }
+
+    private var nativeHeartRateTransportIsValid: Bool {
+        guard let currentConnection = currentTreadmillControlConnection else { return false }
+        return treadmillProtocol != .unknown
+            && treadmillProtocolConnection == currentConnection
+            && isTreadmillControlReady
+    }
+
+    private func nativeHeartRateSafetyFacts(
+        now: Date = Date()
+    ) -> NativeHeartRatePreflightEngine.SafetyFacts {
+        let effectiveAppActivity: NativeHeartRatePreflightEngine.AppActivity = {
+#if canImport(UIKit)
+            let systemActivity: NativeHeartRatePreflightEngine.AppActivity
+            switch UIApplication.shared.applicationState {
+            case .active: systemActivity = .active
+            case .inactive: systemActivity = .inactive
+            case .background: systemActivity = .background
+            @unknown default: systemActivity = .background
             }
+            if nativeHeartRateAppActivity == .background || systemActivity == .background {
+                return .background
+            }
+            if nativeHeartRateAppActivity == .inactive || systemActivity == .inactive {
+                return .inactive
+            }
+#endif
+            return nativeHeartRateAppActivity
+        }()
+        let stopInProgress = stopObservationLifecycle?.finalResult == nil
+            || unavailableStopAttempt != nil
+        return NativeHeartRatePreflightEngine.SafetyFacts(
+            appActivity: effectiveAppActivity,
+            treadmillControlReady: isTreadmillControlReady,
+            transportValid: nativeHeartRateTransportIsValid,
+            controllerUnitsAllowed: controllerUnitsGateDecision(now: now).allowed,
+            hasConflictingWorkout: isHrControlRunning
+                || treadmillTestRunIsActive
+                || nativeHealthKitWorkoutCommitted
+                || nativeHealthKitWorkoutFinishInFlight,
+            stopInProgress: stopInProgress,
+            telemetryAvailability: .healthy
+        )
+    }
+
+    private func warmNativeHeartRateProviderIfPossible() {
+        guard isTrainingHubVisible,
+              nativeHeartRateAppActivity == .active,
+              !isHrControlRunning,
+              IPhoneHealthKitLiveHeartRateProvider.isSupported else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let canPrepare = await iPhoneHealthKitHeartRateProvider
+                .canPrepareWithoutAuthorizationPrompt()
+            guard canPrepare,
+                  isTrainingHubVisible,
+                  nativeHeartRateAppActivity == .active,
+                  !isHrControlRunning else { return }
+            applyNativeHeartRatePreflightEffects(
+                nativeHeartRatePreflightEngine.requestWarmPreparation()
+            )
+        }
+    }
+
+    private func applyNativeHeartRatePreflightEffects(
+        _ effects: [NativeHeartRatePreflightEngine.Effect]
+    ) {
+        syncNativeHeartRatePreflightPresentation()
+        for effect in effects {
+            switch effect {
+            case .prepare:
+                prepareNativeHeartRateProvider()
+            case .startCollection(let intent, let acquisitionStartedAt):
+                startNativeHeartRateCollection(
+                    intent: intent,
+                    acquisitionStartedAt: acquisitionStartedAt
+                )
+            case .commit(let intent, let observation, let acquisitionStartedAt):
+                commitNativeHeartRatePreflight(
+                    intent: intent,
+                    observation: observation,
+                    acquisitionStartedAt: acquisitionStartedAt
+                )
+            case .discard(let reason):
+                discardNativeHeartRatePreflight(reason: reason)
+            }
+        }
+        syncNativeHeartRatePreflightPresentation()
+        recomputeHrStartAllowed()
+    }
+
+    private func syncNativeHeartRatePreflightPresentation() {
+        isNativeHeartRatePreflightActive = nativeHeartRatePreflightEngine.hasStartIntent
+    }
+
+    private func prepareNativeHeartRateProvider() {
+        let configuration = HKWorkoutConfiguration()
+        configuration.activityType = .walking
+        configuration.locationType = .indoor
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await iPhoneHealthKitHeartRateProvider.prepare(
+                    configuration: configuration
+                )
+                appendLog("Native HR session prepared")
+                nativeHeartRateLogger.info("session_prepared")
+                applyNativeHeartRatePreflightEffects(
+                    nativeHeartRatePreflightEngine.providerPrepared(at: Date())
+                )
+            } catch {
+                guard nativeHeartRatePreflightEngine.ownsUncommittedWorkout else { return }
+                nativeHeartRateProviderFailed()
+            }
+        }
+    }
+
+    private func startNativeHeartRateCollection(
+        intent: NativeHeartRatePreflightEngine.Intent,
+        acquisitionStartedAt: Date
+    ) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await iPhoneHealthKitHeartRateProvider.start(at: acquisitionStartedAt)
+                nativeHeartRatePreflightEngine.collectionStarted(
+                    intentID: intent.id,
+                    acquisitionStartedAt: acquisitionStartedAt
+                )
+                nativeHealthKitAcquisitionStartedAt = acquisitionStartedAt
+                nativeHeartRateLogger.info("collection_started")
+                appendLog("Native HR collection started: intent=\(intent.id.uuidString)")
+                syncNativeHeartRatePreflightPresentation()
+            } catch {
+                guard nativeHeartRatePreflightEngine.ownsUncommittedWorkout else { return }
+                nativeHeartRateProviderFailed()
+            }
+        }
+    }
+
+    private func handleNativeHeartRateObservation(
+        _ observation: HeartRateProviderObservation
+    ) {
+        let now = Date()
+        let factualDate = observation.measuredAt ?? observation.receivedAt
+        let ageSeconds = max(0, Int(now.timeIntervalSince(factualDate)))
+        HRDomainService.applyHeartRateDelivery(
+            observation.beatsPerMinute,
+            now: { factualDate },
+            updateCurrent: { heartRateBPM = $0 },
+            updateLastKnown: { lastKnownHeartRateBPM = $0 },
+            updateLastReceivedAt: { hrLastValueAt = $0 },
+            recordPredictorInput: { recordHrSample($0, at: factualDate) }
+        )
+        hrDataStaleSeconds = ageSeconds
+        hrStreamingActive = HRDomainService.heartRateStreamIsActive(
+            beatsPerMinute: observation.beatsPerMinute,
+            hasLastReceivedAt: true,
+            ageSeconds: ageSeconds,
+            staleThresholdSeconds: hrStaleThresholdSeconds
+        )
+        isNativeHeartRateCurrent = hrStreamingActive
+        observeHeartRateDelivery(observation, recordedAt: now)
+        appendLog("Native HR value: \(observation.beatsPerMinute)")
+        logTrainingEvent("hr_sample", fields: [
+            "hr_bpm": observation.beatsPerMinute,
+            "source": "healthkit_selected"
+        ])
+
+        let preflightObservation = NativeHeartRatePreflightEngine.Observation(
+            source: .nativeHealthKit,
+            beatsPerMinute: observation.beatsPerMinute,
+            measuredAt: observation.measuredAt,
+            receivedAt: observation.receivedAt
+        )
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.receive(
+                preflightObservation,
+                safety: nativeHeartRateSafetyFacts(now: now),
+                now: now,
+                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+            )
+        )
+    }
+
+    private func commitNativeHeartRatePreflight(
+        intent: NativeHeartRatePreflightEngine.Intent,
+        observation: NativeHeartRatePreflightEngine.Observation,
+        acquisitionStartedAt: Date
+    ) {
+        let now = Date()
+        guard nativeHeartRateFlowOwnsController,
+              !nativeHealthKitWorkoutCommitted,
+              iPhoneHealthKitHeartRateProvider.state == .collecting,
+              observation.isQualifying(
+                collectionStartedAt: acquisitionStartedAt,
+                now: now,
+                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+              ),
+              nativeHeartRateSafetyFacts(now: now).permitsCommit else {
+            abortNativeHeartRateFlow(reason: .superseded)
+            return
+        }
+
+        hrTargetBPM = intent.targetBPM
+        hrDurationMinutes = intent.durationMinutes
+        nativeHealthKitWorkoutCommitted = true
+        nativePreflightCommitTimestamps = (
+            acquisitionStartedAt: acquisitionStartedAt,
+            measuredAt: observation.measuredAt,
+            receivedAt: observation.receivedAt
+        )
+        let latency = max(0, now.timeIntervalSince(acquisitionStartedAt))
+        nativeHeartRateLogger.info("first_qualifying_hr_received")
+        nativeHeartRateLogger.info("preflight_committed")
+        appendLog("Native HR preflight committed: latency=\(String(format: "%.3f", latency))s")
+        commitExistingHrControl(preflightLatencySeconds: latency)
+    }
+
+    private func discardNativeHeartRatePreflight(
+        reason: NativeHeartRatePreflightEngine.CancellationReason
+    ) {
+        appendLog("Native HR preflight cancelled: \(reason.rawValue)")
+        nativeHeartRateLogger.info("preflight_cancelled reason=\(reason.rawValue, privacy: .public)")
+        nativeHeartRateFlowOwnsController = false
+        isNativeHeartRateCurrent = false
+        Task { @MainActor [weak self] in
+            await self?.iPhoneHealthKitHeartRateProvider.discard(at: Date())
+        }
+        if reason == .timeout || reason == .providerFailure {
+            infoToastMessage = "Пульс не получен. Проверьте подключение и посадку датчика, а также доступ к данным «Здоровье»."
+        }
+    }
+
+    private func abortNativeHeartRateFlow(
+        reason: NativeHeartRatePreflightEngine.CancellationReason
+    ) {
+        nativeHealthKitWorkoutCommitted = false
+        nativeHeartRateFlowOwnsController = false
+        isNativeHeartRateCurrent = false
+        nativePreflightCommitTimestamps = nil
+        appendLog("Native HR flow aborted before motion: \(reason.rawValue)")
+        nativeHeartRateLogger.info("preflight_aborted reason=\(reason.rawValue, privacy: .public)")
+        Task { @MainActor [weak self] in
+            await self?.iPhoneHealthKitHeartRateProvider.discard(at: Date())
+        }
+        syncNativeHeartRatePreflightPresentation()
+        recomputeHrStartAllowed()
+    }
+
+    private func nativeHeartRateProviderFailed() {
+        hrStreamingActive = false
+        isNativeHeartRateCurrent = false
+        hrLastValueAt = nil
+        heartRateBPM = 0
+        if nativeHeartRatePreflightEngine.ownsUncommittedWorkout {
+            applyNativeHeartRatePreflightEffects(
+                nativeHeartRatePreflightEngine.cancel(reason: .providerFailure)
+            )
+        } else if !nativeHealthKitWorkoutCommitted {
+            nativeHeartRateFlowOwnsController = false
+            recomputeHrStartAllowed()
         }
     }
     func stopHrControl() {
@@ -4129,8 +4497,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrControlStartedAt = nil
         hrControlStartedBelt = false
         stopBeltWithToggle(reason: "hr")
-        sendWatchCommand("stop_hr")
+        stopLegacyWatchHeartRateIfNeeded()
         endTelemetryV2Session(reason: "manual_stop")
+    }
+
+    private func stopLegacyWatchHeartRateIfNeeded() {
+        guard !nativeHeartRateFlowOwnsController else { return }
+        sendWatchCommand("stop_hr")
     }
 
     func clearHrFailureReports() { hrFailureReports.removeAll() }
@@ -4179,23 +4552,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func recomputeHrStartAllowed() {
         let now = Date()
-        let existingGatesAllowStart = HRDomainService
-            .heartRateRuntimePrerequisitesAllowStart(
-                treadmillConnected: isTreadmillControlReady,
-                watchReachable: watchReachable,
-                currentHeartRateVisible: hrStreamingActive
-            )
+        let safety = nativeHeartRateSafetyFacts(now: now)
+        let preflightGatesAllowStart = safety.permitsStartIntent
+            && IPhoneHealthKitLiveHeartRateProvider.isSupported
+            && !nativeHeartRatePreflightEngine.hasStartIntent
         let unitsDecision = controllerUnitsGateDecision(now: now)
-        let allowed = ControllerUnitsSafetyPolicy.allowsStart(
-            path: .hrControl,
-            existingGatesAllowStart: existingGatesAllowStart,
-            state: controllerUnitsTruth,
-            currentConnectionEpoch: controllerUnitsConnectionEpoch,
-            now: now,
-            requiresFreshMetricTruth: controllerUnitsTruthRequired
-        )
-        isHrControlStartAllowed = allowed
-        if !allowed {
+        isHrControlStartAllowed = preflightGatesAllowStart
+        if !preflightGatesAllowStart {
             let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
                 startedAt: hrControlStartedAt,
                 now: Date(),
@@ -4205,23 +4568,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 hrControlStartBlockReasonText = "Нет подключения к дорожке"
             } else if !isTreadmillControlReady {
                 hrControlStartBlockReasonText = "Дождитесь готовности управления дорожкой"
-            } else if !watchReachable {
-                hrControlStartBlockReasonText = "Часы недоступны — откройте приложение на Apple Watch и дождитесь соединения."
-            } else if !hrStreamingActive {
-                hrControlStartBlockReasonText = "Пульс недоступен — откройте приложение на Apple Watch и дождитесь передачи пульса."
-            } else if let unitsBlockReason = unitsDecision.blockReason {
-                hrControlStartBlockReasonText = unitsBlockReason.userMessage
+            } else if !IPhoneHealthKitLiveHeartRateProvider.isSupported {
+                hrControlStartBlockReasonText = "HealthKit недоступен на этом устройстве"
+            } else if nativeHeartRateAppActivity != .active {
+                hrControlStartBlockReasonText = "Вернитесь в приложение для старта"
+            } else if nativeHeartRatePreflightEngine.hasStartIntent {
+                hrControlStartBlockReasonText = nil
             } else {
                 hrControlStartBlockReasonText = "Недоступно"
             }
-            if isHrControlRunning && !withinGrace && !existingGatesAllowStart {
+            if isHrControlRunning && !withinGrace && !hrStreamingActive {
                 hrStatusLine = "HR‑контроль: нет сигнала"
             }
         } else {
             hrControlStartBlockReasonText = nil
         }
         refreshControllerUnitsTruthIfNeeded(
-            existingGatesAllowStart: existingGatesAllowStart,
+            existingGatesAllowStart: preflightGatesAllowStart,
             unitsDecision: unitsDecision,
             now: now
         )
@@ -4261,6 +4624,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     staleThresholdSeconds: self.hrStaleThresholdSeconds
                 )
                 self.hrStreamingActive = active
+                if self.nativeHeartRateFlowOwnsController {
+                    self.isNativeHeartRateCurrent = active
+                }
                 if active != wasActive {
                     self.appendLog("HR stream \(active ? "ACTIVE" : "INACTIVE") (bpm=\(self.heartRateBPM), last=\(hasLast ? "\(secs)s ago" : "none"))")
                     self.logTrainingEvent("hr_stream_state", fields: [
@@ -4270,7 +4636,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     ])
                 }
                 self.recomputeHrStartAllowed()
-                if active != wasActive {
+                if active != wasActive && !self.nativeHeartRateFlowOwnsController {
                     self.observeHeartRateSourceLifecycle(
                         active ? .recovered : .stale
                     )
@@ -4288,6 +4654,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func tickTelemetry() {
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.tick(now: Date())
+        )
         defer {
             if isHrControlRunning {
                 _ = telemetryV2Coordinator.observeCurrentElapsedSecond()
@@ -4391,7 +4760,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
                         hrControlStartedAt = nil
                         hrControlStartedBelt = false
-                        sendWatchCommand("stop_hr")
+                        stopLegacyWatchHeartRateIfNeeded()
                         stopBeltWithToggle(reason: "hr_control_not_ready")
                         endTelemetryV2Session(reason: "hr_control_not_ready")
                         return
@@ -4438,7 +4807,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
                         hrControlStartedAt = nil
                         hrControlStartedBelt = false
-                        sendWatchCommand("stop_hr")
+                        stopLegacyWatchHeartRateIfNeeded()
                         stopBeltWithToggle(reason: "hr_no_signal")
                         endTelemetryV2Session(reason: "hr_no_signal")
                         return
@@ -5234,6 +5603,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         lastControllerUnitsQueryAt = nil
         lastControllerUnitsQueryTrigger = nil
         isTreadmillControlReady = false
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.safetyChanged(
+                nativeHeartRateSafetyFacts(),
+                now: Date(),
+                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+            )
+        )
         observeCancelledTreadmillCommands(
             cancelledTelemetry,
             reason: .other("connection_epoch_reset")
@@ -5320,6 +5696,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         let becameReady = ready && !isTreadmillControlReady
         isTreadmillControlReady = ready
+        applyNativeHeartRatePreflightEffects(
+            nativeHeartRatePreflightEngine.safetyChanged(
+                nativeHeartRateSafetyFacts(),
+                now: Date(),
+                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+            )
+        )
         recomputeHrStartAllowed()
         if becameReady {
             rememberCurrentValidatedTreadmill()
@@ -6034,8 +6417,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 cooldownTargetHeartRate: hrCooldownTargetBpm,
                 cooldownMinimumSpeedKilometresPerHour: hrCooldownMinSpeed,
                 cooldownMaximumMinutes: hrCooldownMaxMinutes,
-                heartRateProviderKind: "legacyWatchWorkoutStream",
-                heartRateProviderStableLocalKey: legacyWatchHeartRateSource.stableLocalKey,
+                heartRateProviderKind: "healthKitSelected",
+                heartRateProviderStableLocalKey: "iphone-healthkit-selected",
                 treadmill: TelemetryV2TreadmillContext(
                     stableLocalIdentifier: connectedPeripheralId?.uuidString,
                     model: displayDeviceName ?? (deviceName.isEmpty ? nil : deviceName),
@@ -6059,7 +6442,154 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func endTelemetryV2Session(reason: String) {
+        finishNativeHealthKitWorkoutIfNeeded()
         telemetryV2Coordinator.endSession(reason: reason)
+    }
+
+    private func finishNativeHealthKitWorkoutIfNeeded() {
+        guard nativeHealthKitWorkoutCommitted,
+              !nativeHealthKitWorkoutFinishInFlight else { return }
+        nativeHealthKitWorkoutFinishInFlight = true
+        let finishRequestedAt = Date()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                nativeHealthKitWorkoutCommitted = false
+                nativeHealthKitWorkoutFinishInFlight = false
+                nativeHeartRateFlowOwnsController = false
+                isNativeHeartRateCurrent = false
+                nativeHealthKitAcquisitionStartedAt = nil
+                recomputeHrStartAllowed()
+                warmNativeHeartRateProviderIfPossible()
+            }
+            do {
+                switch try await iPhoneHealthKitHeartRateProvider.finish(at: finishRequestedAt) {
+                case .saved(let workout):
+                    nativeHealthKitAcquisitionStartedAt = nil
+                    linkNativeHealthKitWorkout(
+                        uuid: workout.uuid,
+                        endedAt: workout.endDate,
+                        profileID: pendingHealthkitWorkoutProfileID ?? activeUserProfileID,
+                        telemetrySessionID: pendingHealthkitTelemetryV2SessionID
+                            ?? activeTelemetryV2SessionID,
+                        linksLegacyWorkout: hrWorkoutRecorded
+                    )
+                    appendLog("Native HealthKit workout linked: \(workout.uuid.uuidString)")
+                    nativeHeartRateLogger.info("workout_finished_direct_link")
+                case .savedWorkoutUnavailable:
+                    appendLog("Native HealthKit workout saved; direct UUID unavailable, deferred linkage retained")
+                    retainDeferredNativeHealthKitLinkage(
+                        finishRequestedAt: finishRequestedAt
+                    )
+                    resolveDeferredNativeHealthKitLinkageIfPossible()
+                    nativeHeartRateLogger.info("workout_finished_deferred_link")
+                }
+            } catch {
+                appendLog("Native HealthKit workout finish failed: \(error.localizedDescription)")
+                nativeHeartRateLogger.error("workout_finish_failed")
+            }
+        }
+    }
+
+    private func retainDeferredNativeHealthKitLinkage(finishRequestedAt: Date) {
+        guard let acquisitionStartedAt = nativeHealthKitAcquisitionStartedAt else { return }
+        let linkage = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: acquisitionStartedAt,
+            finishRequestedAt: finishRequestedAt,
+            profileID: pendingHealthkitWorkoutProfileID ?? activeUserProfileID,
+            telemetrySessionID: (pendingHealthkitTelemetryV2SessionID ?? activeTelemetryV2SessionID)?.rawValue,
+            linksLegacyWorkout: hrWorkoutRecorded
+        )
+        if !deferredNativeHealthKitLinkages.contains(linkage) {
+            deferredNativeHealthKitLinkages.append(linkage)
+        }
+        if let data = try? JSONEncoder().encode(deferredNativeHealthKitLinkages) {
+            UserDefaults.standard.set(data, forKey: deferredNativeHealthKitLinkageStoreKey)
+        }
+    }
+
+    private func clearDeferredNativeHealthKitLinkage(
+        _ linkage: DeferredNativeHealthKitLinkage
+    ) {
+        deferredNativeHealthKitLinkages.removeAll { $0 == linkage }
+        nativeHealthKitAcquisitionStartedAt = nil
+        if deferredNativeHealthKitLinkages.isEmpty {
+            UserDefaults.standard.removeObject(forKey: deferredNativeHealthKitLinkageStoreKey)
+        } else if let data = try? JSONEncoder().encode(deferredNativeHealthKitLinkages) {
+            UserDefaults.standard.set(data, forKey: deferredNativeHealthKitLinkageStoreKey)
+        }
+    }
+
+    private func resolveDeferredNativeHealthKitLinkageIfPossible() {
+        guard nativeHeartRateAppActivity == .active,
+              !nativeHealthKitLinkageQueryInFlight else { return }
+        if deferredNativeHealthKitLinkages.isEmpty,
+           let data = UserDefaults.standard.data(forKey: deferredNativeHealthKitLinkageStoreKey) {
+            deferredNativeHealthKitLinkages = (try? JSONDecoder().decode(
+                [DeferredNativeHealthKitLinkage].self,
+                from: data
+            )) ?? []
+        }
+        guard let linkage = deferredNativeHealthKitLinkages.first else { return }
+
+        nativeHealthKitLinkageQueryInFlight = true
+        let predicate = HKQuery.predicateForSamples(
+            withStart: linkage.acquisitionStartedAt.addingTimeInterval(-2),
+            end: linkage.finishRequestedAt.addingTimeInterval(2),
+            options: []
+        )
+        let query = HKSampleQuery(
+            sampleType: HKObjectType.workoutType(),
+            predicate: predicate,
+            limit: 10,
+            sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]
+        ) { [weak self] _, samples, _ in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                nativeHealthKitLinkageQueryInFlight = false
+                let appBundleIdentifier = Bundle.main.bundleIdentifier
+                let workout = (samples as? [HKWorkout])?.first { workout in
+                    workout.workoutActivityType == .walking
+                        && workout.sourceRevision.source.bundleIdentifier == appBundleIdentifier
+                        && abs(workout.startDate.timeIntervalSince(linkage.acquisitionStartedAt)) <= 5
+                        && abs(workout.endDate.timeIntervalSince(linkage.finishRequestedAt)) <= 15
+                }
+                guard let workout else { return }
+                linkNativeHealthKitWorkout(
+                    uuid: workout.uuid,
+                    endedAt: workout.endDate,
+                    profileID: linkage.profileID,
+                    telemetrySessionID: linkage.telemetrySessionID.map {
+                        SessionID(rawValue: $0)
+                    },
+                    linksLegacyWorkout: linkage.linksLegacyWorkout
+                )
+                appendLog("Deferred native HealthKit workout linked: \(workout.uuid.uuidString)")
+                nativeHeartRateLogger.info("deferred_link_resolved")
+                clearDeferredNativeHealthKitLinkage(linkage)
+                resolveDeferredNativeHealthKitLinkageIfPossible()
+            }
+        }
+        healthStore.execute(query)
+    }
+
+    private func linkNativeHealthKitWorkout(
+        uuid: UUID,
+        endedAt: Date,
+        profileID: UUID?,
+        telemetrySessionID: SessionID?,
+        linksLegacyWorkout: Bool
+    ) {
+        if linksLegacyWorkout {
+            pendingHealthkitWorkoutProfileID = profileID
+            pendingHealthkitTelemetryV2SessionID = telemetrySessionID
+            attachHealthkitWorkoutUUID(uuid.uuidString, endedAt: endedAt)
+        } else if let telemetrySessionID {
+            associateHealthKitWorkoutWithTelemetryV2(
+                sessionID: telemetrySessionID,
+                workoutIdentifier: uuid
+            )
+        }
     }
 
     private var treadmillTelemetryConnectionEpoch: TreadmillConnectionEpoch? {
@@ -6264,6 +6794,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         latestHeartRateDelivery = result.delivery
         attachTelemetryDeliveryToLatestHrTrendSample(result.delivery)
         return heartRateTelemetrySink?.observeHeartRate(result) ?? .unavailable
+    }
+
+    private func observeHeartRateDelivery(
+        _ observation: HeartRateProviderObservation,
+        recordedAt: Date
+    ) {
+        let result = heartRateObservationNormalizer.normalize(
+            observation,
+            canonicalObservationID: HeartRateCanonicalObservationID(),
+            deliveryID: HeartRateDeliveryID(),
+            recordedAt: recordedAt
+        )
+        latestHeartRateDelivery = result.delivery
+        attachTelemetryDeliveryToLatestHrTrendSample(result.delivery)
+        _ = heartRateTelemetrySink?.observeHeartRate(result)
     }
 
     private func observeHeartRateSourceLifecycle(
@@ -7223,6 +7768,10 @@ extension BluetoothManager: WCSessionDelegate {
         let phoneReceivedAt = Date()
         if let decoded = WatchHeartRatePayloadDecoder.decode(payload) {
             DispatchQueue.main.async {
+                guard !self.nativeHeartRateFlowOwnsController else {
+                    self.appendLog("Ignored legacy Watch HR while native HealthKit owns HR")
+                    return
+                }
                 HeartRateObservationalTee.deliver(
                     decoded.beatsPerMinute,
                     toLegacyController: { bpm in
@@ -7258,6 +7807,10 @@ extension BluetoothManager: WCSessionDelegate {
                 return nil
             }()
             DispatchQueue.main.async {
+                guard !self.nativeHeartRateFlowOwnsController else {
+                    self.appendLog("Ignored legacy Watch workout UUID while native HealthKit owns workout")
+                    return
+                }
                 self.attachHealthkitWorkoutUUID(uuid, endedAt: endDate)
                 self.appendLog("Workout UUID received: \(uuid)")
                 self.logTrainingEvent("workout_uuid_received", fields: [
@@ -7268,6 +7821,7 @@ extension BluetoothManager: WCSessionDelegate {
         }
         if let status = payload["status"] as? String {
             DispatchQueue.main.async {
+                guard !self.nativeHeartRateFlowOwnsController else { return }
                 var lifecycleTransition: HeartRateSourceLifecycleInput?
                 switch status.lowercased() {
                 case "hr_started":

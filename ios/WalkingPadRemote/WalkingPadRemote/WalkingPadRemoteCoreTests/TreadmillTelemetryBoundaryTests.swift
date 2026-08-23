@@ -147,13 +147,18 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
             in: managerSource
         )
         let start = try functionBody("func startHrControl()", in: managerSource)
+        let commit = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)",
+            in: managerSource
+        )
         XCTAssertFalse(affordance.lowercased().contains("telemetry"))
         XCTAssertFalse(affordance.contains("factual"))
         XCTAssertFalse(affordance.contains("commandID"))
         XCTAssertFalse(affordance.contains("treadmillTelemetrySink"))
-        XCTAssertTrue(start.contains("heartRateRuntimePrerequisitesAllowStart"))
-        XCTAssertTrue(start.contains("controllerUnitsGateDecision"))
+        XCTAssertTrue(start.contains("nativeHeartRatePreflightEngine.requestStart"))
+        XCTAssertTrue(commit.contains("controllerUnitsGateDecision"))
         XCTAssertFalse(start.contains("treadmillTelemetrySink"))
+        XCTAssertFalse(commit.contains("treadmillTelemetrySink"))
     }
 
     func testFactualAndStopEvidenceOnlyUseDecodedObservationAndExistingPredicate() throws {
