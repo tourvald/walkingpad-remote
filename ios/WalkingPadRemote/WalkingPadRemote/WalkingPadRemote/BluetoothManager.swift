@@ -30,10 +30,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         provider.onObservation = { [weak self] observation in
             self?.handleNativeHeartRateObservation(observation)
         }
-        provider.onFailure = { [weak self] in
+        provider.onFailure = { [weak self] context in
             guard let self else { return }
             self.nativeHeartRateProviderFailed(
-                generation: self.nativeHeartRateProviderLifecycle.generation
+                generation: context.providerGeneration,
+                attemptID: context.attemptID
             )
         }
         return provider
@@ -225,13 +226,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var pendingHealthkitWorkoutProfileID: UUID? = nil
     private var activeTelemetryV2SessionID: SessionID? = nil
     private var pendingHealthkitTelemetryV2SessionID: SessionID? = nil
-    private struct DeferredNativeHealthKitLinkage: Codable, Equatable {
-        let acquisitionStartedAt: Date
-        let finishRequestedAt: Date
-        let profileID: UUID?
-        let telemetrySessionID: UUID?
-        let linksLegacyWorkout: Bool
-    }
     private let deferredNativeHealthKitLinkageStoreKey = "deferred_native_healthkit_linkage_v1"
     private var deferredNativeHealthKitLinkages: [DeferredNativeHealthKitLinkage] = []
     private var nativeHealthKitAcquisitionStartedAt: Date?
@@ -4341,7 +4335,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard let self else { return }
             do {
                 try await iPhoneHealthKitHeartRateProvider.prepare(
-                    configuration: configuration
+                    configuration: configuration,
+                    failureContext: IPhoneHealthKitRuntimeFailureContext(
+                        providerGeneration: providerGeneration,
+                        attemptID: nativeHeartRateProviderLifecycle.attemptID
+                    )
                 )
                 guard nativeHeartRateProviderLifecycle.acceptsProviderCompletion(
                     generation: providerGeneration
@@ -4365,6 +4363,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                iPhoneHealthKitHeartRateProvider.bindRuntimeFailureContext(
+                    IPhoneHealthKitRuntimeFailureContext(
+                        providerGeneration: providerGeneration,
+                        attemptID: intent.id
+                    )
+                )
                 try await iPhoneHealthKitHeartRateProvider.start(at: acquisitionStartedAt)
                 guard nativeHeartRateProviderLifecycle.acceptsProviderCompletion(
                     generation: providerGeneration,
@@ -6607,7 +6611,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ linkage: DeferredNativeHealthKitLinkage
     ) {
         deferredNativeHealthKitLinkages.removeAll { $0 == linkage }
-        nativeHealthKitAcquisitionStartedAt = nil
         if deferredNativeHealthKitLinkages.isEmpty {
             UserDefaults.standard.removeObject(forKey: deferredNativeHealthKitLinkageStoreKey)
         } else if let data = try? JSONEncoder().encode(deferredNativeHealthKitLinkages) {
@@ -6650,15 +6653,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         && abs(workout.endDate.timeIntervalSince(linkage.finishRequestedAt)) <= 15
                 }
                 guard let workout else { return }
-                linkNativeHealthKitWorkout(
+                guard linkDeferredNativeHealthKitWorkout(
                     uuid: workout.uuid,
                     endedAt: workout.endDate,
-                    profileID: linkage.profileID,
-                    telemetrySessionID: linkage.telemetrySessionID.map {
-                        SessionID(rawValue: $0)
-                    },
-                    linksLegacyWorkout: linkage.linksLegacyWorkout
-                )
+                    linkage: linkage
+                ) else { return }
                 appendLog("Deferred native HealthKit workout linked: \(workout.uuid.uuidString)")
                 nativeHeartRateLogger.info("deferred_link_resolved")
                 clearDeferredNativeHealthKitLinkage(linkage)
@@ -6666,6 +6665,47 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
         }
         healthStore.execute(query)
+    }
+
+    @discardableResult
+    private func linkDeferredNativeHealthKitWorkout(
+        uuid: UUID,
+        endedAt: Date,
+        linkage: DeferredNativeHealthKitLinkage
+    ) -> Bool {
+        if linkage.linksLegacyWorkout {
+            guard let profileID = linkage.profileID else { return false }
+            var entries = loadLegacyShadowWorkoutHistory(profileID: profileID)
+            let matchWindow: TimeInterval = 15 * 60
+            guard let index = entries.firstIndex(where: {
+                $0.healthkitWorkoutUUID == nil
+                    && abs($0.date.timeIntervalSince(endedAt)) <= matchWindow
+            }) else { return false }
+            let entry = entries[index]
+            entries[index] = LegacyShadowWorkoutEntry(
+                id: entry.id,
+                date: entry.date,
+                beatsPerMeter: entry.beatsPerMeter,
+                targetBpm: entry.targetBpm,
+                durationSeconds: entry.durationSeconds,
+                avgBpm: entry.avgBpm,
+                avgSpeedKmh: entry.avgSpeedKmh,
+                healthkitWorkoutUUID: uuid.uuidString,
+                zoneSeconds: entry.zoneSeconds
+            )
+            saveLegacyShadowWorkoutHistory(entries, profileID: profileID)
+            if activeUserProfileID == profileID {
+                legacyShadowWorkoutHistory = entries
+            }
+        }
+
+        if let telemetrySessionID = linkage.telemetrySessionID {
+            associateHealthKitWorkoutWithTelemetryV2(
+                sessionID: SessionID(rawValue: telemetrySessionID),
+                workoutIdentifier: uuid
+            )
+        }
+        return true
     }
 
     private func linkNativeHealthKitWorkout(

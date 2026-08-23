@@ -431,6 +431,67 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         XCTAssertTrue(lifecycle.acceptsObservation(providerIsCollecting: true))
     }
 
+    func testDelayedRuntimeFailureFromAttemptACannotFailAttemptB() {
+        var lifecycle = NativeHeartRateProviderLifecycle()
+        let attemptA = UUID()
+        lifecycle.bindAttempt(attemptA)
+        let contextA = IPhoneHealthKitRuntimeFailureContext(
+            providerGeneration: lifecycle.beginProviderLifecycle(),
+            attemptID: attemptA
+        )
+        let cleanupGeneration = lifecycle.beginCleanup()
+        XCTAssertTrue(lifecycle.completeCleanup(
+            generation: cleanupGeneration,
+            providerIsIdle: true
+        ))
+
+        let attemptB = UUID()
+        lifecycle.bindAttempt(attemptB)
+        let contextB = IPhoneHealthKitRuntimeFailureContext(
+            providerGeneration: lifecycle.beginProviderLifecycle(),
+            attemptID: attemptB
+        )
+
+        XCTAssertFalse(lifecycle.acceptsProviderCompletion(
+            generation: contextA.providerGeneration,
+            attemptID: contextA.attemptID
+        ))
+        XCTAssertTrue(lifecycle.acceptsProviderCompletion(
+            generation: contextB.providerGeneration,
+            attemptID: contextB.attemptID
+        ))
+    }
+
+    func testResolvingDeferredLinkageAPreservesLinkageBIdentity() {
+        let profileA = UUID()
+        let telemetrySessionA = UUID()
+        let linkageA = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            profileID: profileA,
+            telemetrySessionID: telemetrySessionA,
+            linksLegacyWorkout: true
+        )
+        let profileB = UUID()
+        let telemetrySessionB = UUID()
+        let linkageB = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now.addingTimeInterval(60),
+            finishRequestedAt: now.addingTimeInterval(90),
+            profileID: profileB,
+            telemetrySessionID: telemetrySessionB,
+            linksLegacyWorkout: true
+        )
+        var pending = [linkageA, linkageB]
+
+        pending.removeAll { $0 == linkageA }
+
+        XCTAssertEqual(pending, [linkageB])
+        XCTAssertEqual(pending[0].profileID, profileB)
+        XCTAssertEqual(pending[0].telemetrySessionID, telemetrySessionB)
+        XCTAssertNotEqual(pending[0].profileID, profileA)
+        XCTAssertNotEqual(pending[0].telemetrySessionID, telemetrySessionA)
+    }
+
     func testLateObservationAfterCancelCannotRegainOwnership() {
         var lifecycle = NativeHeartRateProviderLifecycle()
         lifecycle.bindAttempt(UUID())

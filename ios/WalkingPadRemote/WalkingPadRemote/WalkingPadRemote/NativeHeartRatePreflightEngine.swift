@@ -1,5 +1,18 @@
 import Foundation
 
+struct IPhoneHealthKitRuntimeFailureContext: Equatable {
+    let providerGeneration: UInt64
+    let attemptID: UUID?
+}
+
+struct DeferredNativeHealthKitLinkage: Codable, Equatable {
+    let acquisitionStartedAt: Date
+    let finishRequestedAt: Date
+    let profileID: UUID?
+    let telemetrySessionID: UUID?
+    let linksLegacyWorkout: Bool
+}
+
 struct NativeHeartRateProviderLifecycle: Equatable {
     private(set) var generation: UInt64 = 0
     private(set) var attemptID: UUID?

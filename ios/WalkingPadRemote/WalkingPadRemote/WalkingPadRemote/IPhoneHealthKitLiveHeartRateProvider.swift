@@ -6,10 +6,11 @@ import TelemetryDomain
 @MainActor
 final class IPhoneHealthKitLiveHeartRateProvider {
     typealias ObservationHandler = (HeartRateProviderObservation) -> Void
-    typealias FailureHandler = () -> Void
+    typealias FailureHandler = (IPhoneHealthKitRuntimeFailureContext) -> Void
 
     private let driver: HealthKitLiveWorkoutDriver
     private let core: IPhoneHealthKitHeartRateProviderCore<HealthKitLiveWorkoutDriver>
+    private var runtimeFailureContext: IPhoneHealthKitRuntimeFailureContext?
 
     var onObservation: ObservationHandler? {
         get { core.onObservation }
@@ -32,10 +33,20 @@ final class IPhoneHealthKitLiveHeartRateProvider {
                 core?.receive(sample)
             }
         }
-        driver.onRuntimeFailure = { [weak self, weak core] in
+        driver.onRuntimeFailure = { [weak self, weak core] context in
             Task { @MainActor in
+                guard let self else { return }
+                guard self.runtimeFailureContext == context else {
+                    self.onFailure?(context)
+                    return
+                }
                 await core?.resetAfterFailure()
-                self?.onFailure?()
+                guard self.runtimeFailureContext == context else {
+                    self.onFailure?(context)
+                    return
+                }
+                self.runtimeFailureContext = nil
+                self.onFailure?(context)
             }
         }
     }
@@ -48,8 +59,25 @@ final class IPhoneHealthKitLiveHeartRateProvider {
         await driver.canPrepareWithoutAuthorizationPrompt()
     }
 
-    func prepare(configuration: HKWorkoutConfiguration) async throws {
-        try await core.prepare(configuration: configuration)
+    func prepare(
+        configuration: HKWorkoutConfiguration,
+        failureContext: IPhoneHealthKitRuntimeFailureContext
+    ) async throws {
+        runtimeFailureContext = failureContext
+        driver.setNextRuntimeFailureContext(failureContext)
+        do {
+            try await core.prepare(configuration: configuration)
+        } catch {
+            if runtimeFailureContext == failureContext {
+                runtimeFailureContext = nil
+            }
+            throw error
+        }
+    }
+
+    func bindRuntimeFailureContext(_ context: IPhoneHealthKitRuntimeFailureContext) {
+        runtimeFailureContext = context
+        driver.updateCurrentRuntimeFailureContext(context)
     }
 
     func start(at date: Date = Date()) async throws {
@@ -57,13 +85,23 @@ final class IPhoneHealthKitLiveHeartRateProvider {
     }
 
     func discard(at date: Date = Date()) async {
+        let discardedContext = runtimeFailureContext
         await core.discard(at: date)
+        if runtimeFailureContext == discardedContext {
+            runtimeFailureContext = nil
+        }
     }
 
     func finish(
         at date: Date = Date()
     ) async throws -> IPhoneHealthKitWorkoutFinishOutcome<HKWorkout> {
-        try await core.finish(at: date)
+        let finishedContext = runtimeFailureContext
+        defer {
+            if runtimeFailureContext == finishedContext {
+                runtimeFailureContext = nil
+            }
+        }
+        return try await core.finish(at: date)
     }
 }
 
@@ -73,7 +111,7 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
     typealias Workout = HKWorkout
 
     var onHeartRateSample: ((IPhoneHealthKitHeartRateSample) -> Void)?
-    var onRuntimeFailure: (() -> Void)?
+    var onRuntimeFailure: ((IPhoneHealthKitRuntimeFailureContext) -> Void)?
 
     private let healthStore: HKHealthStore
     private var session: HKWorkoutSession?
@@ -84,9 +122,21 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
     private var stoppedAt: Date?
     private var endCollectionContinuation: CheckedContinuation<Void, Error>?
     private var finishContinuation: CheckedContinuation<HKWorkout?, Error>?
+    private var nextRuntimeFailureContext: IPhoneHealthKitRuntimeFailureContext?
+    private var runtimeFailureContexts: [ObjectIdentifier: IPhoneHealthKitRuntimeFailureContext] = [:]
+    private var runtimeFailureContextOrder: [ObjectIdentifier] = []
 
     init(healthStore: HKHealthStore) {
         self.healthStore = healthStore
+    }
+
+    func setNextRuntimeFailureContext(_ context: IPhoneHealthKitRuntimeFailureContext) {
+        nextRuntimeFailureContext = context
+    }
+
+    func updateCurrentRuntimeFailureContext(_ context: IPhoneHealthKitRuntimeFailureContext) {
+        guard let session else { return }
+        retainRuntimeFailureContext(context, for: session)
     }
 
     func requestAuthorization() async throws {
@@ -149,6 +199,10 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
         builder.delegate = self
         self.session = session
         self.builder = builder
+        if let nextRuntimeFailureContext {
+            retainRuntimeFailureContext(nextRuntimeFailureContext, for: session)
+            self.nextRuntimeFailureContext = nil
+        }
     }
 
     func prepare() async throws {
@@ -284,6 +338,20 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
             )
         }
     }
+
+    private func retainRuntimeFailureContext(
+        _ context: IPhoneHealthKitRuntimeFailureContext,
+        for session: HKWorkoutSession
+    ) {
+        let identifier = ObjectIdentifier(session)
+        runtimeFailureContexts[identifier] = context
+        runtimeFailureContextOrder.removeAll { $0 == identifier }
+        runtimeFailureContextOrder.append(identifier)
+        while runtimeFailureContextOrder.count > 8 {
+            let expiredIdentifier = runtimeFailureContextOrder.removeFirst()
+            runtimeFailureContexts.removeValue(forKey: expiredIdentifier)
+        }
+    }
 }
 
 @available(iOS 26.0, *)
@@ -316,14 +384,21 @@ extension HealthKitLiveWorkoutDriver: HKWorkoutSessionDelegate, HKLiveWorkoutBui
 
     func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, workoutSession === self.session else { return }
-            let continuation = self.prepareContinuation
-            self.prepareContinuation = nil
-            continuation?.resume(throwing: error)
-            let stoppedContinuation = self.stoppedTransitionContinuation
-            self.stoppedTransitionContinuation = nil
-            stoppedContinuation?.resume(throwing: error)
-            self.onRuntimeFailure?()
+            guard let self else { return }
+            let identifier = ObjectIdentifier(workoutSession)
+            guard let failureContext = self.runtimeFailureContexts.removeValue(
+                forKey: identifier
+            ) else { return }
+            self.runtimeFailureContextOrder.removeAll { $0 == identifier }
+            if workoutSession === self.session {
+                let continuation = self.prepareContinuation
+                self.prepareContinuation = nil
+                continuation?.resume(throwing: error)
+                let stoppedContinuation = self.stoppedTransitionContinuation
+                self.stoppedTransitionContinuation = nil
+                stoppedContinuation?.resume(throwing: error)
+            }
+            self.onRuntimeFailure?(failureContext)
         }
     }
 
