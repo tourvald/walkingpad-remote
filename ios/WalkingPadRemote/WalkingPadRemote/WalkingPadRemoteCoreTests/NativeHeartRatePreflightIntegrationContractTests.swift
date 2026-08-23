@@ -264,14 +264,25 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
             "private func linkDeferredNativeHealthKitWorkout(",
             in: managerSource
         )
+        let exactLegacy = try functionBody(
+            "private func persistExactLegacyWorkoutLink(",
+            in: managerSource
+        )
 
         XCTAssertFalse(clear.contains("nativeHealthKitAcquisitionStartedAt"))
-        XCTAssertTrue(link.contains("linkage.profileID"))
         XCTAssertTrue(link.contains("linkage.telemetrySessionID"))
-        XCTAssertTrue(link.contains("loadLegacyShadowWorkoutHistory(profileID: profileID)"))
-        XCTAssertTrue(link.contains("saveLegacyShadowWorkoutHistory(entries, profileID: profileID)"))
+        XCTAssertTrue(link.contains("NativeWorkoutRequiredLinkagePolicy.complete("))
+        XCTAssertTrue(exactLegacy.contains("linkage.profileID"))
+        XCTAssertTrue(exactLegacy.contains(
+            "loadLegacyShadowWorkoutHistory(profileID: profileID)"
+        ))
+        XCTAssertTrue(exactLegacy.contains(
+            "saveLegacyShadowWorkoutHistory(entries, profileID: profileID)"
+        ))
         XCTAssertFalse(link.contains("pendingHealthkit"))
         XCTAssertFalse(link.contains("nativeHealthKitAcquisitionStartedAt"))
+        XCTAssertFalse(exactLegacy.contains("pendingHealthkit"))
+        XCTAssertFalse(exactLegacy.contains("nativeHealthKitAcquisitionStartedAt"))
     }
 
     func testTelemetryIdentityIsNativeAndCannotGateMotion() throws {

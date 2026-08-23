@@ -402,6 +402,19 @@ enum NativeWorkoutLegacyLinkPolicy {
     }
 }
 
+enum NativeWorkoutRequiredLinkagePolicy {
+    static func complete(
+        legacyRequired: Bool,
+        persistLegacy: () -> Bool,
+        telemetryRequired: Bool,
+        persistTelemetry: () async -> Bool
+    ) async -> Bool {
+        if legacyRequired, !persistLegacy() { return false }
+        if telemetryRequired, !(await persistTelemetry()) { return false }
+        return true
+    }
+}
+
 struct ActiveWorkoutRecoveryRequestGate {
     private var requestedSceneSessionIDs: Set<String> = []
 

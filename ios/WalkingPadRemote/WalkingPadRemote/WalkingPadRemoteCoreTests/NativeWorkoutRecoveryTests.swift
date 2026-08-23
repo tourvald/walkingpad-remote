@@ -371,6 +371,45 @@ final class NativeWorkoutRecoveryTests: XCTestCase {
         ))
     }
 
+    func testRequiredLinkageFailsClosedUntilEveryApplicableWriteSucceeds() async {
+        var telemetryAttempts = 0
+        let legacyFailure = await NativeWorkoutRequiredLinkagePolicy.complete(
+            legacyRequired: true,
+            persistLegacy: { false },
+            telemetryRequired: true,
+            persistTelemetry: {
+                telemetryAttempts += 1
+                return true
+            }
+        )
+        XCTAssertFalse(legacyFailure)
+        XCTAssertEqual(telemetryAttempts, 0)
+
+        let telemetryFailure = await NativeWorkoutRequiredLinkagePolicy.complete(
+            legacyRequired: true,
+            persistLegacy: { true },
+            telemetryRequired: true,
+            persistTelemetry: {
+                telemetryAttempts += 1
+                return false
+            }
+        )
+        XCTAssertFalse(telemetryFailure)
+        XCTAssertEqual(telemetryAttempts, 1)
+
+        let success = await NativeWorkoutRequiredLinkagePolicy.complete(
+            legacyRequired: true,
+            persistLegacy: { true },
+            telemetryRequired: true,
+            persistTelemetry: {
+                telemetryAttempts += 1
+                return true
+            }
+        )
+        XCTAssertTrue(success)
+        XCTAssertEqual(telemetryAttempts, 2)
+    }
+
     private func makePreflight() -> NativeWorkoutRecoveryRecord {
         NativeWorkoutRecoveryRecord.preflight(
             appWorkoutID: UUID(),

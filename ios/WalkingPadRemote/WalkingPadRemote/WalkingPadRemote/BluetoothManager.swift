@@ -626,24 +626,27 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return list.map { legacyShadowWorkoutEntry(from: $0) }
     }
 
+    @discardableResult
     private func saveLegacyShadowWorkoutHistory(
         _ entries: [LegacyShadowWorkoutEntry],
         profileID: UUID
-    ) {
+    ) -> Bool {
         // Compatibility-only parity evidence through #37; #36 owns mandatory removal.
         let list = entries.prefix(50).map { workoutEntryDTO(from: $0) }
         guard let data = try? JSONEncoder().encode(list) else {
             legacyShadowWriterStatusText = "failed: encode"
             appendLog("Legacy shadow writer failed: encode")
-            return
+            return false
         }
         let key = profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID)
         UserDefaults.standard.set(data, forKey: key)
         if UserDefaults.standard.data(forKey: key) == data {
             legacyShadowWriterStatusText = "ok"
+            return true
         } else {
             legacyShadowWriterStatusText = "failed: persistence"
             appendLog("Legacy shadow writer failed: persistence")
+            return false
         }
     }
 
@@ -7226,7 +7229,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         throw IPhoneHealthKitHeartRateProviderError.operationCancelled
                     }
                     nativeHealthKitAcquisitionStartedAt = nil
-                    guard linkNativeHealthKitWorkout(
+                    guard await linkNativeHealthKitWorkout(
                         uuid: workout.uuid,
                         record: completedRecord
                     ) else {
@@ -7317,10 +7320,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             limit: 10,
             sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)]
         ) { [weak self] _, samples, error in
-            DispatchQueue.main.async { [weak self] in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
-                nativeHealthKitLinkageQueryInFlight = false
                 guard error == nil else {
+                    nativeHealthKitLinkageQueryInFlight = false
                     nativeHeartRateLogger.error("deferred_link_query_failed")
                     return
                 }
@@ -7353,11 +7356,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )) <= 5
                         && abs(workout.endDate.timeIntervalSince(expectedEndAt)) <= 15
                 }
-                guard let workout else { return }
-                guard linkDeferredNativeHealthKitWorkout(
+                guard let workout else {
+                    nativeHealthKitLinkageQueryInFlight = false
+                    return
+                }
+                let linkagePersisted = await linkDeferredNativeHealthKitWorkout(
                     uuid: workout.uuid,
                     linkage: linkage
-                ) else { return }
+                )
+                nativeHealthKitLinkageQueryInFlight = false
+                guard linkagePersisted else { return }
                 appendLog("Deferred native HealthKit workout linked: \(workout.uuid.uuidString)")
                 nativeHeartRateLogger.info("deferred_link_resolved")
                 clearDeferredNativeHealthKitLinkage(linkage)
@@ -7372,47 +7380,62 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func linkDeferredNativeHealthKitWorkout(
         uuid: UUID,
         linkage: DeferredNativeHealthKitLinkage
-    ) -> Bool {
-        if linkage.linksLegacyWorkout {
-            guard let profileID = linkage.profileID,
-                  let legacyWorkoutID = linkage.legacyWorkoutID else {
-                return false
-            }
-            var entries = loadLegacyShadowWorkoutHistory(profileID: profileID)
-            guard let index = entries.firstIndex(where: { $0.id == legacyWorkoutID }) else {
-                return false
-            }
-            let entry = entries[index]
-            guard NativeWorkoutLegacyLinkPolicy.canLink(
-                existingWorkoutUUID: entry.healthkitWorkoutUUID,
-                expectedWorkoutUUID: uuid
-            ) else {
-                return false
-            }
-            if entry.healthkitWorkoutUUID == nil {
-                entries[index] = LegacyShadowWorkoutEntry(
-                    id: entry.id,
-                    date: entry.date,
-                    beatsPerMeter: entry.beatsPerMeter,
-                    targetBpm: entry.targetBpm,
-                    durationSeconds: entry.durationSeconds,
-                    avgBpm: entry.avgBpm,
-                    avgSpeedKmh: entry.avgSpeedKmh,
-                    healthkitWorkoutUUID: uuid.uuidString,
-                    zoneSeconds: entry.zoneSeconds
-                )
-                saveLegacyShadowWorkoutHistory(entries, profileID: profileID)
-                if activeUserProfileID == profileID {
-                    legacyShadowWorkoutHistory = entries
-                }
-            }
+    ) async -> Bool {
+        let telemetrySessionID = linkage.telemetrySessionID.map {
+            SessionID(rawValue: $0)
         }
+        return await NativeWorkoutRequiredLinkagePolicy.complete(
+            legacyRequired: linkage.linksLegacyWorkout,
+            persistLegacy: { [self] in
+                persistExactLegacyWorkoutLink(uuid: uuid, linkage: linkage)
+            },
+            telemetryRequired: telemetrySessionID != nil,
+            persistTelemetry: { [self] in
+                guard let telemetrySessionID else { return false }
+                return await persistHealthKitWorkoutAssociationWithTelemetryV2(
+                    sessionID: telemetrySessionID,
+                    workoutIdentifier: uuid
+                )
+            }
+        )
+    }
 
-        if let telemetrySessionID = linkage.telemetrySessionID {
-            associateHealthKitWorkoutWithTelemetryV2(
-                sessionID: SessionID(rawValue: telemetrySessionID),
-                workoutIdentifier: uuid
-            )
+    private func persistExactLegacyWorkoutLink(
+        uuid: UUID,
+        linkage: DeferredNativeHealthKitLinkage
+    ) -> Bool {
+        guard let profileID = linkage.profileID,
+              let legacyWorkoutID = linkage.legacyWorkoutID else {
+            return false
+        }
+        var entries = loadLegacyShadowWorkoutHistory(profileID: profileID)
+        guard let index = entries.firstIndex(where: { $0.id == legacyWorkoutID }) else {
+            return false
+        }
+        let entry = entries[index]
+        guard NativeWorkoutLegacyLinkPolicy.canLink(
+            existingWorkoutUUID: entry.healthkitWorkoutUUID,
+            expectedWorkoutUUID: uuid
+        ) else {
+            return false
+        }
+        guard entry.healthkitWorkoutUUID == nil else { return true }
+        entries[index] = LegacyShadowWorkoutEntry(
+            id: entry.id,
+            date: entry.date,
+            beatsPerMeter: entry.beatsPerMeter,
+            targetBpm: entry.targetBpm,
+            durationSeconds: entry.durationSeconds,
+            avgBpm: entry.avgBpm,
+            avgSpeedKmh: entry.avgSpeedKmh,
+            healthkitWorkoutUUID: uuid.uuidString,
+            zoneSeconds: entry.zoneSeconds
+        )
+        guard saveLegacyShadowWorkoutHistory(entries, profileID: profileID) else {
+            return false
+        }
+        if activeUserProfileID == profileID {
+            legacyShadowWorkoutHistory = entries
         }
         return true
     }
@@ -7421,8 +7444,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func linkNativeHealthKitWorkout(
         uuid: UUID,
         record: NativeWorkoutRecoveryRecord
-    ) -> Bool {
-        linkDeferredNativeHealthKitWorkout(
+    ) async -> Bool {
+        await linkDeferredNativeHealthKitWorkout(
             uuid: uuid,
             linkage: DeferredNativeHealthKitLinkage(
                 acquisitionStartedAt: record.acquisitionStartedAt,
@@ -7924,21 +7947,31 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         sessionID: SessionID,
         workoutIdentifier: UUID
     ) {
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
-            do {
-                try await self.telemetryV2Coordinator.associateHealthKitWorkout(
-                    sessionID: sessionID,
-                    workoutIdentifier: workoutIdentifier
-                )
-            } catch {
-                await MainActor.run {
-                    self.appendLog("Telemetry V2 HealthKit linkage failed: \(error)")
-                    self.telemetryV2WorkoutHistoryState = .failed(
-                        "HealthKit linkage failed: \(error.localizedDescription)"
-                    )
-                }
-            }
+            _ = await persistHealthKitWorkoutAssociationWithTelemetryV2(
+                sessionID: sessionID,
+                workoutIdentifier: workoutIdentifier
+            )
+        }
+    }
+
+    private func persistHealthKitWorkoutAssociationWithTelemetryV2(
+        sessionID: SessionID,
+        workoutIdentifier: UUID
+    ) async -> Bool {
+        do {
+            try await telemetryV2Coordinator.associateHealthKitWorkout(
+                sessionID: sessionID,
+                workoutIdentifier: workoutIdentifier
+            )
+            return true
+        } catch {
+            appendLog("Telemetry V2 HealthKit linkage failed: \(error)")
+            telemetryV2WorkoutHistoryState = .failed(
+                "HealthKit linkage failed: \(error.localizedDescription)"
+            )
+            return false
         }
     }
 

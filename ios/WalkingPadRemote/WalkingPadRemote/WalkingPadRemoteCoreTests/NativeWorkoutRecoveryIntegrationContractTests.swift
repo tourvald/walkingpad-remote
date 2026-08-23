@@ -350,7 +350,10 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         assertOrdered([
             "guard error == nil else",
             "NativeWorkoutSavedProofPolicy.uniqueMatch(",
-            "guard let workout else { return }",
+            "guard let workout else {",
+            "let linkagePersisted = await linkDeferredNativeHealthKitWorkout(",
+            "guard linkagePersisted else { return }",
+            "clearDeferredNativeHealthKitLinkage(linkage)",
             "completeRecoveredFinishIfProven(linkage: linkage)",
         ], in: resolve)
         XCTAssertFalse(resolve.contains("clearNativeWorkoutRecoveryRecord()"))
@@ -370,24 +373,32 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
             "private func linkDeferredNativeHealthKitWorkout(",
             in: manager
         )
+        XCTAssertTrue(link.contains("NativeWorkoutRequiredLinkagePolicy.complete("))
+        XCTAssertTrue(link.contains("persistHealthKitWorkoutAssociationWithTelemetryV2("))
+
+        let exactLegacy = try functionBody(
+            "private func persistExactLegacyWorkoutLink(",
+            in: manager
+        )
         assertOrdered([
             "guard let index = entries.firstIndex",
             "NativeWorkoutLegacyLinkPolicy.canLink(",
+            "guard saveLegacyShadowWorkoutHistory",
             "return false",
-        ], in: link)
+        ], in: exactLegacy)
 
         let directLink = try functionBody(
             "private func linkNativeHealthKitWorkout(",
             in: manager
         )
-        XCTAssertTrue(directLink.contains("linkDeferredNativeHealthKitWorkout("))
+        XCTAssertTrue(directLink.contains("await linkDeferredNativeHealthKitWorkout("))
 
         let finish = try functionBody(
             "private func finishNativeHealthKitWorkoutIfNeeded()",
             in: manager
         )
         assertOrdered([
-            "guard linkNativeHealthKitWorkout(",
+            "guard await linkNativeHealthKitWorkout(",
             "terminalSaveProven = true",
         ], in: finish)
     }
