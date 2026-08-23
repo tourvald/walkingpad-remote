@@ -137,6 +137,7 @@ private struct TrainingHubPresentation {
     let targetValue: String
     let targetSegments: [TargetSegment]
     let selectedSegmentID: Int?
+    let durationMinutes: Int?
     let metrics: [Metric]
     let readiness: [Readiness]
     let startEnabled: Bool
@@ -161,6 +162,7 @@ private struct TrainingHubPresentation {
         targetValue: String,
         targetSegments: [TargetSegment],
         selectedSegmentID: Int?,
+        durationMinutes: Int? = nil,
         metrics: [Metric],
         readiness: [Readiness],
         startEnabled: Bool,
@@ -183,6 +185,7 @@ private struct TrainingHubPresentation {
         self.targetValue = targetValue
         self.targetSegments = targetSegments
         self.selectedSegmentID = selectedSegmentID
+        self.durationMinutes = durationMinutes
         self.metrics = metrics
         self.readiness = readiness
         self.startEnabled = startEnabled
@@ -303,7 +306,6 @@ private func makeHRControlTrainingHubPresentation(
     targetZoneIndex: Int,
     zoneRanges: [ClosedRange<Int>],
     durationMinutes: Int,
-    cooldownTargetBPM: Int,
     startEnabled: Bool,
     runtimeBlockReason: String?,
     isPreparing: Bool = false,
@@ -332,10 +334,8 @@ private func makeHRControlTrainingHubPresentation(
         targetValue: "\(targetRange.lowerBound)–\(targetRange.upperBound) bpm",
         targetSegments: makeTrainingTargetSegments(zoneRanges: zoneRanges),
         selectedSegmentID: safeZoneIndex,
-        metrics: [
-            .init(id: "duration", title: "Время", value: "\(durationMinutes) мин", systemImage: "clock"),
-            .init(id: "cooldown", title: "Заминка", value: "до \(cooldownTargetBPM) bpm", systemImage: "wind")
-        ],
+        durationMinutes: durationMinutes,
+        metrics: [],
         readiness: [
             .init(
                 id: "treadmill",
@@ -479,14 +479,15 @@ private func makeHRControlActivePresentation(
 #if DEBUG
 private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPresentation? {
     let ranges = [60...134, 135...146, 147...158, 159...170, 171...220]
-    let base: (
-        Bool,
-        Bool,
-        Int?,
-        String?,
-        Bool,
-        Bool
-    ) -> TrainingHubPresentation = { treadmillReady, hrReady, bpm, source, startEnabled, preparing in
+    func hrControl(
+        treadmillReady: Bool = true,
+        hrReady: Bool = true,
+        bpm: Int? = 138,
+        source: String? = nil,
+        durationMinutes: Int = 30,
+        startEnabled: Bool = true,
+        preparing: Bool = false
+    ) -> TrainingHubPresentation {
         makeHRControlTrainingHubPresentation(
             treadmillConnected: treadmillReady,
             hrFresh: hrReady,
@@ -494,8 +495,7 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
             heartRateSourceLabel: source,
             targetZoneIndex: 2,
             zoneRanges: ranges,
-            durationMinutes: 30,
-            cooldownTargetBPM: 115,
+            durationMinutes: durationMinutes,
             startEnabled: startEnabled,
             runtimeBlockReason: nil,
             isPreparing: preparing,
@@ -505,15 +505,25 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
 
     switch name {
     case "ready-unknown-source":
-        return base(true, true, 138, nil, true, false)
+        return hrControl()
     case "ready-known-source":
-        return base(true, true, 138, "Apple Watch", true, false)
+        return hrControl(source: "Apple Watch")
     case "treadmill-unavailable":
-        return base(false, true, 138, nil, false, false)
+        return hrControl(treadmillReady: false, startEnabled: false)
     case "hr-unavailable":
-        return base(true, false, nil, nil, false, false)
+        return hrControl(hrReady: false, bpm: nil, startEnabled: false)
     case "preparing":
-        return base(true, true, 138, nil, false, true)
+        return hrControl(startEnabled: false, preparing: true)
+    case "duration-20":
+        return hrControl(durationMinutes: 20)
+    case "duration-30":
+        return hrControl(durationMinutes: 30)
+    case "duration-45":
+        return hrControl(durationMinutes: 45)
+    case "duration-legacy-10":
+        return hrControl(durationMinutes: 10)
+    case "duration-legacy-60":
+        return hrControl(durationMinutes: 60)
     case "intervals":
         return TrainingHubPresentation(
             modeTitle: "Интервалы",
@@ -526,7 +536,7 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
                 .init(id: "work", title: "Работа", value: "3 мин", systemImage: "figure.run"),
                 .init(id: "recovery", title: "Восстановление", value: "2 мин", systemImage: "figure.walk")
             ],
-            readiness: base(true, true, 138, nil, false, false).readiness,
+            readiness: hrControl(startEnabled: false).readiness,
             startEnabled: false,
             startBlocker: "Только предпросмотр",
             isPreparing: false,
@@ -544,7 +554,7 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
                 .init(id: "zone5", title: "Зона 5", value: "3 мин", systemImage: "heart.fill"),
                 .init(id: "zone4", title: "Зона 4", value: "12 мин", systemImage: "heart.fill")
             ],
-            readiness: base(true, true, 138, nil, false, false).readiness,
+            readiness: hrControl(startEnabled: false).readiness,
             startEnabled: false,
             startBlocker: "Только предпросмотр",
             isPreparing: false,
@@ -967,11 +977,89 @@ private struct TrainingZoneScale: View {
     }
 }
 
+private let trainingDurationPresets = [20, 25, 30, 35, 40, 45]
+
+private struct TrainingDurationPresetSelector: View {
+    let selectedMinutes: Int
+    let interactive: Bool
+    let onSelect: (Int) -> Void
+
+    private var hasPresetSelection: Bool {
+        trainingDurationPresets.contains(selectedMinutes)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("ВРЕМЯ · МИН")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if !hasPresetSelection {
+                    Text("Текущее: \(selectedMinutes) мин")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .accessibilityLabel("Текущая длительность \(selectedMinutes) минут")
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    presetButtons
+                }
+
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
+                    spacing: 6
+                ) {
+                    presetButtons
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var presetButtons: some View {
+        ForEach(trainingDurationPresets, id: \.self) { minutes in
+            let isSelected = minutes == selectedMinutes
+            Button {
+                guard interactive else { return }
+                onSelect(minutes)
+            } label: {
+                Text("\(minutes)")
+                    .font(.subheadline.weight(isSelected ? .bold : .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
+                    .background(
+                        isSelected ? Color.accentColor : Color(.systemBackground).opacity(0.55),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(
+                                isSelected ? Color.accentColor : Color.secondary.opacity(0.16),
+                                lineWidth: isSelected ? 2 : 1
+                            )
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(minutes) минут")
+            .accessibilityValue(isSelected ? "Выбрано" : "Не выбрано")
+            .accessibilityHidden(!interactive)
+        }
+    }
+}
+
 private struct TrainingHubView: View {
     let presentation: TrainingHubPresentation
     let onTreadmillTap: () -> Void
     let onZoneTap: (Int) -> Void
-    let onDurationTap: () -> Void
+    let onDurationSelect: (Int) -> Void
     let onSettingsTap: () -> Void
     let onStart: () -> Void
 
@@ -1012,9 +1100,19 @@ private struct TrainingHubView: View {
                 targetScale
             }
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { metricItems }
-                VStack(spacing: 8) { metricItems }
+            if let durationMinutes = presentation.durationMinutes {
+                TrainingDurationPresetSelector(
+                    selectedMinutes: durationMinutes,
+                    interactive: !presentation.isPreview,
+                    onSelect: onDurationSelect
+                )
+            }
+
+            if !presentation.metrics.isEmpty {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { metricItems }
+                    VStack(spacing: 8) { metricItems }
+                }
             }
 
             if !presentation.isPreview {
@@ -1133,13 +1231,7 @@ private struct TrainingHubView: View {
             .padding(.vertical, 8)
             .background(Color(.systemBackground).opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            if metric.id == "duration", !presentation.isPreview {
-                Button(action: onDurationTap) { content }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Изменяет длительность тренировки")
-            } else {
-                content
-            }
+            content
         }
     }
 
@@ -1766,7 +1858,6 @@ private struct ControlSwipeView: View {
     @State private var showConnectError = false
     @State private var presentSuggestedPicker = false
     @State private var showInfoToast = false
-    @State private var showDurationSheet = false
     @State private var showParameters = false
     @State private var sessionPresentationAnchor: TrainingSessionPresentationAnchor?
     @State private var pendingTrainingResult: PendingTrainingResult?
@@ -1790,7 +1881,6 @@ private struct ControlSwipeView: View {
             targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
             zoneRanges: hrZoneRanges(for: manager),
             durationMinutes: manager.hrDurationMinutes,
-            cooldownTargetBPM: manager.hrCooldownTargetBpm,
             startEnabled: manager.isHrControlStartAffordanceAvailable,
             runtimeBlockReason: manager.hrControlStartBlockReasonText
         )
@@ -1947,7 +2037,7 @@ private struct ControlSwipeView: View {
                     range: ranges[zoneIndex]
                 )
             },
-            onDurationTap: { showDurationSheet = true },
+            onDurationSelect: { manager.hrDurationMinutes = $0 },
             onSettingsTap: { showParameters = true },
             onStart: { manager.startHrControl() }
         )
@@ -2120,12 +2210,6 @@ private struct ControlSwipeView: View {
             .navigationDestination(isPresented: $showParameters) {
                 HRParametersFormView()
                     .environmentObject(manager)
-            }
-            .sheet(isPresented: $showDurationSheet) {
-                HRDurationWheelSheet(minutes: Binding(
-                    get: { manager.hrDurationMinutes },
-                    set: { manager.hrDurationMinutes = max(1, min(120, $0)) }
-                ))
             }
             .sheet(isPresented: $showDevicePicker) {
                 DevicePickerView()
@@ -2606,67 +2690,6 @@ private func hrAdaptiveDecisionPreview(
         details: String(format: "Δ %d bpm -> шаг %+.1f км/ч", diff, delta),
         color: diff > 0 ? .orange : .green
     )
-}
-
-private struct HRDurationWheelSheet: View {
-    @Binding var minutes: Int
-    @Environment(\.dismiss) private var dismiss
-    @State private var draftMinutes: Int
-
-    init(minutes: Binding<Int>) {
-        _minutes = minutes
-        _draftMinutes = State(initialValue: minutes.wrappedValue)
-    }
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                Text("\(draftMinutes) мин")
-                    .font(.system(size: 34, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-
-                Picker("Длительность", selection: $draftMinutes) {
-                    ForEach(1...120, id: \.self) { minute in
-                        Text("\(minute) мин").tag(minute)
-                    }
-                }
-                .pickerStyle(.wheel)
-                .frame(maxHeight: 220)
-                .clipped()
-
-                HStack(spacing: 16) {
-                    Button("- 5 мин") {
-                        draftMinutes = max(1, draftMinutes - 5)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button("+ 5 мин") {
-                        draftMinutes = min(120, draftMinutes + 5)
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                Spacer(minLength: 0)
-            }
-            .padding()
-            .navigationTitle("Длительность")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Отмена") {
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Готово") {
-                        minutes = draftMinutes
-                        dismiss()
-                    }
-                    .fontWeight(.semibold)
-                }
-            }
-        }
-    }
 }
 
 private struct HRParametersFormView: View {

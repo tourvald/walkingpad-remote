@@ -1,6 +1,20 @@
 # Redesign QA ledger
 
-Status: passed for the binding Issue #64 compact continuous preflight correction.
+Status: passed for the binding Issue #68 duration-preset follow-up correction.
+
+## Issue #68 — direct duration presets
+
+| Pass | State / form factor | Severity | Finding | Evidence | Owner path | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline | 20 / 30 / 45 minutes selected, iPhone 17, light and dark | P0 | The idle Hub shows exactly six direct values (`20/25/30/35/40/45`); the selected preset uses the normal app accent and no duration sheet is present. | `/private/tmp/issue68-qa/tall-duration-20-light.png`, `/private/tmp/issue68-qa/tall-duration-30-light.png`, `/private/tmp/issue68-qa/tall-duration-45-dark.png` plus focused source contract | `ContentView.swift` | Pass |
+| Baseline | Legacy 10 / 60 minutes | P0 | A non-preset stored duration selects no preset and remains factual through a compact `Текущее: N мин` label; presentation has no state, binding, or appearance mutation. | `/private/tmp/issue68-qa/tall-duration-legacy-10-light.png` plus `duration-legacy-10` / `duration-legacy-60` fixtures and focused source contract | `ContentView.swift` | Pass |
+| Baseline | Ready / treadmill unavailable / HR unavailable, iPhone 17, light | P0 | Existing readiness and blocker semantics remain intact while the cooldown summary is absent from idle presentation. | `/private/tmp/issue68-qa/tall-duration-30-light.png`, `/private/tmp/issue68-qa/tall-treadmill-unavailable-light.png`, `/private/tmp/issue68-qa/tall-hr-unavailable-light.png` | `ContentView.swift` | Pass |
+| Baseline | Ready, short iPhone portrait, light | P1 | The six presets remain one compact row with 44-point minimum hit targets; the existing scroll composition keeps Start reachable. | `/private/tmp/issue68-qa/short-duration-30-light.png` | `ContentView.swift` | Pass |
+| Baseline | Ready / unavailable, iPhone 17 and short iPhone, Accessibility XL | P1 | The selector keeps all six values; when horizontal space is insufficient it falls back to a 3×2 grid, and natural scrolling preserves reachability without clipping or a modal path. | `/private/tmp/issue68-qa/tall-duration-30-axl.png`, `/private/tmp/issue68-qa/short-treadmill-unavailable-axl.png` plus source inspection | `ContentView.swift` | Pass |
+| Regression | Active / cooldown / ending / summary, iPhone 17, light | P0 | Non-idle presentation remains on the accepted shells; duration presets and cooldown-tile removal are confined to the idle Hub. | `/private/tmp/issue68-qa/tall-active-in-zone-light.png`, `/private/tmp/issue68-qa/tall-cooldown-above-light.png`, `/private/tmp/issue68-qa/tall-ending-confirming-light.png`, `/private/tmp/issue68-qa/tall-summary-complete-light.png` | `ContentView.swift` | Pass |
+| Final review | Runtime and transport boundary | P0 | The production diff is limited to SwiftUI presentation, a source-contract test, and this ledger. Preset taps assign the existing `hrDurationMinutes`; Start authorization, Parameters, cooldown runtime, BLE, HealthKit, telemetry, and persistence owners are unchanged. | Scope checker, focused test, unsigned simulator build, and base-to-head diff | `ContentView.swift`, `HeartRateLegacyBehaviorContractTests.swift` | Pass |
+
+No visual correction pass was required. Simulator fixtures are no-op presentation inputs: fixture launches skip manager startup, and fixture controls cannot reach production callbacks.
 
 ## Issue #64 — compact continuous preflight
 
