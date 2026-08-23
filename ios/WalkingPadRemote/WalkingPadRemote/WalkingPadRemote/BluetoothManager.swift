@@ -2380,7 +2380,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             let peripheralID = peripheral.identifier
             let endedConnectionAttempt = self.connectingPeripheralId == peripheralID
                 && self.connectedPeripheralId != peripheralID
-            guard endedConnectionAttempt || self.connectedPeripheralId == peripheralID else {
+            let endedEstablishedConnection = self.connectedPeripheralId == peripheralID
+                || (self.cancellingConnectionPeripheralId == peripheralID
+                    && self.connectingPeripheralId != peripheralID)
+            guard endedConnectionAttempt || endedEstablishedConnection else {
                 self.appendLog("Ignoring stale disconnect for \(peripheralID.uuidString)")
                 return
             }
@@ -2481,6 +2484,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         if let central {
             if let id = connectedPeripheralId, let p = discoveredMap[id] {
+                cancellingConnectionPeripheralId = id
                 central.cancelPeripheralConnection(p)
             } else if let id = connectingPeripheralId,
                       let p = connectingPeripheral,

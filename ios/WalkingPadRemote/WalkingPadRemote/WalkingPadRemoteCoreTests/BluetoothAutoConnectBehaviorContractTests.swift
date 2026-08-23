@@ -142,6 +142,38 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertEqual(didConnect.components(separatedBy: "central.stopScan()").count - 1, 1)
     }
 
+    func testEstablishedUserDisconnectRetainsIdentityUntilNormalCleanup() throws {
+        let disconnect = try functionBody(
+            "private func disconnect(userInitiated: Bool = false)",
+            in: managerSource
+        )
+        let didDisconnect = try functionBody(
+            "func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?)",
+            in: managerSource
+        )
+
+        assertOrdered(
+            [
+                "if let id = connectedPeripheralId, let p = discoveredMap[id]",
+                "cancellingConnectionPeripheralId = id",
+                "central.cancelPeripheralConnection(p)",
+            ],
+            in: disconnect
+        )
+        assertOrdered(
+            [
+                "let endedEstablishedConnection",
+                "self.cancellingConnectionPeripheralId == peripheralID",
+                "guard endedConnectionAttempt || endedEstablishedConnection",
+                "if endedConnectionAttempt",
+                "self.resetProtocolState()",
+                "self.connectedPeripheral = nil",
+                "self.manualModeSet = false",
+            ],
+            in: didDisconnect
+        )
+    }
+
     func testEqualRssiKnownCandidatesUsePersistedOrderAsTieBreak() throws {
         let preferredKnown = try functionBody(
             "private func preferredKnownDiscoveredPeripheral()",
