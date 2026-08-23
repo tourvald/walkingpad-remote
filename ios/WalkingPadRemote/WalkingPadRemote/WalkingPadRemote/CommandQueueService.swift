@@ -4,6 +4,13 @@ enum CommandQueueService {
     struct Command: Equatable {
         let data: Data
         let label: String
+        let requiresControlReadiness: Bool
+
+        init(data: Data, label: String, requiresControlReadiness: Bool = false) {
+            self.data = data
+            self.label = label
+            self.requiresControlReadiness = requiresControlReadiness
+        }
     }
 
     struct EnqueueResult {

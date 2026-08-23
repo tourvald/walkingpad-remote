@@ -195,7 +195,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         }
 
         XCTAssertTrue(affordance.contains("HRDomainService.heartRateStartAffordanceAvailable"))
-        XCTAssertTrue(affordance.contains("treadmillConnected: isConnected"))
+        XCTAssertTrue(affordance.contains("treadmillConnected: isTreadmillControlReady"))
         XCTAssertTrue(affordance.contains("currentHeartRateVisible: hrStreamingActive"))
         XCTAssertFalse(affordance.contains("watchReachable"))
         XCTAssertFalse(affordance.contains("controllerUnits"))

@@ -46,6 +46,10 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
             "func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral)",
             in: managerSource
         )
+        let rememberValidated = try functionBody(
+            "private func rememberCurrentValidatedTreadmill()",
+            in: managerSource
+        )
         let forget = try functionBody("func forgetKnownPeripheral(id: UUID)", in: managerSource)
         let disconnect = try functionBody(
             "private func disconnect(userInitiated: Bool = false)",
@@ -59,13 +63,15 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertTrue(loadPreference.contains("knownPeripherals.contains"))
         XCTAssertTrue(loadPreference.contains("lastSuccessfulPeripheralID = peripheralID"))
         XCTAssertTrue(candidateOrder.contains("ordered.insert(lastSuccessfulPeripheralID, at: 0)"))
+        XCTAssertFalse(didConnect.contains("self.knownPeripherals.append"))
+        XCTAssertFalse(didConnect.contains("self.saveLastSuccessfulPeripheral"))
         assertOrdered(
             [
-                "guard self.connectingPeripheralId == peripheralID",
-                "self.knownPeripherals.append",
-                "self.saveLastSuccessfulPeripheral(peripheral.identifier)",
+                "guard isTreadmillControlReady",
+                "knownPeripherals.append",
+                "saveLastSuccessfulPeripheral(peripheral.identifier)",
             ],
-            in: didConnect
+            in: rememberValidated
         )
         XCTAssertTrue(forget.contains("if self.lastSuccessfulPeripheralID == id"))
         XCTAssertTrue(forget.contains("removeObject(forKey: self.lastSuccessfulPeripheralStoreKey)"))
@@ -311,10 +317,10 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
                 "self.logTrainingEvent(\"ble_connection_event\"",
                 "self.isConnected = true",
                 "central.stopScan()",
-                "self.knownPeripherals.append",
             ],
             in: didConnect
         )
+        XCTAssertFalse(didConnect.contains("knownPeripherals.append"))
         XCTAssertEqual(didConnect.components(separatedBy: "central.stopScan()").count - 1, 1)
     }
 
@@ -383,6 +389,74 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
                 "self.knownPeripherals.isEmpty && self.allowAutoConnectUnknown && !self.autoConnectSuppressed"
             )
         )
+    }
+
+    func testControlReadinessUsesCurrentSubscribedTransportAndResetsTheQueue() throws {
+        let reset = try functionBody("private func resetProtocolState()", in: managerSource)
+        let services = try functionBody(
+            "func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?)",
+            in: managerSource
+        )
+        let characteristics = try functionBody(
+            "func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?)",
+            in: managerSource
+        )
+        let notification = try functionBody(
+            "func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?)",
+            in: managerSource
+        )
+        let valueUpdate = try functionBody(
+            "func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?)",
+            in: managerSource
+        )
+
+        XCTAssertTrue(managerSource.contains("@Published private(set) var isTreadmillControlReady: Bool = false"))
+        assertOrdered(
+            [
+                "resetCommandQueue(",
+                "treadmillProtocolConnection = nil",
+                "commandCharacteristicConnection = nil",
+                "notifyCharacteristicConnection = nil",
+                "isTreadmillControlReady = false",
+            ],
+            in: reset
+        )
+        XCTAssertTrue(services.contains("peripheral === connectedPeripheral"))
+        XCTAssertTrue(services.contains("treadmillProtocolConnection = currentTreadmillControlConnection"))
+        XCTAssertTrue(services.contains("invalidateTreadmillControlReadinessEvidence(includingProtocol: true)"))
+        XCTAssertTrue(characteristics.contains("commandCharacteristicConnection = currentTreadmillControlConnection"))
+        XCTAssertTrue(characteristics.contains("notifyCharacteristic = dataChar"))
+        XCTAssertTrue(characteristics.contains("notifyCharacteristic = rx"))
+        XCTAssertTrue(characteristics.contains("invalidateTreadmillControlReadinessEvidence()"))
+        XCTAssertTrue(notification.contains("characteristic === notifyCharacteristic"))
+        XCTAssertTrue(notification.contains("characteristic.isNotifying"))
+        XCTAssertTrue(notification.contains("recomputeTreadmillControlReadiness()"))
+        XCTAssertTrue(valueUpdate.contains("peripheral === connectedPeripheral"))
+        XCTAssertTrue(valueUpdate.contains("Ignoring value update from stale peripheral"))
+    }
+
+    func testProductionMotionUsesReadinessWhileStopRemainsLinkBased() throws {
+        let start = try functionBody("func startWithSpeed(_ kmh: Double)", in: managerSource)
+        let slider = try functionBody("func setTargetSpeedFromSlider(_ kmh: Double)", in: managerSource)
+        let adjust = try functionBody("func adjustSpeed(delta: Double)", in: managerSource)
+        let hrStart = try functionBody("func startHrControl()", in: managerSource)
+        let testRun = try functionBody("var canStartTreadmillTestRun: Bool", in: managerSource)
+        let speedWrite = try functionBody("private func sendTreadmillSetSpeed(", in: managerSource)
+        let performWrite = try functionBody("private func performWrite(", in: managerSource)
+        let stop = try functionBody("func stopBelt()", in: managerSource)
+
+        XCTAssertTrue(start.contains("guard isTreadmillControlReady"))
+        XCTAssertTrue(slider.contains("guard isTreadmillControlReady"))
+        XCTAssertTrue(adjust.contains("guard isTreadmillControlReady"))
+        XCTAssertTrue(hrStart.contains("treadmillConnected: isTreadmillControlReady"))
+        XCTAssertTrue(testRun.contains("isTreadmillControlReady"))
+        XCTAssertTrue(speedWrite.contains("guard isTreadmillControlReady"))
+        XCTAssertTrue(performWrite.contains("requiresControlReadiness && !isTreadmillControlReady"))
+        XCTAssertTrue(stop.contains("guard isConnected"))
+        XCTAssertFalse(stop.contains("isTreadmillControlReady"))
+
+        let content = source(relativePath: "WalkingPadRemote/ContentView.swift")
+        XCTAssertTrue(content.contains("treadmillConnected: manager.isTreadmillControlReady"))
     }
 
     private func source(relativePath: String) -> String {

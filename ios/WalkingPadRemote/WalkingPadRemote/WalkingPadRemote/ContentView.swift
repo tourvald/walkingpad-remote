@@ -1872,7 +1872,7 @@ private struct ControlSwipeView: View {
 
     private var productionTrainingHubPresentation: TrainingHubPresentation {
         makeHRControlTrainingHubPresentation(
-            treadmillConnected: manager.isConnected,
+            treadmillConnected: manager.isTreadmillControlReady,
             hrFresh: manager.hrStreamingActive,
             currentHeartRateBPM: manager.hrStreamingActive && manager.heartRateBPM > 0
                 ? manager.heartRateBPM
@@ -1913,7 +1913,7 @@ private struct ControlSwipeView: View {
         }()
 
         return makeHRControlActivePresentation(
-            treadmillConnected: manager.isConnected,
+            treadmillConnected: manager.isTreadmillControlReady,
             hrFresh: manager.hrStreamingActive,
             currentHeartRateBPM: manager.hrStreamingActive && manager.heartRateBPM > 0
                 ? manager.heartRateBPM
