@@ -107,6 +107,44 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.finishCount, 0)
     }
 
+    func testCollectionCleanupIgnoresLateSampleAndAllowsFreshAttempt() async throws {
+        let (provider, driver) = makeProvider()
+        var observations: [HeartRateProviderObservation] = []
+        provider.onObservation = { observations.append($0) }
+        try await provider.prepare(configuration: "attempt-a")
+        try await provider.start()
+
+        await provider.discard(at: Date(timeIntervalSince1970: 4_100))
+        provider.receive(IPhoneHealthKitHeartRateSample(
+            beatsPerMinute: 155,
+            measurementInterval: DateInterval(
+                start: Date(timeIntervalSince1970: 4_099),
+                duration: 1
+            ),
+            callbackObservedAt: Date(timeIntervalSince1970: 4_101),
+            receivedAt: Date(timeIntervalSince1970: 4_101)
+        ))
+
+        XCTAssertEqual(provider.state, .idle)
+        XCTAssertTrue(observations.isEmpty)
+
+        try await provider.prepare(configuration: "attempt-b")
+        try await provider.start()
+        provider.receive(IPhoneHealthKitHeartRateSample(
+            beatsPerMinute: 141,
+            measurementInterval: DateInterval(
+                start: Date(timeIntervalSince1970: 4_102),
+                duration: 1
+            ),
+            callbackObservedAt: Date(timeIntervalSince1970: 4_103),
+            receivedAt: Date(timeIntervalSince1970: 4_103)
+        ))
+
+        XCTAssertEqual(observations.map(\.beatsPerMinute), [141])
+        XCTAssertEqual(driver.createdConfigurations, ["attempt-a", "attempt-b"])
+        XCTAssertEqual(driver.discardCount, 1)
+    }
+
     func testCommittedFinishWaitsForStoppedTransitionAndUsesItsDate() async throws {
         let (provider, driver) = makeProvider()
         try await provider.prepare(configuration: "walking")
@@ -142,6 +180,48 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.stopActivityCount, 1)
         XCTAssertEqual(driver.endCollectionCount, 1)
         XCTAssertEqual(driver.finishCount, 1)
+    }
+
+    func testRapidHubWarmDuringCommittedFinishLeavesProviderUntouched() async throws {
+        let (provider, driver) = makeProvider()
+        try await provider.prepare(configuration: "walking")
+        try await provider.start()
+        driver.calls.removeAll()
+        driver.suspendStoppedTransition = true
+
+        let finish = Task {
+            try await provider.finish(at: Date(timeIntervalSince1970: 5_010))
+        }
+        await driver.waitUntilStoppedTransitionIsPending()
+
+        let shouldWarm = NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
+            isTrainingHubVisible: true,
+            appActivity: .active,
+            isHrControlRunning: false,
+            nativeWorkoutCommitted: true,
+            nativeWorkoutFinishInFlight: true,
+            providerIsIdle: provider.state == .idle,
+            providerIsSupported: true
+        )
+        if shouldWarm {
+            try await provider.prepare(configuration: "unexpected-warm")
+        }
+
+        XCTAssertFalse(shouldWarm)
+        XCTAssertEqual(provider.state, .finishing)
+        XCTAssertEqual(driver.calls, ["stopActivity"])
+        XCTAssertEqual(driver.discardCount, 0)
+        XCTAssertEqual(driver.finishCount, 0)
+        XCTAssertEqual(driver.resetCount, 0)
+
+        driver.sendStoppedTransition(at: Date(timeIntervalSince1970: 5_011))
+        _ = try await finish.value
+
+        XCTAssertEqual(provider.state, .idle)
+        XCTAssertEqual(driver.finishCount, 1)
+        XCTAssertEqual(driver.discardCount, 0)
+        XCTAssertEqual(driver.resetCount, 1)
+        XCTAssertEqual(driver.createdConfigurations, ["walking"])
     }
 
     func testUnavailableFinishedWorkoutEndsSessionWithoutDiscardOrRetry() async throws {
@@ -271,7 +351,7 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertFalse(manager.contains("IPhoneHealthKitLiveHeartRateProvider"))
+        XCTAssertTrue(manager.contains("IPhoneHealthKitLiveHeartRateProvider"))
         for forbidden in [
             "sendTreadmill", "WCSession", "watchReachable", "start_hr", "CoreBluetooth",
         ] {

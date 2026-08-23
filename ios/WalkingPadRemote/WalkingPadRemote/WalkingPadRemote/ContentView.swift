@@ -85,6 +85,7 @@ struct ContentView: View {
             guard !isTrainingPreviewLaunch else { return }
             #endif
             manager.start()
+            updateNativeHeartRateLifecycle(scenePhase)
         }
         .onChange(of: scenePhase) { _, phase in
             #if DEBUG
@@ -95,11 +96,25 @@ struct ContentView: View {
             } else {
                 manager.treadmillTestRunAppBecameInactive()
             }
+            updateNativeHeartRateLifecycle(phase)
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
             if phase != .active {
                 manager.stopTruthExperimentAppBecameInactive()
             }
 #endif
+        }
+    }
+
+    private func updateNativeHeartRateLifecycle(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            manager.nativeHeartRateAppBecameActive()
+        case .inactive:
+            manager.nativeHeartRateAppBecameInactive()
+        case .background:
+            manager.nativeHeartRateAppEnteredBackground()
+        @unknown default:
+            manager.nativeHeartRateAppEnteredBackground()
         }
     }
 }
@@ -316,7 +331,6 @@ private func makeHRControlTrainingHubPresentation(
     let startBlocker: String? = {
         guard !startEnabled, !isPreparing else { return nil }
         if !treadmillConnected { return "Подключите дорожку" }
-        if !hrFresh { return "Дождитесь свежего пульса" }
         guard let runtimeBlockReason, !runtimeBlockReason.isEmpty else {
             return "Тренировка пока недоступна"
         }
@@ -351,7 +365,7 @@ private func makeHRControlTrainingHubPresentation(
                 title: "Пульс",
                 value: hrFresh
                     ? currentHeartRateBPM.map { "\($0) bpm" } ?? "Доступен"
-                    : "Нет",
+                    : (isPreparing ? "Ожидание" : "При старте"),
                 sourceLabel: hrFresh ? heartRateSourceLabel : nil,
                 systemImage: "heart.fill",
                 tint: hrFresh ? .green : .orange,
@@ -1062,13 +1076,14 @@ private struct TrainingHubView: View {
     let onDurationSelect: (Int) -> Void
     let onSettingsTap: () -> Void
     let onStart: () -> Void
+    let onCancel: () -> Void
 
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
                 TrainingReadinessStrip(
                     items: presentation.readiness,
-                    treadmillInteractive: !presentation.isPreview,
+                    treadmillInteractive: !presentation.isPreview && !presentation.isPreparing,
                     onTreadmillTap: onTreadmillTap
                 )
                 hero
@@ -1103,7 +1118,7 @@ private struct TrainingHubView: View {
             if let durationMinutes = presentation.durationMinutes {
                 TrainingDurationPresetSelector(
                     selectedMinutes: durationMinutes,
-                    interactive: !presentation.isPreview,
+                    interactive: !presentation.isPreview && !presentation.isPreparing,
                     onSelect: onDurationSelect
                 )
             }
@@ -1115,7 +1130,7 @@ private struct TrainingHubView: View {
                 }
             }
 
-            if !presentation.isPreview {
+            if !presentation.isPreview && !presentation.isPreparing {
                 Button(action: onSettingsTap) {
                     HStack {
                         Label("Параметры", systemImage: "slider.horizontal.3")
@@ -1204,7 +1219,7 @@ private struct TrainingHubView: View {
             selectedSegmentID: presentation.selectedSegmentID,
             liveMarkerBPM: nil,
             targetThresholdBPM: nil,
-            interactive: !presentation.isPreview,
+            interactive: !presentation.isPreview && !presentation.isPreparing,
             onSegmentTap: onZoneTap
         )
     }
@@ -1245,16 +1260,22 @@ private struct TrainingHubView: View {
             }
 
             if presentation.isPreparing {
-                HStack(spacing: 10) {
+                VStack(spacing: 10) {
                     ProgressView()
-                    Text("Подготовка…")
+                    Text("Получаем пульс…")
                         .font(.headline)
+                    Text("Дорожка запустится автоматически, когда появится пульс.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Отмена", role: .cancel, action: onCancel)
+                        .buttonStyle(.bordered)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
                 .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Подготовка тренировки")
+                .accessibilityLabel("Получаем пульс. Дорожка запустится автоматически, когда появится пульс.")
             } else {
                 Button {
                     guard !presentation.isPreview else { return }
@@ -1873,16 +1894,17 @@ private struct ControlSwipeView: View {
     private var productionTrainingHubPresentation: TrainingHubPresentation {
         makeHRControlTrainingHubPresentation(
             treadmillConnected: manager.isTreadmillControlReady,
-            hrFresh: manager.hrStreamingActive,
-            currentHeartRateBPM: manager.hrStreamingActive && manager.heartRateBPM > 0
+            hrFresh: manager.isNativeHeartRateCurrent && manager.hrStreamingActive,
+            currentHeartRateBPM: manager.isNativeHeartRateCurrent && manager.hrStreamingActive && manager.heartRateBPM > 0
                 ? manager.heartRateBPM
                 : nil,
-            heartRateSourceLabel: nil,
+            heartRateSourceLabel: manager.isNativeHeartRateCurrent ? "HealthKit" : nil,
             targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
             zoneRanges: hrZoneRanges(for: manager),
             durationMinutes: manager.hrDurationMinutes,
             startEnabled: manager.isHrControlStartAffordanceAvailable,
-            runtimeBlockReason: manager.hrControlStartBlockReasonText
+            runtimeBlockReason: manager.hrControlStartBlockReasonText,
+            isPreparing: manager.isNativeHeartRatePreflightActive
         )
     }
 
@@ -1914,11 +1936,11 @@ private struct ControlSwipeView: View {
 
         return makeHRControlActivePresentation(
             treadmillConnected: manager.isTreadmillControlReady,
-            hrFresh: manager.hrStreamingActive,
-            currentHeartRateBPM: manager.hrStreamingActive && manager.heartRateBPM > 0
+            hrFresh: manager.isNativeHeartRateCurrent && manager.hrStreamingActive,
+            currentHeartRateBPM: manager.isNativeHeartRateCurrent && manager.hrStreamingActive && manager.heartRateBPM > 0
                 ? manager.heartRateBPM
                 : nil,
-            heartRateSourceLabel: nil,
+            heartRateSourceLabel: manager.isNativeHeartRateCurrent ? "HealthKit" : nil,
             targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
             zoneRanges: hrZoneRanges(for: manager),
             factualSpeedKmh: factualSpeedKmh,
@@ -2039,8 +2061,11 @@ private struct ControlSwipeView: View {
             },
             onDurationSelect: { manager.hrDurationMinutes = $0 },
             onSettingsTap: { showParameters = true },
-            onStart: { manager.startHrControl() }
+            onStart: { manager.startHrControl() },
+            onCancel: { manager.cancelNativeHeartRatePreflight() }
         )
+        .onAppear { manager.trainingHubDidAppear() }
+        .onDisappear { manager.trainingHubDidDisappear() }
     }
 
     private func currentFactualDistanceReading() -> TrainingDistanceReading? {

@@ -466,7 +466,7 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertTrue(start.contains("guard isTreadmillControlReady"))
         XCTAssertTrue(slider.contains("guard isTreadmillControlReady"))
         XCTAssertTrue(adjust.contains("guard isTreadmillControlReady"))
-        XCTAssertTrue(hrStart.contains("treadmillConnected: isTreadmillControlReady"))
+        XCTAssertTrue(hrStart.contains("nativeHeartRateSafetyFacts(now: now)"))
         XCTAssertTrue(testRun.contains("isTreadmillControlReady"))
         XCTAssertTrue(speedWrite.contains("guard isTreadmillControlReady"))
         XCTAssertTrue(performWrite.contains("requiresControlReadiness && !isTreadmillControlReady"))

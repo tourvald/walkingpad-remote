@@ -140,6 +140,7 @@ let package = Package(
                 "HRDomainService.swift",
                 "HRSettingsDefaults.swift",
                 "IPhoneHealthKitHeartRateProviderCore.swift",
+                "NativeHeartRatePreflightEngine.swift",
                 "StopObservationService.swift",
                 "StopTruthExperimentBuildIdentity.swift",
                 "StopTruthExperimentClock.swift",

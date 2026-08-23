@@ -7,6 +7,151 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
+    func testQualifyingPreflightResultKeepsExactIDsAndPrecedesItsCausalUse() async throws {
+        let persistence = RuntimePersistence()
+        let factoryGate = DispatchSemaphore(value: 0)
+        let startedAt = Date(timeIntervalSince1970: 9_000)
+        let coordinator = TelemetryV2RuntimeCoordinator {
+            factoryGate.wait()
+            return persistence
+        }
+        coordinator.beginSession(Self.descriptor(
+            startedAt: startedAt,
+            heartRateProviderKind: "healthKitSelected",
+            heartRateProviderStableLocalKey: "iphone-healthkit-selected"
+        ))
+
+        let canonicalID = HeartRateCanonicalObservationID(
+            rawValue: UUID(uuidString: "61000000-0000-0000-0000-000000000001")!
+        )
+        let deliveryID = HeartRateDeliveryID(
+            rawValue: UUID(uuidString: "62000000-0000-0000-0000-000000000001")!
+        )
+        let measuredAt = startedAt.addingTimeInterval(-0.4)
+        let callbackAt = startedAt.addingTimeInterval(-0.3)
+        let receivedAt = startedAt.addingTimeInterval(-0.2)
+        let recordedAt = startedAt.addingTimeInterval(-0.1)
+        var normalizer = HeartRateObservationNormalizer()
+        let exactResult = normalizer.normalize(
+            HeartRateProviderObservation(
+                source: HeartRateProviderIdentity(
+                    kind: .healthKitSelected,
+                    stableLocalKey: "iphone-healthkit-selected"
+                ),
+                beatsPerMinute: 143,
+                providerSequence: nil,
+                providerNativeIdentity: nil,
+                measuredAt: measuredAt,
+                sourceCallbackObservedAt: callbackAt,
+                sourceClockRelationship: .receiverComparable,
+                receivedAt: receivedAt,
+                metadataQuality: []
+            ),
+            canonicalObservationID: canonicalID,
+            deliveryID: deliveryID,
+            recordedAt: recordedAt
+        )
+
+        XCTAssertEqual(coordinator.observeHeartRate(exactResult), .accepted)
+        XCTAssertEqual(coordinator.observeControlUse(HeartRateControlUseEvidence(
+            kind: .speedDecision,
+            inputs: [exactResult.delivery.causalReference],
+            occurredAt: startedAt.addingTimeInterval(0.7)
+        )), .accepted)
+        let decisionID = DecisionID(
+            rawValue: UUID(uuidString: "63000000-0000-0000-0000-000000000001")!
+        )
+        XCTAssertEqual(coordinator.observeHeartRateControlDecision(
+            decisionID: decisionID,
+            targetBeatsPerMinute: 143,
+            action: .noCommand,
+            reason: .withinTarget,
+            heartRateInputs: [exactResult.delivery.causalReference],
+            occurredAt: startedAt.addingTimeInterval(0.8)
+        ), .enqueued)
+
+        factoryGate.signal()
+        try await eventually {
+            if case .active = coordinator.status { return true }
+            return false
+        }
+        coordinator.endSession(reason: "preflight-evidence-test")
+        try await eventually { await persistence.finalizations.count == 1 }
+
+        let records = await persistence.snapshot().records
+        let persistedHeartRate = try XCTUnwrap(records.compactMap { record -> HeartRateObservation? in
+            guard case let .heartRate(observation) = record else { return nil }
+            return observation
+        }.first)
+        XCTAssertEqual(persistedHeartRate.observationID.rawValue, canonicalID.rawValue)
+        XCTAssertEqual(persistedHeartRate.timestamp.measuredAt, measuredAt)
+        XCTAssertEqual(persistedHeartRate.timestamp.receivedAt, receivedAt)
+        XCTAssertEqual(persistedHeartRate.timestamp.recordedAt, recordedAt)
+        XCTAssertEqual(persistedHeartRate.timestamp.measuredElapsed, .zero)
+        XCTAssertEqual(persistedHeartRate.timestamp.receivedElapsed, .zero)
+        XCTAssertEqual(persistedHeartRate.timestamp.recordedElapsed, .zero)
+
+        let sources = records.compactMap { record -> SignalSourceIdentity? in
+            guard case let .source(source) = record else { return nil }
+            return source.identity
+        }
+        let nativeSource = try XCTUnwrap(sources.first {
+            $0.providerKind == .healthKitSelected
+        })
+        XCTAssertEqual(nativeSource.stableLocalKey, "hr:iphone-healthkit-selected")
+        XCTAssertFalse(sources.contains { $0.providerKind == .watchMediated })
+        XCTAssertEqual(persistedHeartRate.source.id, nativeSource.id)
+
+        let heartRateEvidence = records.compactMap { record -> HeartRateRuntimeEvidence? in
+            guard case let .event(event) = record,
+                  case let .heartRateEvidence(evidence) = event.payload.payload else {
+                return nil
+            }
+            return evidence
+        }
+        guard case let .delivery(persistedResult) = heartRateEvidence.first else {
+            return XCTFail("Expected exact delivery before causal use")
+        }
+        XCTAssertEqual(persistedResult.delivery.deliveryID, deliveryID)
+        XCTAssertEqual(
+            persistedResult.delivery.canonicalObservationID,
+            canonicalID
+        )
+        XCTAssertEqual(persistedResult.delivery.sourceCallbackObservedAt, callbackAt)
+        XCTAssertEqual(persistedResult.delivery.receivedAt, receivedAt)
+        XCTAssertEqual(persistedResult.delivery.recordedAt, recordedAt)
+        XCTAssertEqual(persistedResult.canonicalObservation?.measuredAt, measuredAt)
+        XCTAssertEqual(
+            persistedResult.canonicalObservation?.sourceCallbackObservedAt,
+            callbackAt
+        )
+        XCTAssertEqual(persistedResult.canonicalObservation?.receivedAt, receivedAt)
+        XCTAssertEqual(persistedResult.canonicalObservation?.recordedAt, recordedAt)
+        guard case let .controlUse(controlUse) = heartRateEvidence.last else {
+            return XCTFail("Expected causal use after delivery")
+        }
+        XCTAssertEqual(controlUse.inputs, [exactResult.delivery.causalReference])
+
+        let events = records.compactMap { record -> WorkoutEvent? in
+            guard case let .event(event) = record else { return nil }
+            return event
+        }
+        let controlUseEvent = try XCTUnwrap(events.first { event in
+            guard case .heartRateEvidence(.controlUse) = event.payload.payload else {
+                return false
+            }
+            return true
+        })
+        XCTAssertEqual(controlUseEvent.sourceID, nativeSource.id)
+        let decisionEvent = try XCTUnwrap(events.first { event in
+            guard case let .controlDecision(decision) = event.payload.payload else {
+                return false
+            }
+            return decision.decisionID == decisionID
+        })
+        XCTAssertEqual(decisionEvent.sourceID, nativeSource.id)
+    }
+
     func testReadProjectionFailureCannotChangeRuntimeLifecycleOrSelectedControlOutput() async throws {
         let persistence = RuntimePersistence()
         let coordinator = TelemetryV2RuntimeCoordinator { persistence }
@@ -1075,7 +1220,9 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
 
     private static func descriptor(
         legacySessionID: UUID? = UUID(uuidString: "10000000-0000-0000-0000-000000000030"),
-        startedAt: Date = Date(timeIntervalSince1970: 1_000)
+        startedAt: Date = Date(timeIntervalSince1970: 1_000),
+        heartRateProviderKind: String = "legacyWatchWorkoutStream",
+        heartRateProviderStableLocalKey: String = "watch-session"
     ) -> TelemetryV2SessionDescriptor {
         TelemetryV2SessionDescriptor(
             sessionID: TelemetryV2SessionDescriptor.sessionID(
@@ -1101,8 +1248,8 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
                 cooldownTargetHeartRate: 100,
                 cooldownMinimumSpeedKilometresPerHour: 1,
                 cooldownMaximumMinutes: 5,
-                heartRateProviderKind: "legacyWatchWorkoutStream",
-                heartRateProviderStableLocalKey: "watch-session",
+                heartRateProviderKind: heartRateProviderKind,
+                heartRateProviderStableLocalKey: heartRateProviderStableLocalKey,
                 treadmill: TelemetryV2TreadmillContext(
                     stableLocalIdentifier: "treadmill-30",
                     model: "test",

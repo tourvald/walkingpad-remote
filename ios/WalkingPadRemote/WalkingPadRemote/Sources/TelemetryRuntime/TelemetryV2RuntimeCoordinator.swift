@@ -1460,10 +1460,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             source = lifecycle.source
         case let .controlUse(controlUse):
             occurredAt = controlUse.occurredAt
-            source = HeartRateProviderIdentity(
-                kind: .legacyWatchWorkoutStream,
-                stableLocalKey: descriptor.configuration.heartRateProviderStableLocalKey
-            )
+            source = configuredHeartRateProvider
         }
         let sourceIdentity = heartRateSource(source)
         emitSourceIfNeeded(sourceIdentity, observedAt: occurredAt)
@@ -1477,12 +1474,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     func observeHeartRateControlDecision(
         _ evidence: TelemetryV2RuntimeCoordinator.PendingHeartRateControlDecision
     ) -> TelemetryYieldDisposition {
-        let source = heartRateSource(
-            HeartRateProviderIdentity(
-                kind: .legacyWatchWorkoutStream,
-                stableLocalKey: descriptor.configuration.heartRateProviderStableLocalKey
-            )
-        )
+        let source = heartRateSource(configuredHeartRateProvider)
         emitSourceIfNeeded(source, observedAt: evidence.occurredAt)
         let decision = ControlDecision(
             decisionID: evidence.decisionID,
@@ -1675,6 +1667,15 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         )
     }
 
+    private var configuredHeartRateProvider: HeartRateProviderIdentity {
+        HeartRateProviderIdentity(
+            kind: Self.heartRateProviderKind(
+                descriptor.configuration.heartRateProviderKind
+            ),
+            stableLocalKey: descriptor.configuration.heartRateProviderStableLocalKey
+        )
+    }
+
     private func treadmillSource(
         for evidence: TreadmillTelemetryEvidence
     ) -> SignalSourceIdentity? {
@@ -1780,6 +1781,18 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         case .bluetooth: .bluetooth
         case .unknown: .unknown
         case let .other(value): .other(value)
+        }
+    }
+
+    private static func heartRateProviderKind(_ value: String) -> HeartRateProviderKind {
+        switch value {
+        case "legacyWatchWorkoutStream": .legacyWatchWorkoutStream
+        case "healthKitSelected": .healthKitSelected
+        case "mirroredWatchWorkout": .mirroredWatchWorkout
+        case "phoneHealthKit": .phoneHealthKit
+        case "bluetooth": .bluetooth
+        case "unknown": .unknown
+        default: .other(value)
         }
     }
 

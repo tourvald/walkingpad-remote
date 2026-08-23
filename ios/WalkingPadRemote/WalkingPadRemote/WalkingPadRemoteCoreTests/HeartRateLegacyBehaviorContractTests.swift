@@ -179,11 +179,12 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             "var isHrControlStartAffordanceAvailable: Bool",
             in: managerSource
         )
+        let commit = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)",
+            in: managerSource
+        )
 
-        for body in [recompute, start] {
-            XCTAssertTrue(body.contains("HRDomainService"))
-            XCTAssertTrue(body.contains(".heartRateRuntimePrerequisitesAllowStart"))
-            XCTAssertTrue(body.contains("controllerUnits"))
+        for body in [recompute, start, commit] {
             XCTAssertFalse(body.contains("HeartRateControlStartEligibility"))
             XCTAssertFalse(body.contains("HeartRateLegacyControlSemantics"))
             XCTAssertFalse(body.contains("TelemetryRecorder"))
@@ -193,10 +194,13 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             XCTAssertFalse(body.contains("telemetryPerformanceObservation"))
             XCTAssertFalse(body.contains("TelemetryPerformanceInstrumentation"))
         }
+        XCTAssertTrue(recompute.contains("nativeHeartRateSafetyFacts"))
+        XCTAssertTrue(recompute.contains("controllerUnitsGateDecision"))
+        XCTAssertTrue(start.contains("nativeHeartRatePreflightEngine.requestStart"))
+        XCTAssertTrue(commit.contains("controllerUnitsGateDecision"))
 
-        XCTAssertTrue(affordance.contains("HRDomainService.heartRateStartAffordanceAvailable"))
-        XCTAssertTrue(affordance.contains("treadmillConnected: isTreadmillControlReady"))
-        XCTAssertTrue(affordance.contains("currentHeartRateVisible: hrStreamingActive"))
+        XCTAssertTrue(affordance.contains("isHrControlStartAllowed"))
+        XCTAssertTrue(affordance.contains("!isNativeHeartRatePreflightActive"))
         XCTAssertFalse(affordance.contains("watchReachable"))
         XCTAssertFalse(affordance.contains("controllerUnits"))
         XCTAssertFalse(affordance.contains("telemetry"))
@@ -216,18 +220,23 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
 
         assertOrdered(
             [
-                ".heartRateRuntimePrerequisitesAllowStart",
-                "guard existingGatesAllowStart",
+                "nativeHeartRatePreflightEngine.requestStart(",
+                "guard nativeHeartRatePreflightEngine.hasStartIntent",
+                "nativeHeartRateFlowOwnsController = true",
+                "applyNativeHeartRatePreflightEffects(effects)",
+            ],
+            in: start
+        )
+        assertOrdered(
+            [
                 "let unitsDecision = controllerUnitsGateDecision()",
-                "guard unitsDecision.allowed",
-                "persistBlockedControllerUnitsStart(decision: unitsDecision)",
-                "retryControllerUnitsQueryAfterBlockedStart()",
+                "guard nativeHeartRateSafetyFacts().permitsCommit",
                 "let legacySessionID = startTrainingStructuredLog(trigger: \"start_hr\")",
                 "isHrControlRunning = true",
                 "beginTelemetryV2Session(legacySessionID: legacySessionID)",
                 "startWithSpeed",
             ],
-            in: start
+            in: commit
         )
     }
 
@@ -263,7 +272,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(mapping.contains("history"))
 
         XCTAssertTrue(production.contains("startEnabled: manager.isHrControlStartAffordanceAvailable"))
-        XCTAssertTrue(production.contains("heartRateSourceLabel: nil"))
+        XCTAssertTrue(production.contains("heartRateSourceLabel: manager.isNativeHeartRateCurrent ? \"HealthKit\" : nil"))
         XCTAssertFalse(production.contains("watchReachable"))
         XCTAssertFalse(production.contains("telemetry"))
 
@@ -810,7 +819,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "stopTrainingStructuredLog(reason: \"manual_stop\")",
                 "isHrControlRunning = false",
                 "stopBeltWithToggle(reason: \"hr\")",
-                "sendWatchCommand(\"stop_hr\")",
+                "stopLegacyWatchHeartRateIfNeeded()",
                 "endTelemetryV2Session(reason: \"manual_stop\")",
             ],
             in: manual
@@ -823,7 +832,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         assertOrdered(
             [
                 "stopTrainingStructuredLog(reason: completionEffect.structuredLogReason)",
-                "sendWatchCommand(\"stop_hr\")",
+                "stopLegacyWatchHeartRateIfNeeded()",
                 "stopBeltWithToggle(reason: \"hr_cooldown_done\")",
                 "endTelemetryV2Session(reason: completionEffect.structuredLogReason)",
             ],
@@ -848,6 +857,10 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
 
     func testTelemetryV2LifecycleRaceCannotBranchProductOrLegacyOutputs() throws {
         let start = try functionBody("func startHrControl()", in: managerSource)
+        let commit = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)",
+            in: managerSource
+        )
         let stop = try functionBody("func stopHrControl()", in: managerSource)
         let begin = try functionBody(
             "private func beginTelemetryV2Session(legacySessionID: UUID?)",
@@ -858,7 +871,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             in: managerSource
         )
 
-        for productPath in [start, stop] {
+        for productPath in [start, commit, stop] {
             for forbiddenBranch in [
                 "if telemetryV2",
                 "guard telemetryV2",
@@ -875,14 +888,14 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "beginTelemetryV2Session(legacySessionID: legacySessionID)",
                 "startWithSpeed",
             ],
-            in: start
+            in: commit
         )
         assertOrdered(
             [
                 "stopTrainingStructuredLog(reason: \"manual_stop\")",
                 "isHrControlRunning = false",
                 "stopBeltWithToggle(reason: \"hr\")",
-                "sendWatchCommand(\"stop_hr\")",
+                "stopLegacyWatchHeartRateIfNeeded()",
                 "endTelemetryV2Session(reason: \"manual_stop\")",
             ],
             in: stop
