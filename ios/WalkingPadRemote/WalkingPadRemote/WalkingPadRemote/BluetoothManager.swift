@@ -2229,6 +2229,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("AutoConnect skipped: suppressed by user action")
             return
         }
+        if let cancellingConnectionPeripheralId {
+            appendLog("AutoConnect skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
+            return
+        }
 
         // If we have known peripherals saved, prefer connecting to them
         if !knownPeripherals.isEmpty {
@@ -2420,8 +2424,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 central.cancelPeripheralConnection(peripheral)
                 return
             }
-            if self.cancellingConnectionPeripheralId == peripheralID || self.autoConnectSuppressed {
-                self.cancellingConnectionPeripheralId = peripheralID
+            if self.cancellingConnectionPeripheralId != nil || self.autoConnectSuppressed {
+                if self.cancellingConnectionPeripheralId == nil {
+                    self.cancellingConnectionPeripheralId = peripheralID
+                }
                 self.connectTimeoutWorkItem?.cancel()
                 self.connectTimeoutWorkItem = nil
                 self.appendLog("Rejecting completed connection after cancellation for \(peripheralID.uuidString)")
@@ -2666,6 +2672,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         autoConnectSuppressed = false
         // Prevent duplicate connection attempts
         if isConnected { appendLog("Connect known skipped: already connected"); return }
+        if let cancellingConnectionPeripheralId {
+            appendLog("Connect known skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
+            return
+        }
         if let inProgress = connectingPeripheralId {
             appendLog("Connect known skipped: connection in progress to \(inProgress.uuidString)")
             if inProgress == id { return }
@@ -2716,6 +2726,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         // Prevent duplicate connection attempts
         if isConnected { appendLog("Connect discovered skipped: already connected"); return }
+        if let cancellingConnectionPeripheralId {
+            appendLog("Connect discovered skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
+            return
+        }
         if let inProgress = connectingPeripheralId {
             // Ignore repeated taps while a connection is in progress (including same target)
             appendLog("Connect discovered skipped: connection in progress to \(inProgress.uuidString)")

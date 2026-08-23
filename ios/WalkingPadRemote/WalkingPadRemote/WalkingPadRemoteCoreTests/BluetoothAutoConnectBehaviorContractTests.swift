@@ -223,6 +223,7 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         assertOrdered(
             [
                 "if isConnected",
+                "if let cancellingConnectionPeripheralId",
                 "if let inProgress = connectingPeripheralId",
                 "connectingPeripheralId = id",
                 "central.connect(p, options: nil)",
@@ -312,7 +313,7 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         assertOrdered(
             [
                 "guard self.connectingPeripheralId == peripheralID",
-                "if self.cancellingConnectionPeripheralId == peripheralID || self.autoConnectSuppressed",
+                "if self.cancellingConnectionPeripheralId != nil || self.autoConnectSuppressed",
                 "central.cancelPeripheralConnection(peripheral)",
                 "self.logTrainingEvent(\"ble_connection_event\"",
                 "self.isConnected = true",
@@ -321,6 +322,9 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
             in: didConnect
         )
         XCTAssertFalse(didConnect.contains("knownPeripherals.append"))
+        XCTAssertTrue(managerSource.contains("Connect known skipped: cancellation pending"))
+        XCTAssertTrue(managerSource.contains("Connect discovered skipped: cancellation pending"))
+        XCTAssertTrue(managerSource.contains("AutoConnect skipped: cancellation pending"))
         XCTAssertEqual(didConnect.components(separatedBy: "central.stopScan()").count - 1, 1)
     }
 
