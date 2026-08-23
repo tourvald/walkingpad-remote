@@ -286,11 +286,12 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         let profileA2 = try makeFile(name: "profile-a-2.jsonl", start: "2026-03-17T10:00:00.000Z", profileID: "profile-a", hasWorkoutSaved: false)
         let profileB = try makeFile(name: "profile-b.jsonl", start: "2026-03-18T10:00:00.000Z", profileID: "profile-b", hasWorkoutSaved: true)
 
-        let inventory = TrainingTelemetryWriter.trainingLogsInventory(
+        let snapshot = TrainingTelemetryWriter.trainingLogsInventorySnapshot(
             [legacy, profileA1, profileA2, profileB],
             matchingProfileID: "profile-a",
             legacyFallbackProfileID: "profile-a"
         )
+        let inventory = snapshot.inventory
 
         let expectedTotalBytes = [legacy, profileA1, profileA2, profileB].reduce(Int64(0)) { partial, file in
             partial + Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
@@ -307,6 +308,7 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertEqual(inventory.totalBytes, expectedTotalBytes)
         XCTAssertEqual(inventory.matchingProfileBytes, expectedMatchingBytes)
         XCTAssertEqual(inventory.clearableBytes, expectedMatchingBytes)
+        XCTAssertEqual(snapshot.latestMatchingProfileFile, profileA2)
     }
 
     func testSelectJsonlFilesForClearRespectsProfileAndProtection() throws {

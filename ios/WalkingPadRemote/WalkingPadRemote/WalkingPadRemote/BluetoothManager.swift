@@ -50,6 +50,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var shouldBeScanning: Bool = false
     private var discoveredMap: [UUID: CBPeripheral] = [:]
     private var autoConnectPendingWorkItem: DispatchWorkItem?
+    private var knownDiscoveryGraceWorkItem: DispatchWorkItem?
+    private var knownDiscoveryGraceCompleted = false
+    private var autoConnectFailedPeripheralIDs: Set<UUID> = []
     private var connectTimeoutWorkItem: DispatchWorkItem?
 #if canImport(WatchConnectivity)
     private var wcSession: WCSession?
@@ -58,6 +61,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var connectingPeripheralId: UUID? = nil
     private var connectingPeripheral: CBPeripheral? = nil
     private var cancellingConnectionPeripheralId: UUID? = nil
+    private var connectingAttemptIsAutomatic = false
     private var controllerUnitsConnectionEpoch: UUID? = nil
     private var controllerUnitsTruthTracker = ControllerUnitsTruthTracker()
     private var lastControllerUnitsQueryAt: Date? = nil
@@ -130,6 +134,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let activeProfileID: UUID?
     }
     private let knownStoreKey = "known_peripherals_store_v1"
+    private let lastSuccessfulPeripheralStoreKey = "last_successful_known_peripheral_id_v1"
     private let userProfilesStoreKey = "user_profiles_state_v1"
     private let installationIDStoreKey = "installation_id_v1"
     private let hrSettingsStoreKey = "hr_settings_v1"
@@ -137,6 +142,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let workoutHistoryStoreKey = "workout_history_v1"
     private var isLoadingHrSettings: Bool = false
     private var autoConnectSuppressed: Bool = false
+    private var lastSuccessfulPeripheralID: UUID? = nil
     private var hrSessionTotalSeconds: Int = 0
     private var hrControlStartedBelt: Bool = false
     private var cooldownRuntimeState: CooldownRuntimeEngine.State? = nil
@@ -282,6 +288,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var trainingLogSessionId: String? = nil
     private var trainingLogFileURL: URL? = nil
     private var trainingLogFileHandle: FileHandle? = nil
+    private var trainingLogsInventoryRefreshID = UUID()
 
     private func loadKnownPeripherals() {
         guard let data = UserDefaults.standard.data(forKey: knownStoreKey) else { return }
@@ -295,6 +302,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if let data = try? JSONEncoder().encode(list) {
             UserDefaults.standard.set(data, forKey: knownStoreKey)
         }
+    }
+
+    private func loadLastSuccessfulPeripheral() {
+        guard let rawValue = UserDefaults.standard.string(forKey: lastSuccessfulPeripheralStoreKey),
+              let peripheralID = UUID(uuidString: rawValue),
+              knownPeripherals.contains(where: { $0.id == peripheralID }) else {
+            lastSuccessfulPeripheralID = nil
+            UserDefaults.standard.removeObject(forKey: lastSuccessfulPeripheralStoreKey)
+            return
+        }
+        lastSuccessfulPeripheralID = peripheralID
+    }
+
+    private func saveLastSuccessfulPeripheral(_ peripheralID: UUID) {
+        lastSuccessfulPeripheralID = peripheralID
+        UserDefaults.standard.set(peripheralID.uuidString, forKey: lastSuccessfulPeripheralStoreKey)
     }
 
     private struct WorkoutEntryDTO: Codable {
@@ -1413,19 +1436,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         TrainingTelemetryWriter.pruneJsonlFiles(in: directory, maxFiles: trainingLogMaxFiles)
     }
 
-    private func synchronizeTrainingLogFileIfNeeded() {
-        trainingLogQueue.sync {
-            trainingLogFileHandle?.synchronizeFile()
-        }
-    }
-
-    private func currentProtectedTrainingLogFiles() -> Set<URL> {
-        let activeLogFile: URL? = trainingLogQueue.sync {
-            trainingLogFileURL?.standardizedFileURL
-        }
-        return Set(activeLogFile.map { [$0] } ?? [])
-    }
-
     private func scheduleTrainingLogsInventoryRefresh() {
         trainingLogQueue.async { [weak self] in
             DispatchQueue.main.async {
@@ -1721,27 +1731,29 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func refreshTrainingLogsInventory() {
-        synchronizeTrainingLogFileIfNeeded()
-        let protectedFiles = currentProtectedTrainingLogFiles()
-        guard let allJsonlFiles = allTrainingJsonlFiles(),
-              !allJsonlFiles.isEmpty else {
-            trainingLogsInventory = .empty
-            lastTrainingLogPath = ""
-            return
-        }
+        let refreshID = UUID()
+        trainingLogsInventoryRefreshID = refreshID
+        let profileID = activeUserProfileID?.uuidString
+        let fallbackProfileID = legacyFallbackProfileID
 
-        let filteredFiles = TrainingTelemetryWriter.filterJsonlFiles(
-            allJsonlFiles,
-            matchingProfileID: activeUserProfileID?.uuidString,
-            legacyFallbackProfileID: legacyFallbackProfileID
-        )
-        trainingLogsInventory = TrainingTelemetryWriter.trainingLogsInventory(
-            allJsonlFiles,
-            matchingProfileID: activeUserProfileID?.uuidString,
-            legacyFallbackProfileID: legacyFallbackProfileID,
-            keeping: protectedFiles
-        )
-        lastTrainingLogPath = filteredFiles.last?.path ?? ""
+        trainingLogQueue.async { [weak self] in
+            guard let self else { return }
+            self.trainingLogFileHandle?.synchronizeFile()
+            let protectedFiles = Set(
+                self.trainingLogFileURL.map { [$0.standardizedFileURL] } ?? []
+            )
+            let snapshot = TrainingTelemetryWriter.trainingLogsInventorySnapshot(
+                self.allTrainingJsonlFiles() ?? [],
+                matchingProfileID: profileID,
+                legacyFallbackProfileID: fallbackProfileID,
+                keeping: protectedFiles
+            )
+            DispatchQueue.main.async {
+                guard self.trainingLogsInventoryRefreshID == refreshID else { return }
+                self.trainingLogsInventory = snapshot.inventory
+                self.lastTrainingLogPath = snapshot.latestMatchingProfileFile?.path ?? ""
+            }
+        }
     }
 
     func trainingLogsExportCount(
@@ -1783,6 +1795,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var connectErrorMessage: String? = nil
     @Published var suggestDevicePicker: Bool = false
     @Published var infoToastMessage: String? = nil
+
+    func consumeConnectErrorMessage() {
+        connectErrorMessage = nil
+    }
 
     // History
     private struct LegacyShadowWorkoutEntry: Identifiable {
@@ -1990,8 +2006,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     func start() {
         ensureCentral()
         autoConnectSuppressed = false
+        autoConnectFailedPeripheralIDs.removeAll()
+        knownDiscoveryGraceWorkItem?.cancel()
+        knownDiscoveryGraceWorkItem = nil
+        knownDiscoveryGraceCompleted = false
         manualModeSet = false
         loadKnownPeripherals()
+        loadLastSuccessfulPeripheral()
         loadProfilesState()
         loadHrSettings()
         loadZonePlan()
@@ -2107,22 +2128,61 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 #endif
 
     // Auto-connect policy helper
+    private var orderedAutoConnectCandidateIDs: [UUID] {
+        var ordered = knownPeripherals.map(\.id).filter {
+            !autoConnectFailedPeripheralIDs.contains($0)
+        }
+        if let lastSuccessfulPeripheralID,
+           let index = ordered.firstIndex(of: lastSuccessfulPeripheralID) {
+            ordered.remove(at: index)
+            ordered.insert(lastSuccessfulPeripheralID, at: 0)
+        }
+        return ordered
+    }
+
     private func preferredKnownPeripheral(from peripherals: [CBPeripheral]) -> CBPeripheral? {
-        knownPeripherals.lazy.compactMap { known in
-            peripherals.first(where: { $0.identifier == known.id })
+        orderedAutoConnectCandidateIDs.lazy.compactMap { candidateID in
+            peripherals.first(where: { $0.identifier == candidateID })
         }.first
     }
 
     private func preferredKnownDiscoveredPeripheral() -> DiscoveredPeripheral? {
-        let knownIDs = Set(knownPeripherals.map(\.id))
-        return discoveredPeripherals.filter { knownIDs.contains($0.id) }.max { lhs, rhs in
+        let candidateIDs = orderedAutoConnectCandidateIDs
+        let eligible = discoveredPeripherals.filter { candidateIDs.contains($0.id) }
+        if let lastSuccessfulPeripheralID,
+           let preferred = eligible.first(where: { $0.id == lastSuccessfulPeripheralID }) {
+            return preferred
+        }
+        return eligible.max { lhs, rhs in
             if lhs.rssi != rhs.rssi {
                 return lhs.rssi < rhs.rssi
             }
-            let lhsIndex = knownPeripherals.firstIndex(where: { $0.id == lhs.id }) ?? .max
-            let rhsIndex = knownPeripherals.firstIndex(where: { $0.id == rhs.id }) ?? .max
+            let lhsIndex = candidateIDs.firstIndex(of: lhs.id) ?? .max
+            let rhsIndex = candidateIDs.firstIndex(of: rhs.id) ?? .max
             return lhsIndex > rhsIndex
         }
+    }
+
+    private func completeKnownDiscoveryGrace() {
+        knownDiscoveryGraceWorkItem?.cancel()
+        knownDiscoveryGraceWorkItem = nil
+        knownDiscoveryGraceCompleted = true
+    }
+
+    private func scheduleKnownDiscoveryFallbackIfNeeded() {
+        guard !knownDiscoveryGraceCompleted,
+              knownDiscoveryGraceWorkItem == nil else { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.knownDiscoveryGraceWorkItem = nil
+            self.knownDiscoveryGraceCompleted = true
+            self.appendLog("AutoConnect: known discovery grace completed")
+            self.attemptAutoConnectIfNeeded()
+        }
+        knownDiscoveryGraceWorkItem = work
+        appendLog("AutoConnect: waiting 1.0s for known-device discovery")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     private func attemptAutoConnectIfNeeded() {
@@ -2142,22 +2202,53 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         // If we have known peripherals saved, prefer connecting to them
         if !knownPeripherals.isEmpty {
-            // Prefer a discovered known with strongest RSSI
             if let candidate = preferredKnownDiscoveredPeripheral() {
-                appendLog("AutoConnect: connecting strongest known discovered \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
+                if !knownDiscoveryGraceCompleted,
+                   let lastSuccessfulPeripheralID,
+                   orderedAutoConnectCandidateIDs.contains(lastSuccessfulPeripheralID),
+                   candidate.id != lastSuccessfulPeripheralID {
+                    scheduleKnownDiscoveryFallbackIfNeeded()
+                    return
+                }
+                completeKnownDiscoveryGrace()
+                appendLog("AutoConnect: connecting preferred known discovered \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
                 connectToDiscovered(id: candidate.id, clearsAutoConnectSuppression: false)
                 return
             }
-            // Try already connected peripherals that match our service and are known
+
             let connectedList = central.retrieveConnectedPeripherals(withServices: supportedServiceUuids)
-            if let p = preferredKnownPeripheral(from: connectedList) {
+            if let lastSuccessfulPeripheralID,
+               orderedAutoConnectCandidateIDs.contains(lastSuccessfulPeripheralID),
+               let p = connectedList.first(where: { $0.identifier == lastSuccessfulPeripheralID }) {
+                completeKnownDiscoveryGrace()
+                discoveredMap[p.identifier] = p
+                appendLog("AutoConnect: connecting to system-connected last-successful id=\(p.identifier.uuidString) name=\(p.name ?? "")")
+                connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
+                return
+            }
+
+            if lastSuccessfulPeripheralID == nil,
+               let p = preferredKnownPeripheral(from: connectedList) {
+                completeKnownDiscoveryGrace()
                 discoveredMap[p.identifier] = p
                 appendLog("AutoConnect: connecting to system-connected known id=\(p.identifier.uuidString) name=\(p.name ?? "")")
                 connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
                 return
             }
-            // Try retrieve by identifiers for known devices
-            let ids = knownPeripherals.map { $0.id }
+
+            guard knownDiscoveryGraceCompleted else {
+                scheduleKnownDiscoveryFallbackIfNeeded()
+                return
+            }
+
+            if let p = preferredKnownPeripheral(from: connectedList) {
+                discoveredMap[p.identifier] = p
+                appendLog("AutoConnect: connecting to fallback system-connected known id=\(p.identifier.uuidString) name=\(p.name ?? "")")
+                connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
+                return
+            }
+
+            let ids = orderedAutoConnectCandidateIDs
             if !ids.isEmpty {
                 let list = central.retrievePeripherals(withIdentifiers: ids)
                 if let p = preferredKnownPeripheral(from: list) {
@@ -2248,23 +2339,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.discoveredPeripherals.append(item)
             }
             // Auto-connect policy:
-            // - If any known discovered -> connect immediately to the strongest known
+            // - Prefer the last successful known device during the bounded discovery grace
+            // - After grace, fall back through the remaining known devices serially
             // - Else if allowAutoConnectUnknown -> debounce and connect strongest unknown
             if !self.isConnected {
                 if self.autoConnectSuppressed {
                     return
                 }
                 if self.preferredKnownDiscoveredPeripheral() != nil {
-                    let candidate = self.preferredKnownDiscoveredPeripheral()
-                    if let candidate {
-                        self.autoConnectPendingWorkItem?.cancel()
-                        self.autoConnectPendingWorkItem = nil
-                        self.appendLog("AutoConnect (discover): connecting strongest known \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
-                        self.connectToDiscovered(
-                            id: candidate.id,
-                            clearsAutoConnectSuppression: false
-                        )
-                    }
+                    self.autoConnectPendingWorkItem?.cancel()
+                    self.autoConnectPendingWorkItem = nil
+                    self.attemptAutoConnectIfNeeded()
                 } else if self.allowAutoConnectUnknown {
                     if self.autoConnectPendingWorkItem == nil {
                         let work = DispatchWorkItem { [weak self] in
@@ -2316,11 +2401,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ])
             self.autoConnectPendingWorkItem?.cancel()
             self.autoConnectPendingWorkItem = nil
+            self.completeKnownDiscoveryGrace()
             self.connectTimeoutWorkItem?.cancel()
             self.connectTimeoutWorkItem = nil
             self.connectingPeripheralId = nil
             self.connectingPeripheral = nil
             self.cancellingConnectionPeripheralId = nil
+            self.connectingAttemptIsAutomatic = false
+            self.autoConnectFailedPeripheralIDs.removeAll()
+            self.connectErrorMessage = nil
             self.isConnected = true
             central.stopScan()
             self.connectedPeripheralId = peripheral.identifier
@@ -2346,6 +2435,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.knownPeripherals.append(KnownPeripheral(id: peripheral.identifier, name: display))
                 self.saveKnownPeripherals()
             }
+            self.saveLastSuccessfulPeripheral(peripheral.identifier)
         }
     }
 
@@ -2355,6 +2445,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.appendLog("Ignoring stale connect failure for \(peripheral.identifier.uuidString)")
                 return
             }
+            let wasAutomatic = self.connectingAttemptIsAutomatic
             self.logTrainingEvent("ble_connection_event", fields: [
                 "status": "failed_to_connect",
                 "peripheral_id": peripheral.identifier.uuidString,
@@ -2362,9 +2453,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ])
             self.isConnected = false
             self.connectionStateText = "Disconnected"
-            self.connectErrorMessage = error?.localizedDescription ?? "Failed to connect"
+            if wasAutomatic {
+                self.autoConnectFailedPeripheralIDs.insert(peripheral.identifier)
+            } else {
+                self.connectErrorMessage = error?.localizedDescription ?? "Failed to connect"
+            }
             self.connectingPeripheralId = nil
             self.connectingPeripheral = nil
+            self.connectingAttemptIsAutomatic = false
             if self.cancellingConnectionPeripheralId == peripheral.identifier {
                 self.cancellingConnectionPeripheralId = nil
             }
@@ -2372,6 +2468,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.connectTimeoutWorkItem = nil
             self.appendLog("Failed to connect to \(peripheral.identifier.uuidString): \(error?.localizedDescription ?? "unknown error")")
             self.resumeDiscoveryScanIfNeeded()
+            if wasAutomatic && !self.autoConnectSuppressed {
+                self.attemptAutoConnectIfNeeded()
+            }
         }
     }
 
@@ -2393,8 +2492,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "error": error?.localizedDescription ?? "none"
             ])
             if endedConnectionAttempt {
+                let shouldContinueAutoConnect = self.connectingAttemptIsAutomatic
+                    && !self.autoConnectSuppressed
+                if shouldContinueAutoConnect {
+                    self.autoConnectFailedPeripheralIDs.insert(peripheralID)
+                }
                 self.connectingPeripheralId = nil
                 self.connectingPeripheral = nil
+                self.connectingAttemptIsAutomatic = false
                 if self.cancellingConnectionPeripheralId == peripheralID {
                     self.cancellingConnectionPeripheralId = nil
                 }
@@ -2403,6 +2508,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.connectionStateText = "Disconnected"
                 self.appendLog("Connection attempt ended for \(peripheralID.uuidString)")
                 self.resumeDiscoveryScanIfNeeded()
+                if shouldContinueAutoConnect {
+                    self.attemptAutoConnectIfNeeded()
+                }
                 return
             }
             self.cancelTreadmillTestRunForConnectionInvalidation()
@@ -2429,6 +2537,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.resetSessionStats()
             self.connectingPeripheralId = nil
             self.connectingPeripheral = nil
+            self.connectingAttemptIsAutomatic = false
             if self.cancellingConnectionPeripheralId == peripheralID {
                 self.cancellingConnectionPeripheralId = nil
             }
@@ -2535,6 +2644,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
             connectingPeripheralId = id
             connectingPeripheral = p
+            connectingAttemptIsAutomatic = false
+            connectErrorMessage = nil
             appendLog("Connecting to known discovered id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
@@ -2547,6 +2658,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
             connectingPeripheralId = id
             connectingPeripheral = p
+            connectingAttemptIsAutomatic = false
+            connectErrorMessage = nil
             appendLog("Connecting to known retrieved id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
@@ -2568,6 +2681,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard let central else { return }
         if clearsAutoConnectSuppression {
             autoConnectSuppressed = false
+            connectErrorMessage = nil
         }
         // Prevent duplicate connection attempts
         if isConnected { appendLog("Connect discovered skipped: already connected"); return }
@@ -2581,6 +2695,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
             connectingPeripheralId = id
             connectingPeripheral = p
+            connectingAttemptIsAutomatic = !clearsAutoConnectSuppression
             appendLog("Connecting to discovered id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
@@ -2592,6 +2707,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
                 connectingPeripheralId = id
                 connectingPeripheral = p
+                connectingAttemptIsAutomatic = !clearsAutoConnectSuppression
                 appendLog("Connecting to retrieved id=\(id.uuidString) name=\(p.name ?? "")")
                 central.stopScan()
                 central.connect(p, options: nil)
@@ -2605,6 +2721,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.async {
             self.autoConnectSuppressed = true
             self.knownPeripherals.removeAll { $0.id == id }
+            if self.lastSuccessfulPeripheralID == id {
+                self.lastSuccessfulPeripheralID = nil
+                UserDefaults.standard.removeObject(forKey: self.lastSuccessfulPeripheralStoreKey)
+            }
             self.discoveredPeripherals = self.discoveredPeripherals.map { item in
                 guard item.id == id else { return item }
                 return DiscoveredPeripheral(
@@ -3990,7 +4110,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             self.isConnected = false
             self.connectionStateText = "Disconnecting..."
-            self.connectErrorMessage = "Connection timeout"
+            if !self.connectingAttemptIsAutomatic {
+                self.connectErrorMessage = "Connection timeout"
+            }
             self.connectTimeoutWorkItem = nil
         }
         connectTimeoutWorkItem = work

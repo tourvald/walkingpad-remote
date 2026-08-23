@@ -2238,8 +2238,13 @@ private struct ControlSwipeView: View {
                 if newValue != nil { showConnectError = true }
             }
             .alert("Проблема с подключением", isPresented: $showConnectError, presenting: manager.connectErrorMessage) { _ in
-                Button("Выбрать другую дорожку") { showDevicePicker = true }
-                Button("OK", role: .cancel) {}
+                Button("Выбрать другую дорожку") {
+                    manager.consumeConnectErrorMessage()
+                    showDevicePicker = true
+                }
+                Button("OK", role: .cancel) {
+                    manager.consumeConnectErrorMessage()
+                }
             } message: { msg in
                 Text(msg)
             }

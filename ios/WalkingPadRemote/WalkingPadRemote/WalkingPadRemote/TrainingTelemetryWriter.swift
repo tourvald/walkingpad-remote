@@ -79,6 +79,11 @@ enum TrainingTelemetryWriter {
         let clearableBytes: Int64
     }
 
+    struct TrainingLogsInventorySnapshot: Equatable {
+        let inventory: TrainingLogsInventory
+        let latestMatchingProfileFile: URL?
+    }
+
     private struct SessionSummary {
         let values: [String]
     }
@@ -419,15 +424,12 @@ enum TrainingTelemetryWriter {
         }
 
         return files.filter { file in
-            guard let summary = summarizeJsonlFile(file) else {
-                return false
-            }
-
-            if let fileProfileID = summary.profileID, !fileProfileID.isEmpty {
-                return fileProfileID == profileID
-            }
-
-            return legacyFallbackProfileID == profileID
+            guard let summary = summarizeJsonlFile(file) else { return false }
+            return sessionSummaryMatchesProfile(
+                summary,
+                matchesProfileID: profileID,
+                legacyFallbackProfileID: legacyFallbackProfileID
+            )
         }
     }
 
@@ -437,42 +439,58 @@ enum TrainingTelemetryWriter {
         legacyFallbackProfileID: String? = nil,
         keeping protectedFiles: Set<URL> = []
     ) -> TrainingLogsInventory {
-        let summaries = files.compactMap(summarizeJsonlFile)
-        let profileFiltered = summaries.filter { summary in
-            guard let profileID, !profileID.isEmpty else {
-                return true
-            }
-
-            if let fileProfileID = summary.profileID, !fileProfileID.isEmpty {
-                return fileProfileID == profileID
-            }
-
-            return legacyFallbackProfileID == profileID
-        }
-        let clearable = selectJsonlFilesForClear(
+        trainingLogsInventorySnapshot(
             files,
             matchingProfileID: profileID,
             legacyFallbackProfileID: legacyFallbackProfileID,
             keeping: protectedFiles
-        )
-        let clearablePaths = Set(clearable.map { $0.standardizedFileURL.path })
-        let clearableBytes = profileFiltered.reduce(Int64(0)) { partial, summary in
-            guard clearablePaths.contains(summary.fileURL.standardizedFileURL.path) else {
-                return partial
-            }
-            return partial + summary.fileSizeBytes
+        ).inventory
+    }
+
+    nonisolated static func trainingLogsInventorySnapshot(
+        _ files: [URL],
+        matchingProfileID profileID: String?,
+        legacyFallbackProfileID: String? = nil,
+        keeping protectedFiles: Set<URL> = []
+    ) -> TrainingLogsInventorySnapshot {
+        let summaries = files.compactMap(summarizeJsonlFile)
+        let profileFiltered = summaries.filter { sessionSummary in
+            sessionSummaryMatchesProfile(
+                sessionSummary,
+                matchesProfileID: profileID,
+                legacyFallbackProfileID: legacyFallbackProfileID
+            )
+        }
+        let protectedPaths = Set(protectedFiles.map { $0.standardizedFileURL.path })
+        let clearable = profileFiltered.filter { sessionSummary in
+            !protectedPaths.contains(sessionSummary.fileURL.standardizedFileURL.path)
         }
 
-        return TrainingLogsInventory(
-            totalSessionFiles: summaries.count,
-            completedWorkoutFiles: summaries.filter(\.containsSavedWorkout).count,
-            matchingProfileSessionFiles: profileFiltered.count,
-            matchingProfileCompletedWorkoutFiles: profileFiltered.filter(\.containsSavedWorkout).count,
-            clearableSessionFiles: clearable.count,
-            totalBytes: summaries.reduce(0) { $0 + $1.fileSizeBytes },
-            matchingProfileBytes: profileFiltered.reduce(0) { $0 + $1.fileSizeBytes },
-            clearableBytes: clearableBytes
+        return TrainingLogsInventorySnapshot(
+            inventory: TrainingLogsInventory(
+                totalSessionFiles: summaries.count,
+                completedWorkoutFiles: summaries.filter(\.containsSavedWorkout).count,
+                matchingProfileSessionFiles: profileFiltered.count,
+                matchingProfileCompletedWorkoutFiles: profileFiltered.filter(\.containsSavedWorkout).count,
+                clearableSessionFiles: clearable.count,
+                totalBytes: summaries.reduce(0) { $0 + $1.fileSizeBytes },
+                matchingProfileBytes: profileFiltered.reduce(0) { $0 + $1.fileSizeBytes },
+                clearableBytes: clearable.reduce(0) { $0 + $1.fileSizeBytes }
+            ),
+            latestMatchingProfileFile: profileFiltered.last?.fileURL
         )
+    }
+
+    private nonisolated static func sessionSummaryMatchesProfile(
+        _ summary: SessionLogSummary,
+        matchesProfileID profileID: String?,
+        legacyFallbackProfileID: String?
+    ) -> Bool {
+        guard let profileID, !profileID.isEmpty else { return true }
+        if let fileProfileID = summary.profileID, !fileProfileID.isEmpty {
+            return fileProfileID == profileID
+        }
+        return legacyFallbackProfileID == profileID
     }
 
     nonisolated static func csvString(_ value: Any?) -> String {
