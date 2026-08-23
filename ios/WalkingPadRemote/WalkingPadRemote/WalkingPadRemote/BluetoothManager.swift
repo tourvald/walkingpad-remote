@@ -56,6 +56,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var pendingWatchCommand: String? = nil
 #endif
     private var connectingPeripheralId: UUID? = nil
+    private var connectingPeripheral: CBPeripheral? = nil
+    private var cancellingConnectionPeripheralId: UUID? = nil
     private var controllerUnitsConnectionEpoch: UUID? = nil
     private var controllerUnitsTruthTracker = ControllerUnitsTruthTracker()
     private var lastControllerUnitsQueryAt: Date? = nil
@@ -2105,6 +2107,24 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 #endif
 
     // Auto-connect policy helper
+    private func preferredKnownPeripheral(from peripherals: [CBPeripheral]) -> CBPeripheral? {
+        knownPeripherals.lazy.compactMap { known in
+            peripherals.first(where: { $0.identifier == known.id })
+        }.first
+    }
+
+    private func preferredKnownDiscoveredPeripheral() -> DiscoveredPeripheral? {
+        let knownIDs = Set(knownPeripherals.map(\.id))
+        return discoveredPeripherals.filter { knownIDs.contains($0.id) }.max { lhs, rhs in
+            if lhs.rssi != rhs.rssi {
+                return lhs.rssi < rhs.rssi
+            }
+            let lhsIndex = knownPeripherals.firstIndex(where: { $0.id == lhs.id }) ?? .max
+            let rhsIndex = knownPeripherals.firstIndex(where: { $0.id == rhs.id }) ?? .max
+            return lhsIndex > rhsIndex
+        }
+    }
+
     private func attemptAutoConnectIfNeeded() {
         guard let central, central.state == .poweredOn else {
             appendLog("AutoConnect skipped: Bluetooth not poweredOn or central nil")
@@ -2123,31 +2143,27 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         // If we have known peripherals saved, prefer connecting to them
         if !knownPeripherals.isEmpty {
             // Prefer a discovered known with strongest RSSI
-            if let candidate = discoveredPeripherals.filter({ $0.isKnown }).max(by: { $0.rssi < $1.rssi }) {
+            if let candidate = preferredKnownDiscoveredPeripheral() {
                 appendLog("AutoConnect: connecting strongest known discovered \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
-                connectToDiscovered(id: candidate.id)
+                connectToDiscovered(id: candidate.id, clearsAutoConnectSuppression: false)
                 return
             }
             // Try already connected peripherals that match our service and are known
             let connectedList = central.retrieveConnectedPeripherals(withServices: supportedServiceUuids)
-            if let p = connectedList.first(where: { kp in self.knownPeripherals.contains(where: { $0.id == kp.identifier }) }) {
+            if let p = preferredKnownPeripheral(from: connectedList) {
                 discoveredMap[p.identifier] = p
-                DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
                 appendLog("AutoConnect: connecting to system-connected known id=\(p.identifier.uuidString) name=\(p.name ?? "")")
-                central.stopScan()
-                central.connect(p, options: nil)
+                connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
                 return
             }
             // Try retrieve by identifiers for known devices
             let ids = knownPeripherals.map { $0.id }
             if !ids.isEmpty {
                 let list = central.retrievePeripherals(withIdentifiers: ids)
-                if let p = list.first {
+                if let p = preferredKnownPeripheral(from: list) {
                     discoveredMap[p.identifier] = p
-                    DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
                     appendLog("AutoConnect: retrieve and connect known id=\(p.identifier.uuidString) name=\(p.name ?? "")")
-                    central.stopScan()
-                    central.connect(p, options: nil)
+                    connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
                     return
                 }
             }
@@ -2159,7 +2175,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if allowAutoConnectUnknown {
             if let candidate = discoveredPeripherals.max(by: { $0.rssi < $1.rssi }) {
                 appendLog("AutoConnect: connecting strongest unknown \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
-                connectToDiscovered(id: candidate.id)
+                connectToDiscovered(id: candidate.id, clearsAutoConnectSuppression: false)
                 return
             }
         }
@@ -2171,7 +2187,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 if !self.isConnected && self.knownPeripherals.isEmpty && self.allowAutoConnectUnknown && !self.autoConnectSuppressed {
                     if let candidate = self.discoveredPeripherals.max(by: { $0.rssi < $1.rssi }) {
                         self.appendLog("AutoConnect (retry): connecting strongest unknown \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
-                        self.connectToDiscovered(id: candidate.id)
+                        self.connectToDiscovered(
+                            id: candidate.id,
+                            clearsAutoConnectSuppression: false
+                        )
                     } else {
                         self.appendLog("AutoConnect (retry): still no candidates")
                     }
@@ -2235,13 +2254,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 if self.autoConnectSuppressed {
                     return
                 }
-                if self.discoveredPeripherals.contains(where: { $0.isKnown }) {
-                    let candidate = self.discoveredPeripherals.filter { $0.isKnown }.max(by: { $0.rssi < $1.rssi })
+                if self.preferredKnownDiscoveredPeripheral() != nil {
+                    let candidate = self.preferredKnownDiscoveredPeripheral()
                     if let candidate {
                         self.autoConnectPendingWorkItem?.cancel()
                         self.autoConnectPendingWorkItem = nil
                         self.appendLog("AutoConnect (discover): connecting strongest known \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
-                        self.connectToDiscovered(id: candidate.id)
+                        self.connectToDiscovered(
+                            id: candidate.id,
+                            clearsAutoConnectSuppression: false
+                        )
                     }
                 } else if self.allowAutoConnectUnknown {
                     if self.autoConnectPendingWorkItem == nil {
@@ -2250,7 +2272,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             if !self.isConnected && self.allowAutoConnectUnknown && !self.autoConnectSuppressed {
                                 let candidate = self.discoveredPeripherals.max(by: { $0.rssi < $1.rssi })
                                 if let candidate {
-                                    self.connectToDiscovered(id: candidate.id)
+                                    self.connectToDiscovered(
+                                        id: candidate.id,
+                                        clearsAutoConnectSuppression: false
+                                    )
                                 }
                             }
                             self.autoConnectPendingWorkItem = nil
@@ -2265,19 +2290,39 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        appendLog("Connected; discovering services…")
-        logTrainingEvent("ble_connection_event", fields: [
-            "status": "connected",
-            "peripheral_id": peripheral.identifier.uuidString,
-            "name": peripheral.name ?? ""
-        ])
         DispatchQueue.main.async {
+            let peripheralID = peripheral.identifier
+            if self.connectedPeripheralId == peripheralID {
+                return
+            }
+            guard self.connectingPeripheralId == peripheralID else {
+                self.appendLog("Ignoring unexpected connection callback for \(peripheralID.uuidString)")
+                central.cancelPeripheralConnection(peripheral)
+                return
+            }
+            if self.cancellingConnectionPeripheralId == peripheralID || self.autoConnectSuppressed {
+                self.cancellingConnectionPeripheralId = peripheralID
+                self.connectTimeoutWorkItem?.cancel()
+                self.connectTimeoutWorkItem = nil
+                self.appendLog("Rejecting completed connection after cancellation for \(peripheralID.uuidString)")
+                central.cancelPeripheralConnection(peripheral)
+                return
+            }
+            self.appendLog("Connected; discovering services…")
+            self.logTrainingEvent("ble_connection_event", fields: [
+                "status": "connected",
+                "peripheral_id": peripheralID.uuidString,
+                "name": peripheral.name ?? ""
+            ])
             self.autoConnectPendingWorkItem?.cancel()
             self.autoConnectPendingWorkItem = nil
             self.connectTimeoutWorkItem?.cancel()
             self.connectTimeoutWorkItem = nil
             self.connectingPeripheralId = nil
+            self.connectingPeripheral = nil
+            self.cancellingConnectionPeripheralId = nil
             self.isConnected = true
+            central.stopScan()
             self.connectedPeripheralId = peripheral.identifier
             let defaultName = peripheral.name
             if let kp = self.knownPeripherals.first(where: { $0.id == peripheral.identifier }) {
@@ -2302,37 +2347,64 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.saveKnownPeripherals()
             }
         }
-        central.stopScan()
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-        logTrainingEvent("ble_connection_event", fields: [
-            "status": "failed_to_connect",
-            "peripheral_id": peripheral.identifier.uuidString,
-            "error": error?.localizedDescription ?? "unknown error"
-        ])
         DispatchQueue.main.async {
+            guard self.connectingPeripheralId == peripheral.identifier else {
+                self.appendLog("Ignoring stale connect failure for \(peripheral.identifier.uuidString)")
+                return
+            }
+            self.logTrainingEvent("ble_connection_event", fields: [
+                "status": "failed_to_connect",
+                "peripheral_id": peripheral.identifier.uuidString,
+                "error": error?.localizedDescription ?? "unknown error"
+            ])
             self.isConnected = false
             self.connectionStateText = "Disconnected"
             self.connectErrorMessage = error?.localizedDescription ?? "Failed to connect"
             self.connectingPeripheralId = nil
+            self.connectingPeripheral = nil
+            if self.cancellingConnectionPeripheralId == peripheral.identifier {
+                self.cancellingConnectionPeripheralId = nil
+            }
             self.connectTimeoutWorkItem?.cancel()
             self.connectTimeoutWorkItem = nil
             self.appendLog("Failed to connect to \(peripheral.identifier.uuidString): \(error?.localizedDescription ?? "unknown error")")
-        }
-        if shouldBeScanning {
-            central.scanForPeripherals(withServices: supportedServiceUuids,
-                                       options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+            self.resumeDiscoveryScanIfNeeded()
         }
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        logTrainingEvent("ble_connection_event", fields: [
-            "status": "disconnected",
-            "peripheral_id": peripheral.identifier.uuidString,
-            "error": error?.localizedDescription ?? "none"
-        ])
         DispatchQueue.main.async {
+            let peripheralID = peripheral.identifier
+            let endedConnectionAttempt = self.connectingPeripheralId == peripheralID
+                && self.connectedPeripheralId != peripheralID
+            let endedEstablishedConnection = self.connectedPeripheralId == peripheralID
+                || (self.cancellingConnectionPeripheralId == peripheralID
+                    && self.connectingPeripheralId != peripheralID)
+            guard endedConnectionAttempt || endedEstablishedConnection else {
+                self.appendLog("Ignoring stale disconnect for \(peripheralID.uuidString)")
+                return
+            }
+            self.logTrainingEvent("ble_connection_event", fields: [
+                "status": "disconnected",
+                "peripheral_id": peripheralID.uuidString,
+                "error": error?.localizedDescription ?? "none"
+            ])
+            if endedConnectionAttempt {
+                self.connectingPeripheralId = nil
+                self.connectingPeripheral = nil
+                if self.cancellingConnectionPeripheralId == peripheralID {
+                    self.cancellingConnectionPeripheralId = nil
+                }
+                self.connectTimeoutWorkItem?.cancel()
+                self.connectTimeoutWorkItem = nil
+                self.connectionStateText = "Disconnected"
+                self.appendLog("Connection attempt ended for \(peripheralID.uuidString)")
+                self.resumeDiscoveryScanIfNeeded()
+                return
+            }
             self.cancelTreadmillTestRunForConnectionInvalidation()
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
             self.stopTruthExperimentController?.connectionContextInvalidated()
@@ -2356,6 +2428,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.recomputeHrStartAllowed()
             self.resetSessionStats()
             self.connectingPeripheralId = nil
+            self.connectingPeripheral = nil
+            if self.cancellingConnectionPeripheralId == peripheralID {
+                self.cancellingConnectionPeripheralId = nil
+            }
             self.connectTimeoutWorkItem?.cancel()
             self.connectTimeoutWorkItem = nil
             self.manualModeSet = false
@@ -2370,10 +2446,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 occurredAt: Date()
             )
             self.endTelemetryV2Session(reason: "ble_disconnected")
-        }
-        if shouldBeScanning, central.state == .poweredOn {
-            central.scanForPeripherals(withServices: supportedServiceUuids,
-                                       options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+            self.resumeDiscoveryScanIfNeeded()
         }
     }
 
@@ -2409,8 +2482,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if isHrControlRunning {
             stopTrainingStructuredLog(reason: userInitiated ? "disconnect_user" : "disconnect")
         }
-        if let central, let id = connectedPeripheralId, let p = discoveredMap[id] {
-            central.cancelPeripheralConnection(p)
+        if let central {
+            if let id = connectedPeripheralId, let p = discoveredMap[id] {
+                cancellingConnectionPeripheralId = id
+                central.cancelPeripheralConnection(p)
+            } else if let id = connectingPeripheralId,
+                      let p = connectingPeripheral,
+                      p.identifier == id {
+                cancellingConnectionPeripheralId = id
+                central.cancelPeripheralConnection(p)
+            }
         }
         connectTimeoutWorkItem?.cancel()
         connectTimeoutWorkItem = nil
@@ -2453,6 +2534,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if let p = discoveredMap[id] {
             DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
             connectingPeripheralId = id
+            connectingPeripheral = p
             appendLog("Connecting to known discovered id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
@@ -2464,6 +2546,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             discoveredMap[id] = p
             DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
             connectingPeripheralId = id
+            connectingPeripheral = p
             appendLog("Connecting to known retrieved id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
@@ -2477,10 +2560,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appendLog("Connecting to known id=\(id.uuidString): scanning to discover")
         }
     }
-    func connectToDiscovered(id: UUID) {
+    func connectToDiscovered(
+        id: UUID,
+        clearsAutoConnectSuppression: Bool = true
+    ) {
         ensureCentral()
         guard let central else { return }
-        autoConnectSuppressed = false
+        if clearsAutoConnectSuppression {
+            autoConnectSuppressed = false
+        }
         // Prevent duplicate connection attempts
         if isConnected { appendLog("Connect discovered skipped: already connected"); return }
         if let inProgress = connectingPeripheralId {
@@ -2492,6 +2580,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if let p = discoveredMap[id] {
             DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
             connectingPeripheralId = id
+            connectingPeripheral = p
             appendLog("Connecting to discovered id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
@@ -2502,6 +2591,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 discoveredMap[id] = p
                 DispatchQueue.main.async { self.connectionStateText = "Connecting..." }
                 connectingPeripheralId = id
+                connectingPeripheral = p
                 appendLog("Connecting to retrieved id=\(id.uuidString) name=\(p.name ?? "")")
                 central.stopScan()
                 central.connect(p, options: nil)
@@ -2515,8 +2605,25 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.async {
             self.autoConnectSuppressed = true
             self.knownPeripherals.removeAll { $0.id == id }
+            self.discoveredPeripherals = self.discoveredPeripherals.map { item in
+                guard item.id == id else { return item }
+                return DiscoveredPeripheral(
+                    id: item.id,
+                    name: item.name,
+                    rssi: item.rssi,
+                    isKnown: false
+                )
+            }
             if self.connectedPeripheralId == id {
                 self.disconnect(userInitiated: true)
+            } else if self.connectingPeripheralId == id,
+                      let central = self.central,
+                      let peripheral = self.connectingPeripheral,
+                      peripheral.identifier == id {
+                self.cancellingConnectionPeripheralId = id
+                self.connectTimeoutWorkItem?.cancel()
+                self.connectTimeoutWorkItem = nil
+                central.cancelPeripheralConnection(peripheral)
             }
             self.saveKnownPeripherals()
         }
@@ -3856,21 +3963,35 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
+    private func resumeDiscoveryScanIfNeeded() {
+        guard shouldBeScanning,
+              let central,
+              central.state == .poweredOn else { return }
+        central.scanForPeripherals(
+            withServices: supportedServiceUuids,
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+        )
+        if !isConnected {
+            connectionStateText = "Scanning..."
+        }
+    }
+
     private func scheduleConnectTimeout(for id: UUID, seconds: TimeInterval = 12) {
         connectTimeoutWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             guard self.connectingPeripheralId == id else { return }
             self.appendLog("Connection timeout for \(id.uuidString)")
-            if let central, let p = self.discoveredMap[id] {
+            if let central,
+               let p = self.connectingPeripheral,
+               p.identifier == id {
+                self.cancellingConnectionPeripheralId = id
                 central.cancelPeripheralConnection(p)
             }
-            DispatchQueue.main.async {
-                self.isConnected = false
-                self.connectionStateText = "Disconnected"
-                self.connectErrorMessage = "Connection timeout"
-                self.connectingPeripheralId = nil
-            }
+            self.isConnected = false
+            self.connectionStateText = "Disconnecting..."
+            self.connectErrorMessage = "Connection timeout"
+            self.connectTimeoutWorkItem = nil
         }
         connectTimeoutWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
