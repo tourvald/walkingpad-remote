@@ -48,7 +48,9 @@ final class IPhoneHealthKitLiveHeartRateProvider {
         await core.discard(at: date)
     }
 
-    func finish(at date: Date = Date()) async throws -> HKWorkout {
+    func finish(
+        at date: Date = Date()
+    ) async throws -> IPhoneHealthKitWorkoutFinishOutcome<HKWorkout> {
         try await core.finish(at: date)
     }
 }

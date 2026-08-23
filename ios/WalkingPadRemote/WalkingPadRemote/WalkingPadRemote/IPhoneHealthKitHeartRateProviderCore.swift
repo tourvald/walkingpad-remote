@@ -36,8 +36,14 @@ enum IPhoneHealthKitHeartRateProviderError: Error, Equatable {
         actual: IPhoneHealthKitHeartRateProviderState
     )
     case operationCancelled
-    case finishedWorkoutUnavailable
 }
+
+enum IPhoneHealthKitWorkoutFinishOutcome<Workout> {
+    case saved(workout: Workout)
+    case savedWorkoutUnavailable
+}
+
+extension IPhoneHealthKitWorkoutFinishOutcome: Equatable where Workout: Equatable {}
 
 struct IPhoneHealthKitHeartRateSample: Equatable {
     let beatsPerMinute: Int
@@ -149,7 +155,9 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
         await discardOwnedWorkout(at: date)
     }
 
-    func finish(at date: Date) async throws -> Driver.Workout {
+    func finish(
+        at date: Date
+    ) async throws -> IPhoneHealthKitWorkoutFinishOutcome<Driver.Workout> {
         guard state == .collecting else {
             throw IPhoneHealthKitHeartRateProviderError.invalidTransition(
                 expected: .collecting,
@@ -168,13 +176,14 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
             try await driver.endCollection(at: stoppedAt)
             try requireCurrent(operationGeneration, state: .finishing)
             collectionStarted = false
-            guard let workout = try await driver.finishWorkout() else {
-                throw IPhoneHealthKitHeartRateProviderError.finishedWorkoutUnavailable
-            }
+            let workout = try await driver.finishWorkout()
             try requireCurrent(operationGeneration, state: .finishing)
             driver.endSession()
             resetOwnership()
-            return workout
+            if let workout {
+                return .saved(workout: workout)
+            }
+            return .savedWorkoutUnavailable
         } catch {
             if operationGeneration == generation {
                 await discardOwnedWorkout(at: date)

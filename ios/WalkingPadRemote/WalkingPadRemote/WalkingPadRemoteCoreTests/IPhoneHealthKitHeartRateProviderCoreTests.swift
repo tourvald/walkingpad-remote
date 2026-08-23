@@ -123,9 +123,9 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.calls, ["stopActivity"])
 
         driver.sendStoppedTransition(at: stoppedAt)
-        let workoutID = try await finish.value
+        let outcome = try await finish.value
 
-        XCTAssertEqual(workoutID, driver.workoutID)
+        XCTAssertEqual(outcome, .saved(workout: driver.workoutID))
         XCTAssertEqual(provider.state, .idle)
         XCTAssertEqual(
             driver.calls,
@@ -144,20 +144,45 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.finishCount, 1)
     }
 
-    func testNilFinishedWorkoutFailsAndResetsOwnership() async throws {
+    func testUnavailableFinishedWorkoutEndsSessionWithoutDiscardOrRetry() async throws {
         let (provider, driver) = makeProvider()
         try await provider.prepare(configuration: "walking")
         try await provider.start()
         driver.finishedWorkout = nil
         driver.calls.removeAll()
 
+        let outcome = try await provider.finish(at: Date(timeIntervalSince1970: 5_100))
+
+        XCTAssertEqual(outcome, .savedWorkoutUnavailable)
+        XCTAssertEqual(provider.state, .idle)
+        XCTAssertEqual(
+            driver.calls,
+            [
+                "stopActivity",
+                "stoppedTransition",
+                "endCollection",
+                "finish",
+                "endSession",
+                "reset",
+            ]
+        )
+        XCTAssertEqual(driver.finishCount, 1)
+        XCTAssertEqual(driver.discardCount, 0)
+        XCTAssertEqual(driver.endSessionCount, 1)
+        XCTAssertEqual(driver.resetCount, 1)
+    }
+
+    func testFinishErrorFailsAndDiscardsOwnedWorkout() async throws {
+        let (provider, driver) = makeProvider()
+        try await provider.prepare(configuration: "walking")
+        try await provider.start()
+        driver.finishWorkoutError = TestError.expected
+        driver.calls.removeAll()
+
         await XCTAssertThrowsErrorAsync(
-            try await provider.finish(at: Date(timeIntervalSince1970: 5_100))
+            try await provider.finish(at: Date(timeIntervalSince1970: 5_200))
         ) { error in
-            XCTAssertEqual(
-                error as? IPhoneHealthKitHeartRateProviderError,
-                .finishedWorkoutUnavailable
-            )
+            XCTAssertEqual(error as? TestError, .expected)
         }
 
         XCTAssertEqual(provider.state, .idle)
@@ -173,7 +198,9 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
                 "reset",
             ]
         )
+        XCTAssertEqual(driver.finishCount, 1)
         XCTAssertEqual(driver.discardCount, 1)
+        XCTAssertEqual(driver.endSessionCount, 1)
         XCTAssertEqual(driver.resetCount, 1)
     }
 
@@ -271,6 +298,7 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
     var calls: [String] = []
     var createdConfigurations: [String] = []
     var beginCollectionError: Error?
+    var finishWorkoutError: Error?
     var suspendPrepare = false
     var suspendStoppedTransition = false
     var startActivityCount = 0
@@ -279,6 +307,7 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
     var endCollectionCount = 0
     var finishCount = 0
     var discardCount = 0
+    var endSessionCount = 0
     var resetCount = 0
     var endCollectionDates: [Date] = []
     private var prepareContinuation: CheckedContinuation<Void, Error>?
@@ -342,6 +371,9 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
     func finishWorkout() async throws -> UUID? {
         calls.append("finish")
         finishCount += 1
+        if let finishWorkoutError {
+            throw finishWorkoutError
+        }
         return finishedWorkout
     }
 
@@ -352,6 +384,7 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
 
     func endSession() {
         calls.append("endSession")
+        endSessionCount += 1
     }
 
     func reset() {
