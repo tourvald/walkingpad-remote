@@ -337,6 +337,58 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
     }
 
+    func testTrainingHubDurationPresetsAreDirectTruthfulAndCooldownFree() throws {
+        let mapping = try functionBody(
+            "private func makeHRControlTrainingHubPresentation(",
+            in: contentViewSource
+        )
+        let selector = try functionBody(
+            "private struct TrainingDurationPresetSelector: View",
+            in: contentViewSource
+        )
+        let controlView = try functionBody(
+            "private struct ControlSwipeView: View",
+            in: contentViewSource
+        )
+        let previewFixtures = try functionBody(
+            "private func trainingHubPreviewPresentation(named name: String)",
+            in: contentViewSource
+        )
+
+        XCTAssertTrue(contentViewSource.contains(
+            "private let trainingDurationPresets = [20, 25, 30, 35, 40, 45]"
+        ))
+        XCTAssertTrue(mapping.contains("durationMinutes: durationMinutes"))
+        XCTAssertTrue(mapping.contains("metrics: []"))
+        XCTAssertFalse(mapping.contains("cooldownTargetBPM"))
+        XCTAssertFalse(mapping.contains("title: \"Заминка\""))
+
+        XCTAssertTrue(selector.contains("trainingDurationPresets.contains(selectedMinutes)"))
+        XCTAssertTrue(selector.contains("if !hasPresetSelection"))
+        XCTAssertTrue(selector.contains("Text(\"Текущее: \\(selectedMinutes) мин\")"))
+        XCTAssertTrue(selector.contains("guard interactive else { return }"))
+        XCTAssertTrue(selector.contains("onSelect(minutes)"))
+        XCTAssertFalse(selector.contains("onAppear"))
+        XCTAssertFalse(selector.contains("@State"))
+        XCTAssertFalse(selector.contains("@Binding"))
+
+        XCTAssertTrue(controlView.contains(
+            "onDurationSelect: { manager.hrDurationMinutes = $0 }"
+        ))
+        XCTAssertFalse(controlView.contains("showDurationSheet"))
+        XCTAssertFalse(contentViewSource.contains("HRDurationWheelSheet"))
+
+        for fixture in [
+            "duration-20",
+            "duration-30",
+            "duration-45",
+            "duration-legacy-10",
+            "duration-legacy-60",
+        ] {
+            XCTAssertTrue(previewFixtures.contains("case \"\(fixture)\""), fixture)
+        }
+    }
+
     func testActiveWorkoutShellIsObservationalSparseAndTransportFree() throws {
         let mapping = try functionBody(
             "private func makeHRControlActivePresentation(",
