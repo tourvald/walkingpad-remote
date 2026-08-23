@@ -107,23 +107,74 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
         XCTAssertEqual(driver.finishCount, 0)
     }
 
-    func testCommittedFinishUsesStopEndCollectionFinishExactlyOnce() async throws {
+    func testCommittedFinishWaitsForStoppedTransitionAndUsesItsDate() async throws {
         let (provider, driver) = makeProvider()
         try await provider.prepare(configuration: "walking")
         try await provider.start()
         driver.calls.removeAll()
+        driver.suspendStoppedTransition = true
+        let stoppedAt = Date(timeIntervalSince1970: 5_001)
 
-        let workoutID = try await provider.finish(at: Date(timeIntervalSince1970: 5_000))
+        let finish = Task {
+            try await provider.finish(at: Date(timeIntervalSince1970: 5_000))
+        }
+        await driver.waitUntilStoppedTransitionIsPending()
+
+        XCTAssertEqual(driver.calls, ["stopActivity"])
+
+        driver.sendStoppedTransition(at: stoppedAt)
+        let workoutID = try await finish.value
 
         XCTAssertEqual(workoutID, driver.workoutID)
         XCTAssertEqual(provider.state, .idle)
         XCTAssertEqual(
             driver.calls,
-            ["stopActivity", "endCollection", "finish", "endSession", "reset"]
+            [
+                "stopActivity",
+                "stoppedTransition",
+                "endCollection",
+                "finish",
+                "endSession",
+                "reset",
+            ]
         )
+        XCTAssertEqual(driver.endCollectionDates, [stoppedAt])
         XCTAssertEqual(driver.stopActivityCount, 1)
         XCTAssertEqual(driver.endCollectionCount, 1)
         XCTAssertEqual(driver.finishCount, 1)
+    }
+
+    func testNilFinishedWorkoutFailsAndResetsOwnership() async throws {
+        let (provider, driver) = makeProvider()
+        try await provider.prepare(configuration: "walking")
+        try await provider.start()
+        driver.finishedWorkout = nil
+        driver.calls.removeAll()
+
+        await XCTAssertThrowsErrorAsync(
+            try await provider.finish(at: Date(timeIntervalSince1970: 5_100))
+        ) { error in
+            XCTAssertEqual(
+                error as? IPhoneHealthKitHeartRateProviderError,
+                .finishedWorkoutUnavailable
+            )
+        }
+
+        XCTAssertEqual(provider.state, .idle)
+        XCTAssertEqual(
+            driver.calls,
+            [
+                "stopActivity",
+                "stoppedTransition",
+                "endCollection",
+                "finish",
+                "discard",
+                "endSession",
+                "reset",
+            ]
+        )
+        XCTAssertEqual(driver.discardCount, 1)
+        XCTAssertEqual(driver.resetCount, 1)
     }
 
     func testFailureResetsOwnershipBeforeNextAttempt() async throws {
@@ -216,10 +267,12 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
     typealias Workout = UUID
 
     let workoutID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+    var finishedWorkout: UUID?
     var calls: [String] = []
     var createdConfigurations: [String] = []
     var beginCollectionError: Error?
     var suspendPrepare = false
+    var suspendStoppedTransition = false
     var startActivityCount = 0
     var beginCollectionCount = 0
     var stopActivityCount = 0
@@ -227,7 +280,13 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
     var finishCount = 0
     var discardCount = 0
     var resetCount = 0
+    var endCollectionDates: [Date] = []
     private var prepareContinuation: CheckedContinuation<Void, Error>?
+    private var stoppedTransitionContinuation: CheckedContinuation<Date, Error>?
+
+    init() {
+        finishedWorkout = workoutID
+    }
 
     func requestAuthorization() async throws {
         calls.append("authorization")
@@ -264,15 +323,26 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
         stopActivityCount += 1
     }
 
+    func waitForStoppedTransition() async throws -> Date {
+        guard suspendStoppedTransition else {
+            calls.append("stoppedTransition")
+            return Date(timeIntervalSince1970: 4_999)
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            stoppedTransitionContinuation = continuation
+        }
+    }
+
     func endCollection(at date: Date) async throws {
         calls.append("endCollection")
         endCollectionCount += 1
+        endCollectionDates.append(date)
     }
 
-    func finishWorkout() async throws -> UUID {
+    func finishWorkout() async throws -> UUID? {
         calls.append("finish")
         finishCount += 1
-        return workoutID
+        return finishedWorkout
     }
 
     func discardWorkout() {
@@ -291,12 +361,29 @@ private final class FakeHealthKitWorkoutDriver: IPhoneHealthKitWorkoutLifecycleD
             throwing: IPhoneHealthKitHeartRateProviderError.operationCancelled
         )
         prepareContinuation = nil
+        stoppedTransitionContinuation?.resume(
+            throwing: IPhoneHealthKitHeartRateProviderError.operationCancelled
+        )
+        stoppedTransitionContinuation = nil
     }
 
     func waitUntilPrepareIsPending() async {
         while prepareContinuation == nil {
             await Task.yield()
         }
+    }
+
+    func waitUntilStoppedTransitionIsPending() async {
+        while stoppedTransitionContinuation == nil {
+            await Task.yield()
+        }
+    }
+
+    func sendStoppedTransition(at date: Date) {
+        calls.append("stoppedTransition")
+        let continuation = stoppedTransitionContinuation
+        stoppedTransitionContinuation = nil
+        continuation?.resume(returning: date)
     }
 }
 

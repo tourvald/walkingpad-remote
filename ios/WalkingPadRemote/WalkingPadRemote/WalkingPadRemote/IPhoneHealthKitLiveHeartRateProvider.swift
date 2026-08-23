@@ -48,7 +48,7 @@ final class IPhoneHealthKitLiveHeartRateProvider {
         await core.discard(at: date)
     }
 
-    func finish(at date: Date = Date()) async throws -> HKWorkout? {
+    func finish(at date: Date = Date()) async throws -> HKWorkout {
         try await core.finish(at: date)
     }
 }
@@ -56,7 +56,7 @@ final class IPhoneHealthKitLiveHeartRateProvider {
 @available(iOS 26.0, *)
 private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkoutLifecycleDriving {
     typealias Configuration = HKWorkoutConfiguration
-    typealias Workout = HKWorkout?
+    typealias Workout = HKWorkout
 
     var onHeartRateSample: ((IPhoneHealthKitHeartRateSample) -> Void)?
     var onRuntimeFailure: (() -> Void)?
@@ -66,6 +66,8 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
     private var builder: HKLiveWorkoutBuilder?
     private var prepareContinuation: CheckedContinuation<Void, Error>?
     private var beginCollectionContinuation: CheckedContinuation<Void, Error>?
+    private var stoppedTransitionContinuation: CheckedContinuation<Date, Error>?
+    private var stoppedAt: Date?
     private var endCollectionContinuation: CheckedContinuation<Void, Error>?
     private var finishContinuation: CheckedContinuation<HKWorkout?, Error>?
 
@@ -147,6 +149,16 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
         session?.stopActivity(with: date)
     }
 
+    func waitForStoppedTransition() async throws -> Date {
+        if let stoppedAt {
+            self.stoppedAt = nil
+            return stoppedAt
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            stoppedTransitionContinuation = continuation
+        }
+    }
+
     func endCollection(at date: Date) async throws {
         guard let builder else {
             throw HealthKitLiveWorkoutDriverError.missingWorkout
@@ -203,10 +215,13 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
         let cancellation = HealthKitLiveWorkoutDriverError.operationCancelled
         prepareContinuation?.resume(throwing: cancellation)
         beginCollectionContinuation?.resume(throwing: cancellation)
+        stoppedTransitionContinuation?.resume(throwing: cancellation)
         endCollectionContinuation?.resume(throwing: cancellation)
         finishContinuation?.resume(throwing: cancellation)
         prepareContinuation = nil
         beginCollectionContinuation = nil
+        stoppedTransitionContinuation = nil
+        stoppedAt = nil
         endCollectionContinuation = nil
         finishContinuation = nil
         session = nil
@@ -242,10 +257,22 @@ extension HealthKitLiveWorkoutDriver: HKWorkoutSessionDelegate, HKLiveWorkoutBui
         date: Date
     ) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, workoutSession === self.session, toState == .prepared else { return }
-            let continuation = self.prepareContinuation
-            self.prepareContinuation = nil
-            continuation?.resume()
+            guard let self, workoutSession === self.session else { return }
+            switch toState {
+            case .prepared:
+                let continuation = self.prepareContinuation
+                self.prepareContinuation = nil
+                continuation?.resume()
+            case .stopped:
+                if let continuation = self.stoppedTransitionContinuation {
+                    self.stoppedTransitionContinuation = nil
+                    continuation.resume(returning: date)
+                } else {
+                    self.stoppedAt = date
+                }
+            default:
+                break
+            }
         }
     }
 
@@ -255,6 +282,9 @@ extension HealthKitLiveWorkoutDriver: HKWorkoutSessionDelegate, HKLiveWorkoutBui
             let continuation = self.prepareContinuation
             self.prepareContinuation = nil
             continuation?.resume(throwing: error)
+            let stoppedContinuation = self.stoppedTransitionContinuation
+            self.stoppedTransitionContinuation = nil
+            stoppedContinuation?.resume(throwing: error)
             self.onRuntimeFailure?()
         }
     }

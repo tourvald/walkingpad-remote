@@ -11,8 +11,9 @@ protocol IPhoneHealthKitWorkoutLifecycleDriving: AnyObject {
     func startActivity(at date: Date)
     func beginCollection(at date: Date) async throws
     func stopActivity(at date: Date)
+    func waitForStoppedTransition() async throws -> Date
     func endCollection(at date: Date) async throws
-    func finishWorkout() async throws -> Workout
+    func finishWorkout() async throws -> Workout?
     func discardWorkout()
     func endSession()
     func reset()
@@ -35,6 +36,7 @@ enum IPhoneHealthKitHeartRateProviderError: Error, Equatable {
         actual: IPhoneHealthKitHeartRateProviderState
     )
     case operationCancelled
+    case finishedWorkoutUnavailable
 }
 
 struct IPhoneHealthKitHeartRateSample: Equatable {
@@ -158,13 +160,17 @@ final class IPhoneHealthKitHeartRateProviderCore<Driver: IPhoneHealthKitWorkoutL
         let operationGeneration = generation
         state = .finishing
         driver.stopActivity(at: date)
-        activityStarted = false
 
         do {
-            try await driver.endCollection(at: date)
+            let stoppedAt = try await driver.waitForStoppedTransition()
+            try requireCurrent(operationGeneration, state: .finishing)
+            activityStarted = false
+            try await driver.endCollection(at: stoppedAt)
             try requireCurrent(operationGeneration, state: .finishing)
             collectionStarted = false
-            let workout = try await driver.finishWorkout()
+            guard let workout = try await driver.finishWorkout() else {
+                throw IPhoneHealthKitHeartRateProviderError.finishedWorkoutUnavailable
+            }
             try requireCurrent(operationGeneration, state: .finishing)
             driver.endSession()
             resetOwnership()
