@@ -151,6 +151,7 @@ let package = Package(
                 "StopTruthExperimentObservationService.swift",
                 "StopTruthExperimentPlanService.swift",
                 "StopTruthExperimentSessionService.swift",
+                "TestRunHeartRateDiagnosticService.swift",
                 "TreadmillTestRunService.swift",
                 "TrainingTelemetryWriter.swift",
                 "ZonePlanProgress.swift",

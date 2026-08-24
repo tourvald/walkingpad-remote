@@ -4271,6 +4271,7 @@ private struct DebugView: View {
 
     private var trainingLogsCardPresentation: DebugTrainingLogsCard.Presentation {
         let entries = manager.telemetryV2WorkoutHistory
+        let heartRateDiagnostic = manager.treadmillTestRunHeartRateDiagnosticSnapshot
         let readReady = manager.telemetryV2WorkoutHistoryState == .loaded
         let readStatusText: String = {
             switch manager.telemetryV2WorkoutHistoryState {
@@ -4311,6 +4312,18 @@ private struct DebugView: View {
             testRunActive: manager.treadmillTestRunIsActive,
             testRunStatusText: manager.treadmillTestRunDisplayText,
             canStartTestRun: manager.canStartTreadmillTestRun,
+            heartRateDiagnosticStatusText: testRunHeartRateDiagnosticStatusText(
+                heartRateDiagnostic
+            ),
+            heartRateDiagnosticMetrics: testRunHeartRateDiagnosticMetrics(
+                heartRateDiagnostic
+            ),
+            heartRateDiagnosticDetailLines: testRunHeartRateDiagnosticDetailLines(
+                heartRateDiagnostic
+            ),
+            heartRateDiagnosticReport: testRunHeartRateDiagnosticReport(
+                heartRateDiagnostic
+            ),
             subtitle: "Telemetry V2 · активный профиль: \(manager.activeUserProfileLabel)",
             profileMetrics: [
                 .init(id: "profile_loaded", title: "Загружено", value: "\(entries.count)", tint: .accentColor),
@@ -4336,6 +4349,122 @@ private struct DebugView: View {
                 ? "Для анализа лучше накопить хотя бы 3 завершённые тренировки."
                 : nil
         )
+    }
+
+    private func testRunHeartRateDiagnosticStatusText(
+        _ snapshot: TestRunHeartRateDiagnosticService.Snapshot
+    ) -> String {
+        guard snapshot.runID != nil else {
+            return "Запускается параллельно Test Run и не управляет дорожкой."
+        }
+        if let detail = snapshot.detail, !detail.isEmpty {
+            return "\(snapshot.phase.rawValue) · \(detail)"
+        }
+        if let reason = snapshot.terminalReason {
+            return "\(snapshot.phase.rawValue) · \(reason.rawValue)"
+        }
+        return "\(snapshot.phase.rawValue) · provider \(snapshot.providerState)"
+    }
+
+    private func testRunHeartRateDiagnosticMetrics(
+        _ snapshot: TestRunHeartRateDiagnosticService.Snapshot
+    ) -> [DebugTrainingLogsCard.Presentation.Metric] {
+        guard snapshot.runID != nil else { return [] }
+        let bpm = snapshot.latestBPM.map(String.init) ?? "—"
+        let freshness = snapshot.latestDisplayFresh ? "fresh" : "not fresh"
+        let qualification = snapshot.latestStartQualified ? "qualified" : "not qualified"
+        return [
+            .init(
+                id: "hr_probe_provider",
+                title: "Provider",
+                value: snapshot.providerState,
+                tint: .accentColor
+            ),
+            .init(id: "hr_probe_bpm", title: "HR", value: "\(bpm) bpm", tint: .red),
+            .init(
+                id: "hr_probe_fresh",
+                title: "Display",
+                value: freshness,
+                tint: snapshot.latestDisplayFresh ? .green : .orange
+            ),
+            .init(
+                id: "hr_probe_qualified",
+                title: "Start gate",
+                value: qualification,
+                tint: snapshot.latestStartQualified ? .green : .orange
+            ),
+            .init(
+                id: "hr_probe_counts",
+                title: "Samples Q / R",
+                value: "\(snapshot.qualifyingSampleCount) / \(snapshot.rejectedSampleCount)",
+                tint: .blue
+            ),
+            .init(
+                id: "hr_probe_fresh_total",
+                title: "Fresh / total",
+                value: "\(snapshot.displayFreshSampleCount) / \(snapshot.receivedSampleCount)",
+                tint: .secondary
+            ),
+        ]
+    }
+
+    private func testRunHeartRateDiagnosticDetailLines(
+        _ snapshot: TestRunHeartRateDiagnosticService.Snapshot
+    ) -> [String] {
+        guard snapshot.runID != nil else { return [] }
+        let age = snapshot.latestAgeSeconds.map { String(format: "%.1f s", $0) } ?? "—"
+        let qualifyingLatency = snapshot.firstQualifyingSampleLatencySeconds.map {
+            String(format: "%.3f s", $0)
+        } ?? "—"
+        return [
+            "started_at: \(testRunHeartRateDiagnosticDate(snapshot.startedAt))",
+            "collection_started_at: \(testRunHeartRateDiagnosticDate(snapshot.collectionStartedAt))",
+            "first_sample_received_at: \(testRunHeartRateDiagnosticDate(snapshot.firstSampleReceivedAt))",
+            "first_qualifying_latency_from_acquisition: \(qualifyingLatency)",
+            "latest_measured_at: \(testRunHeartRateDiagnosticDate(snapshot.latestMeasuredAt))",
+            "latest_callback_observed_at: \(testRunHeartRateDiagnosticDate(snapshot.latestSourceCallbackObservedAt))",
+            "latest_received_at: \(testRunHeartRateDiagnosticDate(snapshot.latestReceivedAt))",
+            "latest_source: \(snapshot.latestSource ?? "—")",
+            "latest_provider_native_identity: \(snapshot.latestProviderNativeIdentity ?? "unavailable")",
+            "latest_age: \(age)",
+            "latest_rejection: \(snapshot.latestRejectionReason?.rawValue ?? "—")",
+            "rejections_by_reason: \(testRunHeartRateDiagnosticRejectionSummary(snapshot))",
+        ]
+    }
+
+    private func testRunHeartRateDiagnosticReport(
+        _ snapshot: TestRunHeartRateDiagnosticService.Snapshot
+    ) -> String {
+        let lines = [
+            "WalkingPad Test Run HR diagnostic",
+            "run_id: \(snapshot.runID?.uuidString ?? "—")",
+            "phase: \(snapshot.phase.rawValue)",
+            "provider_state: \(snapshot.providerState)",
+            "terminal_reason: \(snapshot.terminalReason?.rawValue ?? "—")",
+            "detail: \(snapshot.detail ?? "—")",
+            "latest_bpm: \(snapshot.latestBPM.map(String.init) ?? "—")",
+            "latest_display_fresh: \(snapshot.latestDisplayFresh)",
+            "latest_start_qualified: \(snapshot.latestStartQualified)",
+            "samples_received: \(snapshot.receivedSampleCount)",
+            "samples_display_fresh: \(snapshot.displayFreshSampleCount)",
+            "samples_qualifying: \(snapshot.qualifyingSampleCount)",
+            "samples_rejected: \(snapshot.rejectedSampleCount)",
+            "latest_rejection: \(snapshot.latestRejectionReason?.rawValue ?? "—")",
+        ] + testRunHeartRateDiagnosticDetailLines(snapshot)
+        return lines.joined(separator: "\n")
+    }
+
+    private func testRunHeartRateDiagnosticRejectionSummary(
+        _ snapshot: TestRunHeartRateDiagnosticService.Snapshot
+    ) -> String {
+        TestRunHeartRateDiagnosticService.RejectionReason.allCases.map { reason in
+            "\(reason.rawValue)=\(snapshot.rejectionCountsByReason[reason, default: 0])"
+        }.joined(separator: ",")
+    }
+
+    private func testRunHeartRateDiagnosticDate(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        return ISO8601DateFormatter().string(from: date)
     }
 
     private var hrFailuresCardPresentation: DebugHrFailuresCard.Presentation {

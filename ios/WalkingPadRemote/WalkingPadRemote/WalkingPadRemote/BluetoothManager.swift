@@ -127,6 +127,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var treadmillTestRunService = TreadmillTestRunService()
     private var treadmillTestRunTimer: Timer?
     private var treadmillTestRunContext: TreadmillTestRunConnectionContext?
+    private var treadmillTestRunHeartRateDiagnosticService =
+        TestRunHeartRateDiagnosticService()
+    private var treadmillTestRunHeartRateProvider: IPhoneHealthKitLiveHeartRateProvider?
+    private var treadmillTestRunHeartRateProviderOwnership =
+        TestRunHeartRateDiagnosticProviderOwnership()
+    private var treadmillTestRunHeartRateCleanupInFlight = false
+    private var treadmillTestRunHeartRateProviderGeneration: UInt64 = 0
 
     // Peripheral/characteristics
     private var connectedPeripheral: CBPeripheral?
@@ -1036,6 +1043,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published private(set) var controllerUnitsTruth: ControllerUnitsTruth = .disconnected
     @Published private(set) var treadmillTestRunIsActive = false
     @Published private(set) var treadmillTestRunStatusText = "READY"
+    @Published private(set) var treadmillTestRunHeartRateDiagnosticSnapshot =
+        TestRunHeartRateDiagnosticService.Snapshot.idle
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
     @Published private(set) var stopTruthExperimentStatus: String = "disabled"
     @Published private(set) var stopTruthExperimentArtifactPath: String = ""
@@ -3634,6 +3643,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         syncTreadmillTestRunPresentation()
         startTreadmillTestRunTimer(runID: runID)
         executeTreadmillTestRunActions(transition.actions)
+        startTreadmillTestRunHeartRateDiagnostic(runID: runID)
     }
 
     func stopTreadmillTestRun() {
@@ -3674,6 +3684,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func advanceTreadmillTestRun(expectedRunID: UUID) {
         guard treadmillTestRunService.activeRunID == expectedRunID else { return }
+        tickTreadmillTestRunHeartRateDiagnostic(expectedRunID: expectedRunID)
         guard treadmillTestRunContext == currentTreadmillTestRunContext() else {
             cancelTreadmillTestRunForConnectionInvalidation()
             return
@@ -3690,6 +3701,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             invalidateTreadmillTestRunScheduling()
         }
         executeTreadmillTestRunActions(transition.actions)
+        if !treadmillTestRunService.isActive {
+            finishCurrentTreadmillTestRunHeartRateDiagnostic(
+                expectedRunID: expectedRunID,
+                reason: .testRunCompleted
+            )
+        }
     }
 
     private func cancelTreadmillTestRun(
@@ -3709,6 +3726,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             resetCommandQueue(reason: "Test Run cancelled without safe Stop context")
         }
         executeTreadmillTestRunActions(transition.actions)
+        if let runID = treadmillTestRunHeartRateDiagnosticSnapshot.runID {
+            finishCurrentTreadmillTestRunHeartRateDiagnostic(
+                expectedRunID: runID,
+                reason: treadmillTestRunHeartRateTerminalReason(for: reason)
+            )
+        }
     }
 
     private func cancelTreadmillTestRunForConnectionInvalidation() {
@@ -3727,6 +3750,279 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func syncTreadmillTestRunPresentation() {
         treadmillTestRunIsActive = treadmillTestRunService.isActive
         treadmillTestRunStatusText = treadmillTestRunService.statusText
+    }
+
+    private func startTreadmillTestRunHeartRateDiagnostic(runID: UUID) {
+        let now = Date()
+        guard IPhoneHealthKitLiveHeartRateProvider.isSupported else {
+            treadmillTestRunHeartRateDiagnosticService.markUnavailable(
+                runID: runID,
+                at: now,
+                detail: "Native HealthKit heart-rate provider is unsupported"
+            )
+            syncTreadmillTestRunHeartRateDiagnosticPresentation(now: now)
+            return
+        }
+        guard treadmillTestRunHeartRateProvider == nil,
+              !treadmillTestRunHeartRateCleanupInFlight,
+              iPhoneHealthKitHeartRateProvider.state == .idle,
+              !nativeHeartRatePreflightEngine.ownsUncommittedWorkout,
+              !hasOutstandingNativeWorkoutRecovery,
+              !nativeHealthKitWorkoutCommitted,
+              !nativeHealthKitWorkoutFinishInFlight,
+              !isHrControlRunning else {
+            treadmillTestRunHeartRateDiagnosticService.markUnavailable(
+                runID: runID,
+                at: now,
+                detail: "Production HealthKit provider or workout recovery owns the session"
+            )
+            syncTreadmillTestRunHeartRateDiagnosticPresentation(now: now)
+            return
+        }
+
+        treadmillTestRunHeartRateProviderGeneration &+= 1
+        let providerGeneration = treadmillTestRunHeartRateProviderGeneration
+        treadmillTestRunHeartRateDiagnosticService.start(runID: runID, at: now)
+        let provider = IPhoneHealthKitLiveHeartRateProvider(healthStore: healthStore)
+        let attempt = TestRunHeartRateDiagnosticProviderAttempt(
+            runID: runID,
+            generation: providerGeneration,
+            providerIdentity: ObjectIdentifier(provider)
+        )
+        treadmillTestRunHeartRateProviderOwnership.bind(attempt)
+        provider.onObservation = { [weak self, weak provider] observation in
+            guard let provider else { return }
+            self?.handleTreadmillTestRunHeartRateObservation(
+                observation,
+                expectedAttempt: attempt,
+                provider: provider
+            )
+        }
+        provider.onFailure = { [weak self, weak provider] context in
+            guard let provider else { return }
+            guard context.providerGeneration == providerGeneration,
+                  context.attemptID == runID else { return }
+            self?.treadmillTestRunHeartRateProviderFailed(
+                expectedAttempt: attempt,
+                provider: provider,
+                detail: "HealthKit runtime failure"
+            )
+        }
+        treadmillTestRunHeartRateProvider = provider
+        syncTreadmillTestRunHeartRateDiagnosticPresentation(now: now)
+
+        let configuration = HKWorkoutConfiguration()
+        configuration.activityType = .walking
+        configuration.locationType = .indoor
+        Task { @MainActor [weak self, weak provider] in
+            guard let self, let provider else { return }
+            do {
+                try await provider.prepare(
+                    configuration: configuration,
+                    failureContext: IPhoneHealthKitRuntimeFailureContext(
+                        providerGeneration: providerGeneration,
+                        attemptID: runID
+                    )
+                )
+                guard ownsTreadmillTestRunHeartRateProvider(
+                    attempt,
+                    provider: provider
+                ),
+                      treadmillTestRunService.activeRunID == runID else {
+                    await provider.discard(at: Date())
+                    return
+                }
+                treadmillTestRunHeartRateDiagnosticService.updateProviderState(
+                    provider.state.rawValue,
+                    expectedRunID: runID
+                )
+                syncTreadmillTestRunHeartRateDiagnosticPresentation()
+                let collectionStartedAt = Date()
+                treadmillTestRunHeartRateDiagnosticService.updateProviderState(
+                    IPhoneHealthKitHeartRateProviderState.starting.rawValue,
+                    expectedRunID: runID
+                )
+                syncTreadmillTestRunHeartRateDiagnosticPresentation()
+                try await provider.start(at: collectionStartedAt)
+                guard ownsTreadmillTestRunHeartRateProvider(
+                    attempt,
+                    provider: provider
+                ),
+                      treadmillTestRunService.activeRunID == runID else {
+                    await provider.discard(at: Date())
+                    return
+                }
+                treadmillTestRunHeartRateDiagnosticService.collectionStarted(
+                    expectedRunID: runID,
+                    at: collectionStartedAt
+                )
+                syncTreadmillTestRunHeartRateDiagnosticPresentation()
+            } catch {
+                treadmillTestRunHeartRateProviderFailed(
+                    expectedAttempt: attempt,
+                    provider: provider,
+                    detail: String(describing: error)
+                )
+            }
+        }
+    }
+
+    private func handleTreadmillTestRunHeartRateObservation(
+        _ observation: HeartRateProviderObservation,
+        expectedAttempt: TestRunHeartRateDiagnosticProviderAttempt,
+        provider: IPhoneHealthKitLiveHeartRateProvider
+    ) {
+        guard ownsTreadmillTestRunHeartRateProvider(
+            expectedAttempt,
+            provider: provider
+        ), provider.state == .collecting else { return }
+        let now = Date()
+        treadmillTestRunHeartRateDiagnosticService.receive(
+            TestRunHeartRateDiagnosticService.Sample(
+                qualificationObservation: NativeHeartRatePreflightEngine.Observation(
+                    source: .nativeHealthKit,
+                    beatsPerMinute: observation.beatsPerMinute,
+                    measuredAt: observation.measuredAt,
+                    receivedAt: observation.receivedAt
+                ),
+                sourceCallbackObservedAt: observation.sourceCallbackObservedAt,
+                providerNativeIdentity: observation.providerNativeIdentity?.identifier
+            ),
+            expectedRunID: expectedAttempt.runID,
+            now: now,
+            freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+        )
+        syncTreadmillTestRunHeartRateDiagnosticPresentation(now: now)
+    }
+
+    private func tickTreadmillTestRunHeartRateDiagnostic(expectedRunID: UUID) {
+        let now = Date()
+        if treadmillTestRunHeartRateDiagnosticService.timeoutIfNeeded(
+            expectedRunID: expectedRunID,
+            now: now
+        ) {
+            syncTreadmillTestRunHeartRateDiagnosticPresentation(now: now)
+            guard let attempt = treadmillTestRunHeartRateProviderOwnership.currentAttempt,
+                  attempt.runID == expectedRunID,
+                  let provider = treadmillTestRunHeartRateProvider else { return }
+            discardTreadmillTestRunHeartRateProvider(
+                expectedAttempt: attempt,
+                provider: provider
+            )
+        } else {
+            syncTreadmillTestRunHeartRateDiagnosticPresentation(now: now)
+        }
+    }
+
+    private func treadmillTestRunHeartRateProviderFailed(
+        expectedAttempt: TestRunHeartRateDiagnosticProviderAttempt,
+        provider: IPhoneHealthKitLiveHeartRateProvider,
+        detail: String
+    ) {
+        finishTreadmillTestRunHeartRateDiagnostic(
+            expectedAttempt: expectedAttempt,
+            provider: provider,
+            reason: .providerFailure,
+            detail: detail
+        )
+    }
+
+    private func finishCurrentTreadmillTestRunHeartRateDiagnostic(
+        expectedRunID: UUID,
+        reason: TestRunHeartRateDiagnosticService.TerminalReason
+    ) {
+        guard let attempt = treadmillTestRunHeartRateProviderOwnership.currentAttempt,
+              attempt.runID == expectedRunID,
+              let provider = treadmillTestRunHeartRateProvider else { return }
+        finishTreadmillTestRunHeartRateDiagnostic(
+            expectedAttempt: attempt,
+            provider: provider,
+            reason: reason
+        )
+    }
+
+    private func finishTreadmillTestRunHeartRateDiagnostic(
+        expectedAttempt: TestRunHeartRateDiagnosticProviderAttempt,
+        provider: IPhoneHealthKitLiveHeartRateProvider,
+        reason: TestRunHeartRateDiagnosticService.TerminalReason,
+        detail: String? = nil
+    ) {
+        guard ownsTreadmillTestRunHeartRateProvider(
+            expectedAttempt,
+            provider: provider
+        ),
+              treadmillTestRunHeartRateDiagnosticSnapshot.runID == expectedAttempt.runID,
+              treadmillTestRunHeartRateDiagnosticService.isActive else { return }
+        treadmillTestRunHeartRateDiagnosticService.finish(
+            expectedRunID: expectedAttempt.runID,
+            reason: reason,
+            detail: detail
+        )
+        syncTreadmillTestRunHeartRateDiagnosticPresentation()
+        discardTreadmillTestRunHeartRateProvider(
+            expectedAttempt: expectedAttempt,
+            provider: provider
+        )
+    }
+
+    private func discardTreadmillTestRunHeartRateProvider(
+        expectedAttempt: TestRunHeartRateDiagnosticProviderAttempt,
+        provider: IPhoneHealthKitLiveHeartRateProvider
+    ) {
+        guard ownsTreadmillTestRunHeartRateProvider(
+            expectedAttempt,
+            provider: provider
+        ),
+              !treadmillTestRunHeartRateCleanupInFlight else { return }
+        treadmillTestRunHeartRateCleanupInFlight = true
+        Task { @MainActor [weak self, weak provider] in
+            guard let self, let provider else { return }
+            await provider.discard(at: Date())
+            guard ownsTreadmillTestRunHeartRateProvider(
+                expectedAttempt,
+                provider: provider
+            ), treadmillTestRunHeartRateProviderOwnership.release(expectedAttempt) else {
+                return
+            }
+            treadmillTestRunHeartRateProvider = nil
+            treadmillTestRunHeartRateCleanupInFlight = false
+            treadmillTestRunHeartRateDiagnosticService.providerDiscarded(
+                expectedRunID: expectedAttempt.runID
+            )
+            syncTreadmillTestRunHeartRateDiagnosticPresentation()
+            warmNativeHeartRateProviderIfPossible()
+        }
+    }
+
+    private func ownsTreadmillTestRunHeartRateProvider(
+        _ attempt: TestRunHeartRateDiagnosticProviderAttempt,
+        provider: IPhoneHealthKitLiveHeartRateProvider
+    ) -> Bool {
+        treadmillTestRunHeartRateProvider === provider
+            && treadmillTestRunHeartRateProviderOwnership.accepts(
+                attempt,
+                provider: provider
+            )
+    }
+
+    private func syncTreadmillTestRunHeartRateDiagnosticPresentation(
+        now: Date = Date()
+    ) {
+        treadmillTestRunHeartRateDiagnosticSnapshot =
+            treadmillTestRunHeartRateDiagnosticService.snapshot(
+                now: now,
+                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+            )
+    }
+
+    private func treadmillTestRunHeartRateTerminalReason(
+        for reason: TreadmillTestRunService.CancellationReason
+    ) -> TestRunHeartRateDiagnosticService.TerminalReason {
+        switch reason {
+        case .userRequested: return .userRequested
+        case .appInactive: return .appInactive
+        case .connectionInvalidated: return .connectionInvalidated
+        }
     }
 
     private func executeTreadmillTestRunActions(_ actions: [TreadmillTestRunService.Action]) {
@@ -4935,6 +5231,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func warmNativeHeartRateProviderIfPossible() {
         guard !nativeHeartRateProviderLifecycle.cleanupInFlight,
+              treadmillTestRunHeartRateProvider == nil,
+              !treadmillTestRunHeartRateCleanupInFlight,
+              !treadmillTestRunIsActive,
               !hasOutstandingNativeWorkoutRecovery,
               NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
             isTrainingHubVisible: isTrainingHubVisible,
@@ -4951,6 +5250,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 .canPrepareWithoutAuthorizationPrompt()
             guard canPrepare,
                   !nativeHeartRateProviderLifecycle.cleanupInFlight,
+                  treadmillTestRunHeartRateProvider == nil,
+                  !treadmillTestRunHeartRateCleanupInFlight,
+                  !treadmillTestRunIsActive,
                   !hasOutstandingNativeWorkoutRecovery,
                   NativeHeartRatePreflightEngine.RuntimePolicy.canWarmPrepare(
                     isTrainingHubVisible: isTrainingHubVisible,

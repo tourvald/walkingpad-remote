@@ -18,6 +18,10 @@ struct DebugTrainingLogsCard: View {
         let testRunActive: Bool
         let testRunStatusText: String
         let canStartTestRun: Bool
+        let heartRateDiagnosticStatusText: String
+        let heartRateDiagnosticMetrics: [Metric]
+        let heartRateDiagnosticDetailLines: [String]
+        let heartRateDiagnosticReport: String
         let subtitle: String
         let profileMetrics: [Metric]
         let deviceMetrics: [Metric]
@@ -75,6 +79,42 @@ struct DebugTrainingLogsCard: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!presentation.testRunActive && !presentation.canStartTestRun)
+                }
+
+                if !presentation.heartRateDiagnosticMetrics.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("HR diagnostic probe")
+                                .font(.caption.weight(.medium))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            ShareLink(item: presentation.heartRateDiagnosticReport) {
+                                Label("Report", systemImage: "square.and.arrow.up")
+                                    .font(.caption.weight(.semibold))
+                            }
+                        }
+
+                        Text(presentation.heartRateDiagnosticStatusText)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        metricsSection(
+                            title: "Native HealthKit",
+                            items: presentation.heartRateDiagnosticMetrics
+                        )
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(
+                                Array(presentation.heartRateDiagnosticDetailLines.enumerated()),
+                                id: \.offset
+                            ) { _, line in
+                                Text(line)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .textSelection(.enabled)
+                    }
                 }
 
                 metricsSection(title: "Активный профиль", items: presentation.profileMetrics)
