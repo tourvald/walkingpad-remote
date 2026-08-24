@@ -265,7 +265,12 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(mapping.contains("targetTitle: \"Зона "))
         XCTAssertTrue(mapping.contains("targetValue: \"\\(targetRange.lowerBound)–\\(targetRange.upperBound) bpm\""))
         XCTAssertTrue(mapping.contains("title: \"Пульс\""))
-        XCTAssertTrue(mapping.contains("heartRateSourceLabel"))
+        XCTAssertTrue(
+            mapping.contains("TrainingUIHeartRateReadinessPresentationPolicy.presentation(")
+        )
+        XCTAssertTrue(mapping.contains("sourceLabel: heartRateSourceLabel"))
+        XCTAssertTrue(mapping.contains("startEnabled: startEnabled"))
+        XCTAssertFalse(mapping.contains("startEnabled: heartRateReadiness.isReady"))
         XCTAssertFalse(mapping.contains("watchReachable"))
         XCTAssertFalse(mapping.contains("Apple Watch"))
         XCTAssertFalse(mapping.contains("Telemetry"))
@@ -472,6 +477,20 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             contentViewSource.contains(
                 "@ObservedObject var state: HeartRateFactualState"
             )
+        )
+        XCTAssertEqual(
+            contentViewSource.components(
+                separatedBy: "TrainingUIHeartRateReadinessPresentationPolicy.presentation("
+            ).count - 1,
+            1
+        )
+        XCTAssertFalse(
+            managerSource.contains("TrainingUIHeartRateReadinessPresentationPolicy")
+        )
+        XCTAssertFalse(
+            source(
+                relativePath: "WalkingPadRemote/NativeHeartRatePreflightEngine.swift"
+            ).contains("TrainingUIHeartRateReadinessPresentationPolicy")
         )
     }
 
