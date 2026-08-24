@@ -157,6 +157,7 @@ let package = Package(
                 "CommandQueueService.swift",
                 "TreadmillSpeedBoundsService.swift",
                 "TrainingUIHeartRatePublicationPolicy.swift",
+                "TrainingUIObservationBoundary.swift",
                 "TrainingUITreadmillPublicationPolicy.swift",
                 "TreadmillControlReadinessPolicy.swift",
                 "TreadmillCommandTelemetrySidecar.swift"

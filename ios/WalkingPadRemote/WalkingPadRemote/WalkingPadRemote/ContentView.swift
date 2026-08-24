@@ -1,7 +1,5 @@
 import SwiftUI
-#if DEBUG
 import Combine
-#endif
 #if canImport(TelemetryRuntime)
 import TelemetryRuntime
 #endif
@@ -55,10 +53,10 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: rootTabSelection) {
-            ControlSwipeView {
+            ControlSwipeView(manager: manager) {
                 selectedRootTabRaw = RootTab.stats.rawValue
             }
-                .environmentObject(manager)
+                .equatable()
                 .tabItem {
                     Label("Тренировка", systemImage: "figure.run.circle")
                 }
@@ -542,6 +540,40 @@ private func makeProductionActiveWorkoutPresentation(
     )
 }
 
+private extension TrainingUIObservationBoundary {
+    convenience init(manager: BluetoothManager) {
+        self.init(signals: [
+            manager.$isConnected.map { _ in () }.eraseToAnyPublisher(),
+            manager.$isTreadmillControlReady.map { _ in () }.eraseToAnyPublisher(),
+            manager.$trainingUIHeartRateSnapshot.map { _ in () }.eraseToAnyPublisher(),
+            manager.$trainingUITreadmillSpeedKmh.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrTargetBPM.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrZone1Max.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrZone2Max.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrZone3Max.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrZone4Max.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrDurationMinutes.map { _ in () }.eraseToAnyPublisher(),
+            manager.$isHrControlStartAllowed.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrControlStartBlockReasonText.map { _ in () }.eraseToAnyPublisher(),
+            manager.$isNativeHeartRatePreflightActive.map { _ in () }.eraseToAnyPublisher(),
+            manager.$isHrControlRunning.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrRemainingSeconds.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrCooldownTargetBpm.map { _ in () }.eraseToAnyPublisher(),
+            manager.$timeSec.map { _ in () }.eraseToAnyPublisher(),
+            manager.$isNativeWorkoutRecoveryActive.map { _ in () }.eraseToAnyPublisher(),
+            manager.$nativeWorkoutRecoveryStatusText.map { _ in () }.eraseToAnyPublisher(),
+            manager.$stopTruthStatusText.map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2ProjectionGeneration.map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2WorkoutHistoryState.map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2WorkoutHistory.map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2StatusText.map { _ in () }.eraseToAnyPublisher(),
+            manager.$connectErrorMessage.map { _ in () }.eraseToAnyPublisher(),
+            manager.$suggestDevicePicker.map { _ in () }.eraseToAnyPublisher(),
+            manager.$infoToastMessage.map { _ in () }.eraseToAnyPublisher(),
+        ])
+    }
+}
+
 #if DEBUG
 @MainActor
 private enum TrainingUIUpdatePressureHarness {
@@ -550,9 +582,12 @@ private enum TrainingUIUpdatePressureHarness {
         let source: String
         var technicalEvents = 0
         var managerPublishedEvents = 0
+        var trainingBoundaryPublishedEvents = 0
         var visibleSnapshotChanges = 0
         var potentialAvoidableManagerDrivenInvalidations = 0
+        var potentialAvoidableTrainingBoundaryInvalidations = 0
         var rawManagerPublications = 0
+        var rawTrainingBoundaryPublications = 0
         var synchronousMainThreadNanoseconds: UInt64 = 0
     }
 
@@ -561,10 +596,14 @@ private enum TrainingUIUpdatePressureHarness {
         let measurements: [Measurement]
         let technicalEvents: Int
         let managerPublishedEvents: Int
+        let trainingBoundaryPublishedEvents: Int
         let visibleSnapshotChanges: Int
         let potentialAvoidableManagerDrivenInvalidations: Int
+        let potentialAvoidableTrainingBoundaryInvalidations: Int
         let rawManagerPublications: Int
+        let rawTrainingBoundaryPublications: Int
         let eventToVisibleChangeRatio: Double?
+        let boundaryEventToVisibleChangeRatio: Double?
         let synchronousMainThreadNanoseconds: UInt64
     }
 
@@ -601,7 +640,7 @@ private enum TrainingUIUpdatePressureHarness {
             events: activeEvents
         )
         let report = Report(
-            schema: "training-ui-update-pressure-v2",
+            schema: "training-ui-update-pressure-v3",
             workloads: [idle, active]
         )
         let encoder = JSONEncoder()
@@ -618,15 +657,21 @@ private enum TrainingUIUpdatePressureHarness {
         events: [Event]
     ) -> Workload {
         configure(manager)
+        let boundary = TrainingUIObservationBoundary(manager: manager)
         var publicationCount = 0
-        let cancellable = manager.objectWillChange.sink {
+        var boundaryPublicationCount = 0
+        let managerCancellable = manager.objectWillChange.sink {
             publicationCount += 1
+        }
+        let boundaryCancellable = boundary.objectWillChange.sink {
+            boundaryPublicationCount += 1
         }
         var measurements: [String: Measurement] = [:]
         var snapshot = visibleSnapshot(manager: manager)
 
         for event in events {
             let publicationsBefore = publicationCount
+            let boundaryPublicationsBefore = boundaryPublicationCount
             let startedAt = DispatchTime.now().uptimeNanoseconds
             event.apply(manager)
             let nextSnapshot = visibleSnapshot(manager: manager)
@@ -635,12 +680,18 @@ private enum TrainingUIUpdatePressureHarness {
             var measurement = measurements[event.source]
                 ?? Measurement(source: event.source)
             let managerPublished = publicationCount > publicationsBefore
+            let boundaryPublished = boundaryPublicationCount > boundaryPublicationsBefore
             let snapshotChanged = nextSnapshot != snapshot
             measurement.technicalEvents += 1
             measurement.rawManagerPublications += publicationCount - publicationsBefore
+            measurement.rawTrainingBoundaryPublications +=
+                boundaryPublicationCount - boundaryPublicationsBefore
             measurement.synchronousMainThreadNanoseconds += elapsed
             if managerPublished {
                 measurement.managerPublishedEvents += 1
+            }
+            if boundaryPublished {
+                measurement.trainingBoundaryPublishedEvents += 1
             }
             if snapshotChanged {
                 measurement.visibleSnapshotChanges += 1
@@ -648,27 +699,43 @@ private enum TrainingUIUpdatePressureHarness {
             if managerPublished && !snapshotChanged {
                 measurement.potentialAvoidableManagerDrivenInvalidations += 1
             }
+            if boundaryPublished && !snapshotChanged {
+                measurement.potentialAvoidableTrainingBoundaryInvalidations += 1
+            }
             measurements[event.source] = measurement
             snapshot = nextSnapshot
         }
-        withExtendedLifetime(cancellable) {}
+        withExtendedLifetime((managerCancellable, boundaryCancellable, boundary)) {}
 
         let ordered = measurements.values.sorted { $0.source < $1.source }
         let technicalEvents = ordered.reduce(0) { $0 + $1.technicalEvents }
         let managerPublishedEvents = ordered.reduce(0) { $0 + $1.managerPublishedEvents }
+        let trainingBoundaryPublishedEvents = ordered.reduce(0) {
+            $0 + $1.trainingBoundaryPublishedEvents
+        }
         let visibleSnapshotChanges = ordered.reduce(0) { $0 + $1.visibleSnapshotChanges }
         return Workload(
             workload: workload,
             measurements: ordered,
             technicalEvents: technicalEvents,
             managerPublishedEvents: managerPublishedEvents,
+            trainingBoundaryPublishedEvents: trainingBoundaryPublishedEvents,
             visibleSnapshotChanges: visibleSnapshotChanges,
             potentialAvoidableManagerDrivenInvalidations: ordered.reduce(0) {
                 $0 + $1.potentialAvoidableManagerDrivenInvalidations
             },
+            potentialAvoidableTrainingBoundaryInvalidations: ordered.reduce(0) {
+                $0 + $1.potentialAvoidableTrainingBoundaryInvalidations
+            },
             rawManagerPublications: ordered.reduce(0) { $0 + $1.rawManagerPublications },
+            rawTrainingBoundaryPublications: ordered.reduce(0) {
+                $0 + $1.rawTrainingBoundaryPublications
+            },
             eventToVisibleChangeRatio: visibleSnapshotChanges > 0
                 ? Double(managerPublishedEvents) / Double(visibleSnapshotChanges)
+                : nil,
+            boundaryEventToVisibleChangeRatio: visibleSnapshotChanges > 0
+                ? Double(trainingBoundaryPublishedEvents) / Double(visibleSnapshotChanges)
                 : nil,
             synchronousMainThreadNanoseconds: ordered.reduce(0) {
                 $0 + $1.synchronousMainThreadNanoseconds
@@ -2089,9 +2156,10 @@ private struct TrainingWorkoutUnavailableView: View {
     }
 }
 
-private struct ControlSwipeView: View {
-    @EnvironmentObject private var manager: BluetoothManager
+private struct ControlSwipeView: View, Equatable {
+    let manager: BluetoothManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var trainingObservation: TrainingUIObservationBoundary
     @State private var showDevicePicker = false
     @State private var showConnectError = false
     @State private var presentSuggestedPicker = false
@@ -2104,8 +2172,16 @@ private struct ControlSwipeView: View {
     let onOpenStatistics: () -> Void
     private let heroAccent: Color = .orange
 
-    init(onOpenStatistics: @escaping () -> Void) {
+    init(manager: BluetoothManager, onOpenStatistics: @escaping () -> Void) {
+        self.manager = manager
         self.onOpenStatistics = onOpenStatistics
+        _trainingObservation = StateObject(
+            wrappedValue: TrainingUIObservationBoundary(manager: manager)
+        )
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.manager === rhs.manager
     }
 
     private var productionTrainingHubPresentation: TrainingHubPresentation {
