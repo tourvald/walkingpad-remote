@@ -4553,6 +4553,119 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
+#if DEBUG
+    func prepareTrainingUIIdlePressureBaseline() {
+        isConnected = false
+        isTreadmillControlReady = false
+        isHrControlRunning = false
+        isNativeHeartRatePreflightActive = false
+        isNativeHeartRateCurrent = false
+        hrStreamingActive = false
+        heartRateBPM = 0
+        discoveredPeripherals = (0..<4).map { index in
+            DiscoveredPeripheral(
+                id: UUID(uuidString: "00000000-0000-0000-0000-00000000000\(index)")!,
+                name: "Mock WalkingPad \(index + 1)",
+                rssi: -50 - index,
+                isKnown: false
+            )
+        }
+    }
+
+    func applyTrainingUIDiscoveryPressureEvent(_ eventIndex: Int) {
+        let deviceIndex = eventIndex % discoveredPeripherals.count
+        var updated = discoveredPeripherals
+        let existing = updated[deviceIndex]
+        updated[deviceIndex] = DiscoveredPeripheral(
+            id: existing.id,
+            name: existing.name,
+            rssi: -50 - ((eventIndex / discoveredPeripherals.count) % 4),
+            isKnown: existing.isKnown
+        )
+        discoveredPeripherals = updated
+    }
+
+    func prepareTrainingUIActivePressureBaseline() {
+        isConnected = true
+        isTreadmillControlReady = true
+        isHrControlRunning = true
+        isNativeHeartRatePreflightActive = false
+        isNativeHeartRateCurrent = true
+        hrStreamingActive = true
+        heartRateBPM = 130
+        lastKnownHeartRateBPM = 130
+        hrLastValueAt = Date(timeIntervalSince1970: 1_800_000_000)
+        hrDataStaleSeconds = 0
+        deviceReportedSpeedKmh = 5.0
+        deviceReportedAppSpeedKmh = 5.0
+        deviceReportedState = 1
+        deviceReportedManualMode = 1
+        deviceReportedTimeSeconds = 0
+        deviceReportedDistance10m = 0
+        deviceReportedSteps = 0
+        deviceReportedButton = 0
+        deviceReportedChecksumOk = true
+        deviceReportedRawHex = "F8A2"
+        speedKmh = 5.0
+        timeSec = 0
+        distKm = 0
+        stepsCount = 0
+        avgSpeedActive = true
+        avgSpeedKmh = 5.0
+        hrAverageBPM = 130
+        beatsPerMeter = 1.56
+        hrTargetBPM = 130
+        hrSessionTotalSeconds = 600
+        hrRemainingSeconds = 600
+        hrNextDecisionSeconds = 10
+        hrProgress = 0
+        hrCooldownRemainingSeconds = 0
+        hrControlStartedAt = nil
+    }
+
+    func applyTrainingUIHeartRatePressureEvent(second: Int) {
+        let bpm = 128 + ((second / 5) % 5)
+        heartRateBPM = bpm
+        lastKnownHeartRateBPM = bpm
+        hrLastValueAt = Date(timeIntervalSince1970: 1_800_000_000 + Double(second))
+        hrDataStaleSeconds = 0
+        hrStreamingActive = true
+        isNativeHeartRateCurrent = true
+    }
+
+    func applyTrainingUITreadmillPressureEvent(second: Int) {
+        deviceReportedSpeedKmh = 5.0
+        deviceReportedAppSpeedKmh = 5.0
+        deviceReportedState = 1
+        deviceReportedManualMode = 1
+        deviceReportedTimeSeconds = second
+        deviceReportedDistance10m = second / 2
+        deviceReportedSteps = second * 2
+        deviceReportedButton = 0
+        deviceReportedChecksumOk = true
+        deviceReportedRawHex = String(format: "F8A2%04X", second)
+    }
+
+    func applyTrainingUITimerPressureEvent(second: Int) {
+        speedKmh = 5.0
+        distKm = Double(second) * 5.0 / 3_600.0
+        timeSec = second
+        stepsCount = second * 2
+        avgSpeedActive = true
+        avgSpeedKmh = 5.0
+        hrAverageBPM = 130
+        beatsPerMeter = 1.56
+        hrPredictorStatusLine = "HR \(heartRateBPM) / цель \(hrTargetBPM) · тренд —"
+        hrRemainingSeconds = 600 - second
+        hrProgress = Double(second) / 600.0
+        hrNextDecisionSeconds = 10 - (second % 10)
+        if second.isMultiple(of: 10) {
+            hrStatusLine = "HR‑контроль: цель удерживается"
+            hrDecisionDetails = "Deterministic HOLD sample \(second / 10)"
+        }
+    }
+#endif
+
     func nativeHeartRateAppBecameActive() {
         nativeHeartRateAppActivity = .active
         applyNativeHeartRatePreflightEffects(
