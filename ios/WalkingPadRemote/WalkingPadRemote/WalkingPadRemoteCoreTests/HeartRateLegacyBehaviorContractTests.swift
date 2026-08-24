@@ -353,6 +353,56 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
     }
 
+    func testTrainingTreadmillUIPublicationCannotBecomeFactualTruth() throws {
+        let activePresentation = try functionBody(
+            "private func makeProductionActiveWorkoutPresentation(",
+            in: contentViewSource
+        )
+        let cooldownSnapshot = try functionBody(
+            "private func currentCooldownSpeedSnapshot()",
+            in: managerSource
+        )
+        let telemetryPayload = try functionBody(
+            "private func makeTrainingLogPayload(event: String, fields: [String: Any])",
+            in: managerSource
+        )
+        let uiPublisher = try functionBody(
+            "private func publishTrainingUITreadmillSpeedIfNeeded()",
+            in: managerSource
+        )
+
+        XCTAssertTrue(activePresentation.contains("manager.trainingUITreadmillSpeedKmh"))
+        XCTAssertFalse(activePresentation.contains("manager.deviceReportedAppSpeedKmh"))
+        XCTAssertFalse(activePresentation.contains("manager.deviceReportedSpeedKmh"))
+
+        for factualConsumer in [cooldownSnapshot, telemetryPayload] {
+            XCTAssertTrue(factualConsumer.contains("deviceReportedAppSpeedKmh"))
+            XCTAssertTrue(factualConsumer.contains("deviceReportedSpeedKmh"))
+            XCTAssertFalse(factualConsumer.contains("trainingUITreadmillSpeedKmh"))
+        }
+
+        XCTAssertTrue(managerSource.contains("let treadmillFactualObservationPublisher"))
+        XCTAssertTrue(managerSource.contains("publishTrainingUITreadmillSpeedIfNeeded()"))
+        XCTAssertFalse(managerSource.contains("@Published var deviceReportedSpeedKmh"))
+        XCTAssertFalse(managerSource.contains("@Published var deviceReportedAppSpeedKmh"))
+        XCTAssertEqual(
+            managerSource.components(
+                separatedBy: "self.publishTrainingUITreadmillSpeedIfNeeded()"
+            ).count - 1,
+            4
+        )
+        XCTAssertTrue(uiPublisher.contains("treadmillFactualObservationPublisher.publish()"))
+        XCTAssertTrue(uiPublisher.contains("trainingUITreadmillSpeedKmh ="))
+        XCTAssertFalse(uiPublisher.contains("DispatchQueue"))
+        XCTAssertFalse(uiPublisher.contains("Task"))
+        XCTAssertFalse(uiPublisher.contains("debounce"))
+        XCTAssertTrue(
+            contentViewSource.contains(
+                "@ObservedObject var publisher: TreadmillFactualObservationPublisher"
+            )
+        )
+    }
+
     func testTrainingHubDurationPresetsAreDirectTruthfulAndCooldownFree() throws {
         let mapping = try functionBody(
             "private func makeHRControlTrainingHubPresentation(",
@@ -475,10 +525,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         assertOrdered(
             [
                 "guard manager.isConnected else { return nil }",
-                "if manager.deviceReportedAppSpeedKmh > 0.05",
-                "return manager.deviceReportedAppSpeedKmh",
-                "if manager.deviceReportedSpeedKmh > 0.05",
-                "return manager.deviceReportedSpeedKmh",
+                "return manager.trainingUITreadmillSpeedKmh",
                 "factualSpeedKmh: factualSpeedKmh",
             ],
             in: production

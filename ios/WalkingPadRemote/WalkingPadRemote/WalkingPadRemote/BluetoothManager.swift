@@ -14,6 +14,12 @@ import UIKit
 import WatchConnectivity
 #endif
 
+final class TreadmillFactualObservationPublisher: ObservableObject {
+    func publish() {
+        objectWillChange.send()
+    }
+}
+
 // Minimal stub to satisfy references in the UI. Replace with real implementation.
 final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private let telemetryPerformanceObservation = TelemetryV2PerformanceObservation()
@@ -969,16 +975,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var lastNotifyAgeSeconds: Int = 0
     @Published var lastCommandAckStatusText: String = ""
     @Published var lastCommandTimeoutsCount: Int = 0
-    @Published var deviceReportedSpeedKmh: Double = 0
-    @Published var deviceReportedAppSpeedKmh: Double = 0
-    @Published var deviceReportedState: Int = 0
-    @Published var deviceReportedManualMode: Int = 0
-    @Published var deviceReportedTimeSeconds: Int = 0
-    @Published var deviceReportedDistance10m: Int = 0
-    @Published var deviceReportedSteps: Int = 0
-    @Published var deviceReportedButton: Int = 0
-    @Published var deviceReportedChecksumOk: Bool = true
-    @Published var deviceReportedRawHex: String = ""
+    let treadmillFactualObservationPublisher = TreadmillFactualObservationPublisher()
+    var deviceReportedSpeedKmh: Double = 0
+    var deviceReportedAppSpeedKmh: Double = 0
+    var deviceReportedState: Int = 0
+    var deviceReportedManualMode: Int = 0
+    var deviceReportedTimeSeconds: Int = 0
+    var deviceReportedDistance10m: Int = 0
+    var deviceReportedSteps: Int = 0
+    var deviceReportedButton: Int = 0
+    var deviceReportedChecksumOk: Bool = true
+    var deviceReportedRawHex: String = ""
+    @Published private(set) var trainingUITreadmillSpeedKmh: Double? = nil
     @Published private(set) var controllerUnitsTruth: ControllerUnitsTruth = .disconnected
     @Published private(set) var treadmillTestRunIsActive = false
     @Published private(set) var treadmillTestRunStatusText = "READY"
@@ -1241,6 +1249,19 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appReportedSpeedKmh: deviceReportedAppSpeedKmh,
             rawReportedSpeedKmh: deviceReportedSpeedKmh,
             currentActualSpeedKmh: speedKmh
+        )
+    }
+
+    private func publishTrainingUITreadmillSpeedIfNeeded() {
+        treadmillFactualObservationPublisher.publish()
+        guard TrainingUITreadmillPublicationPolicy.shouldPublish(
+            currentVisibleSpeedKmh: trainingUITreadmillSpeedKmh,
+            appReportedSpeedKmh: deviceReportedAppSpeedKmh,
+            rawReportedSpeedKmh: deviceReportedSpeedKmh
+        ) else { return }
+        trainingUITreadmillSpeedKmh = TrainingUITreadmillPublicationPolicy.visibleSpeedKmh(
+            appReportedSpeedKmh: deviceReportedAppSpeedKmh,
+            rawReportedSpeedKmh: deviceReportedSpeedKmh
         )
     }
 
@@ -4633,6 +4654,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         deviceReportedButton = 0
         deviceReportedChecksumOk = true
         deviceReportedRawHex = "F8A2"
+        publishTrainingUITreadmillSpeedIfNeeded()
         speedKmh = 5.0
         timeSec = 0
         distKm = 0
@@ -4671,6 +4693,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         deviceReportedButton = 0
         deviceReportedChecksumOk = true
         deviceReportedRawHex = String(format: "F8A2%04X", second)
+        publishTrainingUITreadmillSpeedIfNeeded()
     }
 
     func applyTrainingUITimerPressureEvent(second: Int) {
@@ -6973,6 +6996,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.async {
             self.deviceReportedRawHex = frame.rawHex
             self.deviceReportedChecksumOk = frame.checksumOk
+            self.treadmillFactualObservationPublisher.publish()
         }
 
         if frame.cmd == 0x53, frame.subcmd == 0x02 {
@@ -6985,6 +7009,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.deviceReportedSpeedKmh = speedKmh
                     self.deviceReportedAppSpeedKmh = speedKmh
                     self.deviceReportedManualMode = incline
+                    self.publishTrainingUITreadmillSpeedIfNeeded()
                     if peripheral.identifier == self.connectedPeripheralId,
                        characteristic.uuid == self.fitShowCharRx,
                        let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
@@ -7048,6 +7073,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.deviceReportedSpeedKmh = speedKmh
                     self.deviceReportedAppSpeedKmh = speedKmh
                 }
+                self.publishTrainingUITreadmillSpeedIfNeeded()
                 if peripheral.identifier == self.connectedPeripheralId,
                    characteristic.uuid == self.fitShowCharRx,
                    let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
@@ -8645,6 +8671,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.deviceReportedButton = status.lastButton
                     self.deviceReportedChecksumOk = status.checksumOk
                     self.deviceReportedRawHex = hexStr
+                    self.publishTrainingUITreadmillSpeedIfNeeded()
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
                     if let experimentContext = self.stopTruthExperimentObservationContext(
                         peripheral: peripheral,
@@ -8747,6 +8774,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.deviceReportedAppSpeedKmh = parsed.instantaneousSpeedKmh
                     self.deviceReportedState = parsed.isMoving ? 1 : 0
                     self.deviceReportedRawHex = ""
+                    self.publishTrainingUITreadmillSpeedIfNeeded()
                     if peripheral.identifier == self.connectedPeripheralId,
                        characteristic.uuid == self.ftmsCharTreadmillData,
                        let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
