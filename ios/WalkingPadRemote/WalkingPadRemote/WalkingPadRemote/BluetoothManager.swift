@@ -20,6 +20,15 @@ final class TreadmillFactualObservationPublisher: ObservableObject {
     }
 }
 
+final class HeartRateFactualState: ObservableObject {
+    @Published fileprivate(set) var heartRateBPM = 0
+    @Published fileprivate(set) var lastKnownHeartRateBPM = 0
+    @Published fileprivate(set) var isStreamActive = false
+    @Published fileprivate(set) var lastValueAt: Date?
+    @Published fileprivate(set) var staleSeconds = 0
+    @Published fileprivate(set) var isNativeCurrent = false
+}
+
 // Minimal stub to satisfy references in the UI. Replace with real implementation.
 final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private let telemetryPerformanceObservation = TelemetryV2PerformanceObservation()
@@ -961,15 +970,46 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var allowAutoConnectUnknown: Bool = false
 
     // Watch / HR
-    @Published var heartRateBPM: Int = 0
-    @Published var lastKnownHeartRateBPM: Int = 0
-    @Published var hrStreamingActive: Bool = false
+    let heartRateFactualState = HeartRateFactualState()
+    var heartRateBPM: Int {
+        get { heartRateFactualState.heartRateBPM }
+        set {
+            heartRateFactualState.heartRateBPM = newValue
+            publishTrainingUIHeartRateIfNeeded()
+        }
+    }
+    var lastKnownHeartRateBPM: Int {
+        get { heartRateFactualState.lastKnownHeartRateBPM }
+        set {
+            heartRateFactualState.lastKnownHeartRateBPM = newValue
+            publishTrainingUIHeartRateIfNeeded()
+        }
+    }
+    var hrStreamingActive: Bool {
+        get { heartRateFactualState.isStreamActive }
+        set {
+            heartRateFactualState.isStreamActive = newValue
+            publishTrainingUIHeartRateIfNeeded()
+        }
+    }
     @Published var watchReachable: Bool = false
     @Published var watchPaired: Bool = false
     @Published var watchAppInstalled: Bool = false
     @Published var hrPermissionGranted: Bool = false
-    @Published var hrLastValueAt: Date? = nil
-    @Published var hrDataStaleSeconds: Int = 0
+    var hrLastValueAt: Date? {
+        get { heartRateFactualState.lastValueAt }
+        set {
+            heartRateFactualState.lastValueAt = newValue
+            publishTrainingUIHeartRateIfNeeded()
+        }
+    }
+    var hrDataStaleSeconds: Int {
+        get { heartRateFactualState.staleSeconds }
+        set {
+            heartRateFactualState.staleSeconds = newValue
+            publishTrainingUIHeartRateIfNeeded()
+        }
+    }
     @Published var treadmillStatusText: String = "unknown"
     @Published private(set) var stopTruthStatusText: String = ""
     @Published var lastNotifyAgeSeconds: Int = 0
@@ -987,6 +1027,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     var deviceReportedChecksumOk: Bool = true
     var deviceReportedRawHex: String = ""
     @Published private(set) var trainingUITreadmillSpeedKmh: Double? = nil
+    @Published private(set) var trainingUIHeartRateSnapshot =
+        TrainingUIHeartRatePublicationPolicy.snapshot(
+            isNativeHeartRateCurrent: false,
+            isHeartRateStreamActive: false,
+            heartRateBPM: 0
+        )
     @Published private(set) var controllerUnitsTruth: ControllerUnitsTruth = .disconnected
     @Published private(set) var treadmillTestRunIsActive = false
     @Published private(set) var treadmillTestRunStatusText = "READY"
@@ -1000,7 +1046,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var isHrControlStartAllowed: Bool = false
     @Published var hrControlStartBlockReasonText: String? = nil
     @Published private(set) var isNativeHeartRatePreflightActive: Bool = false
-    @Published private(set) var isNativeHeartRateCurrent: Bool = false
+    private(set) var isNativeHeartRateCurrent: Bool {
+        get { heartRateFactualState.isNativeCurrent }
+        set {
+            heartRateFactualState.isNativeCurrent = newValue
+            publishTrainingUIHeartRateIfNeeded()
+        }
+    }
     @Published private(set) var isNativeWorkoutRecoveryActive: Bool = false
     @Published private(set) var nativeWorkoutRecoveryStatusText: String? = nil
 
@@ -1263,6 +1315,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appReportedSpeedKmh: deviceReportedAppSpeedKmh,
             rawReportedSpeedKmh: deviceReportedSpeedKmh
         )
+    }
+
+    private func publishTrainingUIHeartRateIfNeeded() {
+        let nextSnapshot = TrainingUIHeartRatePublicationPolicy.snapshot(
+            isNativeHeartRateCurrent: isNativeHeartRateCurrent,
+            isHeartRateStreamActive: hrStreamingActive,
+            heartRateBPM: heartRateBPM
+        )
+        guard nextSnapshot != trainingUIHeartRateSnapshot else { return }
+        trainingUIHeartRateSnapshot = nextSnapshot
     }
 
     private func applyCooldownOutput(

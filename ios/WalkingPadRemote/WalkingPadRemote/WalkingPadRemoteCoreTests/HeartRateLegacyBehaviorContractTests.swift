@@ -272,7 +272,8 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(mapping.contains("history"))
 
         XCTAssertTrue(production.contains("startEnabled: manager.isHrControlStartAffordanceAvailable"))
-        XCTAssertTrue(production.contains("heartRateSourceLabel: manager.isNativeHeartRateCurrent ? \"HealthKit\" : nil"))
+        XCTAssertTrue(production.contains("let heartRate = manager.trainingUIHeartRateSnapshot"))
+        XCTAssertTrue(production.contains("heartRateSourceLabel: heartRate.sourceLabel"))
         XCTAssertFalse(production.contains("watchReachable"))
         XCTAssertFalse(production.contains("telemetry"))
 
@@ -399,6 +400,77 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(
             contentViewSource.contains(
                 "@ObservedObject var publisher: TreadmillFactualObservationPublisher"
+            )
+        )
+    }
+
+    func testTrainingHeartRateUIPublicationCannotBecomeFactualTruth() throws {
+        let activePresentation = try functionBody(
+            "private func makeProductionActiveWorkoutPresentation(",
+            in: contentViewSource
+        )
+        let controlDecision = try functionBody(
+            "private func tickTelemetry()",
+            in: managerSource
+        )
+        let telemetryPayload = try functionBody(
+            "private func makeTrainingLogPayload(event: String, fields: [String: Any])",
+            in: managerSource
+        )
+        let uiPublisher = try functionBody(
+            "private func publishTrainingUIHeartRateIfNeeded()",
+            in: managerSource
+        )
+        let nativeDelivery = try functionBody(
+            "private func handleNativeHeartRateObservation(",
+            in: managerSource
+        )
+        let staleTimer = try functionBody(
+            "private func startHrStaleTimer()",
+            in: managerSource
+        )
+
+        XCTAssertTrue(activePresentation.contains("manager.trainingUIHeartRateSnapshot"))
+        XCTAssertFalse(activePresentation.contains("manager.heartRateBPM"))
+        XCTAssertFalse(activePresentation.contains("manager.hrLastValueAt"))
+
+        for factualConsumer in [controlDecision, telemetryPayload] {
+            XCTAssertTrue(factualConsumer.contains("heartRateBPM"))
+            XCTAssertFalse(factualConsumer.contains("trainingUIHeartRateSnapshot"))
+        }
+        XCTAssertTrue(telemetryPayload.contains("lastKnownHeartRateBPM"))
+
+        XCTAssertTrue(managerSource.contains("let heartRateFactualState"))
+        XCTAssertTrue(managerSource.contains("@Published fileprivate(set) var heartRateBPM"))
+        XCTAssertTrue(managerSource.contains("var heartRateBPM: Int {"))
+        XCTAssertTrue(managerSource.contains("var lastKnownHeartRateBPM: Int {"))
+        XCTAssertFalse(managerSource.contains("@Published var hrLastValueAt"))
+        XCTAssertEqual(
+            contentViewSource.components(separatedBy: "manager.trainingUIHeartRateSnapshot")
+                .count - 1,
+            2
+        )
+        XCTAssertFalse(nativeDelivery.contains("trainingUIHeartRateSnapshot"))
+        XCTAssertFalse(staleTimer.contains("trainingUIHeartRateSnapshot"))
+        assertOrdered(
+            [
+                "HRDomainService.applyHeartRateDelivery(",
+                "hrDataStaleSeconds = ageSeconds",
+                "hrStreamingActive = HRDomainService.heartRateStreamIsActive(",
+                "isNativeHeartRateCurrent = hrStreamingActive",
+                "let normalization = normalizeHeartRateDelivery",
+                "logTrainingEvent(\"hr_sample\"",
+            ],
+            in: nativeDelivery
+        )
+        XCTAssertTrue(uiPublisher.contains("guard nextSnapshot != trainingUIHeartRateSnapshot"))
+        XCTAssertTrue(uiPublisher.contains("trainingUIHeartRateSnapshot = nextSnapshot"))
+        XCTAssertFalse(uiPublisher.contains("DispatchQueue"))
+        XCTAssertFalse(uiPublisher.contains("Task"))
+        XCTAssertFalse(uiPublisher.contains("debounce"))
+        XCTAssertTrue(
+            contentViewSource.contains(
+                "@ObservedObject var state: HeartRateFactualState"
             )
         )
     }

@@ -156,6 +156,7 @@ let package = Package(
                 "ZonePlanProgress.swift",
                 "CommandQueueService.swift",
                 "TreadmillSpeedBoundsService.swift",
+                "TrainingUIHeartRatePublicationPolicy.swift",
                 "TrainingUITreadmillPublicationPolicy.swift",
                 "TreadmillControlReadinessPolicy.swift",
                 "TreadmillCommandTelemetrySidecar.swift"
