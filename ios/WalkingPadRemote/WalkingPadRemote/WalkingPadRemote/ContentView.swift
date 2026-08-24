@@ -502,15 +502,12 @@ private func makeHRControlActivePresentation(
 private func makeProductionTrainingHubPresentation(
     manager: BluetoothManager
 ) -> TrainingHubPresentation {
-    makeHRControlTrainingHubPresentation(
+    let heartRate = manager.trainingUIHeartRateSnapshot
+    return makeHRControlTrainingHubPresentation(
         treadmillConnected: manager.isTreadmillControlReady,
-        hrFresh: manager.isNativeHeartRateCurrent && manager.hrStreamingActive,
-        currentHeartRateBPM: manager.isNativeHeartRateCurrent
-            && manager.hrStreamingActive
-            && manager.heartRateBPM > 0
-            ? manager.heartRateBPM
-            : nil,
-        heartRateSourceLabel: manager.isNativeHeartRateCurrent ? "HealthKit" : nil,
+        hrFresh: heartRate.isFresh,
+        currentHeartRateBPM: heartRate.currentHeartRateBPM,
+        heartRateSourceLabel: heartRate.sourceLabel,
         targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
         zoneRanges: hrZoneRanges(for: manager),
         durationMinutes: manager.hrDurationMinutes,
@@ -523,6 +520,7 @@ private func makeProductionTrainingHubPresentation(
 private func makeProductionActiveWorkoutPresentation(
     manager: BluetoothManager
 ) -> TrainingHubPresentation {
+    let heartRate = manager.trainingUIHeartRateSnapshot
     let factualSpeedKmh: Double? = {
         guard manager.isConnected else { return nil }
         return manager.trainingUITreadmillSpeedKmh
@@ -530,13 +528,9 @@ private func makeProductionActiveWorkoutPresentation(
 
     return makeHRControlActivePresentation(
         treadmillConnected: manager.isTreadmillControlReady,
-        hrFresh: manager.isNativeHeartRateCurrent && manager.hrStreamingActive,
-        currentHeartRateBPM: manager.isNativeHeartRateCurrent
-            && manager.hrStreamingActive
-            && manager.heartRateBPM > 0
-            ? manager.heartRateBPM
-            : nil,
-        heartRateSourceLabel: manager.isNativeHeartRateCurrent ? "HealthKit" : nil,
+        hrFresh: heartRate.isFresh,
+        currentHeartRateBPM: heartRate.currentHeartRateBPM,
+        heartRateSourceLabel: heartRate.sourceLabel,
         targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
         zoneRanges: hrZoneRanges(for: manager),
         factualSpeedKmh: factualSpeedKmh,
@@ -4115,6 +4109,18 @@ private struct DebugTreadmillFactualObservationRows: View {
     }
 }
 
+private struct DebugHeartRateFactualObservationRow: View {
+    @ObservedObject var state: HeartRateFactualState
+
+    var body: some View {
+        Text(
+            "HR \(state.heartRateBPM) (last \(state.lastKnownHeartRateBPM))"
+        )
+        .font(.caption)
+        .foregroundColor(.secondary)
+    }
+}
+
 private struct DebugView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @State private var showHrControlPreview = false
@@ -4413,9 +4419,12 @@ private struct DebugView: View {
                             let actualStr = String(format: "%.1f", manager.speedKmh)
                             let targetStr = String(format: "%.1f", manager.desiredSpeedKmh)
                             let deviceStr = String(format: "%.1f", manager.deviceTargetSpeedKmh)
-                            Text("Speed \(actualStr)  Target \(targetStr)  AppSet \(deviceStr)  HR \(manager.heartRateBPM) (last \(manager.lastKnownHeartRateBPM))")
+                            Text("Speed \(actualStr)  Target \(targetStr)  AppSet \(deviceStr)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                            DebugHeartRateFactualObservationRow(
+                                state: manager.heartRateFactualState
+                            )
                             DebugTreadmillFactualObservationRows(
                                 publisher: manager.treadmillFactualObservationPublisher,
                                 manager: manager
