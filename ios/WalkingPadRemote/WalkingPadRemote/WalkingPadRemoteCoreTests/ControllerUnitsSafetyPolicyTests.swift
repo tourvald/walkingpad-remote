@@ -272,6 +272,97 @@ final class ControllerUnitsSafetyPolicyTests: XCTestCase {
         ))
     }
 
+    func testMalformedDiagnosticKeepsRawEvidenceByteCountAndBlockedGate() {
+        let rawHex = "F8 A6 08 00 3C 00 00 00 14 00 00 00 00 00 5E"
+        var tracker = ControllerUnitsTruthTracker()
+        tracker.beginConnection(epoch: epoch)
+        tracker.recordMalformed(rawHex: rawHex, for: epoch, at: now.addingTimeInterval(-2))
+
+        let snapshot = ControllerUnitsDiagnosticSnapshot.capture(
+            truth: tracker.state,
+            currentConnectionEpoch: epoch,
+            now: now,
+            requiresFreshMetricTruth: true
+        )
+
+        XCTAssertEqual(snapshot.status, .malformed)
+        XCTAssertEqual(snapshot.units, .unknown)
+        XCTAssertEqual(snapshot.ageSeconds, 2)
+        XCTAssertFalse(snapshot.isFresh)
+        XCTAssertFalse(snapshot.gateAllowed)
+        XCTAssertEqual(snapshot.blockReason, .malformed)
+        XCTAssertTrue(snapshot.isCurrentConnection)
+        XCTAssertEqual(snapshot.rawHex, rawHex)
+        XCTAssertEqual(snapshot.byteCount, 15)
+        XCTAssertTrue(snapshot.reportText.contains("byte_count: 15"))
+        XCTAssertTrue(snapshot.reportText.contains("raw_hex: \(rawHex)"))
+    }
+
+    func testValidDiagnosticKeepsEvidenceWithoutChangingGateBehavior() {
+        let rawHex = "F8 A6 08 00 3C 00 00 00 14 00 00 00 00 00 5E FD"
+        var tracker = ControllerUnitsTruthTracker()
+        tracker.beginConnection(epoch: epoch)
+        tracker.record(
+            BLETransportCodec.WalkingPadParams(
+                maxSpeedRawTenths: 60,
+                startSpeedRawTenths: 20,
+                rawControllerUnit: 0,
+                checksumOk: true,
+                rawHex: rawHex
+            ),
+            for: epoch,
+            at: now.addingTimeInterval(-1)
+        )
+
+        let snapshot = ControllerUnitsDiagnosticSnapshot.capture(
+            truth: tracker.state,
+            currentConnectionEpoch: epoch,
+            now: now,
+            requiresFreshMetricTruth: true
+        )
+        let existingDecision = evaluate(path: .testRun, state: tracker.state)
+
+        XCTAssertEqual(snapshot.status, .valid)
+        XCTAssertEqual(snapshot.units, .metric)
+        XCTAssertTrue(snapshot.isFresh)
+        XCTAssertEqual(snapshot.gateAllowed, existingDecision.allowed)
+        XCTAssertEqual(snapshot.blockReason, existingDecision.blockReason)
+        XCTAssertEqual(snapshot.rawHex, rawHex)
+        XCTAssertEqual(snapshot.byteCount, 16)
+    }
+
+    func testPriorEpochDiagnosticCannotExposeRawEvidenceAsCurrent() {
+        let priorRawHex = "F8 A6 08 00 3C 00 00 00 14 00 00 00 00 00 5E FD"
+        let priorTruth = ControllerUnitsTruth(
+            connectionEpoch: epoch,
+            units: .metric,
+            status: .valid,
+            observedAt: now.addingTimeInterval(-1),
+            rawHex: priorRawHex
+        )
+        let currentEpoch = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
+        let snapshot = ControllerUnitsDiagnosticSnapshot.capture(
+            truth: priorTruth,
+            currentConnectionEpoch: currentEpoch,
+            now: now,
+            requiresFreshMetricTruth: true
+        )
+
+        XCTAssertFalse(snapshot.isCurrentConnection)
+        XCTAssertEqual(snapshot.status, .notRead)
+        XCTAssertEqual(snapshot.units, .unknown)
+        XCTAssertNil(snapshot.observedAt)
+        XCTAssertNil(snapshot.ageSeconds)
+        XCTAssertFalse(snapshot.isFresh)
+        XCTAssertFalse(snapshot.gateAllowed)
+        XCTAssertEqual(snapshot.blockReason, .notRead)
+        XCTAssertNil(snapshot.rawHex)
+        XCTAssertNil(snapshot.byteCount)
+        XCTAssertTrue(snapshot.reportText.contains("current_connection_context: false"))
+        XCTAssertTrue(snapshot.reportText.contains("raw_hex: unavailable"))
+    }
+
     private func evaluate(
         path: ControllerAutomatedMotionPath = .hrControl,
         state: ControllerUnitsTruth

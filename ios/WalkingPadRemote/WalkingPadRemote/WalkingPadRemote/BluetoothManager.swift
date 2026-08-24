@@ -6980,6 +6980,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
+    func controllerUnitsDiagnosticSnapshot(
+        now: Date = Date()
+    ) -> ControllerUnitsDiagnosticSnapshot {
+        ControllerUnitsDiagnosticSnapshot.capture(
+            truth: controllerUnitsTruth,
+            currentConnectionEpoch: controllerUnitsConnectionEpoch,
+            now: now,
+            requiresFreshMetricTruth: controllerUnitsTruthRequired
+        )
+    }
+
     private func controllerUnitsTelemetryFields(
         action: String,
         now: Date = Date(),

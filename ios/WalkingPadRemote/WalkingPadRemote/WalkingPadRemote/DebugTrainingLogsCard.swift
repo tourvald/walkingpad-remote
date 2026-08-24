@@ -18,6 +18,10 @@ struct DebugTrainingLogsCard: View {
         let testRunActive: Bool
         let testRunStatusText: String
         let canStartTestRun: Bool
+        let controllerUnitsDiagnosticStatusText: String
+        let controllerUnitsDiagnosticMetrics: [Metric]
+        let controllerUnitsDiagnosticDetailLines: [String]
+        let controllerUnitsDiagnosticReport: String
         let heartRateDiagnosticStatusText: String
         let heartRateDiagnosticMetrics: [Metric]
         let heartRateDiagnosticDetailLines: [String]
@@ -79,6 +83,40 @@ struct DebugTrainingLogsCard: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!presentation.testRunActive && !presentation.canStartTestRun)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Controller units diagnostic")
+                            .font(.caption.weight(.medium))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        ShareLink(item: presentation.controllerUnitsDiagnosticReport) {
+                            Label("Report", systemImage: "square.and.arrow.up")
+                                .font(.caption.weight(.semibold))
+                        }
+                    }
+
+                    Text(presentation.controllerUnitsDiagnosticStatusText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    metricsSection(
+                        title: "A6 controller params",
+                        items: presentation.controllerUnitsDiagnosticMetrics
+                    )
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(
+                            Array(presentation.controllerUnitsDiagnosticDetailLines.enumerated()),
+                            id: \.offset
+                        ) { _, line in
+                            Text(line)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .textSelection(.enabled)
                 }
 
                 if !presentation.heartRateDiagnosticMetrics.isEmpty {

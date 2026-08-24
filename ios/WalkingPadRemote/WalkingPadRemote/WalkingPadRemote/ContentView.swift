@@ -4271,6 +4271,7 @@ private struct DebugView: View {
 
     private var trainingLogsCardPresentation: DebugTrainingLogsCard.Presentation {
         let entries = manager.telemetryV2WorkoutHistory
+        let controllerUnitsDiagnostic = manager.controllerUnitsDiagnosticSnapshot()
         let heartRateDiagnostic = manager.treadmillTestRunHeartRateDiagnosticSnapshot
         let readReady = manager.telemetryV2WorkoutHistoryState == .loaded
         let readStatusText: String = {
@@ -4312,6 +4313,16 @@ private struct DebugView: View {
             testRunActive: manager.treadmillTestRunIsActive,
             testRunStatusText: manager.treadmillTestRunDisplayText,
             canStartTestRun: manager.canStartTreadmillTestRun,
+            controllerUnitsDiagnosticStatusText: controllerUnitsDiagnosticStatusText(
+                controllerUnitsDiagnostic
+            ),
+            controllerUnitsDiagnosticMetrics: controllerUnitsDiagnosticMetrics(
+                controllerUnitsDiagnostic
+            ),
+            controllerUnitsDiagnosticDetailLines: controllerUnitsDiagnosticDetailLines(
+                controllerUnitsDiagnostic
+            ),
+            controllerUnitsDiagnosticReport: controllerUnitsDiagnostic.reportText,
             heartRateDiagnosticStatusText: testRunHeartRateDiagnosticStatusText(
                 heartRateDiagnostic
             ),
@@ -4349,6 +4360,66 @@ private struct DebugView: View {
                 ? "Для анализа лучше накопить хотя бы 3 завершённые тренировки."
                 : nil
         )
+    }
+
+    private func controllerUnitsDiagnosticStatusText(
+        _ snapshot: ControllerUnitsDiagnosticSnapshot
+    ) -> String {
+        let context = snapshot.isCurrentConnection ? "current connection" : "no current evidence"
+        let gate = snapshot.gateAllowed ? "gate allowed" : "gate blocked"
+        return "\(context) · \(gate)"
+    }
+
+    private func controllerUnitsDiagnosticMetrics(
+        _ snapshot: ControllerUnitsDiagnosticSnapshot
+    ) -> [DebugTrainingLogsCard.Presentation.Metric] {
+        let age = snapshot.ageSeconds.map { String(format: "%.1f s", $0) } ?? "—"
+        return [
+            .init(
+                id: "units_status",
+                title: "Status",
+                value: snapshot.status.rawValue,
+                tint: snapshot.status == .valid ? .green : .orange
+            ),
+            .init(
+                id: "units_value",
+                title: "Units",
+                value: snapshot.units.rawValue,
+                tint: snapshot.units == .metric ? .green : .orange
+            ),
+            .init(id: "units_age", title: "Age", value: age, tint: .secondary),
+            .init(
+                id: "units_fresh",
+                title: "Fresh",
+                value: snapshot.isFresh ? "yes" : "no",
+                tint: snapshot.isFresh ? .green : .orange
+            ),
+            .init(
+                id: "units_gate",
+                title: "Test Run gate",
+                value: snapshot.gateAllowed ? "allowed" : "blocked",
+                tint: snapshot.gateAllowed ? .green : .red
+            ),
+            .init(
+                id: "units_bytes",
+                title: "A6 bytes",
+                value: snapshot.byteCount.map(String.init) ?? "—",
+                tint: .blue
+            ),
+        ]
+    }
+
+    private func controllerUnitsDiagnosticDetailLines(
+        _ snapshot: ControllerUnitsDiagnosticSnapshot
+    ) -> [String] {
+        [
+            "observed_at: \(testRunHeartRateDiagnosticDate(snapshot.observedAt))",
+            "block_reason: \(snapshot.blockReason?.rawValue ?? "none")",
+            "current_connection_context: \(snapshot.isCurrentConnection)",
+            "evidence_connection_epoch: \(snapshot.evidenceConnectionEpoch?.uuidString ?? "unavailable")",
+            "current_connection_epoch: \(snapshot.currentConnectionEpoch?.uuidString ?? "unavailable")",
+            "raw_hex: \(snapshot.rawHex ?? "unavailable")",
+        ]
     }
 
     private func testRunHeartRateDiagnosticStatusText(
