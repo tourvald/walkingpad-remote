@@ -235,7 +235,7 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
         XCTAssertFalse(managerSource.contains("Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in\n            self?.warmNativeHeartRateProviderIfPossible"))
     }
 
-    func testFinishUsesDirectUUIDAndPersistsUnavailableDeferredLinkageWithoutRetry() throws {
+    func testFinishPersistsExactUUIDBeforeRetryableDeferredLinkage() throws {
         let finish = try functionBody(
             "private func finishNativeHealthKitWorkoutIfNeeded()",
             in: managerSource
@@ -246,11 +246,14 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
         )
         XCTAssertTrue(finish.contains("iPhoneHealthKitHeartRateProvider.finish"))
         XCTAssertTrue(finish.contains("case .saved(let workout)"))
-        XCTAssertTrue(finish.contains("linkNativeHealthKitWorkout"))
+        XCTAssertTrue(finish.contains("healthKitWorkoutID: workout.uuid"))
+        XCTAssertTrue(finish.contains("terminalSaveProven = true"))
         XCTAssertTrue(finish.contains("case .savedWorkoutUnavailable"))
         XCTAssertTrue(finish.contains("retainDeferredNativeHealthKitLinkage"))
         XCTAssertTrue(resolver.contains("HKSampleQuery"))
         XCTAssertTrue(resolver.contains("linkDeferredNativeHealthKitWorkout"))
+        XCTAssertTrue(resolver.contains("linkage.healthKitWorkoutID"))
+        XCTAssertTrue(resolver.contains("completeRecoveredFinishIfProven"))
         XCTAssertFalse(resolver.contains(".finish("))
         XCTAssertTrue(managerSource.contains("deferred_native_healthkit_linkage_v1"))
     }

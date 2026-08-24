@@ -14,6 +14,21 @@ struct DeferredNativeHealthKitLinkage: Codable, Equatable {
     let linksLegacyWorkout: Bool
     let legacyWorkoutID: UUID?
     let recoveryAppWorkoutID: UUID?
+    let healthKitWorkoutID: UUID?
+
+    func provingSavedWorkout(id: UUID) -> Self {
+        Self(
+            acquisitionStartedAt: acquisitionStartedAt,
+            finishRequestedAt: finishRequestedAt,
+            healthKitStoppedAt: healthKitStoppedAt,
+            profileID: profileID,
+            telemetrySessionID: telemetrySessionID,
+            linksLegacyWorkout: linksLegacyWorkout,
+            legacyWorkoutID: legacyWorkoutID,
+            recoveryAppWorkoutID: recoveryAppWorkoutID,
+            healthKitWorkoutID: id
+        )
+    }
 }
 
 struct NativeWorkoutRecoveryRecord: Codable, Equatable {

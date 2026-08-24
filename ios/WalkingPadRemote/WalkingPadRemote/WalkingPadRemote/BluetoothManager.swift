@@ -2288,11 +2288,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             pendingHealthkitTelemetryV2SessionID = record.telemetrySessionID.map {
                 SessionID(rawValue: $0)
             }
-            retainDeferredNativeHealthKitLinkage(
+            guard retainDeferredNativeHealthKitLinkage(
                 record: record,
                 finishRequestedAt: finishRequestedAt,
                 healthKitStoppedAt: healthKitStoppedAt
-            )
+            ) != nil else {
+                isNativeWorkoutRecoveryActive = true
+                nativeWorkoutRecoveryStatusText = "Не удалось сохранить проверку тренировки"
+                recomputeHrStartAllowed()
+                return
+            }
             isNativeWorkoutRecoveryActive = true
             nativeWorkoutRecoveryStatusText = "Проверяем сохранение восстановленной тренировки…"
             recomputeHrStartAllowed()
@@ -2415,21 +2420,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrStreamingActive = false
         hrLastValueAt = nil
         heartRateBPM = 0
-        switch nativeWorkoutRecoveryLoadResult {
-        case .missing:
-            isNativeWorkoutRecoveryActive = false
-            nativeWorkoutRecoveryStatusText = nil
-        case .record(let record) where record.phase == .preflight:
-            if clearNativeWorkoutRecoveryRecord() {
-                isNativeWorkoutRecoveryActive = false
-                isNativeHeartRatePreflightActive = false
-                nativeWorkoutRecoveryStatusText = nil
-            }
-        case .invalid, .record:
-            isNativeWorkoutRecoveryActive = true
-            nativeWorkoutRecoveryStatusText = "Не удалось восстановить тренировку"
-            infoToastMessage = "HealthKit не восстановил активную тренировку. Управление дорожкой не возобновлено."
-        }
+        isNativeWorkoutRecoveryActive = true
+        nativeWorkoutRecoveryStatusText = "Не удалось восстановить тренировку"
+        infoToastMessage = "HealthKit не восстановил активную тренировку. Управление дорожкой не возобновлено."
         if error != nil {
             nativeHeartRateLogger.error("active_workout_recovery_failed")
         }
@@ -7229,15 +7222,19 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         throw IPhoneHealthKitHeartRateProviderError.operationCancelled
                     }
                     nativeHealthKitAcquisitionStartedAt = nil
-                    guard await linkNativeHealthKitWorkout(
-                        uuid: workout.uuid,
-                        record: completedRecord
-                    ) else {
+                    guard retainDeferredNativeHealthKitLinkage(
+                        record: completedRecord,
+                        finishRequestedAt: completedRecord.terminalRequestedAt
+                            ?? finishRequestedAt,
+                        healthKitStoppedAt: completedRecord.healthKitStopActivityAt,
+                        healthKitWorkoutID: workout.uuid
+                    ) != nil else {
                         throw IPhoneHealthKitHeartRateProviderError.operationCancelled
                     }
-                    appendLog("Native HealthKit workout linked: \(workout.uuid.uuidString)")
-                    nativeHeartRateLogger.info("workout_finished_direct_link")
                     terminalSaveProven = true
+                    resolveDeferredNativeHealthKitLinkageIfPossible()
+                    appendLog("Native HealthKit workout saved: \(workout.uuid.uuidString)")
+                    nativeHeartRateLogger.info("workout_finished_direct_proof")
                 case .savedWorkoutUnavailable:
                     guard let completedRecord = activeNativeWorkoutRecoveryRecord,
                           let terminalRequestedAt = completedRecord.terminalRequestedAt,
@@ -7245,11 +7242,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         throw IPhoneHealthKitHeartRateProviderError.operationCancelled
                     }
                     appendLog("Native HealthKit finish returned no workout; exact saved proof pending")
-                    retainDeferredNativeHealthKitLinkage(
+                    guard retainDeferredNativeHealthKitLinkage(
                         record: completedRecord,
                         finishRequestedAt: terminalRequestedAt,
-                        healthKitStoppedAt: healthKitStoppedAt
-                    )
+                        healthKitStoppedAt: healthKitStoppedAt,
+                        healthKitWorkoutID: nil
+                    ) != nil else {
+                        throw IPhoneHealthKitHeartRateProviderError.operationCancelled
+                    }
                     resolveDeferredNativeHealthKitLinkageIfPossible()
                     nativeHeartRateLogger.info("workout_finish_proof_deferred")
                     terminalProofPending = true
@@ -7264,8 +7264,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func retainDeferredNativeHealthKitLinkage(
         record: NativeWorkoutRecoveryRecord,
         finishRequestedAt: Date,
-        healthKitStoppedAt: Date
-    ) {
+        healthKitStoppedAt: Date?,
+        healthKitWorkoutID: UUID? = nil
+    ) -> DeferredNativeHealthKitLinkage? {
         let linkage = DeferredNativeHealthKitLinkage(
             acquisitionStartedAt: record.acquisitionStartedAt,
             finishRequestedAt: finishRequestedAt,
@@ -7274,14 +7275,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             telemetrySessionID: record.telemetrySessionID,
             linksLegacyWorkout: record.legacyWorkoutID != nil,
             legacyWorkoutID: record.legacyWorkoutID,
-            recoveryAppWorkoutID: record.appWorkoutID
+            recoveryAppWorkoutID: record.appWorkoutID,
+            healthKitWorkoutID: healthKitWorkoutID
         )
-        if !deferredNativeHealthKitLinkages.contains(linkage) {
+        guard retainDeferredNativeHealthKitLinkage(linkage) else { return nil }
+        return linkage
+    }
+
+    @discardableResult
+    private func retainDeferredNativeHealthKitLinkage(
+        _ linkage: DeferredNativeHealthKitLinkage
+    ) -> Bool {
+        loadDeferredNativeHealthKitLinkagesIfNeeded()
+        if let recoveryAppWorkoutID = linkage.recoveryAppWorkoutID,
+           let index = deferredNativeHealthKitLinkages.firstIndex(where: {
+               $0.recoveryAppWorkoutID == recoveryAppWorkoutID
+           }) {
+            let existing = deferredNativeHealthKitLinkages[index]
+            if existing.healthKitWorkoutID != nil,
+               linkage.healthKitWorkoutID == nil {
+                return true
+            }
+            deferredNativeHealthKitLinkages[index] = linkage
+        } else if !deferredNativeHealthKitLinkages.contains(linkage) {
             deferredNativeHealthKitLinkages.append(linkage)
         }
-        if let data = try? JSONEncoder().encode(deferredNativeHealthKitLinkages) {
-            UserDefaults.standard.set(data, forKey: deferredNativeHealthKitLinkageStoreKey)
-        }
+        return persistDeferredNativeHealthKitLinkages()
     }
 
     private func clearDeferredNativeHealthKitLinkage(
@@ -7290,22 +7309,65 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         deferredNativeHealthKitLinkages.removeAll { $0 == linkage }
         if deferredNativeHealthKitLinkages.isEmpty {
             UserDefaults.standard.removeObject(forKey: deferredNativeHealthKitLinkageStoreKey)
-        } else if let data = try? JSONEncoder().encode(deferredNativeHealthKitLinkages) {
-            UserDefaults.standard.set(data, forKey: deferredNativeHealthKitLinkageStoreKey)
+        } else {
+            _ = persistDeferredNativeHealthKitLinkages()
         }
+    }
+
+    private func loadDeferredNativeHealthKitLinkagesIfNeeded() {
+        guard deferredNativeHealthKitLinkages.isEmpty,
+              let data = UserDefaults.standard.data(
+                forKey: deferredNativeHealthKitLinkageStoreKey
+              ) else { return }
+        deferredNativeHealthKitLinkages = (try? JSONDecoder().decode(
+            [DeferredNativeHealthKitLinkage].self,
+            from: data
+        )) ?? []
+    }
+
+    private func persistDeferredNativeHealthKitLinkages() -> Bool {
+        guard let data = try? JSONEncoder().encode(deferredNativeHealthKitLinkages) else {
+            return false
+        }
+        UserDefaults.standard.set(data, forKey: deferredNativeHealthKitLinkageStoreKey)
+        guard let storedData = UserDefaults.standard.data(
+            forKey: deferredNativeHealthKitLinkageStoreKey
+        ), let stored = try? JSONDecoder().decode(
+            [DeferredNativeHealthKitLinkage].self,
+            from: storedData
+        ) else {
+            return false
+        }
+        return stored == deferredNativeHealthKitLinkages
     }
 
     private func resolveDeferredNativeHealthKitLinkageIfPossible() {
         guard nativeHeartRateAppActivity == .active,
               !nativeHealthKitLinkageQueryInFlight else { return }
-        if deferredNativeHealthKitLinkages.isEmpty,
-           let data = UserDefaults.standard.data(forKey: deferredNativeHealthKitLinkageStoreKey) {
-            deferredNativeHealthKitLinkages = (try? JSONDecoder().decode(
-                [DeferredNativeHealthKitLinkage].self,
-                from: data
-            )) ?? []
-        }
+        loadDeferredNativeHealthKitLinkagesIfNeeded()
         guard let linkage = deferredNativeHealthKitLinkages.first else { return }
+
+        if let workoutID = linkage.healthKitWorkoutID {
+            nativeHealthKitLinkageQueryInFlight = true
+            completeRecoveredFinishIfProven(linkage: linkage)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let linkagePersisted = await linkDeferredNativeHealthKitWorkout(
+                    uuid: workoutID,
+                    linkage: linkage
+                )
+                nativeHealthKitLinkageQueryInFlight = false
+                guard linkagePersisted else {
+                    nativeHeartRateLogger.error("deferred_exact_link_failed")
+                    return
+                }
+                appendLog("Deferred native HealthKit workout linked: \(workoutID.uuidString)")
+                nativeHeartRateLogger.info("deferred_exact_link_resolved")
+                clearDeferredNativeHealthKitLinkage(linkage)
+                resolveDeferredNativeHealthKitLinkageIfPossible()
+            }
+            return
+        }
 
         nativeHealthKitLinkageQueryInFlight = true
         let expectedEndAt = linkage.healthKitStoppedAt ?? linkage.finishRequestedAt
@@ -7360,16 +7422,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     nativeHealthKitLinkageQueryInFlight = false
                     return
                 }
-                let linkagePersisted = await linkDeferredNativeHealthKitWorkout(
-                    uuid: workout.uuid,
-                    linkage: linkage
-                )
+                let provenLinkage = linkage.provingSavedWorkout(id: workout.uuid)
+                let proofPersisted = retainDeferredNativeHealthKitLinkage(provenLinkage)
                 nativeHealthKitLinkageQueryInFlight = false
-                guard linkagePersisted else { return }
-                appendLog("Deferred native HealthKit workout linked: \(workout.uuid.uuidString)")
-                nativeHeartRateLogger.info("deferred_link_resolved")
-                clearDeferredNativeHealthKitLinkage(linkage)
-                completeRecoveredFinishIfProven(linkage: linkage)
+                guard proofPersisted else {
+                    nativeHeartRateLogger.error("deferred_saved_proof_write_failed")
+                    return
+                }
+                completeRecoveredFinishIfProven(linkage: provenLinkage)
                 resolveDeferredNativeHealthKitLinkageIfPossible()
             }
         }
@@ -7438,26 +7498,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             legacyShadowWorkoutHistory = entries
         }
         return true
-    }
-
-    @discardableResult
-    private func linkNativeHealthKitWorkout(
-        uuid: UUID,
-        record: NativeWorkoutRecoveryRecord
-    ) async -> Bool {
-        await linkDeferredNativeHealthKitWorkout(
-            uuid: uuid,
-            linkage: DeferredNativeHealthKitLinkage(
-                acquisitionStartedAt: record.acquisitionStartedAt,
-                finishRequestedAt: record.terminalRequestedAt ?? Date.distantPast,
-                healthKitStoppedAt: record.healthKitStopActivityAt,
-                profileID: record.profileID,
-                telemetrySessionID: record.telemetrySessionID,
-                linksLegacyWorkout: record.legacyWorkoutID != nil,
-                legacyWorkoutID: record.legacyWorkoutID,
-                recoveryAppWorkoutID: record.appWorkoutID
-            )
-        )
     }
 
     private func completeRecoveredFinishIfProven(
