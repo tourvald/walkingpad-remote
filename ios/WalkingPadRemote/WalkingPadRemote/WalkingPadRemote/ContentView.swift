@@ -1,4 +1,7 @@
 import SwiftUI
+#if DEBUG
+import Combine
+#endif
 #if canImport(TelemetryRuntime)
 import TelemetryRuntime
 #endif
@@ -45,6 +48,7 @@ struct ContentView: View {
             $0.hasPrefix("--training-hub-preview=")
                 || $0.hasPrefix("--active-workout-preview=")
                 || $0.hasPrefix("--training-result-preview=")
+                || $0 == "--training-ui-pressure-baseline"
         }
     }
     #endif
@@ -82,6 +86,10 @@ struct ContentView: View {
         }
         .onAppear {
             #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--training-ui-pressure-baseline") {
+                TrainingUIUpdatePressureHarness.run(manager: manager)
+                return
+            }
             guard !isTrainingPreviewLaunch else { return }
             #endif
             manager.start()
@@ -491,7 +499,221 @@ private func makeHRControlActivePresentation(
     )
 }
 
+private func makeProductionTrainingHubPresentation(
+    manager: BluetoothManager
+) -> TrainingHubPresentation {
+    makeHRControlTrainingHubPresentation(
+        treadmillConnected: manager.isTreadmillControlReady,
+        hrFresh: manager.isNativeHeartRateCurrent && manager.hrStreamingActive,
+        currentHeartRateBPM: manager.isNativeHeartRateCurrent
+            && manager.hrStreamingActive
+            && manager.heartRateBPM > 0
+            ? manager.heartRateBPM
+            : nil,
+        heartRateSourceLabel: manager.isNativeHeartRateCurrent ? "HealthKit" : nil,
+        targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
+        zoneRanges: hrZoneRanges(for: manager),
+        durationMinutes: manager.hrDurationMinutes,
+        startEnabled: manager.isHrControlStartAffordanceAvailable,
+        runtimeBlockReason: manager.hrControlStartBlockReasonText,
+        isPreparing: manager.isNativeHeartRatePreflightActive
+    )
+}
+
+private func makeProductionActiveWorkoutPresentation(
+    manager: BluetoothManager
+) -> TrainingHubPresentation {
+    let factualSpeedKmh: Double? = {
+        guard manager.isConnected else { return nil }
+        if manager.deviceReportedAppSpeedKmh > 0.05 {
+            return manager.deviceReportedAppSpeedKmh
+        }
+        if manager.deviceReportedSpeedKmh > 0.05 {
+            return manager.deviceReportedSpeedKmh
+        }
+        return nil
+    }()
+
+    return makeHRControlActivePresentation(
+        treadmillConnected: manager.isTreadmillControlReady,
+        hrFresh: manager.isNativeHeartRateCurrent && manager.hrStreamingActive,
+        currentHeartRateBPM: manager.isNativeHeartRateCurrent
+            && manager.hrStreamingActive
+            && manager.heartRateBPM > 0
+            ? manager.heartRateBPM
+            : nil,
+        heartRateSourceLabel: manager.isNativeHeartRateCurrent ? "HealthKit" : nil,
+        targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
+        zoneRanges: hrZoneRanges(for: manager),
+        factualSpeedKmh: factualSpeedKmh,
+        elapsedSeconds: manager.presentedWorkoutElapsedSeconds,
+        isCooldown: manager.isHrControlRunning && manager.hrRemainingSeconds <= 0,
+        cooldownTargetBPM: manager.hrCooldownTargetBpm,
+        canExtend: manager.canExtendHrSession,
+        phaseTitleOverride: manager.presentedWorkoutPhaseTitle
+    )
+}
+
 #if DEBUG
+@MainActor
+private enum TrainingUIUpdatePressureHarness {
+    private typealias Event = (source: String, apply: (BluetoothManager) -> Void)
+    private struct Measurement: Codable {
+        let source: String
+        var technicalEvents = 0
+        var managerPublishedEvents = 0
+        var visibleSnapshotChanges = 0
+        var potentialAvoidableManagerDrivenInvalidations = 0
+        var rawManagerPublications = 0
+        var synchronousMainThreadNanoseconds: UInt64 = 0
+    }
+
+    private struct Workload: Codable {
+        let workload: String
+        let measurements: [Measurement]
+        let technicalEvents: Int
+        let managerPublishedEvents: Int
+        let visibleSnapshotChanges: Int
+        let potentialAvoidableManagerDrivenInvalidations: Int
+        let rawManagerPublications: Int
+        let eventToVisibleChangeRatio: Double?
+        let synchronousMainThreadNanoseconds: UInt64
+    }
+
+    private struct Report: Codable {
+        let schema: String
+        let workloads: [Workload]
+    }
+
+    private static var didRun = false
+
+    static func run(manager: BluetoothManager) {
+        guard !didRun else { return }
+        didRun = true
+
+        let idle = measure(
+            workload: "idle_hub_duplicate_discovery",
+            manager: manager,
+            configure: { $0.prepareTrainingUIIdlePressureBaseline() },
+            events: (0..<120).map { index -> Event in
+                ("ble_discovery", { $0.applyTrainingUIDiscoveryPressureEvent(index) })
+            }
+        )
+        let activeEvents = (1...60).flatMap { second -> [Event] in
+            [
+                ("heart_rate", { $0.applyTrainingUIHeartRatePressureEvent(second: second) }),
+                ("treadmill_status", { $0.applyTrainingUITreadmillPressureEvent(second: second) }),
+                ("timer", { $0.applyTrainingUITimerPressureEvent(second: second) }),
+            ]
+        }
+        let active = measure(
+            workload: "active_workout_60s",
+            manager: manager,
+            configure: { $0.prepareTrainingUIActivePressureBaseline() },
+            events: activeEvents
+        )
+        let report = Report(
+            schema: "training-ui-update-pressure-v2",
+            workloads: [idle, active]
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(report),
+              let json = String(data: data, encoding: .utf8) else { return }
+        print("TRAINING_UI_PRESSURE \(json)")
+    }
+
+    private static func measure(
+        workload: String,
+        manager: BluetoothManager,
+        configure: (BluetoothManager) -> Void,
+        events: [Event]
+    ) -> Workload {
+        configure(manager)
+        var publicationCount = 0
+        let cancellable = manager.objectWillChange.sink {
+            publicationCount += 1
+        }
+        var measurements: [String: Measurement] = [:]
+        var snapshot = visibleSnapshot(manager: manager)
+
+        for event in events {
+            let publicationsBefore = publicationCount
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            event.apply(manager)
+            let nextSnapshot = visibleSnapshot(manager: manager)
+            let elapsed = DispatchTime.now().uptimeNanoseconds - startedAt
+
+            var measurement = measurements[event.source]
+                ?? Measurement(source: event.source)
+            let managerPublished = publicationCount > publicationsBefore
+            let snapshotChanged = nextSnapshot != snapshot
+            measurement.technicalEvents += 1
+            measurement.rawManagerPublications += publicationCount - publicationsBefore
+            measurement.synchronousMainThreadNanoseconds += elapsed
+            if managerPublished {
+                measurement.managerPublishedEvents += 1
+            }
+            if snapshotChanged {
+                measurement.visibleSnapshotChanges += 1
+            }
+            if managerPublished && !snapshotChanged {
+                measurement.potentialAvoidableManagerDrivenInvalidations += 1
+            }
+            measurements[event.source] = measurement
+            snapshot = nextSnapshot
+        }
+        withExtendedLifetime(cancellable) {}
+
+        let ordered = measurements.values.sorted { $0.source < $1.source }
+        let technicalEvents = ordered.reduce(0) { $0 + $1.technicalEvents }
+        let managerPublishedEvents = ordered.reduce(0) { $0 + $1.managerPublishedEvents }
+        let visibleSnapshotChanges = ordered.reduce(0) { $0 + $1.visibleSnapshotChanges }
+        return Workload(
+            workload: workload,
+            measurements: ordered,
+            technicalEvents: technicalEvents,
+            managerPublishedEvents: managerPublishedEvents,
+            visibleSnapshotChanges: visibleSnapshotChanges,
+            potentialAvoidableManagerDrivenInvalidations: ordered.reduce(0) {
+                $0 + $1.potentialAvoidableManagerDrivenInvalidations
+            },
+            rawManagerPublications: ordered.reduce(0) { $0 + $1.rawManagerPublications },
+            eventToVisibleChangeRatio: visibleSnapshotChanges > 0
+                ? Double(managerPublishedEvents) / Double(visibleSnapshotChanges)
+                : nil,
+            synchronousMainThreadNanoseconds: ordered.reduce(0) {
+                $0 + $1.synchronousMainThreadNanoseconds
+            }
+        )
+    }
+
+    private static func visibleSnapshot(manager: BluetoothManager) -> [String] {
+        let presentation = manager.shouldPresentActiveWorkout
+            ? makeProductionActiveWorkoutPresentation(manager: manager)
+            : makeProductionTrainingHubPresentation(manager: manager)
+        return [
+            presentation.modeTitle,
+            presentation.targetTitle,
+            presentation.targetValue,
+            presentation.metrics.map { "\($0.id)=\($0.value)" }.joined(separator: "|"),
+            presentation.readiness.map {
+                "\($0.id)=\($0.value)|\($0.sourceLabel ?? "")|\($0.isReady)"
+            }.joined(separator: ";"),
+            String(presentation.startEnabled),
+            presentation.startBlocker ?? "",
+            String(presentation.isPreparing),
+            presentation.phaseTitle ?? "",
+            presentation.primaryValue ?? "",
+            presentation.primaryUnit ?? "",
+            presentation.statusTitle ?? "",
+            presentation.liveMarkerBPM.map(String.init) ?? "",
+            presentation.targetThresholdBPM.map(String.init) ?? "",
+            String(presentation.showsExtendAction),
+        ]
+    }
+}
+
 private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPresentation? {
     let ranges = [60...134, 135...146, 147...158, 159...170, 171...220]
     func hrControl(
@@ -1899,20 +2121,7 @@ private struct ControlSwipeView: View {
     }
 
     private var productionTrainingHubPresentation: TrainingHubPresentation {
-        makeHRControlTrainingHubPresentation(
-            treadmillConnected: manager.isTreadmillControlReady,
-            hrFresh: manager.isNativeHeartRateCurrent && manager.hrStreamingActive,
-            currentHeartRateBPM: manager.isNativeHeartRateCurrent && manager.hrStreamingActive && manager.heartRateBPM > 0
-                ? manager.heartRateBPM
-                : nil,
-            heartRateSourceLabel: manager.isNativeHeartRateCurrent ? "HealthKit" : nil,
-            targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
-            zoneRanges: hrZoneRanges(for: manager),
-            durationMinutes: manager.hrDurationMinutes,
-            startEnabled: manager.isHrControlStartAffordanceAvailable,
-            runtimeBlockReason: manager.hrControlStartBlockReasonText,
-            isPreparing: manager.isNativeHeartRatePreflightActive
-        )
+        makeProductionTrainingHubPresentation(manager: manager)
     }
 
     private var trainingHubPresentation: TrainingHubPresentation {
@@ -1930,33 +2139,7 @@ private struct ControlSwipeView: View {
     }
 
     private var productionActiveWorkoutPresentation: TrainingHubPresentation {
-        let factualSpeedKmh: Double? = {
-            guard manager.isConnected else { return nil }
-            if manager.deviceReportedAppSpeedKmh > 0.05 {
-                return manager.deviceReportedAppSpeedKmh
-            }
-            if manager.deviceReportedSpeedKmh > 0.05 {
-                return manager.deviceReportedSpeedKmh
-            }
-            return nil
-        }()
-
-        return makeHRControlActivePresentation(
-            treadmillConnected: manager.isTreadmillControlReady,
-            hrFresh: manager.isNativeHeartRateCurrent && manager.hrStreamingActive,
-            currentHeartRateBPM: manager.isNativeHeartRateCurrent && manager.hrStreamingActive && manager.heartRateBPM > 0
-                ? manager.heartRateBPM
-                : nil,
-            heartRateSourceLabel: manager.isNativeHeartRateCurrent ? "HealthKit" : nil,
-            targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
-            zoneRanges: hrZoneRanges(for: manager),
-            factualSpeedKmh: factualSpeedKmh,
-            elapsedSeconds: manager.presentedWorkoutElapsedSeconds,
-            isCooldown: manager.isHrControlRunning && manager.hrRemainingSeconds <= 0,
-            cooldownTargetBPM: manager.hrCooldownTargetBpm,
-            canExtend: manager.canExtendHrSession,
-            phaseTitleOverride: manager.presentedWorkoutPhaseTitle
-        )
+        makeProductionActiveWorkoutPresentation(manager: manager)
     }
 
     private var activeWorkoutPresentation: TrainingHubPresentation? {

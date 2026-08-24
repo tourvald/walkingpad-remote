@@ -246,7 +246,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             in: contentViewSource
         )
         let production = try functionBody(
-            "private var productionTrainingHubPresentation: TrainingHubPresentation",
+            "private func makeProductionTrainingHubPresentation(",
             in: contentViewSource
         )
         let previewFixtures = try functionBody(
@@ -331,12 +331,19 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(contentBody.contains("--training-hub-preview="))
         XCTAssertTrue(contentBody.contains("--active-workout-preview="))
         XCTAssertTrue(contentBody.contains("--training-result-preview="))
+        XCTAssertTrue(contentBody.contains("--training-ui-pressure-baseline"))
+        XCTAssertTrue(contentViewSource.contains("managerPublishedEvents"))
+        XCTAssertTrue(contentViewSource.contains("potentialAvoidableManagerDrivenInvalidations"))
+        XCTAssertTrue(contentViewSource.contains("eventToVisibleChangeRatio"))
+        XCTAssertTrue(contentViewSource.contains("rawManagerPublications"))
+        XCTAssertFalse(contentViewSource.contains("publicationToVisibleChangeRatio"))
         XCTAssertEqual(
             contentBody.components(separatedBy: "guard !isTrainingPreviewLaunch else { return }").count - 1,
             2
         )
         assertOrdered(
             [
+                "TrainingUIUpdatePressureHarness.run(manager: manager)",
                 "guard !isTrainingPreviewLaunch else { return }",
                 "manager.start()",
                 "guard !isTrainingPreviewLaunch else { return }",
@@ -415,6 +422,10 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             "private struct ControlSwipeView: View",
             in: contentViewSource
         )
+        let production = try functionBody(
+            "private func makeProductionActiveWorkoutPresentation(",
+            in: contentViewSource
+        )
         let fixtures = try functionBody(
             "private func activeWorkoutPreviewPresentation(named name: String)",
             in: contentViewSource
@@ -459,7 +470,8 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(scale.contains("manager."))
         XCTAssertFalse(scale.contains("sendTreadmill"))
 
-        XCTAssertTrue(controlView.contains("makeHRControlActivePresentation("))
+        XCTAssertTrue(controlView.contains("makeProductionActiveWorkoutPresentation("))
+        XCTAssertTrue(production.contains("makeHRControlActivePresentation("))
         assertOrdered(
             [
                 "guard manager.isConnected else { return nil }",
@@ -469,7 +481,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "return manager.deviceReportedSpeedKmh",
                 "factualSpeedKmh: factualSpeedKmh",
             ],
-            in: controlView
+            in: production
         )
         for forbiddenSpeedFallback in [
             "HRDomainService.cooldownSpeedSnapshot(",
@@ -479,7 +491,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             "manager.deviceTargetSpeedKmh",
         ] {
             XCTAssertFalse(
-                controlView.contains(forbiddenSpeedFallback),
+                production.contains(forbiddenSpeedFallback),
                 "Active presentation contains \(forbiddenSpeedFallback)"
             )
         }
