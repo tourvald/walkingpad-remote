@@ -334,6 +334,13 @@ private func makeHRControlTrainingHubPresentation(
 ) -> TrainingHubPresentation {
     let safeZoneIndex = max(0, min(zoneRanges.count - 1, targetZoneIndex))
     let targetRange = zoneRanges[safeZoneIndex]
+    let heartRateReadiness =
+        TrainingUIHeartRateReadinessPresentationPolicy.presentation(
+            isFresh: hrFresh,
+            currentHeartRateBPM: currentHeartRateBPM,
+            sourceLabel: heartRateSourceLabel,
+            isPreparing: isPreparing
+        )
     let startBlocker: String? = {
         guard !startEnabled, !isPreparing else { return nil }
         if !treadmillConnected { return "Подключите дорожку" }
@@ -369,13 +376,11 @@ private func makeHRControlTrainingHubPresentation(
             .init(
                 id: "heartRate",
                 title: "Пульс",
-                value: hrFresh
-                    ? currentHeartRateBPM.map { "\($0) bpm" } ?? "Доступен"
-                    : (isPreparing ? "Ожидание" : "При старте"),
-                sourceLabel: hrFresh ? heartRateSourceLabel : nil,
+                value: heartRateReadiness.value,
+                sourceLabel: heartRateReadiness.sourceLabel,
                 systemImage: "heart.fill",
-                tint: hrFresh ? .green : .orange,
-                isReady: hrFresh
+                tint: heartRateReadiness.isReady ? .green : .orange,
+                isReady: heartRateReadiness.isReady
             )
         ],
         startEnabled: startEnabled,
