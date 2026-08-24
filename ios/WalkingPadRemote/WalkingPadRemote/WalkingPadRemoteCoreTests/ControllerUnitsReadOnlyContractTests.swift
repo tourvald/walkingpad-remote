@@ -26,4 +26,79 @@ final class ControllerUnitsReadOnlyContractTests: XCTestCase {
             }
         }
     }
+
+    func testDebugDiagnosticIsShareableAndDoesNotBecomeControlAuthority() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent(
+            "WalkingPadRemote"
+        )
+        let manager = try String(
+            contentsOf: sourceDirectory.appendingPathComponent("BluetoothManager.swift"),
+            encoding: .utf8
+        )
+        let content = try String(
+            contentsOf: sourceDirectory.appendingPathComponent("ContentView.swift"),
+            encoding: .utf8
+        )
+        let card = try String(
+            contentsOf: sourceDirectory.appendingPathComponent("DebugTrainingLogsCard.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(
+            manager.components(separatedBy: "ControllerUnitsDiagnosticSnapshot").count - 1,
+            2
+        )
+        XCTAssertTrue(content.contains("manager.controllerUnitsDiagnosticSnapshot()"))
+        XCTAssertTrue(card.contains("ShareLink(item: presentation.controllerUnitsDiagnosticReport)"))
+        XCTAssertTrue(card.contains("presentation.controllerUnitsDiagnosticDetailLines"))
+
+        for controlSignature in [
+            "func startTreadmillTestRun()",
+            "private func controllerUnitsGateDecision(",
+            "private func commitNativeHeartRatePreflight(",
+        ] {
+            let body = try functionBody(controlSignature, in: manager)
+            XCTAssertFalse(body.contains("ControllerUnitsDiagnostic"))
+        }
+    }
+
+    func testControllerParamsParserContractRemainsExactAndUnchanged() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let codec = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("WalkingPadRemote/BLETransportCodec.swift"),
+            encoding: .utf8
+        )
+        let parser = try functionBody(
+            "static func parseWalkingPadParams(_ data: Data)",
+            in: codec
+        )
+
+        XCTAssertTrue(parser.contains("data.count == 16"))
+        XCTAssertTrue(parser.contains("data[0] == 0xF8"))
+        XCTAssertTrue(parser.contains("data[1] == 0xA6"))
+        XCTAssertTrue(parser.contains("data[15] == 0xFD"))
+    }
+
+    private func functionBody(_ signature: String, in source: String) throws -> String {
+        guard let signatureRange = source.range(of: signature),
+              let openingBrace = source[signatureRange.upperBound...].firstIndex(of: "{") else {
+            throw NSError(domain: "ControllerUnitsReadOnlyContractTests", code: 1)
+        }
+        var depth = 0
+        var index = openingBrace
+        while index < source.endIndex {
+            switch source[index] {
+            case "{": depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 { return String(source[openingBrace...index]) }
+            default: break
+            }
+            index = source.index(after: index)
+        }
+        throw NSError(domain: "ControllerUnitsReadOnlyContractTests", code: 2)
+    }
 }

@@ -121,6 +121,91 @@ struct ControllerUnitsGateDecision: Equatable {
     let ageSeconds: TimeInterval?
 }
 
+struct ControllerUnitsDiagnosticSnapshot: Equatable {
+    let status: ControllerUnitsTruthStatus
+    let units: ControllerUnits
+    let observedAt: Date?
+    let ageSeconds: TimeInterval?
+    let isFresh: Bool
+    let gateAllowed: Bool
+    let blockReason: ControllerUnitsBlockReason?
+    let evidenceConnectionEpoch: UUID?
+    let currentConnectionEpoch: UUID?
+    let isCurrentConnection: Bool
+    let rawHex: String?
+    let byteCount: Int?
+
+    static func capture(
+        truth: ControllerUnitsTruth,
+        currentConnectionEpoch: UUID?,
+        now: Date,
+        requiresFreshMetricTruth: Bool
+    ) -> ControllerUnitsDiagnosticSnapshot {
+        let decision = ControllerUnitsSafetyPolicy.evaluate(
+            path: .testRun,
+            state: truth,
+            currentConnectionEpoch: currentConnectionEpoch,
+            now: now,
+            requiresFreshMetricTruth: requiresFreshMetricTruth
+        )
+        let isCurrentConnection = currentConnectionEpoch != nil
+            && truth.connectionEpoch == currentConnectionEpoch
+        let currentRawHex = isCurrentConnection ? truth.rawHex : nil
+        let currentObservedAt = isCurrentConnection ? truth.observedAt : nil
+        let age = isCurrentConnection ? truth.age(at: now) : nil
+        let isFresh = isCurrentConnection
+            && truth.status == .valid
+            && (age.map { $0 <= ControllerUnitsSafetyPolicy.freshnessInterval } ?? false)
+        return ControllerUnitsDiagnosticSnapshot(
+            status: isCurrentConnection ? truth.status : .notRead,
+            units: isCurrentConnection ? truth.units : .unknown,
+            observedAt: currentObservedAt,
+            ageSeconds: age,
+            isFresh: isFresh,
+            gateAllowed: decision.allowed,
+            blockReason: decision.blockReason,
+            evidenceConnectionEpoch: truth.connectionEpoch,
+            currentConnectionEpoch: currentConnectionEpoch,
+            isCurrentConnection: isCurrentConnection,
+            rawHex: currentRawHex,
+            byteCount: currentRawHex.flatMap(byteCount),
+        )
+    }
+
+    var reportText: String {
+        let formatter = ISO8601DateFormatter()
+        let observed = observedAt.map(formatter.string(from:)) ?? "unavailable"
+        let age = ageSeconds.map { String(format: "%.3f", $0) } ?? "unavailable"
+        return [
+            "WalkingPad controller units diagnostic",
+            "status: \(status.rawValue)",
+            "units: \(units.rawValue)",
+            "observed_at: \(observed)",
+            "age_s: \(age)",
+            "freshness_limit_s: \(Int(ControllerUnitsSafetyPolicy.freshnessInterval))",
+            "fresh: \(isFresh)",
+            "test_run_gate_allowed: \(gateAllowed)",
+            "block_reason: \(blockReason?.rawValue ?? "none")",
+            "evidence_connection_epoch: \(evidenceConnectionEpoch?.uuidString ?? "unavailable")",
+            "current_connection_epoch: \(currentConnectionEpoch?.uuidString ?? "unavailable")",
+            "current_connection_context: \(isCurrentConnection)",
+            "byte_count: \(byteCount.map(String.init) ?? "unavailable")",
+            "raw_hex: \(rawHex ?? "unavailable")",
+        ].joined(separator: "\n")
+    }
+
+    private static func byteCount(_ rawHex: String) -> Int? {
+        let tokens = rawHex.split(whereSeparator: \.isWhitespace)
+        guard !tokens.isEmpty,
+              tokens.allSatisfy({ token in
+                  token.count == 2 && token.allSatisfy(\.isHexDigit)
+              }) else {
+            return nil
+        }
+        return tokens.count
+    }
+}
+
 enum ControllerUnitsRefreshTrigger: String, Equatable {
     case connectionReady = "connection_ready"
     case gateBlockedAuto = "gate_blocked_auto"
