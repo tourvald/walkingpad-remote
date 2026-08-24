@@ -73,9 +73,21 @@ enum DeferredNativeHealthKitLinkageQueue {
     }
 
     static func next(
-        in pending: [DeferredNativeHealthKitLinkage]
+        in pending: [DeferredNativeHealthKitLinkage],
+        preferredRecoveryAppWorkoutID: UUID? = nil
     ) -> DeferredNativeHealthKitLinkage? {
-        pending.first(where: { $0.healthKitWorkoutID != nil }) ?? pending.first
+        if let preferredRecoveryAppWorkoutID,
+           let preferred = pending.last(where: {
+               $0.recoveryAppWorkoutID == preferredRecoveryAppWorkoutID
+           }) {
+            return preferred
+        }
+        return pending.last(where: {
+            $0.healthKitWorkoutID != nil
+                && (!$0.linksLegacyWorkout || $0.legacyWorkoutID != nil)
+        })
+            ?? pending.last(where: { $0.healthKitWorkoutID != nil })
+            ?? pending.last
     }
 }
 

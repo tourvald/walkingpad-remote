@@ -668,6 +668,72 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         )
     }
 
+    func testActionableExactLinkageIsSelectedAheadOfBaseExactLegacyDebt() {
+        let baseExact = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: nil,
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: true,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil,
+            healthKitWorkoutID: UUID()
+        )
+        let actionableExact = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now.addingTimeInterval(60),
+            finishRequestedAt: now.addingTimeInterval(90),
+            healthKitStoppedAt: now.addingTimeInterval(91),
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: true,
+            legacyWorkoutID: UUID(),
+            recoveryAppWorkoutID: UUID(),
+            healthKitWorkoutID: UUID()
+        )
+
+        XCTAssertEqual(
+            DeferredNativeHealthKitLinkageQueue.next(
+                in: [baseExact, actionableExact]
+            ),
+            actionableExact
+        )
+    }
+
+    func testCurrentPendingProofIsSelectedAheadOfOlderBaseDebt() {
+        let oldBase = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: nil,
+            profileID: nil,
+            telemetrySessionID: nil,
+            linksLegacyWorkout: true,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil,
+            healthKitWorkoutID: nil
+        )
+        let currentWorkoutID = UUID()
+        let currentPending = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now.addingTimeInterval(60),
+            finishRequestedAt: now.addingTimeInterval(90),
+            healthKitStoppedAt: now.addingTimeInterval(91),
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: true,
+            legacyWorkoutID: UUID(),
+            recoveryAppWorkoutID: currentWorkoutID,
+            healthKitWorkoutID: nil
+        )
+
+        XCTAssertEqual(
+            DeferredNativeHealthKitLinkageQueue.next(
+                in: [oldBase, currentPending],
+                preferredRecoveryAppWorkoutID: currentWorkoutID
+            ),
+            currentPending
+        )
+    }
+
     func testLateObservationAfterCancelCannotRegainOwnership() {
         var lifecycle = NativeHeartRateProviderLifecycle()
         lifecycle.bindAttempt(UUID())

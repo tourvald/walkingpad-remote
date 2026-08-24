@@ -195,6 +195,27 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         }
     }
 
+    func testDeferredResolutionPrioritizesCurrentFinishAndBoundsEachRetryPass() throws {
+        let manager = try source("WalkingPadRemote/BluetoothManager.swift")
+        let resolve = try functionBody(
+            "private func resolveDeferredNativeHealthKitLinkageIfPossible(",
+            in: manager
+        )
+
+        assertOrdered([
+            "let candidates = deferredNativeHealthKitLinkages.filter",
+            "!attempted.contains($0)",
+            "preferredRecoveryAppWorkoutID: activeNativeWorkoutRecoveryRecord?",
+            "let attemptedIncludingCurrent = attempted + [linkage]",
+        ], in: resolve)
+        XCTAssertGreaterThanOrEqual(
+            resolve.components(
+                separatedBy: "excluding: attemptedIncludingCurrent"
+            ).count - 1,
+            4
+        )
+    }
+
     func testEveryNonStopMotionEntryPointIsRecoveryGated() throws {
         let manager = try source("WalkingPadRemote/BluetoothManager.swift")
         let sharedGate = try functionBody(
@@ -407,7 +428,7 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
     func testSavedProofIsDurableBeforeRecoveryClearsAndLinkageCannotGateStart() throws {
         let manager = try source("WalkingPadRemote/BluetoothManager.swift")
         let resolve = try functionBody(
-            "private func resolveDeferredNativeHealthKitLinkageIfPossible()",
+            "private func resolveDeferredNativeHealthKitLinkageIfPossible(",
             in: manager
         )
         let complete = try functionBody(
@@ -422,7 +443,7 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
             "let provenLinkage = retainSavedWorkoutProof(",
             "guard let provenLinkage else",
             "completeRecoveredFinishIfProven(linkage: provenLinkage)",
-            "resolveDeferredNativeHealthKitLinkageIfPossible()",
+            "resolveDeferredNativeHealthKitLinkageIfPossible(",
         ], in: resolve)
         XCTAssertTrue(resolve.contains("DeferredNativeHealthKitLinkageQueue.next("))
         assertOrdered([

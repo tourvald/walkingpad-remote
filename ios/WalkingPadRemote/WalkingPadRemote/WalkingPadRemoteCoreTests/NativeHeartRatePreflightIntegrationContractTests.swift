@@ -241,7 +241,7 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
             in: managerSource
         )
         let resolver = try functionBody(
-            "private func resolveDeferredNativeHealthKitLinkageIfPossible()",
+            "private func resolveDeferredNativeHealthKitLinkageIfPossible(",
             in: managerSource
         )
         XCTAssertTrue(finish.contains("iPhoneHealthKitHeartRateProvider.finish"))
