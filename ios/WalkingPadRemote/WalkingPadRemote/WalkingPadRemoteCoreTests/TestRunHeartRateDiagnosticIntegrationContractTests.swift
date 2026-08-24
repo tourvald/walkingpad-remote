@@ -35,7 +35,12 @@ final class TestRunHeartRateDiagnosticIntegrationContractTests: XCTestCase {
         XCTAssertTrue(start.contains("HKWorkoutConfiguration()"))
         XCTAssertTrue(start.contains("provider.prepare("))
         XCTAssertTrue(start.contains("provider.start(at: collectionStartedAt)"))
+        XCTAssertTrue(start.contains("providerIdentity: ObjectIdentifier(provider)"))
+        XCTAssertTrue(start.contains("treadmillTestRunHeartRateProviderOwnership.bind(attempt)"))
+        XCTAssertTrue(receive.contains("ownsTreadmillTestRunHeartRateProvider("))
         XCTAssertTrue(receive.contains("NativeHeartRatePreflightEngine.Observation("))
+        XCTAssertTrue(receive.contains("sourceCallbackObservedAt: observation.sourceCallbackObservedAt"))
+        XCTAssertTrue(receive.contains("observation.providerNativeIdentity?.identifier"))
         XCTAssertTrue(diagnosticSource.contains("observation.isQualifying("))
         XCTAssertTrue(diagnosticSource.contains("HRDomainService.heartRateStreamIsActive("))
         for forbidden in [
@@ -59,7 +64,7 @@ final class TestRunHeartRateDiagnosticIntegrationContractTests: XCTestCase {
             in: managerSource
         )
         let discard = try functionBody(
-            "private func discardTreadmillTestRunHeartRateProvider(expectedRunID: UUID)",
+            "private func discardTreadmillTestRunHeartRateProvider(",
             in: managerSource
         )
 
@@ -69,6 +74,8 @@ final class TestRunHeartRateDiagnosticIntegrationContractTests: XCTestCase {
         XCTAssertTrue(start.contains("!nativeHealthKitWorkoutCommitted"))
         XCTAssertTrue(start.contains("!nativeHealthKitWorkoutFinishInFlight"))
         XCTAssertTrue(discard.contains("provider.discard(at: Date())"))
+        XCTAssertTrue(discard.contains("ownsTreadmillTestRunHeartRateProvider("))
+        XCTAssertTrue(discard.contains("treadmillTestRunHeartRateProviderOwnership.release(expectedAttempt)"))
         for body in [start, finish, discard] {
             XCTAssertFalse(body.contains("provider.finish("))
             XCTAssertFalse(body.contains("persistNativeWorkoutRecoveryRecord"))
@@ -122,8 +129,22 @@ final class TestRunHeartRateDiagnosticIntegrationContractTests: XCTestCase {
         XCTAssertTrue(timeout.contains("timeoutIfNeeded("))
         XCTAssertTrue(timeout.contains("discardTreadmillTestRunHeartRateProvider"))
         XCTAssertTrue(failure.contains("reason: .providerFailure"))
+        XCTAssertTrue(failure.contains("expectedAttempt: expectedAttempt"))
+        XCTAssertTrue(failure.contains("provider: provider"))
         XCTAssertTrue(managerSource.contains("case .appInactive: return .appInactive"))
         XCTAssertTrue(managerSource.contains("case .connectionInvalidated: return .connectionInvalidated"))
+    }
+
+    func testDiagnosticReportModelRetainsRequestedEvidence() {
+        for field in [
+            "latestSourceCallbackObservedAt",
+            "latestProviderNativeIdentity",
+            "displayFreshSampleCount",
+            "rejectionCountsByReason",
+            "firstQualifyingSampleLatencySeconds",
+        ] {
+            XCTAssertTrue(diagnosticSource.contains(field), "Missing diagnostic field: \(field)")
+        }
     }
 
     private func source(_ relativePath: String) throws -> String {

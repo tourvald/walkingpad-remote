@@ -11,7 +11,13 @@ final class TestRunHeartRateDiagnosticServiceTests: XCTestCase {
         service.collectionStarted(expectedRunID: runID, at: startedAt)
 
         service.receive(
-            observation(bpm: 128, measuredAt: startedAt.addingTimeInterval(1)),
+            observation(
+                bpm: 128,
+                measuredAt: startedAt.addingTimeInterval(1),
+                receivedAt: startedAt.addingTimeInterval(1.75),
+                callbackObservedAt: startedAt.addingTimeInterval(1.5),
+                providerNativeIdentity: "provider-sample-1"
+            ),
             expectedRunID: runID,
             now: startedAt.addingTimeInterval(2),
             freshnessLimit: 7
@@ -22,9 +28,16 @@ final class TestRunHeartRateDiagnosticServiceTests: XCTestCase {
             freshnessLimit: 7
         )
         XCTAssertEqual(current.receivedSampleCount, 1)
+        XCTAssertEqual(current.displayFreshSampleCount, 1)
         XCTAssertEqual(current.qualifyingSampleCount, 1)
         XCTAssertEqual(current.rejectedSampleCount, 0)
         XCTAssertEqual(current.latestSource, "native_healthkit")
+        XCTAssertEqual(
+            current.latestSourceCallbackObservedAt,
+            startedAt.addingTimeInterval(1.5)
+        )
+        XCTAssertEqual(current.latestProviderNativeIdentity, "provider-sample-1")
+        XCTAssertEqual(current.firstQualifyingSampleLatencySeconds, 1.75)
         XCTAssertTrue(current.latestStartQualified)
         XCTAssertTrue(current.latestDisplayFresh)
 
@@ -66,6 +79,8 @@ final class TestRunHeartRateDiagnosticServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.latestRejectionReason, .stale)
         XCTAssertEqual(snapshot.receivedSampleCount, 2)
         XCTAssertEqual(snapshot.rejectedSampleCount, 2)
+        XCTAssertEqual(snapshot.rejectionCountsByReason[.receivedBeforeCollection], 1)
+        XCTAssertEqual(snapshot.rejectionCountsByReason[.stale], 1)
         XCTAssertFalse(snapshot.latestStartQualified)
     }
 
@@ -122,16 +137,84 @@ final class TestRunHeartRateDiagnosticServiceTests: XCTestCase {
         )
     }
 
+    func testDelayedObservationFromOldAttemptCannotMutateNewAttempt() {
+        let providerA = FakeDiagnosticProvider()
+        let providerB = FakeDiagnosticProvider()
+        let attemptA = TestRunHeartRateDiagnosticProviderAttempt(
+            runID: runID,
+            generation: 1,
+            providerIdentity: ObjectIdentifier(providerA)
+        )
+        let runB = UUID()
+        let attemptB = TestRunHeartRateDiagnosticProviderAttempt(
+            runID: runB,
+            generation: 2,
+            providerIdentity: ObjectIdentifier(providerB)
+        )
+        var ownership = TestRunHeartRateDiagnosticProviderOwnership()
+        ownership.bind(attemptA)
+        XCTAssertTrue(ownership.release(attemptA))
+        ownership.bind(attemptB)
+
+        var service = TestRunHeartRateDiagnosticService()
+        service.start(runID: runB, at: startedAt)
+        service.collectionStarted(expectedRunID: runB, at: startedAt)
+        service.receive(
+            observation(bpm: 140, measuredAt: startedAt.addingTimeInterval(1)),
+            expectedRunID: attemptA.runID,
+            now: startedAt.addingTimeInterval(1),
+            freshnessLimit: 7
+        )
+
+        XCTAssertFalse(ownership.accepts(attemptA, provider: providerA))
+        XCTAssertEqual(ownership.currentAttempt, attemptB)
+        XCTAssertTrue(ownership.accepts(attemptB, provider: providerB))
+        XCTAssertEqual(
+            service.snapshot(now: startedAt.addingTimeInterval(1), freshnessLimit: 7)
+                .receivedSampleCount,
+            0
+        )
+    }
+
+    func testDelayedFailureFromOldAttemptCannotReleaseNewAttempt() {
+        let providerA = FakeDiagnosticProvider()
+        let providerB = FakeDiagnosticProvider()
+        let attemptA = TestRunHeartRateDiagnosticProviderAttempt(
+            runID: runID,
+            generation: 1,
+            providerIdentity: ObjectIdentifier(providerA)
+        )
+        let attemptB = TestRunHeartRateDiagnosticProviderAttempt(
+            runID: UUID(),
+            generation: 2,
+            providerIdentity: ObjectIdentifier(providerB)
+        )
+        var ownership = TestRunHeartRateDiagnosticProviderOwnership()
+        ownership.bind(attemptB)
+
+        XCTAssertFalse(ownership.release(attemptA))
+        XCTAssertEqual(ownership.currentAttempt, attemptB)
+        XCTAssertTrue(ownership.accepts(attemptB, provider: providerB))
+    }
+
     private func observation(
         bpm: Int,
         measuredAt: Date,
-        receivedAt: Date? = nil
-    ) -> NativeHeartRatePreflightEngine.Observation {
-        NativeHeartRatePreflightEngine.Observation(
-            source: .nativeHealthKit,
-            beatsPerMinute: bpm,
-            measuredAt: measuredAt,
-            receivedAt: receivedAt ?? measuredAt
+        receivedAt: Date? = nil,
+        callbackObservedAt: Date? = nil,
+        providerNativeIdentity: String? = nil
+    ) -> TestRunHeartRateDiagnosticService.Sample {
+        TestRunHeartRateDiagnosticService.Sample(
+            qualificationObservation: NativeHeartRatePreflightEngine.Observation(
+                source: .nativeHealthKit,
+                beatsPerMinute: bpm,
+                measuredAt: measuredAt,
+                receivedAt: receivedAt ?? measuredAt
+            ),
+            sourceCallbackObservedAt: callbackObservedAt,
+            providerNativeIdentity: providerNativeIdentity
         )
     }
 }
+
+private final class FakeDiagnosticProvider {}

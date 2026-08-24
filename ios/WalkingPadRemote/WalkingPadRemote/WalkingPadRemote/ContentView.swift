@@ -4399,7 +4399,12 @@ private struct DebugView: View {
                 value: "\(snapshot.qualifyingSampleCount) / \(snapshot.rejectedSampleCount)",
                 tint: .blue
             ),
-            .init(id: "hr_probe_total", title: "Received", value: "\(snapshot.receivedSampleCount)", tint: .secondary),
+            .init(
+                id: "hr_probe_fresh_total",
+                title: "Fresh / total",
+                value: "\(snapshot.displayFreshSampleCount) / \(snapshot.receivedSampleCount)",
+                tint: .secondary
+            ),
         ]
     }
 
@@ -4408,15 +4413,22 @@ private struct DebugView: View {
     ) -> [String] {
         guard snapshot.runID != nil else { return [] }
         let age = snapshot.latestAgeSeconds.map { String(format: "%.1f s", $0) } ?? "—"
+        let qualifyingLatency = snapshot.firstQualifyingSampleLatencySeconds.map {
+            String(format: "%.3f s", $0)
+        } ?? "—"
         return [
             "started_at: \(testRunHeartRateDiagnosticDate(snapshot.startedAt))",
             "collection_started_at: \(testRunHeartRateDiagnosticDate(snapshot.collectionStartedAt))",
             "first_sample_received_at: \(testRunHeartRateDiagnosticDate(snapshot.firstSampleReceivedAt))",
+            "first_qualifying_latency_from_acquisition: \(qualifyingLatency)",
             "latest_measured_at: \(testRunHeartRateDiagnosticDate(snapshot.latestMeasuredAt))",
+            "latest_callback_observed_at: \(testRunHeartRateDiagnosticDate(snapshot.latestSourceCallbackObservedAt))",
             "latest_received_at: \(testRunHeartRateDiagnosticDate(snapshot.latestReceivedAt))",
             "latest_source: \(snapshot.latestSource ?? "—")",
+            "latest_provider_native_identity: \(snapshot.latestProviderNativeIdentity ?? "unavailable")",
             "latest_age: \(age)",
             "latest_rejection: \(snapshot.latestRejectionReason?.rawValue ?? "—")",
+            "rejections_by_reason: \(testRunHeartRateDiagnosticRejectionSummary(snapshot))",
         ]
     }
 
@@ -4434,11 +4446,20 @@ private struct DebugView: View {
             "latest_display_fresh: \(snapshot.latestDisplayFresh)",
             "latest_start_qualified: \(snapshot.latestStartQualified)",
             "samples_received: \(snapshot.receivedSampleCount)",
+            "samples_display_fresh: \(snapshot.displayFreshSampleCount)",
             "samples_qualifying: \(snapshot.qualifyingSampleCount)",
             "samples_rejected: \(snapshot.rejectedSampleCount)",
             "latest_rejection: \(snapshot.latestRejectionReason?.rawValue ?? "—")",
         ] + testRunHeartRateDiagnosticDetailLines(snapshot)
         return lines.joined(separator: "\n")
+    }
+
+    private func testRunHeartRateDiagnosticRejectionSummary(
+        _ snapshot: TestRunHeartRateDiagnosticService.Snapshot
+    ) -> String {
+        TestRunHeartRateDiagnosticService.RejectionReason.allCases.map { reason in
+            "\(reason.rawValue)=\(snapshot.rejectionCountsByReason[reason, default: 0])"
+        }.joined(separator: ",")
     }
 
     private func testRunHeartRateDiagnosticDate(_ date: Date?) -> String {
