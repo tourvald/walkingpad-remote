@@ -97,10 +97,16 @@ enum BLETransportCodec {
     }
 
     static func parseWalkingPadParams(_ data: Data) -> WalkingPadParams? {
-        guard data.count == 16,
-              data[0] == 0xF8,
+        switch data.count {
+        case 16, 20:
+            break
+        default:
+            return nil
+        }
+
+        guard data[0] == 0xF8,
               data[1] == 0xA6,
-              data[15] == 0xFD else {
+              data[data.count - 1] == 0xFD else {
             return nil
         }
 

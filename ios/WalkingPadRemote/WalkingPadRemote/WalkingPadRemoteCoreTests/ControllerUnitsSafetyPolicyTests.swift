@@ -14,6 +14,45 @@ final class ControllerUnitsSafetyPolicyTests: XCTestCase {
         }
     }
 
+    func testPhysicalTwentyByteMetricResponseAllowsBothCoveredAutomatedPaths() throws {
+        let frame = Data([
+            0xF8, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x08, 0x00,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0xFD,
+        ])
+        let params = try XCTUnwrap(BLETransportCodec.parseWalkingPadParams(frame))
+        var tracker = ControllerUnitsTruthTracker()
+        tracker.beginConnection(epoch: epoch)
+        tracker.record(params, for: epoch, at: now)
+
+        for path in ControllerAutomatedMotionPath.allCases {
+            let decision = evaluate(path: path, state: tracker.state)
+            XCTAssertTrue(decision.allowed, "Expected physical metric evidence to allow \(path.rawValue)")
+            XCTAssertNil(decision.blockReason)
+        }
+    }
+
+    func testTwentyByteUnknownAndInvalidChecksumResponsesFailClosedForBothPaths() throws {
+        let unknownBytes = [UInt8](physicalFrame(unit: 2))
+        var invalidChecksumBytes = [UInt8](physicalFrame(unit: 0))
+        invalidChecksumBytes[18] ^= 0x01
+
+        for (frame, expectedReason) in [
+            (Data(unknownBytes), ControllerUnitsBlockReason.unknown),
+            (Data(invalidChecksumBytes), ControllerUnitsBlockReason.invalidChecksum),
+        ] {
+            let params = try XCTUnwrap(BLETransportCodec.parseWalkingPadParams(frame))
+            var tracker = ControllerUnitsTruthTracker()
+            tracker.beginConnection(epoch: epoch)
+            tracker.record(params, for: epoch, at: now)
+
+            for path in ControllerAutomatedMotionPath.allCases {
+                let decision = evaluate(path: path, state: tracker.state)
+                XCTAssertFalse(decision.allowed)
+                XCTAssertEqual(decision.blockReason, expectedReason)
+            }
+        }
+    }
+
     func testFreshImperialBlocksBothCoveredAutomatedPaths() {
         for path in ControllerAutomatedMotionPath.allCases {
             let decision = evaluate(path: path, state: truth(units: .imperial))
@@ -408,5 +447,14 @@ final class ControllerUnitsSafetyPolicyTests: XCTestCase {
             checksumOk: true,
             rawHex: "F8 A6 ... FD"
         )
+    }
+
+    private func physicalFrame(unit: UInt8) -> Data {
+        var bytes: [UInt8] = [
+            0xF8, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78, 0x08, 0x00,
+            0x02, 0x00, 0x00, unit, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFD,
+        ]
+        bytes[18] = UInt8(bytes[1..<18].reduce(UInt16(0)) { ($0 + UInt16($1)) & 0xFF })
+        return Data(bytes)
     }
 }

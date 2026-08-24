@@ -63,7 +63,7 @@ final class ControllerUnitsReadOnlyContractTests: XCTestCase {
         }
     }
 
-    func testControllerParamsParserContractRemainsExactAndUnchanged() throws {
+    func testControllerParamsParserContractAcceptsOnlyProvenShapes() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let codec = try String(
             contentsOf: testsDirectory
@@ -76,10 +76,12 @@ final class ControllerUnitsReadOnlyContractTests: XCTestCase {
             in: codec
         )
 
-        XCTAssertTrue(parser.contains("data.count == 16"))
+        XCTAssertTrue(parser.contains("case 16, 20:"))
+        XCTAssertTrue(parser.contains("default:\n            return nil"))
         XCTAssertTrue(parser.contains("data[0] == 0xF8"))
         XCTAssertTrue(parser.contains("data[1] == 0xA6"))
-        XCTAssertTrue(parser.contains("data[15] == 0xFD"))
+        XCTAssertTrue(parser.contains("data[data.count - 1] == 0xFD"))
+        XCTAssertTrue(parser.contains("rawControllerUnit: data[13]"))
     }
 
     private func functionBody(_ signature: String, in source: String) throws -> String {
