@@ -1083,13 +1083,19 @@ private struct TrainingReadinessStrip: View {
     @ViewBuilder
     private var readinessItems: some View {
         ForEach(items) { item in
-            let chip = readinessChip(item)
-            if item.id == "treadmill", treadmillInteractive {
-                Button(action: onTreadmillTap) { chip }
-                    .buttonStyle(.plain)
-            } else {
-                chip
-            }
+            readinessItem(item)
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func readinessItem(_ item: TrainingHubPresentation.Readiness) -> some View {
+        let chip = readinessChip(item)
+        if item.id == "treadmill", treadmillInteractive {
+            Button(action: onTreadmillTap) { chip }
+                .buttonStyle(.plain)
+        } else {
+            chip
         }
     }
 
