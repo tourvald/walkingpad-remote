@@ -359,6 +359,68 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
     }
 
+    func testTrainingReadinessStripKeepsEqualOuterWidthsAndFallback() throws {
+        let strip = try functionBody(
+            "private struct TrainingReadinessStrip: View",
+            in: contentViewSource
+        )
+        let body = try functionBody("var body: some View", in: strip)
+        let readinessItems = try functionBody(
+            "private var readinessItems: some View",
+            in: strip
+        )
+        let readinessItem = try functionBody(
+            "private func readinessItem(",
+            in: strip
+        )
+        let readinessChip = try functionBody(
+            "private func readinessChip(",
+            in: strip
+        )
+        let previewFixtures = try functionBody(
+            "private func trainingHubPreviewPresentation(named name: String)",
+            in: contentViewSource
+        )
+
+        XCTAssertTrue(body.contains("ViewThatFits(in: .horizontal)"))
+        assertOrdered(
+            [
+                "HStack(spacing: 8) { readinessItems }",
+                "VStack(spacing: 6) { readinessItems }",
+            ],
+            in: body
+        )
+        assertOrdered(
+            [
+                "ForEach(items)",
+                "readinessItem(item)",
+                ".frame(maxWidth: .infinity)",
+            ],
+            in: readinessItems
+        )
+        XCTAssertFalse(readinessItems.contains("Button("))
+
+        XCTAssertTrue(
+            readinessItem.contains("if item.id == \"treadmill\", treadmillInteractive")
+        )
+        XCTAssertTrue(readinessItem.contains("Button(action: onTreadmillTap) { chip }"))
+        XCTAssertTrue(readinessItem.contains(".buttonStyle(.plain)"))
+        XCTAssertTrue(readinessItem.contains("else {\n            chip"))
+        XCTAssertTrue(
+            readinessChip.contains(".frame(maxWidth: .infinity, alignment: .leading)")
+        )
+
+        XCTAssertTrue(previewFixtures.contains("treadmillReady: Bool = true"))
+        XCTAssertTrue(previewFixtures.contains("hrReady: Bool = true"))
+        XCTAssertTrue(previewFixtures.contains("bpm: Int? = 138"))
+        XCTAssertTrue(previewFixtures.contains("return hrControl(source: \"Apple Watch\")"))
+        XCTAssertTrue(
+            previewFixtures.contains(
+                "return hrControl(hrReady: false, bpm: nil, startEnabled: false)"
+            )
+        )
+    }
+
     func testTrainingTreadmillUIPublicationCannotBecomeFactualTruth() throws {
         let activePresentation = try functionBody(
             "private func makeProductionActiveWorkoutPresentation(",
