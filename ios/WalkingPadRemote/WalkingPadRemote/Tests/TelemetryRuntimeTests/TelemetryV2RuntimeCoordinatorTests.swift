@@ -893,7 +893,10 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         enabled.endSession(reason: "enabled-complete")
         try await eventually { await enabledPersistence.finalizations.count == 1 }
 
-        let backpressuredPersistence = RuntimePersistence()
+        let backpressuredFinalized = expectation(description: "Backpressured session finalized")
+        let backpressuredPersistence = RuntimePersistence {
+            backpressuredFinalized.fulfill()
+        }
         let factoryGate = DispatchSemaphore(value: 0)
         let backpressured = TelemetryV2RuntimeCoordinator {
             factoryGate.wait()
@@ -936,7 +939,9 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(backpressuredOutput, expectedOutput)
 
         factoryGate.signal()
-        try await eventually { await backpressuredPersistence.finalizations.count == 1 }
+        await fulfillment(of: [backpressuredFinalized], timeout: 5)
+        let backpressuredFinalizationCount = await backpressuredPersistence.finalizations.count
+        XCTAssertEqual(backpressuredFinalizationCount, 1)
         if case .incomplete = backpressured.status {
             // Recorder loss is visible only in telemetry state.
         } else {
@@ -1403,6 +1408,7 @@ private actor RuntimePersistence:
     private let suspendAnalysis: Bool
     private let suspendMigration: Bool
     private let finalizeFailure: Bool
+    private let finalizationDidPersist: @Sendable () -> Void
     private let migrationReport: LegacyTelemetryMigrationReport
     private var beginContinuation: CheckedContinuation<Void, Never>?
     private var finalizeContinuation: CheckedContinuation<Void, Never>?
@@ -1419,6 +1425,7 @@ private actor RuntimePersistence:
         suspendAnalysis: Bool = false,
         suspendMigration: Bool = false,
         finalizeFailure: Bool = false,
+        finalizationDidPersist: @escaping @Sendable () -> Void = {},
         migrationReport: LegacyTelemetryMigrationReport = LegacyTelemetryMigrationReport(
             completion: .completed,
             completedSourceCount: 0,
@@ -1433,6 +1440,7 @@ private actor RuntimePersistence:
         self.suspendAnalysis = suspendAnalysis
         self.suspendMigration = suspendMigration
         self.finalizeFailure = finalizeFailure
+        self.finalizationDidPersist = finalizationDidPersist
         self.migrationReport = migrationReport
     }
 
@@ -1458,6 +1466,7 @@ private actor RuntimePersistence:
             throw TelemetryPersistenceOperationError.terminal(code: "test-finalize")
         }
         finalizations.append(finalization)
+        finalizationDidPersist()
     }
 
     func fetchWorkoutHistoryPage(
