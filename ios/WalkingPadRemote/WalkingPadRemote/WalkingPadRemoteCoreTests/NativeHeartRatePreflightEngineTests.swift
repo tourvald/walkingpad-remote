@@ -468,18 +468,26 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         let linkageA = DeferredNativeHealthKitLinkage(
             acquisitionStartedAt: now,
             finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: nil,
             profileID: profileA,
             telemetrySessionID: telemetrySessionA,
-            linksLegacyWorkout: true
+            linksLegacyWorkout: true,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil,
+            healthKitWorkoutID: nil
         )
         let profileB = UUID()
         let telemetrySessionB = UUID()
         let linkageB = DeferredNativeHealthKitLinkage(
             acquisitionStartedAt: now.addingTimeInterval(60),
             finishRequestedAt: now.addingTimeInterval(90),
+            healthKitStoppedAt: nil,
             profileID: profileB,
             telemetrySessionID: telemetrySessionB,
-            linksLegacyWorkout: true
+            linksLegacyWorkout: true,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil,
+            healthKitWorkoutID: nil
         )
         var pending = [linkageA, linkageB]
 
@@ -490,6 +498,240 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         XCTAssertEqual(pending[0].telemetrySessionID, telemetrySessionB)
         XCTAssertNotEqual(pending[0].profileID, profileA)
         XCTAssertNotEqual(pending[0].telemetrySessionID, telemetrySessionA)
+    }
+
+    func testSavedWorkoutProofFreezesExactUUIDWithoutLosingDeferredIdentity() {
+        let recoveryAppWorkoutID = UUID()
+        let legacyWorkoutID = UUID()
+        let telemetrySessionID = UUID()
+        let pending = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: now.addingTimeInterval(31),
+            profileID: UUID(),
+            telemetrySessionID: telemetrySessionID,
+            linksLegacyWorkout: true,
+            legacyWorkoutID: legacyWorkoutID,
+            recoveryAppWorkoutID: recoveryAppWorkoutID,
+            healthKitWorkoutID: nil
+        )
+        let healthKitWorkoutID = UUID()
+
+        let proven = pending.provingSavedWorkout(id: healthKitWorkoutID)
+
+        XCTAssertEqual(proven.healthKitWorkoutID, healthKitWorkoutID)
+        XCTAssertEqual(proven.recoveryAppWorkoutID, recoveryAppWorkoutID)
+        XCTAssertEqual(proven.legacyWorkoutID, legacyWorkoutID)
+        XCTAssertEqual(proven.telemetrySessionID, telemetrySessionID)
+        XCTAssertEqual(proven.acquisitionStartedAt, pending.acquisitionStartedAt)
+        XCTAssertEqual(proven.finishRequestedAt, pending.finishRequestedAt)
+        XCTAssertEqual(proven.healthKitStoppedAt, pending.healthKitStoppedAt)
+    }
+
+    func testDeferredLinkageWithoutExactWorkoutIDStillDecodesForProofQuery() throws {
+        let linkage = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: now.addingTimeInterval(31),
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: false,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: UUID(),
+            healthKitWorkoutID: UUID()
+        )
+        let encoded = try JSONEncoder().encode(linkage)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "healthKitWorkoutID")
+
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(
+            DeferredNativeHealthKitLinkage.self,
+            from: legacyData
+        )
+
+        XCTAssertNil(decoded.healthKitWorkoutID)
+        XCTAssertEqual(decoded.recoveryAppWorkoutID, linkage.recoveryAppWorkoutID)
+        XCTAssertEqual(decoded.telemetrySessionID, linkage.telemetrySessionID)
+    }
+
+    func testBaseShapeDeferredLinkageUpgradesInPlaceWithoutRepeatedQuery() throws {
+        let current = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: now.addingTimeInterval(31),
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: true,
+            legacyWorkoutID: UUID(),
+            recoveryAppWorkoutID: UUID(),
+            healthKitWorkoutID: nil
+        )
+        let encoded = try JSONEncoder().encode(current)
+        var baseObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        for key in [
+            "healthKitStoppedAt", "legacyWorkoutID",
+            "recoveryAppWorkoutID", "healthKitWorkoutID",
+        ] {
+            baseObject.removeValue(forKey: key)
+        }
+        let baseData = try JSONSerialization.data(withJSONObject: baseObject)
+        let baseShape = try JSONDecoder().decode(
+            DeferredNativeHealthKitLinkage.self,
+            from: baseData
+        )
+        let workoutID = UUID()
+
+        let updated = try XCTUnwrap(
+            DeferredNativeHealthKitLinkageQueue.provingSavedWorkout(
+                id: workoutID,
+                replacing: baseShape,
+                in: [baseShape]
+            )
+        )
+
+        XCTAssertEqual(updated.count, 1)
+        XCTAssertEqual(updated[0].healthKitWorkoutID, workoutID)
+        XCTAssertNil(updated[0].recoveryAppWorkoutID)
+        XCTAssertEqual(
+            DeferredNativeHealthKitLinkageQueue.next(in: updated),
+            updated[0]
+        )
+    }
+
+    func testExactDeferredProofCannotDowngradeOrChangeUUID() throws {
+        let recoveryAppWorkoutID = UUID()
+        let pending = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: now.addingTimeInterval(31),
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: false,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: recoveryAppWorkoutID,
+            healthKitWorkoutID: nil
+        )
+        let workoutA = UUID()
+        let exactA = pending.provingSavedWorkout(id: workoutA)
+        let workoutB = UUID()
+
+        XCTAssertEqual(
+            DeferredNativeHealthKitLinkageQueue.retaining(
+                pending,
+                in: [exactA]
+            ),
+            [exactA]
+        )
+        XCTAssertNil(DeferredNativeHealthKitLinkageQueue.retaining(
+            pending.provingSavedWorkout(id: workoutB),
+            in: [exactA]
+        ))
+        XCTAssertNil(DeferredNativeHealthKitLinkageQueue.provingSavedWorkout(
+            id: workoutB,
+            replacing: exactA,
+            in: [exactA]
+        ))
+    }
+
+    func testExactDeferredLinkageIsSelectedAheadOfUnresolvedLegacyRow() {
+        let legacy = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: nil,
+            profileID: nil,
+            telemetrySessionID: nil,
+            linksLegacyWorkout: false,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil,
+            healthKitWorkoutID: nil
+        )
+        let exact = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now.addingTimeInterval(60),
+            finishRequestedAt: now.addingTimeInterval(90),
+            healthKitStoppedAt: now.addingTimeInterval(91),
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: false,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: UUID(),
+            healthKitWorkoutID: UUID()
+        )
+
+        XCTAssertEqual(
+            DeferredNativeHealthKitLinkageQueue.next(in: [legacy, exact]),
+            exact
+        )
+    }
+
+    func testActionableExactLinkageIsSelectedAheadOfBaseExactLegacyDebt() {
+        let baseExact = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: nil,
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: true,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil,
+            healthKitWorkoutID: UUID()
+        )
+        let actionableExact = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now.addingTimeInterval(60),
+            finishRequestedAt: now.addingTimeInterval(90),
+            healthKitStoppedAt: now.addingTimeInterval(91),
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: true,
+            legacyWorkoutID: UUID(),
+            recoveryAppWorkoutID: UUID(),
+            healthKitWorkoutID: UUID()
+        )
+
+        XCTAssertEqual(
+            DeferredNativeHealthKitLinkageQueue.next(
+                in: [baseExact, actionableExact]
+            ),
+            actionableExact
+        )
+    }
+
+    func testCurrentPendingProofIsSelectedAheadOfOlderBaseDebt() {
+        let oldBase = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now,
+            finishRequestedAt: now.addingTimeInterval(30),
+            healthKitStoppedAt: nil,
+            profileID: nil,
+            telemetrySessionID: nil,
+            linksLegacyWorkout: true,
+            legacyWorkoutID: nil,
+            recoveryAppWorkoutID: nil,
+            healthKitWorkoutID: nil
+        )
+        let currentWorkoutID = UUID()
+        let currentPending = DeferredNativeHealthKitLinkage(
+            acquisitionStartedAt: now.addingTimeInterval(60),
+            finishRequestedAt: now.addingTimeInterval(90),
+            healthKitStoppedAt: now.addingTimeInterval(91),
+            profileID: UUID(),
+            telemetrySessionID: UUID(),
+            linksLegacyWorkout: true,
+            legacyWorkoutID: UUID(),
+            recoveryAppWorkoutID: currentWorkoutID,
+            healthKitWorkoutID: nil
+        )
+
+        XCTAssertEqual(
+            DeferredNativeHealthKitLinkageQueue.next(
+                in: [oldBase, currentPending],
+                preferredRecoveryAppWorkoutID: currentWorkoutID
+            ),
+            currentPending
+        )
     }
 
     func testLateObservationAfterCancelCannotRegainOwnership() {

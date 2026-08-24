@@ -235,22 +235,25 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
         XCTAssertFalse(managerSource.contains("Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in\n            self?.warmNativeHeartRateProviderIfPossible"))
     }
 
-    func testFinishUsesDirectUUIDAndPersistsUnavailableDeferredLinkageWithoutRetry() throws {
+    func testFinishPersistsExactUUIDBeforeRetryableDeferredLinkage() throws {
         let finish = try functionBody(
             "private func finishNativeHealthKitWorkoutIfNeeded()",
             in: managerSource
         )
         let resolver = try functionBody(
-            "private func resolveDeferredNativeHealthKitLinkageIfPossible()",
+            "private func resolveDeferredNativeHealthKitLinkageIfPossible(",
             in: managerSource
         )
         XCTAssertTrue(finish.contains("iPhoneHealthKitHeartRateProvider.finish"))
         XCTAssertTrue(finish.contains("case .saved(let workout)"))
-        XCTAssertTrue(finish.contains("linkNativeHealthKitWorkout"))
+        XCTAssertTrue(finish.contains("healthKitWorkoutID: workout.uuid"))
+        XCTAssertTrue(finish.contains("terminalSaveProven = true"))
         XCTAssertTrue(finish.contains("case .savedWorkoutUnavailable"))
         XCTAssertTrue(finish.contains("retainDeferredNativeHealthKitLinkage"))
         XCTAssertTrue(resolver.contains("HKSampleQuery"))
         XCTAssertTrue(resolver.contains("linkDeferredNativeHealthKitWorkout"))
+        XCTAssertTrue(resolver.contains("linkage.healthKitWorkoutID"))
+        XCTAssertTrue(resolver.contains("completeRecoveredFinishIfProven"))
         XCTAssertFalse(resolver.contains(".finish("))
         XCTAssertTrue(managerSource.contains("deferred_native_healthkit_linkage_v1"))
     }
@@ -264,14 +267,25 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
             "private func linkDeferredNativeHealthKitWorkout(",
             in: managerSource
         )
+        let exactLegacy = try functionBody(
+            "private func persistExactLegacyWorkoutLink(",
+            in: managerSource
+        )
 
         XCTAssertFalse(clear.contains("nativeHealthKitAcquisitionStartedAt"))
-        XCTAssertTrue(link.contains("linkage.profileID"))
         XCTAssertTrue(link.contains("linkage.telemetrySessionID"))
-        XCTAssertTrue(link.contains("loadLegacyShadowWorkoutHistory(profileID: profileID)"))
-        XCTAssertTrue(link.contains("saveLegacyShadowWorkoutHistory(entries, profileID: profileID)"))
+        XCTAssertTrue(link.contains("NativeWorkoutRequiredLinkagePolicy.complete("))
+        XCTAssertTrue(exactLegacy.contains("linkage.profileID"))
+        XCTAssertTrue(exactLegacy.contains(
+            "loadLegacyShadowWorkoutHistory(profileID: profileID)"
+        ))
+        XCTAssertTrue(exactLegacy.contains(
+            "saveLegacyShadowWorkoutHistory(entries, profileID: profileID)"
+        ))
         XCTAssertFalse(link.contains("pendingHealthkit"))
         XCTAssertFalse(link.contains("nativeHealthKitAcquisitionStartedAt"))
+        XCTAssertFalse(exactLegacy.contains("pendingHealthkit"))
+        XCTAssertFalse(exactLegacy.contains("nativeHealthKitAcquisitionStartedAt"))
     }
 
     func testTelemetryIdentityIsNativeAndCannotGateMotion() throws {

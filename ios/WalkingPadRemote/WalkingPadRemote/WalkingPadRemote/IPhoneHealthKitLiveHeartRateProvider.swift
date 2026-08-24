@@ -80,6 +80,22 @@ final class IPhoneHealthKitLiveHeartRateProvider {
         driver.updateCurrentRuntimeFailureContext(context)
     }
 
+    func recover(
+        _ recoveredSession: HKWorkoutSession,
+        failureContext: IPhoneHealthKitRuntimeFailureContext
+    ) throws -> IPhoneHealthKitRecoveredWorkoutLifecycle {
+        runtimeFailureContext = failureContext
+        driver.setNextRuntimeFailureContext(failureContext)
+        do {
+            return try core.recover(recoveredSession)
+        } catch {
+            if runtimeFailureContext == failureContext {
+                runtimeFailureContext = nil
+            }
+            throw error
+        }
+    }
+
     func start(at date: Date = Date()) async throws {
         try await core.start(at: date)
     }
@@ -93,7 +109,9 @@ final class IPhoneHealthKitLiveHeartRateProvider {
     }
 
     func finish(
-        at date: Date = Date()
+        at date: Date = Date(),
+        recoveredStoppedAt: Date? = nil,
+        persistStoppedAt: (Date) -> Bool = { _ in true }
     ) async throws -> IPhoneHealthKitWorkoutFinishOutcome<HKWorkout> {
         let finishedContext = runtimeFailureContext
         defer {
@@ -101,7 +119,11 @@ final class IPhoneHealthKitLiveHeartRateProvider {
                 runtimeFailureContext = nil
             }
         }
-        return try await core.finish(at: date)
+        return try await core.finish(
+            at: date,
+            recoveredStoppedAt: recoveredStoppedAt,
+            persistStoppedAt: persistStoppedAt
+        )
     }
 }
 
@@ -109,6 +131,7 @@ final class IPhoneHealthKitLiveHeartRateProvider {
 private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkoutLifecycleDriving {
     typealias Configuration = HKWorkoutConfiguration
     typealias Workout = HKWorkout
+    typealias RecoveredWorkout = HKWorkoutSession
 
     var onHeartRateSample: ((IPhoneHealthKitHeartRateSample) -> Void)?
     var onRuntimeFailure: ((IPhoneHealthKitRuntimeFailureContext) -> Void)?
@@ -184,17 +207,7 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
             configuration: configuration
         )
         let builder = session.associatedWorkoutBuilder()
-        let dataSource = HKLiveWorkoutDataSource(
-            healthStore: healthStore,
-            workoutConfiguration: configuration
-        )
-        if let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) {
-            for quantityType in dataSource.typesToCollect where quantityType != heartRateType {
-                dataSource.disableCollection(for: quantityType)
-            }
-            dataSource.enableCollection(for: heartRateType, predicate: nil)
-        }
-        builder.dataSource = dataSource
+        configureDataSource(for: configuration, builder: builder)
         session.delegate = self
         builder.delegate = self
         self.session = session
@@ -203,6 +216,54 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
             retainRuntimeFailureContext(nextRuntimeFailureContext, for: session)
             self.nextRuntimeFailureContext = nil
         }
+    }
+
+    func recoverWorkout(
+        _ recoveredSession: HKWorkoutSession
+    ) throws -> IPhoneHealthKitRecoveredWorkoutLifecycle {
+        guard session == nil, builder == nil else {
+            throw HealthKitLiveWorkoutDriverError.workoutAlreadyOwned
+        }
+        guard recoveredSession.state != .ended else {
+            throw HealthKitLiveWorkoutDriverError.invalidRecoveredWorkoutState
+        }
+
+        let builder = recoveredSession.associatedWorkoutBuilder()
+        configureDataSource(
+            for: recoveredSession.workoutConfiguration,
+            builder: builder
+        )
+        recoveredSession.delegate = self
+        builder.delegate = self
+        session = recoveredSession
+        self.builder = builder
+        if let nextRuntimeFailureContext {
+            retainRuntimeFailureContext(nextRuntimeFailureContext, for: recoveredSession)
+            self.nextRuntimeFailureContext = nil
+        }
+
+        let activityStarted: Bool
+        let collectionStarted: Bool
+        switch recoveredSession.state {
+        case .running, .paused:
+            activityStarted = true
+            collectionStarted = true
+        case .stopped:
+            activityStarted = false
+            collectionStarted = true
+        case .notStarted, .prepared:
+            activityStarted = false
+            collectionStarted = false
+        case .ended:
+            throw HealthKitLiveWorkoutDriverError.invalidRecoveredWorkoutState
+        @unknown default:
+            throw HealthKitLiveWorkoutDriverError.invalidRecoveredWorkoutState
+        }
+        return IPhoneHealthKitRecoveredWorkoutLifecycle(
+            activityStarted: activityStarted,
+            collectionStarted: collectionStarted,
+            startedAt: recoveredSession.startDate
+        )
     }
 
     func prepare() async throws {
@@ -238,7 +299,10 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
     }
 
     func stopActivity(at date: Date) {
-        session?.stopActivity(with: date)
+        guard let session else { return }
+        if session.state == .running || session.state == .paused {
+            session.stopActivity(with: date)
+        }
     }
 
     func waitForStoppedTransition() async throws -> Date {
@@ -337,6 +401,23 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
                 throwing: error ?? HealthKitLiveWorkoutDriverError.operationFailed
             )
         }
+    }
+
+    private func configureDataSource(
+        for configuration: HKWorkoutConfiguration,
+        builder: HKLiveWorkoutBuilder
+    ) {
+        let dataSource = HKLiveWorkoutDataSource(
+            healthStore: healthStore,
+            workoutConfiguration: configuration
+        )
+        if let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) {
+            for quantityType in dataSource.typesToCollect where quantityType != heartRateType {
+                dataSource.disableCollection(for: quantityType)
+            }
+            dataSource.enableCollection(for: heartRateType, predicate: nil)
+        }
+        builder.dataSource = dataSource
     }
 
     private func retainRuntimeFailureContext(
@@ -439,6 +520,7 @@ extension HealthKitLiveWorkoutDriver: HKWorkoutSessionDelegate, HKLiveWorkoutBui
 private enum HealthKitLiveWorkoutDriverError: LocalizedError {
     case authorizationNotGranted
     case healthDataUnavailable
+    case invalidRecoveredWorkoutState
     case missingWorkout
     case operationCancelled
     case operationFailed
@@ -450,6 +532,8 @@ private enum HealthKitLiveWorkoutDriverError: LocalizedError {
             "HealthKit workout access was not granted."
         case .healthDataUnavailable:
             "HealthKit data is unavailable on this device."
+        case .invalidRecoveredWorkoutState:
+            "The recovered HealthKit workout is no longer active."
         case .missingWorkout:
             "The HealthKit workout lifecycle is not initialized."
         case .operationCancelled:
