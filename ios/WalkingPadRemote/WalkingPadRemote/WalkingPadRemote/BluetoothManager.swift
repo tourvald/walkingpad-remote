@@ -7287,20 +7287,35 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ linkage: DeferredNativeHealthKitLinkage
     ) -> Bool {
         loadDeferredNativeHealthKitLinkagesIfNeeded()
-        if let recoveryAppWorkoutID = linkage.recoveryAppWorkoutID,
-           let index = deferredNativeHealthKitLinkages.firstIndex(where: {
-               $0.recoveryAppWorkoutID == recoveryAppWorkoutID
-           }) {
-            let existing = deferredNativeHealthKitLinkages[index]
-            if existing.healthKitWorkoutID != nil,
-               linkage.healthKitWorkoutID == nil {
-                return true
-            }
-            deferredNativeHealthKitLinkages[index] = linkage
-        } else if !deferredNativeHealthKitLinkages.contains(linkage) {
-            deferredNativeHealthKitLinkages.append(linkage)
+        guard let updated = DeferredNativeHealthKitLinkageQueue.retaining(
+            linkage,
+            in: deferredNativeHealthKitLinkages
+        ) else { return false }
+        let previous = deferredNativeHealthKitLinkages
+        deferredNativeHealthKitLinkages = updated
+        guard persistDeferredNativeHealthKitLinkages() else {
+            deferredNativeHealthKitLinkages = previous
+            return false
         }
-        return persistDeferredNativeHealthKitLinkages()
+        return true
+    }
+
+    private func retainSavedWorkoutProof(
+        id: UUID,
+        replacing source: DeferredNativeHealthKitLinkage
+    ) -> DeferredNativeHealthKitLinkage? {
+        guard let updated = DeferredNativeHealthKitLinkageQueue.provingSavedWorkout(
+            id: id,
+            replacing: source,
+            in: deferredNativeHealthKitLinkages
+        ) else { return nil }
+        let previous = deferredNativeHealthKitLinkages
+        deferredNativeHealthKitLinkages = updated
+        guard persistDeferredNativeHealthKitLinkages() else {
+            deferredNativeHealthKitLinkages = previous
+            return nil
+        }
+        return source.provingSavedWorkout(id: id)
     }
 
     private func clearDeferredNativeHealthKitLinkage(
@@ -7345,7 +7360,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard nativeHeartRateAppActivity == .active,
               !nativeHealthKitLinkageQueryInFlight else { return }
         loadDeferredNativeHealthKitLinkagesIfNeeded()
-        guard let linkage = deferredNativeHealthKitLinkages.first else { return }
+        guard let linkage = DeferredNativeHealthKitLinkageQueue.next(
+            in: deferredNativeHealthKitLinkages
+        ) else { return }
 
         if let workoutID = linkage.healthKitWorkoutID {
             nativeHealthKitLinkageQueryInFlight = true
@@ -7422,10 +7439,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     nativeHealthKitLinkageQueryInFlight = false
                     return
                 }
-                let provenLinkage = linkage.provingSavedWorkout(id: workout.uuid)
-                let proofPersisted = retainDeferredNativeHealthKitLinkage(provenLinkage)
+                let provenLinkage = retainSavedWorkoutProof(
+                    id: workout.uuid,
+                    replacing: linkage
+                )
                 nativeHealthKitLinkageQueryInFlight = false
-                guard proofPersisted else {
+                guard let provenLinkage else {
                     nativeHeartRateLogger.error("deferred_saved_proof_write_failed")
                     return
                 }

@@ -174,6 +174,27 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         }
     }
 
+    func testDeferredProofPublicationRollsBackWhenDurableWriteFails() throws {
+        let manager = try source("WalkingPadRemote/BluetoothManager.swift")
+        let retain = try functionBody(
+            "private func retainDeferredNativeHealthKitLinkage(\n        _ linkage:",
+            in: manager
+        )
+        let prove = try functionBody(
+            "private func retainSavedWorkoutProof(",
+            in: manager
+        )
+
+        for body in [retain, prove] {
+            assertOrdered([
+                "let previous = deferredNativeHealthKitLinkages",
+                "deferredNativeHealthKitLinkages = updated",
+                "guard persistDeferredNativeHealthKitLinkages() else",
+                "deferredNativeHealthKitLinkages = previous",
+            ], in: body)
+        }
+    }
+
     func testEveryNonStopMotionEntryPointIsRecoveryGated() throws {
         let manager = try source("WalkingPadRemote/BluetoothManager.swift")
         let sharedGate = try functionBody(
@@ -398,12 +419,12 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
             "guard error == nil else",
             "NativeWorkoutSavedProofPolicy.uniqueMatch(",
             "guard let workout else {",
-            "let provenLinkage = linkage.provingSavedWorkout(id: workout.uuid)",
-            "let proofPersisted = retainDeferredNativeHealthKitLinkage(provenLinkage)",
-            "guard proofPersisted else",
+            "let provenLinkage = retainSavedWorkoutProof(",
+            "guard let provenLinkage else",
             "completeRecoveredFinishIfProven(linkage: provenLinkage)",
             "resolveDeferredNativeHealthKitLinkageIfPossible()",
         ], in: resolve)
+        XCTAssertTrue(resolve.contains("DeferredNativeHealthKitLinkageQueue.next("))
         assertOrdered([
             "if let workoutID = linkage.healthKitWorkoutID",
             "completeRecoveredFinishIfProven(linkage: linkage)",
@@ -446,11 +467,20 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
             "private func persistDeferredNativeHealthKitLinkages()",
             in: manager
         )
+        let retainProof = try functionBody(
+            "private func retainSavedWorkoutProof(",
+            in: manager
+        )
         assertOrdered([
             "UserDefaults.standard.set(data",
             "UserDefaults.standard.data(",
             "return stored == deferredNativeHealthKitLinkages",
         ], in: durableWrite)
+        assertOrdered([
+            "DeferredNativeHealthKitLinkageQueue.provingSavedWorkout(",
+            "deferredNativeHealthKitLinkages = updated",
+            "persistDeferredNativeHealthKitLinkages()",
+        ], in: retainProof)
 
         let finish = try functionBody(
             "private func finishNativeHealthKitWorkoutIfNeeded()",

@@ -31,6 +31,54 @@ struct DeferredNativeHealthKitLinkage: Codable, Equatable {
     }
 }
 
+enum DeferredNativeHealthKitLinkageQueue {
+    static func retaining(
+        _ linkage: DeferredNativeHealthKitLinkage,
+        in pending: [DeferredNativeHealthKitLinkage]
+    ) -> [DeferredNativeHealthKitLinkage]? {
+        var updated = pending
+        guard let recoveryAppWorkoutID = linkage.recoveryAppWorkoutID,
+              let index = updated.firstIndex(where: {
+                  $0.recoveryAppWorkoutID == recoveryAppWorkoutID
+              }) else {
+            if !updated.contains(linkage) {
+                updated.append(linkage)
+            }
+            return updated
+        }
+        let existing = updated[index]
+        if let existingWorkoutID = existing.healthKitWorkoutID {
+            guard linkage.healthKitWorkoutID == nil
+                    || linkage.healthKitWorkoutID == existingWorkoutID else {
+                return nil
+            }
+            return updated
+        }
+        updated[index] = linkage
+        return updated
+    }
+
+    static func provingSavedWorkout(
+        id: UUID,
+        replacing source: DeferredNativeHealthKitLinkage,
+        in pending: [DeferredNativeHealthKitLinkage]
+    ) -> [DeferredNativeHealthKitLinkage]? {
+        guard let index = pending.firstIndex(of: source) else { return nil }
+        if let existingWorkoutID = source.healthKitWorkoutID {
+            return existingWorkoutID == id ? pending : nil
+        }
+        var updated = pending
+        updated[index] = source.provingSavedWorkout(id: id)
+        return updated
+    }
+
+    static func next(
+        in pending: [DeferredNativeHealthKitLinkage]
+    ) -> DeferredNativeHealthKitLinkage? {
+        pending.first(where: { $0.healthKitWorkoutID != nil }) ?? pending.first
+    }
+}
+
 struct NativeWorkoutRecoveryRecord: Codable, Equatable {
     enum Phase: String, Codable, Equatable {
         case preflight
