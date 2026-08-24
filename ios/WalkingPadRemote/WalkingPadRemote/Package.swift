@@ -137,6 +137,7 @@ let package = Package(
                 "ControllerUnitsSafetyPolicy.swift",
                 "CooldownRuntimeEngine.swift",
                 "DeterministicControlReplay.swift",
+                "DiscoveryUIPublicationPolicy.swift",
                 "HRDomainService.swift",
                 "HRSettingsDefaults.swift",
                 "IPhoneHealthKitHeartRateProviderCore.swift",

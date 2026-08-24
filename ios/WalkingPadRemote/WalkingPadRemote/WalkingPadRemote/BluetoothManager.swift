@@ -144,7 +144,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         var label: String
         let createdAt: Date
     }
-    @Published var discoveredPeripherals: [DiscoveredPeripheral] = []
+    private(set) var discoveredPeripherals: [DiscoveredPeripheral] = []
+    @Published private(set) var discoveryUIPeripherals: [DiscoveredPeripheral] = []
     @Published var knownPeripherals: [KnownPeripheral] = []
     @Published private(set) var userProfiles: [UserProfile] = []
     @Published private(set) var activeUserProfileID: UUID? = nil
@@ -2513,6 +2514,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         appendLog("Discovery refresh requested")
         DispatchQueue.main.async {
             self.discoveredPeripherals = []
+            self.discoveryUIPeripherals = []
         }
         discoveredMap.removeAll()
         if shouldBeScanning, let central, central.state == .poweredOn {
@@ -2768,6 +2770,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.recomputeHrStartAllowed()
                 self.stopDiscoveryScan()
                 self.discoveredPeripherals = []
+                self.discoveryUIPeripherals = []
                 self.discoveredMap.removeAll()
             default:
                 break
@@ -2787,11 +2790,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         appendLog("Discovered: name=\(name.isEmpty ? "(no name)" : name) id=\(id.uuidString) rssi=\(rssi) isKnown=\(isKnown)")
         let item = DiscoveredPeripheral(id: id, name: name, rssi: rssi, isKnown: isKnown)
         DispatchQueue.main.async {
-            if let idx = self.discoveredPeripherals.firstIndex(where: { $0.id == id }) {
-                self.discoveredPeripherals[idx] = item
-            } else {
-                self.discoveredPeripherals.append(item)
-            }
+            self.recordDiscoveredPeripheral(item)
             // Auto-connect policy:
             // - Prefer the last successful known device during the bounded discovery grace
             // - After grace, fall back through the remaining known devices serially
@@ -2829,6 +2828,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 }
             }
         }
+    }
+
+    private func recordDiscoveredPeripheral(_ item: DiscoveredPeripheral) {
+        if let idx = self.discoveredPeripherals.firstIndex(where: { $0.id == item.id }) {
+            self.discoveredPeripherals[idx] = item
+        } else {
+            self.discoveredPeripherals.append(item)
+        }
+        self.publishDiscoveredPeripheralToUI(item)
+    }
+
+    private func publishDiscoveredPeripheralToUI(_ item: DiscoveredPeripheral) {
+        guard let idx = self.discoveryUIPeripherals.firstIndex(where: { $0.id == item.id }) else {
+            self.discoveryUIPeripherals.append(item)
+            return
+        }
+        let current = self.discoveryUIPeripherals[idx]
+        guard DiscoveryUIPublicationPolicy.shouldPublish(
+            currentName: current.name,
+            currentRSSI: current.rssi,
+            currentIsKnown: current.isKnown,
+            nextName: item.name,
+            nextRSSI: item.rssi,
+            nextIsKnown: item.isKnown
+        ) else { return }
+        self.discoveryUIPeripherals[idx] = item
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -3198,6 +3223,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     isKnown: false
                 )
             }
+            self.discoveryUIPeripherals = self.discoveredPeripherals
             if self.connectedPeripheralId == id {
                 self.disconnect(userInitiated: true)
             } else if self.connectingPeripheralId == id,
@@ -4562,7 +4588,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         isNativeHeartRateCurrent = false
         hrStreamingActive = false
         heartRateBPM = 0
-        discoveredPeripherals = (0..<4).map { index in
+        let initialPeripherals = (0..<4).map { index in
             DiscoveredPeripheral(
                 id: UUID(uuidString: "00000000-0000-0000-0000-00000000000\(index)")!,
                 name: "Mock WalkingPad \(index + 1)",
@@ -4570,19 +4596,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 isKnown: false
             )
         }
+        discoveredPeripherals = initialPeripherals
+        discoveryUIPeripherals = initialPeripherals
     }
 
     func applyTrainingUIDiscoveryPressureEvent(_ eventIndex: Int) {
         let deviceIndex = eventIndex % discoveredPeripherals.count
-        var updated = discoveredPeripherals
-        let existing = updated[deviceIndex]
-        updated[deviceIndex] = DiscoveredPeripheral(
+        let existing = discoveredPeripherals[deviceIndex]
+        let updated = DiscoveredPeripheral(
             id: existing.id,
             name: existing.name,
             rssi: -50 - ((eventIndex / discoveredPeripherals.count) % 4),
             isKnown: existing.isKnown
         )
-        discoveredPeripherals = updated
+        recordDiscoveredPeripheral(updated)
     }
 
     func prepareTrainingUIActivePressureBaseline() {

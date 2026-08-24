@@ -110,6 +110,52 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertFalse(discovery.contains("central.connect("))
     }
 
+    func testDiscoveryUIPublicationDedupeCannotBecomeAutoConnectTruth() throws {
+        let discovery = try functionBody(
+            "func centralManager(_ central: CBCentralManager,\n                        didDiscover peripheral: CBPeripheral,",
+            in: managerSource
+        )
+        let record = try functionBody(
+            "private func recordDiscoveredPeripheral(_ item: DiscoveredPeripheral)",
+            in: managerSource
+        )
+        let publish = try functionBody(
+            "private func publishDiscoveredPeripheralToUI(_ item: DiscoveredPeripheral)",
+            in: managerSource
+        )
+        let preferredKnown = try functionBody(
+            "private func preferredKnownDiscoveredPeripheral()",
+            in: managerSource
+        )
+        let autoConnect = try functionBody(
+            "private func attemptAutoConnectIfNeeded()",
+            in: managerSource
+        )
+
+        XCTAssertEqual(
+            discovery.components(separatedBy: "recordDiscoveredPeripheral(item)").count - 1,
+            1
+        )
+        assertOrdered(
+            ["recordDiscoveredPeripheral(item)", "rearmAutoConnectCandidateAfterFreshDiscovery("],
+            in: discovery
+        )
+        assertOrdered(
+            ["self.discoveredPeripherals[idx] = item", "self.publishDiscoveredPeripheralToUI(item)"],
+            in: record
+        )
+        assertOrdered(
+            ["self.discoveredPeripherals.append(item)", "self.publishDiscoveredPeripheralToUI(item)"],
+            in: record
+        )
+        XCTAssertTrue(publish.contains("DiscoveryUIPublicationPolicy.shouldPublish"))
+        XCTAssertTrue(publish.contains("self.discoveryUIPeripherals[idx] = item"))
+        XCTAssertTrue(preferredKnown.contains("discoveredPeripherals.filter"))
+        XCTAssertTrue(autoConnect.contains("discoveredPeripherals.max"))
+        XCTAssertFalse(preferredKnown.contains("discoveryUIPeripherals"))
+        XCTAssertFalse(autoConnect.contains("discoveryUIPeripherals"))
+    }
+
     func testAutomaticFailuresStaySilentAndFallBackSerially() throws {
         let failure = try functionBody(
             "func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?)",

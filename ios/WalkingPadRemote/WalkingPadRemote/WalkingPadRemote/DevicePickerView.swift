@@ -64,7 +64,7 @@ struct DevicePickerView: View {
         scanSessionId = currentId
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak manager] in
             guard let manager = manager else { return }
-            if scanSessionId == currentId && isScanning && manager.discoveredPeripherals.isEmpty {
+            if scanSessionId == currentId && isScanning && manager.discoveryUIPeripherals.isEmpty {
                 isScanning = false
                 manager.stopDiscoveryScan()
                 lastUpdate = Date()
@@ -196,7 +196,7 @@ struct DevicePickerView: View {
     @ViewBuilder
     private func DiscoveryHeader() -> some View {
         HStack(spacing: 8) {
-            Text("Устройств: \(manager.discoveredPeripherals.count)")
+            Text("Устройств: \(manager.discoveryUIPeripherals.count)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -219,7 +219,7 @@ struct DevicePickerView: View {
             } else if manager.isConnected {
                 Text("Сканирование отключено — уже подключены к дорожке")
                     .foregroundStyle(.secondary)
-            } else if manager.discoveredPeripherals.isEmpty {
+            } else if manager.discoveryUIPeripherals.isEmpty {
                 if isScanning {
                     HStack {
                         ProgressView()
@@ -239,7 +239,7 @@ struct DevicePickerView: View {
                     Label("Повторить поиск", systemImage: "arrow.clockwise")
                 }
             } else {
-                ForEach(manager.discoveredPeripherals) { d in
+                ForEach(manager.discoveryUIPeripherals) { d in
                     Button {
                         manager.connectToDiscovered(id: d.id)
                         dismiss()
@@ -366,7 +366,7 @@ struct DevicePickerView: View {
                     startScanIfPossible()
                 }
             }
-            .onChange(of: manager.discoveredPeripherals.count) { _, _ in
+            .onChange(of: manager.discoveryUIPeripherals.count) { _, _ in
                 markUpdated()
             }
             .onChange(of: scenePhase) { oldValue, newValue in
