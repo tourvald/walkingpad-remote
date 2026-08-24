@@ -271,7 +271,7 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
                 analysisID: AnalysisID(rawValue: uuid(810_001)),
                 recordID: RecordID(rawValue: uuid(810_002)),
                 sessionID: storedSession.sessionID,
-                analyzerVersion: AnalyzerVersion(rawValue: "low-quality-fixture"),
+                analyzerVersion: WorkoutAnalyzerV1.analyzerVersion,
                 evidenceHash: ContentHash(
                     algorithm: .sha256,
                     lowercaseHexDigest: String(repeating: "d", count: 64)
@@ -302,6 +302,94 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
         XCTAssertNil(item.zoneSeconds)
         XCTAssertFalse(item.quality.adaptationEligible)
         XCTAssertTrue(item.quality.includedInStatistics)
+    }
+
+    func testInsufficientFactualSpeedCoverageIsExplicitInHistoryAndExport() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let storedSession = session(
+            index: 71,
+            profile: "profile-speed-coverage",
+            startedAt: Date(timeIntervalSince1970: 1_900_100_071)
+        )
+        let heartRateSource = TelemetryPersistenceFixtures.source(
+            seed: 71,
+            kind: .healthKitSelected
+        )
+        let treadmillSource = TelemetryPersistenceFixtures.source(
+            seed: 72,
+            kind: .treadmillProtocol
+        )
+        let heartRate = TelemetryPersistenceFixtures.heartRate(
+            seed: 71,
+            session: storedSession,
+            source: heartRateSource,
+            arrivalOrder: 0,
+            bpm: 120
+        )
+        let treadmill = TelemetryPersistenceFixtures.treadmill(
+            seed: 72,
+            session: storedSession,
+            source: treadmillSource,
+            arrivalOrder: 0,
+            unit: .kilometresPerHour
+        )
+        let analysis = try WorkoutAnalyzerV1.analyze(
+            WorkoutAnalysisInput(
+                session: storedSession,
+                heartRate: [heartRate],
+                treadmill: [treadmill],
+                events: [],
+                frames: []
+            ),
+            generatedAt: storedSession.endedAt!.addingTimeInterval(1)
+        )
+        XCTAssertNil(analysis.keyMetrics.averageFactualSpeedKilometresPerHour)
+        try await store.insertSession(storedSession)
+        try await store.insertAnalysis(analysis)
+
+        let page = try await store.fetchWorkoutHistoryPage(
+            filter: WorkoutReadFilter(profileScope: .exact("profile-speed-coverage")),
+            after: nil,
+            limit: 10
+        )
+        let item = try XCTUnwrap(page.items.first)
+        let coverage = try XCTUnwrap(item.factualSpeedCoverage)
+        XCTAssertNil(item.averageSpeed)
+        XCTAssertEqual(coverage.coveredSeconds, 5, accuracy: 0.000_001)
+        XCTAssertEqual(coverage.uncoveredSeconds, 595, accuracy: 0.000_001)
+        XCTAssertEqual(coverage.coverageRatio!, 5.0 / 600.0, accuracy: 0.000_001)
+        XCTAssertEqual(
+            coverage.requiredRatio,
+            WorkoutAnalyzerV1.minimumAverageFactualSpeedCoverageRatio
+        )
+        XCTAssertTrue(item.quality.unavailableMetrics.contains("averageFactualSpeed"))
+        XCTAssertTrue(item.quality.warnings.contains(
+            "average-factual-speed-unavailable-insufficient-coverage"
+        ))
+
+        let artifact = try await store.exportWorkouts(
+            WorkoutExportRequest(
+                filter: WorkoutReadFilter(profileScope: .exact("profile-speed-coverage")),
+                selection: .all,
+                batchSize: 10
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: artifact.directoryURL) }
+        let summaryCSV = try String(
+            contentsOf: artifact.directoryURL.appendingPathComponent("session_summary_v2.csv"),
+            encoding: .utf8
+        )
+        let summaryJSONL = try String(
+            contentsOf: artifact.directoryURL.appendingPathComponent("session_summary_v2.jsonl"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(summaryCSV.contains("factual_speed_coverage_ratio"))
+        XCTAssertTrue(summaryCSV.contains("5.000000,595.000000,0.008333,0.900000"))
+        XCTAssertTrue(summaryCSV.contains(
+            "average-factual-speed-unavailable-insufficient-coverage"
+        ))
+        XCTAssertTrue(summaryJSONL.contains("\"factualSpeedCoverage\""))
+        XCTAssertTrue(summaryJSONL.contains("\"requiredRatio\":0.9"))
     }
 
     func testExactImportedDuplicateEnrichesNativeHealthKitLinkageInHistoryAndExport() async throws {
@@ -361,7 +449,7 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(at: artifact.directoryURL) }
         let summary = try String(
-            contentsOf: artifact.directoryURL.appendingPathComponent("session_summary_v1.jsonl"),
+            contentsOf: artifact.directoryURL.appendingPathComponent("session_summary_v2.jsonl"),
             encoding: .utf8
         )
         XCTAssertTrue(summary.lowercased().contains(healthKitIdentifier.uuidString.lowercased()))
@@ -563,8 +651,8 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
         XCTAssertEqual(Set(artifact.fileURLs.map(\.lastPathComponent)), Set([
             "raw_evidence_v1.jsonl",
             "normalized_evidence_v1.csv",
-            "session_summary_v1.jsonl",
-            "session_summary_v1.csv",
+            "session_summary_v2.jsonl",
+            "session_summary_v2.csv",
             "manifest.json",
         ]))
         let decoder = JSONDecoder()
@@ -675,7 +763,7 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
                 analysisID: AnalysisID(rawValue: uuid(800_001)),
                 recordID: RecordID(rawValue: uuid(800_002)),
                 sessionID: storedSession.sessionID,
-                analyzerVersion: AnalyzerVersion(rawValue: "malformed-fixture"),
+                analyzerVersion: WorkoutAnalyzerV1.analyzerVersion,
                 evidenceHash: ContentHash(
                     algorithm: .sha256,
                     lowercaseHexDigest: String(repeating: "c", count: 64)

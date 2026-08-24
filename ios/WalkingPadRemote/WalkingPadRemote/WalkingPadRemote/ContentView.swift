@@ -988,7 +988,7 @@ private func trainingResultPreview(named name: String) -> TrainingResultPreview?
         appVersion: "1.0",
         buildNumber: "1",
         algorithmVersion: "legacy-hr-control-2026-08",
-        analyzerVersion: "workout-analyzer-v1",
+        analyzerVersion: "workout-analyzer-v1.1",
         quality: WorkoutProjectionQuality(
             lifecycleState: "completed",
             recorderComplete: true,

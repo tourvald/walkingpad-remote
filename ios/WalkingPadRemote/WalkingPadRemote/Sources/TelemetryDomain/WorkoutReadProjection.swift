@@ -58,6 +58,25 @@ public struct WorkoutSpeedProjection: Codable, Hashable, Sendable {
     }
 }
 
+public struct WorkoutFactualSpeedCoverageProjection: Codable, Hashable, Sendable {
+    public let coveredSeconds: Double
+    public let uncoveredSeconds: Double
+    public let coverageRatio: Double?
+    public let requiredRatio: Double
+
+    public init(
+        coveredSeconds: Double,
+        uncoveredSeconds: Double,
+        coverageRatio: Double?,
+        requiredRatio: Double
+    ) {
+        self.coveredSeconds = coveredSeconds
+        self.uncoveredSeconds = uncoveredSeconds
+        self.coverageRatio = coverageRatio
+        self.requiredRatio = requiredRatio
+    }
+}
+
 public struct WorkoutProjectionQuality: Codable, Hashable, Sendable {
     public let lifecycleState: String
     public let recorderComplete: Bool?
@@ -113,6 +132,7 @@ public struct WorkoutHistoryProjection: Codable, Hashable, Identifiable, Sendabl
     public let algorithmVersion: String?
     public let analyzerVersion: String?
     public let quality: WorkoutProjectionQuality
+    public let factualSpeedCoverage: WorkoutFactualSpeedCoverageProjection?
 
     public init(
         id: String,
@@ -131,7 +151,8 @@ public struct WorkoutHistoryProjection: Codable, Hashable, Identifiable, Sendabl
         buildNumber: String?,
         algorithmVersion: String?,
         analyzerVersion: String?,
-        quality: WorkoutProjectionQuality
+        quality: WorkoutProjectionQuality,
+        factualSpeedCoverage: WorkoutFactualSpeedCoverageProjection? = nil
     ) {
         self.id = id
         self.origin = origin
@@ -150,6 +171,7 @@ public struct WorkoutHistoryProjection: Codable, Hashable, Identifiable, Sendabl
         self.algorithmVersion = algorithmVersion
         self.analyzerVersion = analyzerVersion
         self.quality = quality
+        self.factualSpeedCoverage = factualSpeedCoverage
     }
 }
 
@@ -301,7 +323,7 @@ public struct WorkoutExportManifestQuality: Codable, Hashable, Sendable {
 
 public struct WorkoutExportManifest: Codable, Hashable, Sendable {
     public static let formatVersion = "workout-export-manifest-v1"
-    public static let sessionSummaryVersion = "workout-session-summary-v1"
+    public static let sessionSummaryVersion = "workout-session-summary-v2"
 
     public let manifestVersion: String
     public let sessionSummaryVersion: String

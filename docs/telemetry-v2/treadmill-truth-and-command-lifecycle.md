@@ -23,12 +23,21 @@ control, queueing, retry, units, HR, cooldown, Start, or stop behavior.
 - FE01 reports speed as native controller-unit tenths.
 - The raw tenths value is retained before the legacy `raw / 10` presentation and
   control conversion.
-- Physical km/h is produced only when the current connection epoch has fresh,
-  checksum-valid controller-unit truth.
-- Metric tenths normalize directly. Imperial tenths convert with 1 mile =
-  1.609344 km.
-- Unknown, not-read, stale, malformed, invalid-checksum, or old-epoch unit truth
-  retains the native evidence but produces no factual physical km/h.
+- Physical km/h is produced only when the current connection epoch has
+  checksum-valid metric controller-unit truth.
+- During an active HR-controlled workout and cooldown, the existing read-only
+  `A6 key=0` query refreshes unit truth on a 20-second cadence only in a proven
+  motion-idle window: the command queue is empty, no write is processing, the
+  existing WalkingPad write-spacing deadline has passed, and more than two
+  seconds remain before the next scheduled HR/cooldown motion decision.
+- If no such idle window exists, the query is skipped and factual telemetry may
+  degrade when unit truth reaches the existing 30-second limit. The query never
+  delays a scheduled motion write; high-priority Stop retains its existing queue
+  reset and spacing bypass. The motion gate remains independently unchanged and
+  a later Start still requires fresh unit evidence under the same fail-closed
+  rule.
+- Imperial, unknown, not-read, stale, malformed, invalid-checksum, or old-epoch
+  unit truth retains the native evidence but produces no factual physical km/h.
 - The callback exposes receive time, not device measurement time, so
   `measuredAt` is nil.
 

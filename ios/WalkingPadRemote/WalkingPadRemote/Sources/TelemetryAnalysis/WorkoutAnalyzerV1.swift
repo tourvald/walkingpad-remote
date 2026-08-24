@@ -10,8 +10,9 @@ public enum WorkoutAnalyzerError: Error, Equatable, Sendable {
 }
 
 public enum WorkoutAnalyzerV1 {
-    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1")
-    public static let metricDefinitionVersion = "timestamp-hold-metrics-v1"
+    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.1")
+    public static let metricDefinitionVersion = "timestamp-hold-metrics-v2"
+    public static let minimumAverageFactualSpeedCoverageRatio = 0.9
 
     static func secondsDetail(_ seconds: Double) -> String {
         String(
@@ -82,13 +83,19 @@ public enum WorkoutAnalyzerV1 {
             connectionBoundaries: connectionTransitionBoundaries(input.events),
             freshnessSeconds: policy.treadmillFreshnessSeconds
         )
+        let factualSpeedMetric = FactualSpeedMetricTimeline(
+            frames: input.frames,
+            nativeFallback: treadmill,
+            sessionEnd: sessionEnd,
+            phaseTimeline: phaseTimeline
+        )
         let causal = CausalAnalysis(events: input.events)
         let quality = makeQuality(
             input: input,
             sessionEnd: sessionEnd,
             phases: phaseTimeline,
             heartRate: heartRate,
-            treadmill: treadmill,
+            factualSpeedMetric: factualSpeedMetric,
             causal: causal,
             configurationAvailable: configuration != nil
         )
@@ -130,7 +137,10 @@ public enum WorkoutAnalyzerV1 {
             return (lhs.detail ?? "") < (rhs.detail ?? "")
         }
         let weightedHeartRate = heartRate.weightedAverage(in: nil)
-        let weightedSpeed = treadmill.weightedAverage(in: nil)
+        let speedCoverage = quality.treadmillFactualCoverage.coverageRatio
+        let weightedSpeed = speedCoverage.map {
+            $0 >= minimumAverageFactualSpeedCoverageRatio
+        } == true ? factualSpeedMetric.weightedAverage(in: nil) : nil
         let identity = "\(input.session.sessionID.description)|\(analyzerVersion.rawValue)|\(hash.lowercaseHexDigest)"
         return WorkoutAnalysisResult(
             analysisID: AnalysisID(rawValue: deterministicUUID("analysis|\(identity)")),
@@ -546,6 +556,73 @@ private extension WorkoutAnalyzerV1 {
         }
 
         func clippedSegments(in range: Range<Double>?) -> [SpeedSegment] {
+            guard let range else { return segments }
+            return segments.compactMap { segment in
+                let start = max(segment.start, range.lowerBound)
+                let end = min(segment.end, range.upperBound)
+                guard end > start else { return nil }
+                return SpeedSegment(
+                    start: start,
+                    end: end,
+                    speed: segment.speed,
+                    phase: segment.phase
+                )
+            }
+        }
+    }
+
+    struct FactualSpeedMetricTimeline {
+        let segments: [SpeedSegment]
+
+        init(
+            frames: [CanonicalFrame],
+            nativeFallback: TreadmillTimeline,
+            sessionEnd: Double,
+            phaseTimeline: PhaseTimeline
+        ) {
+            guard !frames.isEmpty else {
+                segments = nativeFallback.segments
+                return
+            }
+            var seenSeconds: Set<Int64> = []
+            var built: [SpeedSegment] = []
+            for frame in frames.sorted(by: frameEvidenceOrder) {
+                guard seenSeconds.insert(frame.canonicalElapsedSecond).inserted,
+                      frame.canonicalElapsedSecond >= 0,
+                      let evidence = frame.treadmillEvidence,
+                      evidence.freshness == .fresh,
+                      let factual = evidence.factualSpeed else {
+                    continue
+                }
+                let start = min(sessionEnd, Double(frame.canonicalElapsedSecond))
+                let end = min(sessionEnd, start + 1)
+                guard end > start else { continue }
+                let boundaries = phaseTimeline.boundaries(in: start..<end)
+                let points = [start] + boundaries + [end]
+                for pair in zip(points, points.dropFirst()) where pair.1 > pair.0 {
+                    built.append(SpeedSegment(
+                        start: pair.0,
+                        end: pair.1,
+                        speed: factual.value,
+                        phase: phaseTimeline.phase(at: pair.0)
+                    ))
+                }
+            }
+            segments = built
+        }
+
+        func coveredSeconds(in range: Range<Double>?) -> Double {
+            clippedSegments(in: range).reduce(0) { $0 + $1.duration }
+        }
+
+        func weightedAverage(in range: Range<Double>?) -> Double? {
+            let clipped = clippedSegments(in: range)
+            let duration = clipped.reduce(0) { $0 + $1.duration }
+            guard duration > 0 else { return nil }
+            return clipped.reduce(0) { $0 + $1.speed * $1.duration } / duration
+        }
+
+        private func clippedSegments(in range: Range<Double>?) -> [SpeedSegment] {
             guard let range else { return segments }
             return segments.compactMap { segment in
                 let start = max(segment.start, range.lowerBound)
@@ -1133,12 +1210,12 @@ private extension WorkoutAnalyzerV1 {
         sessionEnd: Double,
         phases: PhaseTimeline,
         heartRate: HeartRateTimeline,
-        treadmill: TreadmillTimeline,
+        factualSpeedMetric: FactualSpeedMetricTimeline,
         causal: CausalAnalysis,
         configurationAvailable: Bool
     ) -> WorkoutDataQualityV1 {
         let heartRateCovered = heartRate.coveredSeconds(in: nil)
-        let treadmillCovered = treadmill.coveredSeconds(in: nil)
+        let treadmillCovered = factualSpeedMetric.coveredSeconds(in: nil)
         let hrCoverage = DurationCoverage(
             coveredSeconds: heartRateCovered,
             uncoveredSeconds: max(0, sessionEnd - heartRateCovered)
@@ -1265,6 +1342,20 @@ private extension WorkoutAnalyzerV1 {
                 detail: secondsDetail(treadmillCoverage.uncoveredSeconds)
             ))
         }
+        if treadmillCoverage.coverageRatio.map({
+            $0 < minimumAverageFactualSpeedCoverageRatio
+        }) ?? true {
+            let ratio = treadmillCoverage.coverageRatio ?? 0
+            issues.append(AnalysisQualityIssue(
+                category: .sourceCoverageUnavailable,
+                code: "average-factual-speed-insufficient-coverage",
+                detail: String(
+                    format: "coverage=%.6f required=%.6f",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    arguments: [ratio, minimumAverageFactualSpeedCoverageRatio]
+                )
+            ))
+        }
         if !configurationAvailable {
             issues.append(AnalysisQualityIssue(
                 category: .malformedCorruptEvidence,
@@ -1306,7 +1397,7 @@ private extension WorkoutAnalyzerV1 {
                 let range = interval.start..<interval.end
                 let duration = interval.end - interval.start
                 let hr = heartRate.coveredSeconds(in: range)
-                let speed = treadmill.coveredSeconds(in: range)
+                let speed = factualSpeedMetric.coveredSeconds(in: range)
                 let coverage = DurationCoverage(
                     coveredSeconds: hr,
                     uncoveredSeconds: max(0, duration - hr)

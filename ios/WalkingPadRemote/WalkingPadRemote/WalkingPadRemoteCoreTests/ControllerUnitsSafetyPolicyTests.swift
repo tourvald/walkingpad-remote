@@ -279,6 +279,65 @@ final class ControllerUnitsSafetyPolicyTests: XCTestCase {
         ).trigger, .connectionReady)
     }
 
+    func testActiveWorkoutRefreshUsesIdleWindowsWithoutChangingMotionGate() {
+        XCTAssertEqual(ControllerUnitsSafetyPolicy.freshnessInterval, 30)
+        XCTAssertEqual(ControllerUnitsRefreshPolicy.activeWorkoutQueryInterval, 20)
+        let gateBefore = evaluate(state: truth(units: .metric))
+        var lastQueryAt: Date? = now
+        var refreshSeconds: [Int] = []
+
+        for second in 1...1_800 {
+            let remainder = second % 10
+            let queueIdle = remainder >= 2
+            let lead = remainder == 0 ? 0 : 10 - remainder
+            let tick = now.addingTimeInterval(TimeInterval(second))
+            let decision = ControllerUnitsRefreshPolicy.activeWorkoutRefresh(
+                isHrControlRunning: true,
+                transportReady: true,
+                motionQueueIdle: queueIdle,
+                secondsUntilNextScheduledMotion: lead,
+                lastQueryAt: lastQueryAt,
+                now: tick
+            )
+            if decision.shouldRequest {
+                XCTAssertEqual(decision.trigger, .activeWorkoutIdleWindow)
+                refreshSeconds.append(second)
+                lastQueryAt = tick
+            }
+        }
+        let gateAfter = evaluate(state: truth(units: .metric))
+
+        XCTAssertEqual(refreshSeconds.first, 22)
+        XCTAssertEqual(refreshSeconds.last, 1_782)
+        XCTAssertEqual(refreshSeconds.count, 89)
+        XCTAssertTrue(zip(refreshSeconds, refreshSeconds.dropFirst()).allSatisfy {
+            $1 - $0 == 20
+        })
+        XCTAssertEqual(gateAfter, gateBefore)
+    }
+
+    func testActiveWorkoutRefreshNeverOccupiesMotionSpacingOrImmediateLeadWindow() {
+        let dueAt = now.addingTimeInterval(-20)
+        for (queueIdle, lead) in [(false, 10), (true, 2), (true, 1), (true, 0)] {
+            XCTAssertFalse(ControllerUnitsRefreshPolicy.activeWorkoutRefresh(
+                isHrControlRunning: true,
+                transportReady: true,
+                motionQueueIdle: queueIdle,
+                secondsUntilNextScheduledMotion: lead,
+                lastQueryAt: dueAt,
+                now: now
+            ).shouldRequest)
+        }
+        XCTAssertTrue(ControllerUnitsRefreshPolicy.activeWorkoutRefresh(
+            isHrControlRunning: true,
+            transportReady: true,
+            motionQueueIdle: true,
+            secondsUntilNextScheduledMotion: 3,
+            lastQueryAt: dueAt,
+            now: now
+        ).shouldRequest)
+    }
+
     func testResponseContextRejectsPeripheralEpochAndCharacteristicChanges() {
         final class CharacteristicToken {}
         let currentCharacteristic = CharacteristicToken()

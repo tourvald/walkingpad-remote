@@ -6204,6 +6204,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
         }
         updateTreadmillStatus()
+        maintainControllerUnitsTruthDuringActiveWorkout(now: Date())
     }
 
     private func updateTreadmillStatus() {
@@ -7110,6 +7111,30 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         guard let trigger = refreshDecision.trigger else { return }
         requestControllerUnitsTruth(trigger: trigger.rawValue, now: now)
+    }
+
+    private func maintainControllerUnitsTruthDuringActiveWorkout(now: Date) {
+        let refreshDecision = ControllerUnitsRefreshPolicy.activeWorkoutRefresh(
+            isHrControlRunning: isHrControlRunning,
+            transportReady: controllerUnitsQueryTransportReady,
+            motionQueueIdle: commandQueue.isEmpty
+                && !isCommandQueueProcessing
+                && nextCommandAllowedAt <= now,
+            secondsUntilNextScheduledMotion: controllerUnitsNextScheduledMotionLeadSeconds,
+            lastQueryAt: lastControllerUnitsQueryAt,
+            now: now
+        )
+        guard let trigger = refreshDecision.trigger else { return }
+        requestControllerUnitsTruth(trigger: trigger.rawValue, now: now)
+    }
+
+    private var controllerUnitsNextScheduledMotionLeadSeconds: Int {
+        if let cooldownState = cooldownRuntimeState {
+            let interval = max(1, cooldownState.stepIntervalSeconds)
+            let remainder = cooldownState.elapsedSeconds % interval
+            return remainder == 0 ? interval : interval - remainder
+        }
+        return min(hrNextDecisionSeconds, hrRemainingSeconds)
     }
 
     private func controllerUnitsResponseContext(
