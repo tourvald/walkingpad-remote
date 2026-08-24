@@ -332,6 +332,11 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(contentBody.contains("--active-workout-preview="))
         XCTAssertTrue(contentBody.contains("--training-result-preview="))
         XCTAssertTrue(contentBody.contains("--training-ui-pressure-baseline"))
+        XCTAssertTrue(contentViewSource.contains("managerPublishedEvents"))
+        XCTAssertTrue(contentViewSource.contains("potentialAvoidableManagerDrivenInvalidations"))
+        XCTAssertTrue(contentViewSource.contains("eventToVisibleChangeRatio"))
+        XCTAssertTrue(contentViewSource.contains("rawManagerPublications"))
+        XCTAssertFalse(contentViewSource.contains("publicationToVisibleChangeRatio"))
         XCTAssertEqual(
             contentBody.components(separatedBy: "guard !isTrainingPreviewLaunch else { return }").count - 1,
             2

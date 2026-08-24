@@ -561,20 +561,22 @@ private enum TrainingUIUpdatePressureHarness {
     private struct Measurement: Codable {
         let source: String
         var technicalEvents = 0
-        var managerPublications = 0
+        var managerPublishedEvents = 0
         var visibleSnapshotChanges = 0
+        var potentialAvoidableManagerDrivenInvalidations = 0
+        var rawManagerPublications = 0
         var synchronousMainThreadNanoseconds: UInt64 = 0
-        var publicationsWithoutVisibleChangeLowerBound = 0
     }
 
     private struct Workload: Codable {
         let workload: String
         let measurements: [Measurement]
         let technicalEvents: Int
-        let managerPublications: Int
+        let managerPublishedEvents: Int
         let visibleSnapshotChanges: Int
-        let publicationsWithoutVisibleChangeLowerBound: Int
-        let publicationToVisibleChangeRatio: Double?
+        let potentialAvoidableManagerDrivenInvalidations: Int
+        let rawManagerPublications: Int
+        let eventToVisibleChangeRatio: Double?
         let synchronousMainThreadNanoseconds: UInt64
     }
 
@@ -611,7 +613,7 @@ private enum TrainingUIUpdatePressureHarness {
             events: activeEvents
         )
         let report = Report(
-            schema: "training-ui-update-pressure-v1",
+            schema: "training-ui-update-pressure-v2",
             workloads: [idle, active]
         )
         let encoder = JSONEncoder()
@@ -644,16 +646,20 @@ private enum TrainingUIUpdatePressureHarness {
 
             var measurement = measurements[event.source]
                 ?? Measurement(source: event.source)
+            let managerPublished = publicationCount > publicationsBefore
+            let snapshotChanged = nextSnapshot != snapshot
             measurement.technicalEvents += 1
-            measurement.managerPublications += publicationCount - publicationsBefore
+            measurement.rawManagerPublications += publicationCount - publicationsBefore
             measurement.synchronousMainThreadNanoseconds += elapsed
-            if nextSnapshot != snapshot {
+            if managerPublished {
+                measurement.managerPublishedEvents += 1
+            }
+            if snapshotChanged {
                 measurement.visibleSnapshotChanges += 1
             }
-            measurement.publicationsWithoutVisibleChangeLowerBound = max(
-                0,
-                measurement.managerPublications - measurement.visibleSnapshotChanges
-            )
+            if managerPublished && !snapshotChanged {
+                measurement.potentialAvoidableManagerDrivenInvalidations += 1
+            }
             measurements[event.source] = measurement
             snapshot = nextSnapshot
         }
@@ -661,20 +667,20 @@ private enum TrainingUIUpdatePressureHarness {
 
         let ordered = measurements.values.sorted { $0.source < $1.source }
         let technicalEvents = ordered.reduce(0) { $0 + $1.technicalEvents }
-        let managerPublications = ordered.reduce(0) { $0 + $1.managerPublications }
+        let managerPublishedEvents = ordered.reduce(0) { $0 + $1.managerPublishedEvents }
         let visibleSnapshotChanges = ordered.reduce(0) { $0 + $1.visibleSnapshotChanges }
         return Workload(
             workload: workload,
             measurements: ordered,
             technicalEvents: technicalEvents,
-            managerPublications: managerPublications,
+            managerPublishedEvents: managerPublishedEvents,
             visibleSnapshotChanges: visibleSnapshotChanges,
-            publicationsWithoutVisibleChangeLowerBound: max(
-                0,
-                managerPublications - visibleSnapshotChanges
-            ),
-            publicationToVisibleChangeRatio: visibleSnapshotChanges > 0
-                ? Double(managerPublications) / Double(visibleSnapshotChanges)
+            potentialAvoidableManagerDrivenInvalidations: ordered.reduce(0) {
+                $0 + $1.potentialAvoidableManagerDrivenInvalidations
+            },
+            rawManagerPublications: ordered.reduce(0) { $0 + $1.rawManagerPublications },
+            eventToVisibleChangeRatio: visibleSnapshotChanges > 0
+                ? Double(managerPublishedEvents) / Double(visibleSnapshotChanges)
                 : nil,
             synchronousMainThreadNanoseconds: ordered.reduce(0) {
                 $0 + $1.synchronousMainThreadNanoseconds
