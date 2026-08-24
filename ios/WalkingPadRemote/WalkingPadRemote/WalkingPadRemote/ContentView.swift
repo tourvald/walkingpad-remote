@@ -525,13 +525,7 @@ private func makeProductionActiveWorkoutPresentation(
 ) -> TrainingHubPresentation {
     let factualSpeedKmh: Double? = {
         guard manager.isConnected else { return nil }
-        if manager.deviceReportedAppSpeedKmh > 0.05 {
-            return manager.deviceReportedAppSpeedKmh
-        }
-        if manager.deviceReportedSpeedKmh > 0.05 {
-            return manager.deviceReportedSpeedKmh
-        }
-        return nil
+        return manager.trainingUITreadmillSpeedKmh
     }()
 
     return makeHRControlActivePresentation(
@@ -4094,6 +4088,33 @@ private enum HrControlPreviewMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private struct DebugTreadmillFactualObservationRows: View {
+    @ObservedObject var publisher: TreadmillFactualObservationPublisher
+    let manager: BluetoothManager
+
+    var body: some View {
+        Group {
+            Text(
+                "Reported speed: \(String(format: "%.1f", manager.deviceReportedSpeedKmh))  "
+                    + "AppSpeed: \(String(format: "%.1f", manager.deviceReportedAppSpeedKmh))"
+            )
+            Text(
+                "State \(manager.deviceReportedState)  Mode \(manager.deviceReportedManualMode)  "
+                    + "Button \(manager.deviceReportedButton)  Checksum \(manager.deviceReportedChecksumOk ? "ok" : "bad")"
+            )
+            Text(
+                "Time \(manager.deviceReportedTimeSeconds)s  "
+                    + "Dist \(manager.deviceReportedDistance10m * 10)m  Steps \(manager.deviceReportedSteps)"
+            )
+            if !manager.deviceReportedRawHex.isEmpty {
+                Text("FE01 raw: \(manager.deviceReportedRawHex)")
+            }
+        }
+        .font(.caption)
+        .foregroundColor(.secondary)
+    }
+}
+
 private struct DebugView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @State private var showHrControlPreview = false
@@ -4395,20 +4416,10 @@ private struct DebugView: View {
                             Text("Speed \(actualStr)  Target \(targetStr)  AppSet \(deviceStr)  HR \(manager.heartRateBPM) (last \(manager.lastKnownHeartRateBPM))")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            Text("Reported speed: \(String(format: "%.1f", manager.deviceReportedSpeedKmh))  AppSpeed: \(String(format: "%.1f", manager.deviceReportedAppSpeedKmh))")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("State \(manager.deviceReportedState)  Mode \(manager.deviceReportedManualMode)  Button \(manager.deviceReportedButton)  Checksum \(manager.deviceReportedChecksumOk ? "ok" : "bad")")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text("Time \(manager.deviceReportedTimeSeconds)s  Dist \(manager.deviceReportedDistance10m * 10)m  Steps \(manager.deviceReportedSteps)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            if !manager.deviceReportedRawHex.isEmpty {
-                                Text("FE01 raw: \(manager.deviceReportedRawHex)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
+                            DebugTreadmillFactualObservationRows(
+                                publisher: manager.treadmillFactualObservationPublisher,
+                                manager: manager
+                            )
 
                             let wcState = "WCSession: paired=\(manager.watchPaired ? "yes" : "no") installed=\(manager.watchAppInstalled ? "yes" : "no") reachable=\(manager.watchReachable ? "yes" : "no")"
                             Text(wcState)
