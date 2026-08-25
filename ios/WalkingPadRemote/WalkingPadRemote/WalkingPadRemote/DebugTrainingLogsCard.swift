@@ -34,6 +34,7 @@ struct DebugTrainingLogsCard: View {
         let diagnosticScopeOptions: [DiagnosticScopeOption]
         let diagnosticShareSubtitle: String
         let canShareDiagnostics: Bool
+        let isPreparingDiagnostics: Bool
         let clearSubtitle: String
         let canClear: Bool
         let clearConfirmationMessage: String
@@ -44,6 +45,7 @@ struct DebugTrainingLogsCard: View {
     let presentation: Presentation
     let onToggleTestRun: () -> Void
     let onShareDiagnostics: (TrainingLogCsvExportScope) -> Void
+    let onCancelDiagnostics: () -> Void
 
     private let metricColumns = [
         GridItem(.flexible(), spacing: 10),
@@ -166,24 +168,44 @@ struct DebugTrainingLogsCard: View {
                     }
                 }
 
-                Menu {
-                    ForEach(presentation.diagnosticScopeOptions) { option in
-                        Button(option.title) {
-                            onShareDiagnostics(option.scope)
-                        }
+                if presentation.isPreparingDiagnostics {
+                    Button(action: onCancelDiagnostics) {
+                        DebugActionTileLabel(
+                            title: "Отменить подготовку",
+                            subtitle: "Диагностический пакет формируется…",
+                            tint: .orange,
+                            enabled: true
+                        )
                     }
-                } label: {
-                    DebugActionTileLabel(
-                        title: "Поделиться диагностикой",
-                        subtitle: presentation.diagnosticShareSubtitle,
-                        tint: .accentColor,
-                        enabled: presentation.canShareDiagnostics
-                    )
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Отменяет подготовку и удаляет временные файлы")
+                } else {
+                    Button {
+                        onShareDiagnostics(.lastCompletedWorkouts(1))
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Поделиться диагностикой",
+                            subtitle: presentation.diagnosticShareSubtitle,
+                            tint: .accentColor,
+                            enabled: presentation.canShareDiagnostics
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!presentation.canShareDiagnostics)
+                    .accessibilityHint("Готовит последнюю тренировку и support diagnostics")
+
+                    Menu {
+                        ForEach(presentation.diagnosticScopeOptions) { option in
+                            Button(option.title) {
+                                onShareDiagnostics(option.scope)
+                            }
+                        }
+                    } label: {
+                        Label("Другой объём", systemImage: "ellipsis.circle")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .disabled(!presentation.canShareDiagnostics)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .disabled(!presentation.canShareDiagnostics)
-                .accessibilityLabel("Поделиться диагностикой")
-                .accessibilityHint("Выберите объём тренировок для диагностического пакета")
 
                 Text(presentation.clearSubtitle)
                     .font(.caption)

@@ -9,16 +9,19 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
     func testNormalHistoryStatisticsAndExportUIUseOnlyTelemetryV2() {
         XCTAssertTrue(contentSource.contains("manager.telemetryV2WorkoutHistory"))
         XCTAssertTrue(contentSource.contains("manager.telemetryV2Statistics"))
-        XCTAssertTrue(contentSource.contains("manager.prepareTelemetryV2Export"))
+        XCTAssertTrue(contentSource.contains("manager.prepareDiagnosticBundle"))
+        XCTAssertTrue(managerSource.contains("prepareTelemetryV2Export"))
         XCTAssertFalse(contentSource.contains("manager.workoutHistory"))
         XCTAssertFalse(contentSource.contains("manager.prepareTrainingLogsCsvExport"))
         XCTAssertFalse(contentSource.contains("manager.prepareTrainingSessionSummaryCsvExport"))
         XCTAssertFalse(contentSource.contains("manager.clearTrainingLogsForActiveProfile"))
     }
 
-    func testDebugSharesOneCompleteDiagnosticItemBehindPlainLanguageScopes() {
+    func testDebugSharesOneCancellableDiagnosticItemWithRecentDefault() {
         XCTAssertTrue(trainingLogsCardSource.contains("Поделиться диагностикой"))
+        XCTAssertTrue(trainingLogsCardSource.contains(".lastCompletedWorkouts(1)"))
         XCTAssertTrue(trainingLogsCardSource.contains("presentation.diagnosticScopeOptions"))
+        XCTAssertTrue(trainingLogsCardSource.contains("Отменить подготовку"))
         XCTAssertTrue(trainingLogsCardSource.contains("controllerUnitsDiagnosticReport"))
         XCTAssertTrue(trainingLogsCardSource.contains("heartRateDiagnosticReport"))
         XCTAssertFalse(trainingLogsCardSource.contains("Export Training CSV"))
@@ -29,9 +32,12 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
         XCTAssertTrue(contentSource.contains("Все доступные тренировки"))
         XCTAssertTrue(contentSource.contains("Последние "))
         XCTAssertTrue(contentSource.contains("Данные о здоровье"))
-        XCTAssertTrue(contentSource.contains("activityItems: [archiveURL]"))
+        XCTAssertTrue(contentSource.contains("activityItems: [artifact.archiveURL]"))
         XCTAssertFalse(contentSource.contains("activityItems: artifact.fileURLs"))
-        XCTAssertTrue(contentSource.contains("manager.finalizeTelemetryV2Export"))
+        XCTAssertTrue(contentSource.contains("manager.finalizeDiagnosticBundle"))
+        XCTAssertTrue(contentSource.contains("diagnosticBundleTask?.cancel()"))
+        XCTAssertTrue(managerSource.contains("diagnosticSupportSnapshot"))
+        XCTAssertTrue(managerSource.contains("DiagnosticBundlePackager.create"))
     }
 
     func testLegacyHistoryIsPrivateShadowEvidenceAndCannotGateStart() throws {

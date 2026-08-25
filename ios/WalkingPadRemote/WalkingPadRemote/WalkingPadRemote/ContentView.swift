@@ -4257,6 +4257,8 @@ private struct DebugView: View {
     @State private var showHrControlPreview = false
     @State private var hrControlPreviewMode: HrControlPreviewMode = .workout
     @State private var previewNoHrSignal = false
+    @State private var diagnosticBundleTask: Task<Void, Never>?
+    @State private var isPreparingDiagnosticBundle = false
 
     private var trainingLogScopeOptions: [TrainingLogCsvExportScope] {
         [.all, .lastCompletedWorkouts(3), .lastCompletedWorkouts(5)]
@@ -4380,9 +4382,10 @@ private struct DebugView: View {
             writerHealthDetailLines: telemetryV2WriterHealthDetailLines,
             diagnosticScopeOptions: diagnosticScopeOptions,
             diagnosticShareSubtitle: readReady
-                ? "Тренировки, пульс, версии и качество данных"
-                : "Данные Telemetry V2 недоступны",
-            canShareDiagnostics: readReady,
+                ? "Последняя тренировка + support diagnostics"
+                : "Support diagnostics + доступные данные Telemetry V2",
+            canShareDiagnostics: !isPreparingDiagnosticBundle,
+            isPreparingDiagnostics: isPreparingDiagnosticBundle,
             clearSubtitle: "Исходные данные остаются без изменений.",
             canClear: false,
             clearConfirmationMessage: "",
@@ -4785,7 +4788,29 @@ private struct DebugView: View {
                             }
                         },
                         onShareDiagnostics: { scope in
-                            shareTrainingDiagnostics(manager: manager, scope: scope)
+                            presentTelemetryV2ExportWarning {
+                                diagnosticBundleTask?.cancel()
+                                isPreparingDiagnosticBundle = true
+                                diagnosticBundleTask = Task { @MainActor in
+                                    defer {
+                                        isPreparingDiagnosticBundle = false
+                                        diagnosticBundleTask = nil
+                                    }
+                                    do {
+                                        try await prepareAndPresentDiagnosticBundle(
+                                            manager: manager,
+                                            scope: scope
+                                        )
+                                    } catch is CancellationError {
+                                        // User cancellation is already reflected by the card state.
+                                    } catch {
+                                        presentDiagnosticBundleFailure(error)
+                                    }
+                                }
+                            }
+                        },
+                        onCancelDiagnostics: {
+                            diagnosticBundleTask?.cancel()
                         }
                     )
 
@@ -4806,6 +4831,9 @@ private struct DebugView: View {
             .onAppear {
                 manager.refreshWorkoutHistoryFromV2(reset: true)
             }
+            .onDisappear {
+                diagnosticBundleTask?.cancel()
+            }
         }
     }
 }
@@ -4823,16 +4851,8 @@ private func copyLogs(lastCmd: String, hrStatus: String, log: String) {
     UIPasteboard.general.string = text
 }
 
-private func shareTrainingDiagnostics(
-    manager: BluetoothManager,
-    scope: TrainingLogCsvExportScope
-) {
-    presentTelemetryV2ExportWarning(manager: manager, scope: scope)
-}
-
 private func presentTelemetryV2ExportWarning(
-    manager: BluetoothManager,
-    scope: TrainingLogCsvExportScope
+    onContinue: @escaping () -> Void
 ) {
     guard let root = activeRootViewController() else { return }
     let alert = UIAlertController(
@@ -4842,45 +4862,51 @@ private func presentTelemetryV2ExportWarning(
     )
     alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
     alert.addAction(UIAlertAction(title: "Продолжить", style: .default) { _ in
-        Task { @MainActor in
-            do {
-                let artifact = try await manager.prepareTelemetryV2Export(scope: scope)
-                let archiveURL: URL
-                do {
-                    let archiveName = diagnosticArchiveName()
-                    archiveURL = try await Task.detached(priority: .userInitiated) {
-                        try DiagnosticZipArchive.create(
-                            directoryURL: artifact.directoryURL,
-                            fileURLs: artifact.fileURLs,
-                            archiveName: archiveName
-                        )
-                    }.value
-                } catch {
-                    manager.finalizeTelemetryV2Export(artifact, completed: false)
-                    throw error
-                }
-                let activity = UIActivityViewController(
-                    activityItems: [archiveURL],
-                    applicationActivities: nil
-                )
-                activity.completionWithItemsHandler = { _, completed, _, _ in
-                    Task { @MainActor in
-                        manager.finalizeTelemetryV2Export(artifact, completed: completed)
-                    }
-                }
-                activeRootViewController()?.present(activity, animated: true)
-            } catch {
-                let failure = UIAlertController(
-                    title: "Не удалось подготовить диагностику",
-                    message: error.localizedDescription,
-                    preferredStyle: .alert
-                )
-                failure.addAction(UIAlertAction(title: "OK", style: .default))
-                activeRootViewController()?.present(failure, animated: true)
-            }
-        }
+        onContinue()
     })
     root.present(alert, animated: true)
+}
+
+@MainActor
+private func prepareAndPresentDiagnosticBundle(
+    manager: BluetoothManager,
+    scope: TrainingLogCsvExportScope
+) async throws {
+    let artifact = try await manager.prepareDiagnosticBundle(
+        scope: scope,
+        archiveName: diagnosticArchiveName()
+    )
+    do {
+        try Task.checkCancellation()
+        guard let root = activeRootViewController() else {
+            manager.finalizeDiagnosticBundle(artifact, completed: false)
+            return
+        }
+        let activity = UIActivityViewController(
+            activityItems: [artifact.archiveURL],
+            applicationActivities: nil
+        )
+        activity.completionWithItemsHandler = { _, completed, _, _ in
+            Task { @MainActor in
+                manager.finalizeDiagnosticBundle(artifact, completed: completed)
+            }
+        }
+        root.present(activity, animated: true)
+    } catch {
+        manager.finalizeDiagnosticBundle(artifact, completed: false)
+        throw error
+    }
+}
+
+@MainActor
+private func presentDiagnosticBundleFailure(_ error: Error) {
+    let failure = UIAlertController(
+        title: "Не удалось подготовить диагностику",
+        message: error.localizedDescription,
+        preferredStyle: .alert
+    )
+    failure.addAction(UIAlertAction(title: "OK", style: .default))
+    activeRootViewController()?.present(failure, animated: true)
 }
 
 private func diagnosticArchiveName(now: Date = Date()) -> String {

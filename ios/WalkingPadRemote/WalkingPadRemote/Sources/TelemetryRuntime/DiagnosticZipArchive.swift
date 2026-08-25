@@ -1,6 +1,12 @@
 import Foundation
 
 public enum DiagnosticZipArchive {
+    public struct Result: Equatable, Sendable {
+        public let url: URL
+        public let outputBytes: UInt64
+        public let maximumChunkBytes: Int
+    }
+
     public enum ArchiveError: Error, Equatable {
         case destinationExists
         case emptyInput
@@ -24,6 +30,33 @@ public enum DiagnosticZipArchive {
         fileURLs: [URL],
         archiveName: String
     ) throws -> URL {
+        try createWithMetrics(
+            directoryURL: directoryURL,
+            fileURLs: fileURLs,
+            archiveName: archiveName
+        ).url
+    }
+
+    public static func createWithMetrics(
+        directoryURL: URL,
+        fileURLs: [URL],
+        archiveName: String
+    ) throws -> Result {
+        try createWithMetrics(
+            directoryURL: directoryURL,
+            fileURLs: fileURLs,
+            archiveName: archiveName,
+            cancellationCheck: { try Task.checkCancellation() }
+        )
+    }
+
+    static func createWithMetrics(
+        directoryURL: URL,
+        fileURLs: [URL],
+        archiveName: String,
+        cancellationCheck: () throws -> Void
+    ) throws -> Result {
+        try cancellationCheck()
         guard !fileURLs.isEmpty else { throw ArchiveError.emptyInput }
         guard !archiveName.isEmpty,
               archiveName == URL(fileURLWithPath: archiveName).lastPathComponent,
@@ -42,7 +75,9 @@ public enum DiagnosticZipArchive {
 
         var entries: [Entry] = []
         var seenNames = Set<String>()
+        var maximumChunkBytes = 0
         for fileURL in fileURLs {
+            try cancellationCheck()
             let source = fileURL.standardizedFileURL
             let name = source.lastPathComponent
             guard source.deletingLastPathComponent() == root,
@@ -71,13 +106,17 @@ public enum DiagnosticZipArchive {
             guard nameData.count <= Int(UInt16.max) else {
                 throw ArchiveError.zip32LimitExceeded(name)
             }
-            let crc32 = try checksum(of: source)
+            let checksum = try checksum(
+                of: source,
+                cancellationCheck: cancellationCheck
+            )
+            maximumChunkBytes = max(maximumChunkBytes, checksum.maximumChunkBytes)
             let timestamp = dosTimestamp(values.contentModificationDate ?? Date())
             entries.append(Entry(
                 sourceURL: source,
                 name: name,
                 nameData: nameData,
-                crc32: crc32,
+                crc32: checksum.value,
                 size: UInt32(fileSize),
                 modificationTime: timestamp.time,
                 modificationDate: timestamp.date
@@ -92,6 +131,7 @@ public enum DiagnosticZipArchive {
 
         do {
             for index in entries.indices {
+                try cancellationCheck()
                 guard offset <= UInt64(UInt32.max) else {
                     throw ArchiveError.zip32LimitExceeded(entries[index].name)
                 }
@@ -115,6 +155,8 @@ public enum DiagnosticZipArchive {
                 let input = try FileHandle(forReadingFrom: entry.sourceURL)
                 defer { try? input.close() }
                 while let chunk = try input.read(upToCount: 64 * 1024), !chunk.isEmpty {
+                    try cancellationCheck()
+                    maximumChunkBytes = max(maximumChunkBytes, chunk.count)
                     try write(chunk, to: output, offset: &offset)
                 }
             }
@@ -124,6 +166,7 @@ public enum DiagnosticZipArchive {
             }
             let centralDirectoryOffset = UInt32(offset)
             for entry in entries {
+                try cancellationCheck()
                 var header = Data()
                 header.appendLittleEndian(UInt32(0x02014b50))
                 header.appendLittleEndian(UInt16(20))
@@ -161,7 +204,11 @@ public enum DiagnosticZipArchive {
             footer.appendLittleEndian(UInt16(0))
             try write(footer, to: output, offset: &offset)
             try output.close()
-            return archiveURL
+            return Result(
+                url: archiveURL,
+                outputBytes: offset,
+                maximumChunkBytes: maximumChunkBytes
+            )
         } catch {
             try? output.close()
             try? FileManager.default.removeItem(at: archiveURL)
@@ -181,17 +228,23 @@ public enum DiagnosticZipArchive {
         }
     }
 
-    private static func checksum(of fileURL: URL) throws -> UInt32 {
+    private static func checksum(
+        of fileURL: URL,
+        cancellationCheck: () throws -> Void
+    ) throws -> (value: UInt32, maximumChunkBytes: Int) {
         let input = try FileHandle(forReadingFrom: fileURL)
         defer { try? input.close() }
         var value = UInt32.max
+        var maximumChunkBytes = 0
         while let chunk = try input.read(upToCount: 64 * 1024), !chunk.isEmpty {
+            try cancellationCheck()
+            maximumChunkBytes = max(maximumChunkBytes, chunk.count)
             for byte in chunk {
                 let index = Int((value ^ UInt32(byte)) & 0xff)
                 value = crcTable[index] ^ (value >> 8)
             }
         }
-        return value ^ UInt32.max
+        return (value ^ UInt32.max, maximumChunkBytes)
     }
 
     private static func dosTimestamp(_ date: Date) -> (time: UInt16, date: UInt16) {
