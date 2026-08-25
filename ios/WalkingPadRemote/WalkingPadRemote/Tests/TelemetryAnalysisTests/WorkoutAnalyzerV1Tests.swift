@@ -152,6 +152,54 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         })
     }
 
+    func testThirtyOneMinuteStableSpeedResponsesProvideFactualAverage() throws {
+        let sessionSeconds = 31 * 60
+        let fixture = AnalysisFixture(sessionSeconds: Double(sessionSeconds))
+        let treadmill = stride(from: 0, to: sessionSeconds, by: 5).enumerated().map {
+            fixture.treadmill(
+                ordinal: $0.offset + 1,
+                seconds: Double($0.element),
+                speed: 4.2,
+                factual: true
+            )
+        }
+        let frames = (0..<sessionSeconds).map { second -> CanonicalFrame in
+            let observation = treadmill[second / 5]
+            return fixture.treadmillFrame(
+                observation: observation,
+                second: Int64(second),
+                freshness: .fresh
+            )
+        }
+        let result = try WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                treadmill: treadmill,
+                events: fixture.cooldownEvents(
+                    start: Double(sessionSeconds - 300),
+                    end: Double(sessionSeconds),
+                    target: 115
+                ),
+                frames: frames
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(Double(sessionSeconds + 60))
+        )
+        let detail = try decodeDetail(result)
+
+        XCTAssertEqual(
+            try XCTUnwrap(detail.quality.treadmillFactualCoverage.coverageRatio),
+            1,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(result.keyMetrics.averageFactualSpeedKilometresPerHour),
+            4.2,
+            accuracy: 0.000_001
+        )
+        XCTAssertFalse(detail.quality.issues.contains {
+            $0.code == "average-factual-speed-insufficient-coverage"
+        })
+    }
+
     func testDuplicateAndOutOfOrderNativeSamplesCannotChangeDurationMetrics() throws {
         let fixture = AnalysisFixture(sessionSeconds: 20)
         let heartRate = [
