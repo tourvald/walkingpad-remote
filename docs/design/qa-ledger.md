@@ -1,6 +1,17 @@
 # Redesign QA ledger
 
-Status: passed for the binding Issue #116 Training presentation follow-up.
+Status: passed for the binding Issue #113 workout-analysis export interaction.
+
+## Issue #113 — workout analysis export action
+
+| Pass | State / form factor | Severity | Finding | Evidence | Owner path | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline | Native V2 workout history row, iPhone / iPad adaptive layout | P1 | `Экспорт данных тренировки` is a native full-width bordered button in the existing scroll flow, shown only for native V2 workouts. It has a symbol, a progress state, an explicit VoiceOver label, and disables duplicate export taps while work is active. | Focused source-contract test plus unsigned generic iOS + embedded Watch build | `ContentView.swift` | Pass |
+| Baseline | Health-data confirmation and share completion | P0 | Export requires an explicit health-data confirmation, shares exactly one CSV, cleans only its temporary directory on cancel/failure/share completion, and states that source data is not changed or deleted. | Focused persistence/runtime/source-contract tests | `ContentView.swift`, `BluetoothManager.swift` | Pass |
+| Final review | Missing / imported workout selection | P0 | Imported rows expose no analysis action; typed native session plus exact active-profile ownership is revalidated by the store before any frame/event page is read. | Cross-profile, missing-native, historical UUID-case, and source-contract tests | `WorkoutReadProjection.swift`, `TelemetryWorkoutAnalysisExportStore.swift` | Pass |
+| Final review | Simulator screenshot | P3 | A clean simulator has no retained native V2 workout row, so the selected-history action cannot be captured without fabricating persisted product evidence. Source order, hit target behavior, accessibility label, localization resilience, and adaptive scroll placement were verified by inspection and build instead. | QA environment limitation; no device, BLE, treadmill, or fabricated persistence fixture used | QA environment | Accepted limitation; no P0–P2 finding. |
+
+No visual correction pass was required. The export generation runs through the isolated SwiftData actor; the history view only coordinates progress, confirmation, and the system share sheet.
 
 ## Issue #116 — active/cooldown presentation polish
 

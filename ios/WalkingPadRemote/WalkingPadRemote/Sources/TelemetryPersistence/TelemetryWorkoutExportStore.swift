@@ -34,7 +34,7 @@ private struct NativeSessionExportRecord: Encodable {
     let configurationHashDigest: String?
 }
 
-private struct PrivacySafeConfigurationExportRecord: Codable {
+struct PrivacySafeConfigurationExportRecord: Codable {
     let workoutMode: WorkoutMode?
     let targetHeartRate: Int?
     let durationMinutes: Int?
@@ -49,7 +49,7 @@ private struct PrivacySafeConfigurationExportRecord: Codable {
     let treadmill: PrivacySafeTreadmillConfigurationExportRecord?
 }
 
-private struct PrivacySafeTreadmillConfigurationExportRecord: Codable {
+struct PrivacySafeTreadmillConfigurationExportRecord: Codable {
     let protocolName: String?
     let protocolVersion: String?
     let minimumSpeedKilometresPerHour: Double?

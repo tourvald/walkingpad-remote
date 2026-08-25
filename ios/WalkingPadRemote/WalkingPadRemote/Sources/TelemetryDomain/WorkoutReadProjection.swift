@@ -380,6 +380,68 @@ public struct WorkoutExportManifest: Codable, Hashable, Sendable {
     }
 }
 
+public struct WorkoutAnalysisExportRequest: Codable, Hashable, Sendable {
+    public let sessionID: SessionID
+    public let exactProfileLocalIdentifier: String
+    public let batchSize: Int
+
+    public init(
+        sessionID: SessionID,
+        exactProfileLocalIdentifier: String,
+        batchSize: Int = 128
+    ) {
+        self.sessionID = sessionID
+        self.exactProfileLocalIdentifier = exactProfileLocalIdentifier
+        self.batchSize = batchSize
+    }
+}
+
+public struct WorkoutAnalysisExportDiagnostics: Codable, Hashable, Sendable {
+    public let frameRowCount: Int
+    public let eventRowCount: Int
+    public let metadataRowCount: Int
+    public let fileByteCount: Int64
+    public let storeFetchCount: Int
+    public let maximumStoreFetchLimit: Int
+    public let maximumBufferedTimelineRows: Int
+
+    public init(
+        frameRowCount: Int,
+        eventRowCount: Int,
+        metadataRowCount: Int,
+        fileByteCount: Int64,
+        storeFetchCount: Int,
+        maximumStoreFetchLimit: Int,
+        maximumBufferedTimelineRows: Int
+    ) {
+        self.frameRowCount = frameRowCount
+        self.eventRowCount = eventRowCount
+        self.metadataRowCount = metadataRowCount
+        self.fileByteCount = fileByteCount
+        self.storeFetchCount = storeFetchCount
+        self.maximumStoreFetchLimit = maximumStoreFetchLimit
+        self.maximumBufferedTimelineRows = maximumBufferedTimelineRows
+    }
+}
+
+public struct WorkoutAnalysisExportArtifact: Codable, Hashable, Sendable {
+    public static let schemaVersion = "workout-analysis-timeline-v1"
+
+    public let fileURL: URL
+    public let diagnostics: WorkoutAnalysisExportDiagnostics
+    public let containsHealthData: Bool
+
+    public init(
+        fileURL: URL,
+        diagnostics: WorkoutAnalysisExportDiagnostics,
+        containsHealthData: Bool
+    ) {
+        self.fileURL = fileURL
+        self.diagnostics = diagnostics
+        self.containsHealthData = containsHealthData
+    }
+}
+
 public enum TelemetryWorkoutReadError: Error, Codable, Equatable, Sendable {
     case unavailable(String)
     case invalidPageSize
@@ -415,6 +477,10 @@ public protocol TelemetryWorkoutReadCapability: Sendable {
     ) async throws -> WorkoutStatisticsProjection
 
     func exportWorkouts(_ request: WorkoutExportRequest) async throws -> WorkoutExportArtifact
+
+    func exportWorkoutAnalysis(
+        _ request: WorkoutAnalysisExportRequest
+    ) async throws -> WorkoutAnalysisExportArtifact
 }
 
 public protocol TelemetryHealthKitWorkoutLinkageCapability: Sendable {

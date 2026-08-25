@@ -610,6 +610,15 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         return try await reader.exportWorkouts(request)
     }
 
+    public func exportWorkoutAnalysis(
+        _ request: WorkoutAnalysisExportRequest
+    ) async throws -> WorkoutAnalysisExportArtifact {
+        guard let reader = workoutReadCapability() else {
+            throw TelemetryWorkoutReadError.unavailable("telemetry-v2-store-not-ready")
+        }
+        return try await reader.exportWorkoutAnalysis(request)
+    }
+
     public func associateHealthKitWorkout(
         sessionID: SessionID,
         workoutIdentifier: UUID

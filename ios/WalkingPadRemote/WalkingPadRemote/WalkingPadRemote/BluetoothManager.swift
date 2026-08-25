@@ -2145,6 +2145,29 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
+    func prepareWorkoutAnalysisExport(
+        for entry: WorkoutHistoryProjection
+    ) async throws -> WorkoutAnalysisExportArtifact {
+        guard entry.origin == .nativeV2,
+              entry.id.hasPrefix("native:"),
+              let profileID = activeUserProfileID,
+              let sessionUUID = UUID(uuidString: String(entry.id.dropFirst("native:".count))) else {
+            throw TelemetryWorkoutReadError.unavailable("selected-native-workout-unavailable")
+        }
+        return try await telemetryV2Coordinator.exportWorkoutAnalysis(
+            WorkoutAnalysisExportRequest(
+                sessionID: SessionID(rawValue: sessionUUID),
+                exactProfileLocalIdentifier: profileID.uuidString
+            )
+        )
+    }
+
+    func finalizeWorkoutAnalysisExport(_ artifact: WorkoutAnalysisExportArtifact) {
+        try? FileManager.default.removeItem(
+            at: artifact.fileURL.deletingLastPathComponent()
+        )
+    }
+
     func prepareDiagnosticBundle(
         scope: TrainingLogCsvExportScope,
         archiveName: String
