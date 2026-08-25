@@ -9,7 +9,7 @@ struct DebugTrainingLogsCard: View {
             let tint: Color
         }
 
-        struct ExportOption: Identifiable {
+        struct DiagnosticScopeOption: Identifiable {
             let id: String
             let title: String
             let scope: TrainingLogCsvExportScope
@@ -31,12 +31,10 @@ struct DebugTrainingLogsCard: View {
         let deviceMetrics: [Metric]
         let writerHealthMetrics: [Metric]
         let writerHealthDetailLines: [String]
-        let rawExportOptions: [ExportOption]
-        let rawExportSubtitle: String
-        let canExportRaw: Bool
-        let sessionSummaryOptions: [ExportOption]
-        let sessionSummarySubtitle: String
-        let canExportSessionSummary: Bool
+        let diagnosticScopeOptions: [DiagnosticScopeOption]
+        let diagnosticShareSubtitle: String
+        let canShareDiagnostics: Bool
+        let isPreparingDiagnostics: Bool
         let clearSubtitle: String
         let canClear: Bool
         let clearConfirmationMessage: String
@@ -46,16 +44,11 @@ struct DebugTrainingLogsCard: View {
 
     let presentation: Presentation
     let onToggleTestRun: () -> Void
-    let onExportRaw: (TrainingLogCsvExportScope) -> Void
-    let onExportSessionSummary: (TrainingLogCsvExportScope) -> Void
+    let onShareDiagnostics: (TrainingLogCsvExportScope) -> Void
+    let onCancelDiagnostics: () -> Void
 
     private let metricColumns = [
         GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10)
-    ]
-
-    private let actionColumns = [
         GridItem(.flexible(), spacing: 10),
         GridItem(.flexible(), spacing: 10)
     ]
@@ -175,38 +168,43 @@ struct DebugTrainingLogsCard: View {
                     }
                 }
 
-                LazyVGrid(columns: actionColumns, spacing: 10) {
-                    Menu {
-                        ForEach(presentation.rawExportOptions) { option in
-                            Button(option.title) {
-                                onExportRaw(option.scope)
-                            }
-                        }
-                    } label: {
+                if presentation.isPreparingDiagnostics {
+                    Button(action: onCancelDiagnostics) {
                         DebugActionTileLabel(
-                            title: "Export Training CSV",
-                            subtitle: presentation.rawExportSubtitle,
-                            tint: .accentColor,
-                            enabled: presentation.canExportRaw
+                            title: "Отменить подготовку",
+                            subtitle: "Диагностический пакет формируется…",
+                            tint: .orange,
+                            enabled: true
                         )
                     }
-                    .disabled(!presentation.canExportRaw)
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Отменяет подготовку и удаляет временные файлы")
+                } else {
+                    Button {
+                        onShareDiagnostics(.lastCompletedWorkouts(1))
+                    } label: {
+                        DebugActionTileLabel(
+                            title: "Поделиться диагностикой",
+                            subtitle: presentation.diagnosticShareSubtitle,
+                            tint: .accentColor,
+                            enabled: presentation.canShareDiagnostics
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!presentation.canShareDiagnostics)
+                    .accessibilityHint("Готовит последнюю тренировку и support diagnostics")
 
                     Menu {
-                        ForEach(presentation.sessionSummaryOptions) { option in
+                        ForEach(presentation.diagnosticScopeOptions) { option in
                             Button(option.title) {
-                                onExportSessionSummary(option.scope)
+                                onShareDiagnostics(option.scope)
                             }
                         }
                     } label: {
-                        DebugActionTileLabel(
-                            title: "Export Session Summary",
-                            subtitle: presentation.sessionSummarySubtitle,
-                            tint: Color.blue,
-                            enabled: presentation.canExportSessionSummary
-                        )
+                        Label("Другой объём", systemImage: "ellipsis.circle")
+                            .font(.caption.weight(.semibold))
                     }
-                    .disabled(!presentation.canExportSessionSummary)
+                    .disabled(!presentation.canShareDiagnostics)
                 }
 
                 Text(presentation.clearSubtitle)

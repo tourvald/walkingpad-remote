@@ -223,6 +223,7 @@ let package = Package(
             dependencies: [
                 "TelemetryDomain",
                 "TelemetryPersistence",
+                "TelemetryRuntime",
                 "TelemetryGateCrashWorker",
             ]
         )

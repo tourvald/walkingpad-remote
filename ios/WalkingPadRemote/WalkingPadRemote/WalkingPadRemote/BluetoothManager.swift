@@ -2145,15 +2145,153 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
-    func finalizeTelemetryV2Export(_ artifact: WorkoutExportArtifact, completed: Bool) {
+    func prepareDiagnosticBundle(
+        scope: TrainingLogCsvExportScope,
+        archiveName: String
+    ) async throws -> DiagnosticBundleArtifact {
+        let supportSnapshot = diagnosticSupportSnapshot()
+        let workoutArtifact: WorkoutExportArtifact
+        do {
+            workoutArtifact = try await prepareTelemetryV2Export(scope: scope)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return try await DiagnosticBundlePackager.createSupportOnly(
+                supportSnapshot: supportSnapshot,
+                archiveName: archiveName,
+                workoutEvidenceFailureCategory: diagnosticWorkoutExportFailureCategory(error)
+            )
+        }
+        if workoutArtifact.exportedWorkoutCount == 0 {
+            try? FileManager.default.removeItem(at: workoutArtifact.directoryURL)
+            return try await DiagnosticBundlePackager.createSupportOnly(
+                supportSnapshot: supportSnapshot,
+                archiveName: archiveName,
+                workoutEvidenceStatus: "not_present",
+                workoutEvidenceFailureCategory: "no_completed_workout"
+            )
+        }
+        do {
+            return try await DiagnosticBundlePackager.create(
+                workoutArtifact: workoutArtifact,
+                supportSnapshot: supportSnapshot,
+                archiveName: archiveName
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: workoutArtifact.directoryURL)
+            throw error
+        }
+    }
+
+    private func diagnosticWorkoutExportFailureCategory(_ error: Error) -> String {
+        guard let error = error as? TelemetryWorkoutReadError else {
+            return "unexpected_error"
+        }
+        return switch error {
+        case .unavailable(_): "unavailable"
+        case .invalidPageSize: "invalid_page_size"
+        case .corruptProjection(_): "corrupt_projection"
+        case .exportFailed(_): "export_failed"
+        }
+    }
+
+    private func diagnosticSupportSnapshot(
+        now: Date = Date()
+    ) -> DiagnosticSupportSnapshot {
+        let preflight = nativeHeartRatePreflightEngine.diagnosticSnapshot
+        let controllerUnits = controllerUnitsDiagnosticSnapshot(now: now)
+        let currentConnection = currentTreadmillControlConnection
+        let writer = telemetryV2WriterHealthSnapshot
+        let app = currentTelemetryV2AppContext
+        let versions = currentTelemetryV2RuntimeVersions
+        return DiagnosticSupportSnapshot(
+            capturedAt: now,
+            runtime: .init(
+                appVersion: app.appVersion,
+                buildNumber: app.buildNumber,
+                operatingSystemVersion: app.operatingSystemVersion,
+                telemetrySchemaVersion: versions.telemetrySchema.rawValue,
+                algorithmVersion: versions.algorithm.rawValue,
+                safetyPolicyVersion: versions.safetyPolicy.rawValue,
+                workoutProtocolVersion: versions.workoutProtocol.rawValue
+            ),
+            nativeHeartRatePreflight: .init(
+                phase: preflight.phase,
+                requestedAt: preflight.requestedAt,
+                providerPreparedAt: preflight.providerPreparedAt,
+                collectionStartedAt: preflight.collectionStartedAt,
+                firstNativeCallbackMeasuredAt: preflight.firstNativeCallbackMeasuredAt,
+                firstNativeCallbackReceivedAt: preflight.firstNativeCallbackReceivedAt,
+                firstQualifyingLatencySeconds: preflight.firstQualifyingLatencySeconds,
+                terminalAt: preflight.terminalAt,
+                terminalReason: preflight.terminalReason,
+                gateBlockReason: preflight.gateBlockReason,
+                providerState: iPhoneHealthKitHeartRateProvider.state.rawValue,
+                providerCleanupInFlight: nativeHeartRateProviderLifecycle.cleanupInFlight,
+                providerGeneration: nativeHeartRateProviderLifecycle.generation,
+                providerHasBoundAttempt: nativeHeartRateProviderLifecycle.attemptID != nil,
+                nativeWorkoutCommitted: nativeHealthKitWorkoutCommitted
+            ),
+            controllerUnits: .init(
+                status: controllerUnits.status.rawValue,
+                physicalUnits: controllerUnits.units.rawValue,
+                observedAt: controllerUnits.observedAt,
+                ageSeconds: controllerUnits.ageSeconds,
+                isFresh: controllerUnits.isFresh,
+                gateAllowed: controllerUnits.gateAllowed,
+                blockReason: controllerUnits.blockReason?.rawValue,
+                evidenceConnectionEpoch: controllerUnits.evidenceConnectionEpoch?.uuidString,
+                currentConnectionEpoch: controllerUnits.currentConnectionEpoch?.uuidString,
+                isCurrentConnection: controllerUnits.isCurrentConnection,
+                byteCount: controllerUnits.byteCount,
+                rawA6Hex: controllerUnits.rawHex
+            ),
+            treadmill: .init(
+                protocolName: treadmillProtocol.rawValue,
+                isConnected: isConnected,
+                isControlReady: isTreadmillControlReady,
+                hasCurrentConnectionContext: currentConnection != nil,
+                protocolMatchesCurrentConnection: currentConnection != nil
+                    && treadmillProtocolConnection == currentConnection,
+                connectionEpoch: currentConnection?.epoch.uuidString
+            ),
+            writerHealth: .init(
+                workoutReadState: telemetryV2WorkoutReadStateDiagnosticValue,
+                runtimeLifecycle: writer.runtimeLifecycle.rawValue,
+                recorderLifecycle: writer.recorderLifecycle?.rawValue,
+                completeness: writer.completeness?.rawValue,
+                queueDepth: writer.queueDepth,
+                peakQueueDepth: writer.peakQueueDepth,
+                coalescedFrameCount: writer.coalescedFrameCount,
+                droppedFrameCount: writer.droppedFrameCount,
+                lostNativeCount: writer.lostNativeCount,
+                lostCriticalCount: writer.lostCriticalCount,
+                writerFailureCount: writer.writerFailureCount,
+                retryCount: writer.retryCount,
+                successfulFlushCount: writer.successfulFlushCount,
+                lastCommittedRecorderSequence: writer.lastCommittedRecorderSequence
+            )
+        )
+    }
+
+    private var telemetryV2WorkoutReadStateDiagnosticValue: String {
+        switch telemetryV2WorkoutHistoryState {
+        case .idle: "idle"
+        case .loading: "loading"
+        case .loaded: "loaded"
+        case .failed(_): "failed"
+        }
+    }
+
+    func finalizeDiagnosticBundle(_ artifact: DiagnosticBundleArtifact, completed: Bool) {
         do {
             try FileManager.default.removeItem(at: artifact.directoryURL)
         } catch {
-            appendLog("Telemetry V2 export temporary cleanup failed: \(error.localizedDescription)")
+            appendLog("Diagnostic bundle temporary cleanup failed: \(error.localizedDescription)")
         }
         infoToastMessage = completed
-            ? "Telemetry V2 export shared. Source evidence was preserved."
-            : "Telemetry V2 export cancelled. Source evidence was preserved."
+            ? "Diagnostic bundle shared. Source evidence was preserved."
+            : "Diagnostic bundle cancelled. Source evidence was preserved."
     }
 
     // Lifecycle
@@ -7642,16 +7780,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             sessionID: sessionID,
             deterministicLegacySessionID: legacySessionID,
             startedAt: startedAt,
-            appContext: AppRuntimeContext(
-                appVersion: Bundle.main.object(
-                    forInfoDictionaryKey: "CFBundleShortVersionString"
-                ) as? String ?? "unknown",
-                buildNumber: Bundle.main.object(
-                    forInfoDictionaryKey: "CFBundleVersion"
-                ) as? String ?? "unknown",
-                operatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersionString,
-                deviceModel: deviceModel
-            ),
+            appContext: currentTelemetryV2AppContext(deviceModel: deviceModel),
             configuration: TelemetryV2ConfigurationInput(
                 profileLocalIdentifier: activeUserProfile?.id.uuidString ?? "unknown",
                 workoutMode: .heartRateControlled,
@@ -7676,16 +7805,37 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     speedIncrementKilometresPerHour: treadmillSpeedIncrementKmh
                 )
             ),
-            versions: RuntimeVersionContext(
-                telemetrySchema: TelemetrySchemaVersion(rawValue: "1.0.0"),
-                algorithm: AlgorithmVersion(rawValue: "legacy-hr-control-2026-08"),
-                safetyPolicy: SafetyPolicyVersion(rawValue: "walkingpad-runtime-safety-2026-08"),
-                workoutProtocol: WorkoutProtocolVersion(rawValue: "hr-workout-v1")
-            ),
+            versions: currentTelemetryV2RuntimeVersions,
             heartRateFreshnessLimitSeconds: TimeInterval(hrStaleThresholdSeconds),
             treadmillFreshnessLimitSeconds: ControllerUnitsSafetyPolicy.freshnessInterval
         )
         telemetryV2Coordinator.beginSession(descriptor)
+    }
+
+    private var currentTelemetryV2AppContext: AppRuntimeContext {
+        currentTelemetryV2AppContext(deviceModel: nil)
+    }
+
+    private func currentTelemetryV2AppContext(deviceModel: String?) -> AppRuntimeContext {
+        AppRuntimeContext(
+            appVersion: Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String ?? "unknown",
+            buildNumber: Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String ?? "unknown",
+            operatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            deviceModel: deviceModel
+        )
+    }
+
+    private var currentTelemetryV2RuntimeVersions: RuntimeVersionContext {
+        RuntimeVersionContext(
+            telemetrySchema: TelemetrySchemaVersion(rawValue: "1.0.0"),
+            algorithm: AlgorithmVersion(rawValue: "legacy-hr-control-2026-08"),
+            safetyPolicy: SafetyPolicyVersion(rawValue: "walkingpad-runtime-safety-2026-08"),
+            workoutProtocol: WorkoutProtocolVersion(rawValue: "hr-workout-v1")
+        )
     }
 
     private func endTelemetryV2Session(reason: String) {

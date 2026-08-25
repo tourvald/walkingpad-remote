@@ -559,6 +559,32 @@ struct NativeHeartRateProviderLifecycle: Equatable {
 struct NativeHeartRatePreflightEngine {
     static let timeoutSeconds: TimeInterval = 30
 
+    struct DiagnosticSnapshot: Equatable {
+        var phase: String
+        var requestedAt: Date?
+        var providerPreparedAt: Date?
+        var collectionStartedAt: Date?
+        var firstNativeCallbackMeasuredAt: Date?
+        var firstNativeCallbackReceivedAt: Date?
+        var firstQualifyingLatencySeconds: TimeInterval?
+        var terminalAt: Date?
+        var terminalReason: String?
+        var gateBlockReason: String?
+
+        static let idle = DiagnosticSnapshot(
+            phase: "idle",
+            requestedAt: nil,
+            providerPreparedAt: nil,
+            collectionStartedAt: nil,
+            firstNativeCallbackMeasuredAt: nil,
+            firstNativeCallbackReceivedAt: nil,
+            firstQualifyingLatencySeconds: nil,
+            terminalAt: nil,
+            terminalReason: nil,
+            gateBlockReason: nil
+        )
+    }
+
     enum RuntimePolicy {
         static func stopInProgress(
             hasObservationLifecycle: Bool,
@@ -721,6 +747,8 @@ struct NativeHeartRatePreflightEngine {
     }
 
     private var phase: Phase = .idle
+    private var latestProviderPreparedAt: Date?
+    private(set) var diagnosticSnapshot: DiagnosticSnapshot = .idle
 
     var isWarmPrepared: Bool { phase == .prepared }
 
@@ -747,7 +775,33 @@ struct NativeHeartRatePreflightEngine {
     }
 
     mutating func requestStart(intent: Intent, safety: SafetyFacts) -> [Effect] {
-        guard safety.permitsStartIntent else { return [] }
+        guard safety.permitsStartIntent else {
+            diagnosticSnapshot = DiagnosticSnapshot(
+                phase: "blocked",
+                requestedAt: intent.requestedAt,
+                providerPreparedAt: latestProviderPreparedAt,
+                collectionStartedAt: nil,
+                firstNativeCallbackMeasuredAt: nil,
+                firstNativeCallbackReceivedAt: nil,
+                firstQualifyingLatencySeconds: nil,
+                terminalAt: intent.requestedAt,
+                terminalReason: "start_blocked",
+                gateBlockReason: Self.startBlockReason(safety)
+            )
+            return []
+        }
+        diagnosticSnapshot = DiagnosticSnapshot(
+            phase: "requested",
+            requestedAt: intent.requestedAt,
+            providerPreparedAt: latestProviderPreparedAt,
+            collectionStartedAt: nil,
+            firstNativeCallbackMeasuredAt: nil,
+            firstNativeCallbackReceivedAt: nil,
+            firstQualifyingLatencySeconds: nil,
+            terminalAt: nil,
+            terminalReason: nil,
+            gateBlockReason: nil
+        )
         switch phase {
         case .idle:
             phase = .preparing(intent)
@@ -768,13 +822,18 @@ struct NativeHeartRatePreflightEngine {
     }
 
     mutating func providerPrepared(at date: Date) -> [Effect] {
+        latestProviderPreparedAt = date
         switch phase {
         case .warming:
             phase = .prepared
             return []
         case .preparing(let intent):
+            if diagnosticSnapshot.requestedAt == intent.requestedAt {
+                diagnosticSnapshot.phase = "provider_prepared"
+                diagnosticSnapshot.providerPreparedAt = date
+            }
             guard !deadlineReached(for: intent, now: date) else {
-                return cancel(reason: .timeout)
+                return cancel(reason: .timeout, now: date)
             }
             phase = .starting(intent, acquisitionStartedAt: date)
             return [.startCollection(intent: intent, acquisitionStartedAt: date)]
@@ -794,13 +853,15 @@ struct NativeHeartRatePreflightEngine {
             return []
         }
         guard !deadlineReached(for: intent, now: now) else {
-            return cancel(reason: .timeout)
+            return cancel(reason: .timeout, now: now)
         }
         phase = .waiting(
             intent,
             acquisitionStartedAt: acquisitionStartedAt,
             observation: nil
         )
+        diagnosticSnapshot.phase = "collecting"
+        diagnosticSnapshot.collectionStartedAt = acquisitionStartedAt
         return []
     }
 
@@ -812,7 +873,12 @@ struct NativeHeartRatePreflightEngine {
     ) -> [Effect] {
         guard let intent = currentIntent else { return [] }
         guard !deadlineReached(for: intent, now: now) else {
-            return cancel(reason: .timeout)
+            return cancel(reason: .timeout, now: now)
+        }
+        if observation.source == .nativeHealthKit,
+           diagnosticSnapshot.firstNativeCallbackReceivedAt == nil {
+            diagnosticSnapshot.firstNativeCallbackMeasuredAt = observation.measuredAt
+            diagnosticSnapshot.firstNativeCallbackReceivedAt = observation.receivedAt
         }
         guard case .waiting(let intent, let acquisitionStartedAt, _) = phase,
               observation.isQualifying(
@@ -822,6 +888,14 @@ struct NativeHeartRatePreflightEngine {
               ) else {
             return []
         }
+        diagnosticSnapshot.phase = "qualifying_hr_received"
+        diagnosticSnapshot.firstQualifyingLatencySeconds = max(
+            0,
+            observation.receivedAt.timeIntervalSince(acquisitionStartedAt)
+        )
+        diagnosticSnapshot.gateBlockReason = safety.controllerUnitsAllowed
+            ? nil
+            : "controller_units_blocked"
         phase = .waiting(
             intent,
             acquisitionStartedAt: acquisitionStartedAt,
@@ -837,16 +911,16 @@ struct NativeHeartRatePreflightEngine {
     ) -> [Effect] {
         guard ownsUncommittedWorkout else { return [] }
         if let intent = currentIntent, deadlineReached(for: intent, now: now) {
-            return cancel(reason: .timeout)
+            return cancel(reason: .timeout, now: now)
         }
         if safety.appActivity == .background {
-            return cancel(reason: .appBackgrounded)
+            return cancel(reason: .appBackgrounded, now: now)
         }
         if !safety.treadmillControlReady || !safety.transportValid {
-            return cancel(reason: .treadmillControlLost)
+            return cancel(reason: .treadmillControlLost, now: now)
         }
         if safety.hasConflictingWorkout || safety.stopInProgress {
-            return cancel(reason: .superseded)
+            return cancel(reason: .superseded, now: now)
         }
         return commitIfAllowed(safety: safety, now: now, freshnessLimit: freshnessLimit)
     }
@@ -856,12 +930,15 @@ struct NativeHeartRatePreflightEngine {
               deadlineReached(for: intent, now: now) else {
             return []
         }
-        return cancel(reason: .timeout)
+        return cancel(reason: .timeout, now: now)
     }
 
-    mutating func cancel(reason: CancellationReason) -> [Effect] {
+    mutating func cancel(reason: CancellationReason, now: Date = Date()) -> [Effect] {
         guard phase != .idle else { return [] }
         phase = .idle
+        diagnosticSnapshot.phase = "terminal"
+        diagnosticSnapshot.terminalAt = now
+        diagnosticSnapshot.terminalReason = reason.rawValue
         return [.discard(reason: reason)]
     }
 
@@ -889,7 +966,7 @@ struct NativeHeartRatePreflightEngine {
             return []
         }
         guard !deadlineReached(for: intent, now: now) else {
-            return cancel(reason: .timeout)
+            return cancel(reason: .timeout, now: now)
         }
         guard safety.permitsCommit,
               observation.isQualifying(
@@ -900,6 +977,10 @@ struct NativeHeartRatePreflightEngine {
             return []
         }
         phase = .idle
+        diagnosticSnapshot.phase = "committed"
+        diagnosticSnapshot.terminalAt = now
+        diagnosticSnapshot.terminalReason = "committed"
+        diagnosticSnapshot.gateBlockReason = nil
         return [.commit(
             intent: intent,
             observation: observation,
@@ -909,5 +990,14 @@ struct NativeHeartRatePreflightEngine {
 
     private func deadlineReached(for intent: Intent, now: Date) -> Bool {
         now >= intent.requestedAt.addingTimeInterval(Self.timeoutSeconds)
+    }
+
+    private static func startBlockReason(_ safety: SafetyFacts) -> String {
+        if safety.appActivity != .active { return "app_not_active" }
+        if !safety.treadmillControlReady { return "treadmill_not_ready" }
+        if !safety.transportValid { return "transport_invalid" }
+        if safety.hasConflictingWorkout { return "conflicting_workout" }
+        if safety.stopInProgress { return "stop_in_progress" }
+        return "unknown"
     }
 }

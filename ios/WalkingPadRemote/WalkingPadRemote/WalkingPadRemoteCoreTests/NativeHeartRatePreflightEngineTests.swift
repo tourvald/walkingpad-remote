@@ -150,6 +150,104 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         ])
     }
 
+    func testDiagnosticSnapshotRecordsBlockedStartWithoutChangingEffectsOrWarmState() {
+        var engine = preparedEngine()
+        let intent = makeIntent()
+
+        let effects = engine.requestStart(
+            intent: intent,
+            safety: safeFacts(treadmillControlReady: false)
+        )
+
+        XCTAssertEqual(effects, [])
+        XCTAssertTrue(engine.isWarmPrepared)
+        XCTAssertFalse(engine.hasStartIntent)
+        XCTAssertEqual(engine.diagnosticSnapshot.phase, "blocked")
+        XCTAssertEqual(engine.diagnosticSnapshot.requestedAt, intent.requestedAt)
+        XCTAssertEqual(engine.diagnosticSnapshot.terminalAt, intent.requestedAt)
+        XCTAssertEqual(engine.diagnosticSnapshot.terminalReason, "start_blocked")
+        XCTAssertEqual(engine.diagnosticSnapshot.gateBlockReason, "treadmill_not_ready")
+    }
+
+    func testDiagnosticSnapshotTracksQualifyingLatencyWithoutChangingDeferredCommit() {
+        var engine = waitingEngine()
+        let observation = nativeObservation(
+            measuredAt: now.addingTimeInterval(1.25),
+            receivedAt: now.addingTimeInterval(1.5)
+        )
+
+        let blockedEffects = engine.receive(
+            observation,
+            safety: safeFacts(controllerUnitsAllowed: false),
+            now: now.addingTimeInterval(2),
+            freshnessLimit: 7
+        )
+
+        XCTAssertEqual(blockedEffects, [])
+        XCTAssertTrue(engine.hasStartIntent)
+        XCTAssertEqual(engine.diagnosticSnapshot.phase, "qualifying_hr_received")
+        XCTAssertEqual(engine.diagnosticSnapshot.firstNativeCallbackMeasuredAt, observation.measuredAt)
+        XCTAssertEqual(engine.diagnosticSnapshot.firstNativeCallbackReceivedAt, observation.receivedAt)
+        XCTAssertEqual(engine.diagnosticSnapshot.firstQualifyingLatencySeconds, 1.5)
+        XCTAssertEqual(engine.diagnosticSnapshot.gateBlockReason, "controller_units_blocked")
+
+        let commitEffects = engine.safetyChanged(
+            safeFacts(),
+            now: now.addingTimeInterval(3),
+            freshnessLimit: 7
+        )
+        XCTAssertEqual(commitEffects.count, 1)
+        guard case .commit = commitEffects[0] else {
+            return XCTFail("Expected existing commit effect")
+        }
+        XCTAssertEqual(engine.diagnosticSnapshot.phase, "committed")
+        XCTAssertEqual(engine.diagnosticSnapshot.terminalAt, now.addingTimeInterval(3))
+        XCTAssertEqual(engine.diagnosticSnapshot.terminalReason, "committed")
+        XCTAssertNil(engine.diagnosticSnapshot.gateBlockReason)
+    }
+
+    func testDiagnosticSnapshotRecordsTerminalCancellationWithoutAddingEffects() {
+        var engine = waitingEngine()
+        let cancelledAt = now.addingTimeInterval(4)
+
+        XCTAssertEqual(
+            engine.cancel(reason: .providerFailure, now: cancelledAt),
+            [.discard(reason: .providerFailure)]
+        )
+        XCTAssertEqual(engine.cancel(reason: .providerFailure, now: cancelledAt), [])
+        XCTAssertEqual(engine.diagnosticSnapshot.phase, "terminal")
+        XCTAssertEqual(engine.diagnosticSnapshot.terminalAt, cancelledAt)
+        XCTAssertEqual(engine.diagnosticSnapshot.terminalReason, "providerFailure")
+    }
+
+    func testWarmPreparationCannotOverwriteBlockedOrTerminalDiagnosticSnapshot() {
+        var blockedEngine = NativeHeartRatePreflightEngine()
+        let blockedIntent = makeIntent()
+        XCTAssertEqual(blockedEngine.requestStart(
+            intent: blockedIntent,
+            safety: safeFacts(treadmillControlReady: false)
+        ), [])
+        let blockedSnapshot = blockedEngine.diagnosticSnapshot
+
+        XCTAssertEqual(blockedEngine.requestWarmPreparation(), [.prepare])
+        XCTAssertEqual(blockedEngine.providerPrepared(at: now.addingTimeInterval(5)), [])
+        XCTAssertEqual(blockedEngine.diagnosticSnapshot, blockedSnapshot)
+
+        var terminalEngine = waitingEngine()
+        XCTAssertEqual(
+            terminalEngine.cancel(
+                reason: .providerFailure,
+                now: now.addingTimeInterval(6)
+            ),
+            [.discard(reason: .providerFailure)]
+        )
+        let terminalSnapshot = terminalEngine.diagnosticSnapshot
+
+        XCTAssertEqual(terminalEngine.requestWarmPreparation(), [.prepare])
+        XCTAssertEqual(terminalEngine.providerPrepared(at: now.addingTimeInterval(7)), [])
+        XCTAssertEqual(terminalEngine.diagnosticSnapshot, terminalSnapshot)
+    }
+
     func testHeartRateAtDeadlineCannotCommitWithoutTimerTick() {
         var engine = waitingEngine()
 
@@ -850,6 +948,7 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
     private func safeFacts(
         appActivity: NativeHeartRatePreflightEngine.AppActivity = .active,
         treadmillControlReady: Bool = true,
+        controllerUnitsAllowed: Bool = true,
         hasConflictingWorkout: Bool = false,
         stopInProgress: Bool = false,
         telemetryAvailability: NativeHeartRatePreflightEngine.TelemetryAvailability = .healthy
@@ -858,7 +957,7 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
             appActivity: appActivity,
             treadmillControlReady: treadmillControlReady,
             transportValid: true,
-            controllerUnitsAllowed: true,
+            controllerUnitsAllowed: controllerUnitsAllowed,
             hasConflictingWorkout: hasConflictingWorkout,
             stopInProgress: stopInProgress,
             telemetryAvailability: telemetryAvailability
