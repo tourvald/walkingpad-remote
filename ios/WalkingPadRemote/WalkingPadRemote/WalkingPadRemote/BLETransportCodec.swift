@@ -65,6 +65,12 @@ enum BLETransportCodec {
         Data([0xF7, 0xA6, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA6, 0xFD])
     }
 
+    /// Read-only current status query used by the controller protocol. A zero
+    /// A2 key/value requests an F8 A2 report and does not change motion state.
+    static func buildWalkingPadQueryStatusPacket() -> Data {
+        Data([0xF7, 0xA2, 0x00, 0x00, 0xA2, 0xFD])
+    }
+
     static func buildStopTruthExperimentPacket(
         role: StopTruthExperimentCommandRole
     ) -> Data {

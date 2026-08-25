@@ -103,6 +103,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var controllerUnitsTruthTracker = ControllerUnitsTruthTracker()
     private var lastControllerUnitsQueryAt: Date? = nil
     private var lastControllerUnitsQueryTrigger: String? = nil
+    private var lastWalkingPadStatusQueryAt: Date? = nil
     private var stopObservationStreamID: UUID? = nil
     private var stopObservationLifecycle: StopObservationLifecycle? = nil
     private var stopObservationCheckpointWorkItems: [DispatchWorkItem] = []
@@ -6545,7 +6546,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
         }
         updateTreadmillStatus()
-        maintainControllerUnitsTruthDuringActiveWorkout(now: Date())
+        maintainWalkingPadReadOnlyEvidenceDuringActiveWorkout(now: Date())
     }
 
     private func updateTreadmillStatus() {
@@ -7148,6 +7149,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         controllerUnitsTruth = controllerUnitsTruthTracker.state
         lastControllerUnitsQueryAt = nil
         lastControllerUnitsQueryTrigger = nil
+        lastWalkingPadStatusQueryAt = nil
         isTreadmillControlReady = false
         applyNativeHeartRatePreflightEffects(
             nativeHeartRatePreflightEngine.safetyChanged(
@@ -7454,19 +7456,45 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         requestControllerUnitsTruth(trigger: trigger.rawValue, now: now)
     }
 
-    private func maintainControllerUnitsTruthDuringActiveWorkout(now: Date) {
-        let refreshDecision = ControllerUnitsRefreshPolicy.activeWorkoutRefresh(
-            isHrControlRunning: isHrControlRunning,
+    private func maintainWalkingPadReadOnlyEvidenceDuringActiveWorkout(now: Date) {
+        let refreshDecision = WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
+            isWorkoutOrCooldownActive: isHrControlRunning,
             transportReady: controllerUnitsQueryTransportReady,
             motionQueueIdle: commandQueue.isEmpty
                 && !isCommandQueueProcessing
                 && nextCommandAllowedAt <= now,
             secondsUntilNextScheduledMotion: controllerUnitsNextScheduledMotionLeadSeconds,
-            lastQueryAt: lastControllerUnitsQueryAt,
+            lastStatusQueryAt: lastWalkingPadStatusQueryAt,
+            lastControllerUnitsQueryAt: lastControllerUnitsQueryAt,
             now: now
         )
-        guard let trigger = refreshDecision.trigger else { return }
-        requestControllerUnitsTruth(trigger: trigger.rawValue, now: now)
+        switch refreshDecision.kind {
+        case .status:
+            requestWalkingPadStatusRefresh(now: now)
+        case .controllerUnits:
+            requestControllerUnitsTruth(
+                trigger: ControllerUnitsRefreshTrigger.activeWorkoutIdleWindow.rawValue,
+                now: now
+            )
+        case nil:
+            break
+        }
+    }
+
+    private func requestWalkingPadStatusRefresh(now: Date) {
+        guard controllerUnitsQueryTransportReady else { return }
+        lastWalkingPadStatusQueryAt = now
+        appendLog("WalkingPad status query: command=A2 key=0 read_only=true")
+        logTrainingEvent("walkingpad_status_query_requested", fields: [
+            "command_family": "A2",
+            "key": 0,
+            "read_only": true,
+            "query_interval_s": WalkingPadStatusRefreshPolicy.preferredStatusQueryInterval
+        ])
+        writeCommand(
+            BLETransportCodec.buildWalkingPadQueryStatusPacket(),
+            label: "QUERY STATUS"
+        )
     }
 
     private var controllerUnitsNextScheduledMotionLeadSeconds: Int {

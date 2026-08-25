@@ -94,17 +94,17 @@ final class ControllerUnitsReadOnlyContractTests: XCTestCase {
         )
         let tick = try functionBody("private func tickTelemetry()", in: manager)
         let maintenance = try functionBody(
-            "private func maintainControllerUnitsTruthDuringActiveWorkout(",
+            "private func maintainWalkingPadReadOnlyEvidenceDuringActiveWorkout(",
             in: manager
         )
         let request = try functionBody("private func requestControllerUnitsTruth(", in: manager)
 
-        XCTAssertTrue(tick.contains("maintainControllerUnitsTruthDuringActiveWorkout"))
+        XCTAssertTrue(tick.contains("maintainWalkingPadReadOnlyEvidenceDuringActiveWorkout"))
         XCTAssertTrue(maintenance.contains("motionQueueIdle: commandQueue.isEmpty"))
         XCTAssertTrue(maintenance.contains("!isCommandQueueProcessing"))
         XCTAssertTrue(maintenance.contains("nextCommandAllowedAt <= now"))
         XCTAssertTrue(maintenance.contains("controllerUnitsNextScheduledMotionLeadSeconds"))
-        XCTAssertTrue(maintenance.contains("ControllerUnitsRefreshPolicy.activeWorkoutRefresh"))
+        XCTAssertTrue(maintenance.contains("WalkingPadStatusRefreshPolicy.activeWorkoutRefresh"))
         XCTAssertTrue(request.contains("BLETransportCodec.buildWalkingPadQueryParamsPacket()"))
         XCTAssertFalse(maintenance.contains("sendTreadmill"))
         XCTAssertFalse(maintenance.contains("isHrControlStartAllowed ="))
