@@ -4733,16 +4733,20 @@ private struct DebugView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Button("Copy Logs") {
-                                    copyLogs(
-                                        lastCmd: manager.lastCommandLine,
-                                        hrStatus: manager.hrStatusLine,
-                                        log: manager.debugLog
-                                    )
+                                    let lastCommandLine = manager.lastCommandLine
+                                    let hrStatusLine = manager.hrStatusLine
+                                    manager.makeDebugLogSnapshot { log in
+                                        copyLogs(
+                                            lastCmd: lastCommandLine,
+                                            hrStatus: hrStatusLine,
+                                            log: log
+                                        )
+                                    }
                                 }
                                 .buttonStyle(.bordered)
 
                                 Button("Clear") {
-                                    manager.debugLog = ""
+                                    manager.clearDebugLog()
                                     manager.lastCommandLine = ""
                                     manager.hrStatusLine = ""
                                 }
@@ -4884,9 +4888,11 @@ private struct DebugView: View {
             }
             .navigationTitle("Отладка")
             .onAppear {
+                manager.startDebugLogPresentation()
                 manager.refreshWorkoutHistoryFromV2(reset: true)
             }
             .onDisappear {
+                manager.stopDebugLogPresentation()
                 diagnosticBundleTask?.cancel()
             }
         }

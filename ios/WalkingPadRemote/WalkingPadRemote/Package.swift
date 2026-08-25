@@ -134,6 +134,7 @@ let package = Package(
             sources: [
                 "AutoConnectRetryPolicy.swift",
                 "BLETransportCodec.swift",
+                "BoundedDebugLog.swift",
                 "ControllerUnitsSafetyPolicy.swift",
                 "CooldownRuntimeEngine.swift",
                 "DeterministicControlReplay.swift",
