@@ -322,7 +322,6 @@ private func makeTrainingTargetSegments(
 private func makeHRControlTrainingHubPresentation(
     treadmillConnected: Bool,
     hrFresh: Bool,
-    currentHeartRateBPM: Int?,
     heartRateSourceLabel: String?,
     targetZoneIndex: Int,
     zoneRanges: [ClosedRange<Int>],
@@ -337,7 +336,6 @@ private func makeHRControlTrainingHubPresentation(
     let heartRateReadiness =
         TrainingUIHeartRateReadinessPresentationPolicy.presentation(
             isFresh: hrFresh,
-            currentHeartRateBPM: currentHeartRateBPM,
             sourceLabel: heartRateSourceLabel,
             isPreparing: isPreparing
         )
@@ -403,9 +401,7 @@ private func formattedTrainingElapsed(_ totalSeconds: Int) -> String {
 
 private func makeHRControlActivePresentation(
     treadmillConnected: Bool,
-    hrFresh: Bool,
-    currentHeartRateBPM: Int?,
-    heartRateSourceLabel: String?,
+    heartRatePresentation: TrainingUIHeartRateActivePresentation,
     targetZoneIndex: Int,
     zoneRanges: [ClosedRange<Int>],
     factualSpeedKmh: Double?,
@@ -423,21 +419,21 @@ private func makeHRControlActivePresentation(
     let selectedRange = zoneRanges.indices.contains(safeZoneIndex)
         ? zoneRanges[safeZoneIndex]
         : fallbackRange
-    let factualHeartRate = hrFresh ? currentHeartRateBPM : nil
+    let presentedHeartRate = heartRatePresentation.currentHeartRateBPM
 
     let status: (title: String, symbol: String, tint: Color) = {
-        guard let factualHeartRate else {
+        guard let presentedHeartRate else {
             return ("Пульс недоступен", "waveform.path.ecg.slash", .orange)
         }
         if isCooldown {
-            return factualHeartRate <= cooldownTargetBPM
+            return presentedHeartRate <= cooldownTargetBPM
                 ? ("Цель достигнута", "checkmark.circle.fill", .green)
                 : ("Выше цели", "arrow.up.circle.fill", .orange)
         }
-        if factualHeartRate < selectedRange.lowerBound {
+        if presentedHeartRate < selectedRange.lowerBound {
             return ("Ниже зоны", "arrow.down.circle.fill", .blue)
         }
-        if factualHeartRate > selectedRange.upperBound {
+        if presentedHeartRate > selectedRange.upperBound {
             return ("Выше зоны", "arrow.up.circle.fill", .orange)
         }
         return ("В зоне", "checkmark.circle.fill", .green)
@@ -479,11 +475,15 @@ private func makeHRControlActivePresentation(
             .init(
                 id: "heartRate",
                 title: "Пульс",
-                value: factualHeartRate == nil ? "Нет" : "Доступен",
-                sourceLabel: factualHeartRate == nil ? nil : heartRateSourceLabel,
+                value: heartRatePresentation.isReady
+                    ? TrainingUIHeartRateReadinessPresentationPolicy.readyValue(
+                        sourceLabel: heartRatePresentation.sourceLabel
+                    )
+                    : "Нет",
+                sourceLabel: nil,
                 systemImage: "heart.fill",
-                tint: factualHeartRate == nil ? .orange : .green,
-                isReady: factualHeartRate != nil
+                tint: heartRatePresentation.isReady ? .green : .orange,
+                isReady: heartRatePresentation.isReady
             )
         ],
         startEnabled: false,
@@ -491,12 +491,12 @@ private func makeHRControlActivePresentation(
         isPreparing: false,
         isPreview: isPreview,
         phaseTitle: phaseTitleOverride ?? (isCooldown ? "ЗАМИНКА" : "ТРЕНИРОВКА"),
-        primaryValue: factualHeartRate.map(String.init) ?? "—",
-        primaryUnit: factualHeartRate == nil ? nil : "bpm",
+        primaryValue: presentedHeartRate.map(String.init) ?? "—",
+        primaryUnit: presentedHeartRate == nil ? nil : "bpm",
         statusTitle: status.title,
         statusSystemImage: status.symbol,
         statusTint: status.tint,
-        liveMarkerBPM: factualHeartRate,
+        liveMarkerBPM: presentedHeartRate,
         targetThresholdBPM: isCooldown ? cooldownTargetBPM : nil,
         showsExtendAction: !isCooldown && canExtend
     )
@@ -509,7 +509,6 @@ private func makeProductionTrainingHubPresentation(
     return makeHRControlTrainingHubPresentation(
         treadmillConnected: manager.isTreadmillControlReady,
         hrFresh: heartRate.isFresh,
-        currentHeartRateBPM: heartRate.currentHeartRateBPM,
         heartRateSourceLabel: heartRate.sourceLabel,
         targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
         zoneRanges: hrZoneRanges(for: manager),
@@ -521,9 +520,14 @@ private func makeProductionTrainingHubPresentation(
 }
 
 private func makeProductionActiveWorkoutPresentation(
-    manager: BluetoothManager
+    manager: BluetoothManager,
+    lastAcceptedHeartRatePresentation: TrainingUIHeartRateAcceptedPresentation?
 ) -> TrainingHubPresentation {
-    let heartRate = manager.trainingUIHeartRateSnapshot
+    let heartRatePresentation = TrainingUIHeartRatePresentationHoldPolicy.presentation(
+        factualSnapshot: manager.trainingUIHeartRateSnapshot,
+        lastAcceptedPresentation: lastAcceptedHeartRatePresentation,
+        now: Date()
+    )
     let factualSpeedKmh: Double? = {
         guard manager.isConnected else { return nil }
         return manager.trainingUITreadmillSpeedKmh
@@ -531,9 +535,7 @@ private func makeProductionActiveWorkoutPresentation(
 
     return makeHRControlActivePresentation(
         treadmillConnected: manager.isTreadmillControlReady,
-        hrFresh: heartRate.isFresh,
-        currentHeartRateBPM: heartRate.currentHeartRateBPM,
-        heartRateSourceLabel: heartRate.sourceLabel,
+        heartRatePresentation: heartRatePresentation,
         targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
         zoneRanges: hrZoneRanges(for: manager),
         factualSpeedKmh: factualSpeedKmh,
@@ -551,6 +553,7 @@ private extension TrainingUIObservationBoundary {
             manager.$isConnected.map { _ in () }.eraseToAnyPublisher(),
             manager.$isTreadmillControlReady.map { _ in () }.eraseToAnyPublisher(),
             manager.$trainingUIHeartRateSnapshot.map { _ in () }.eraseToAnyPublisher(),
+            manager.heartRateFactualState.$lastValueAt.map { _ in () }.eraseToAnyPublisher(),
             manager.$trainingUITreadmillSpeedKmh.map { _ in () }.eraseToAnyPublisher(),
             manager.$hrTargetBPM.map { _ in () }.eraseToAnyPublisher(),
             manager.$hrZone1Max.map { _ in () }.eraseToAnyPublisher(),
@@ -749,9 +752,15 @@ private enum TrainingUIUpdatePressureHarness {
     }
 
     private static func visibleSnapshot(manager: BluetoothManager) -> [String] {
-        let presentation = manager.shouldPresentActiveWorkout
-            ? makeProductionActiveWorkoutPresentation(manager: manager)
-            : makeProductionTrainingHubPresentation(manager: manager)
+        let presentation: TrainingHubPresentation
+        if manager.shouldPresentActiveWorkout {
+            presentation = makeProductionActiveWorkoutPresentation(
+                manager: manager,
+                lastAcceptedHeartRatePresentation: nil
+            )
+        } else {
+            presentation = makeProductionTrainingHubPresentation(manager: manager)
+        }
         return [
             presentation.modeTitle,
             presentation.targetTitle,
@@ -779,7 +788,6 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
     func hrControl(
         treadmillReady: Bool = true,
         hrReady: Bool = true,
-        bpm: Int? = 138,
         source: String? = nil,
         durationMinutes: Int = 30,
         startEnabled: Bool = true,
@@ -788,7 +796,6 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
         makeHRControlTrainingHubPresentation(
             treadmillConnected: treadmillReady,
             hrFresh: hrReady,
-            currentHeartRateBPM: bpm,
             heartRateSourceLabel: source,
             targetZoneIndex: 2,
             zoneRanges: ranges,
@@ -808,7 +815,7 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
     case "treadmill-unavailable":
         return hrControl(treadmillReady: false, startEnabled: false)
     case "hr-unavailable":
-        return hrControl(hrReady: false, bpm: nil, startEnabled: false)
+        return hrControl(hrReady: false, startEnabled: false)
     case "preparing":
         return hrControl(startEnabled: false, preparing: true)
     case "duration-20":
@@ -875,9 +882,12 @@ private func activeWorkoutPreviewPresentation(named name: String) -> TrainingHub
     ) -> TrainingHubPresentation = { treadmillReady, hrReady, bpm, source, speed, cooldown, cooldownTarget in
         return makeHRControlActivePresentation(
             treadmillConnected: treadmillReady,
-            hrFresh: hrReady,
-            currentHeartRateBPM: bpm,
-            heartRateSourceLabel: source,
+            heartRatePresentation: TrainingUIHeartRateActivePresentation(
+                currentHeartRateBPM: hrReady ? bpm : nil,
+                sourceLabel: hrReady ? source : nil,
+                isReady: hrReady && bpm != nil,
+                isHeld: false
+            ),
             targetZoneIndex: 2,
             zoneRanges: ranges,
             factualSpeedKmh: speed,
@@ -1105,24 +1115,21 @@ private struct TrainingReadinessStrip: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(item.tint)
 
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text(item.title)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                    Text(item.value)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
+            HStack(spacing: 4) {
+                Text(item.title)
+                    .font(.caption.weight(.semibold))
+                Text(item.value)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
                 if let sourceLabel = item.sourceLabel {
                     Text(sourceLabel)
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
 
             Image(systemName: item.isReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .font(.caption)
@@ -1592,6 +1599,7 @@ private struct ActiveWorkoutShell: View {
     let onStop: () -> Void
     var stopEnabled = true
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .largeTitle) private var primaryValueSize: CGFloat = 86
     @State private var showExtendConfirm = false
 
@@ -1605,14 +1613,27 @@ private struct ActiveWorkoutShell: View {
                     onTreadmillTap: {}
                 )
                 liveHero
-                secondaryMetrics
+                if !usesAccessibilityControlInset {
+                    secondaryMetrics
+                    stopControl
+                }
+                extendControl
             }
             .padding(.horizontal, 16)
             .padding(.top, 4)
-            .padding(.bottom, 12)
+            .padding(.bottom, 20)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            controls
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if usesAccessibilityControlInset {
+                VStack(spacing: 10) {
+                    secondaryMetrics
+                    stopControl
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial)
+                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+            }
         }
         .alert("Добавить 5 минут?", isPresented: $showExtendConfirm) {
             Button("Добавить") {
@@ -1636,6 +1657,10 @@ private struct ActiveWorkoutShell: View {
             Spacer()
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private var usesAccessibilityControlInset: Bool {
+        dynamicTypeSize.isAccessibilitySize
     }
 
     private var liveHero: some View {
@@ -1752,48 +1777,40 @@ private struct ActiveWorkoutShell: View {
         }
     }
 
-    private var controls: some View {
-        VStack(spacing: 8) {
-            Group {
-                if presentation.showsExtendAction {
-                    Button("+5 мин") {
-                        guard !presentation.isPreview else { return }
-                        showExtendConfirm = true
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .accessibilityLabel("Продлить тренировку на 5 минут")
-                } else {
-                    Color.clear
-                        .accessibilityHidden(true)
-                }
-            }
-            .frame(height: 48)
-
-            Button {
-                guard !presentation.isPreview else { return }
-                onStop()
-            } label: {
-                Label("Стоп", systemImage: "stop.fill")
-                    .font(.headline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(.red)
-            .disabled(!stopEnabled)
-            .accessibilityLabel("Остановить HR-контроль")
-            .accessibilityHint(
-                stopEnabled
-                    ? "Запускает существующий процесс остановки тренировки"
-                    : "Доступно после восстановления управления дорожкой"
-            )
+    private var stopControl: some View {
+        Button {
+            guard !presentation.isPreview else { return }
+            onStop()
+        } label: {
+            Label("Стоп", systemImage: "stop.fill")
+                .font(.headline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .tint(.red)
+        .disabled(!stopEnabled)
+        .accessibilityLabel("Остановить HR-контроль")
+        .accessibilityHint(
+            stopEnabled
+                ? "Запускает существующий процесс остановки тренировки"
+                : "Доступно после восстановления управления дорожкой"
+        )
+    }
+
+    @ViewBuilder
+    private var extendControl: some View {
+        if presentation.showsExtendAction {
+            Button("+5 мин") {
+                guard !presentation.isPreview else { return }
+                showExtendConfirm = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .frame(minHeight: 48)
+            .accessibilityLabel("Продлить тренировку на 5 минут")
+        }
     }
 }
 
@@ -2176,6 +2193,8 @@ private struct ControlSwipeView: View, Equatable {
     @State private var presentSuggestedPicker = false
     @State private var showInfoToast = false
     @State private var showParameters = false
+    @State private var lastAcceptedHeartRatePresentation:
+        TrainingUIHeartRateAcceptedPresentation?
     @State private var sessionPresentationAnchor: TrainingSessionPresentationAnchor?
     @State private var pendingTrainingResult: PendingTrainingResult?
     @State private var resolvedTrainingResult: ResolvedTrainingResult?
@@ -2214,7 +2233,10 @@ private struct ControlSwipeView: View, Equatable {
     }
 
     private var productionActiveWorkoutPresentation: TrainingHubPresentation {
-        makeProductionActiveWorkoutPresentation(manager: manager)
+        makeProductionActiveWorkoutPresentation(
+            manager: manager,
+            lastAcceptedHeartRatePresentation: lastAcceptedHeartRatePresentation
+        )
     }
 
     private var activeWorkoutPresentation: TrainingHubPresentation? {
@@ -2464,6 +2486,23 @@ private struct ControlSwipeView: View, Equatable {
         onOpenStatistics()
     }
 
+    private func captureLastAcceptedHeartRatePresentation() {
+        guard let acceptedAt = manager.hrLastValueAt,
+              manager.lastKnownHeartRateBPM > 0 else {
+            lastAcceptedHeartRatePresentation = nil
+            return
+        }
+        let factualSnapshot = manager.trainingUIHeartRateSnapshot
+        let sourceLabel = factualSnapshot.isFresh
+            ? factualSnapshot.sourceLabel
+            : lastAcceptedHeartRatePresentation?.sourceLabel
+        lastAcceptedHeartRatePresentation = TrainingUIHeartRateAcceptedPresentation(
+            heartRateBPM: manager.lastKnownHeartRateBPM,
+            acceptedAt: acceptedAt,
+            sourceLabel: sourceLabel
+        )
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -2506,6 +2545,12 @@ private struct ControlSwipeView: View, Equatable {
             .sheet(isPresented: $showDevicePicker) {
                 DevicePickerView()
                     .environmentObject(manager)
+            }
+            .onChange(of: manager.hrLastValueAt, initial: true) { _, _ in
+                captureLastAcceptedHeartRatePresentation()
+            }
+            .onChange(of: manager.trainingUIHeartRateSnapshot) { _, _ in
+                captureLastAcceptedHeartRatePresentation()
             }
             .onChange(of: manager.isHrControlRunning) { wasRunning, isRunning in
                 if isRunning {
@@ -4581,9 +4626,12 @@ private struct DebugView: View {
         let isCooldown = hrControlPreviewMode == .cooldown
         return makeHRControlActivePresentation(
             treadmillConnected: true,
-            hrFresh: !previewNoHrSignal,
-            currentHeartRateBPM: previewNoHrSignal ? nil : (isCooldown ? 124 : 152),
-            heartRateSourceLabel: nil,
+            heartRatePresentation: TrainingUIHeartRateActivePresentation(
+                currentHeartRateBPM: previewNoHrSignal ? nil : (isCooldown ? 124 : 152),
+                sourceLabel: nil,
+                isReady: !previewNoHrSignal,
+                isHeld: false
+            ),
             targetZoneIndex: 2,
             zoneRanges: [60...134, 135...146, 147...158, 159...170, 171...220],
             factualSpeedKmh: isCooldown ? 3.0 : 4.4,

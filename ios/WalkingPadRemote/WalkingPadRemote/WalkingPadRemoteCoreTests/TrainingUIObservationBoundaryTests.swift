@@ -77,6 +77,7 @@ final class TrainingUIObservationBoundaryTests: XCTestCase {
             "$isConnected",
             "$isTreadmillControlReady",
             "$trainingUIHeartRateSnapshot",
+            "$lastValueAt",
             "$trainingUITreadmillSpeedKmh",
             "$hrTargetBPM",
             "$hrZone1Max",

@@ -1,6 +1,21 @@
 # Redesign QA ledger
 
-Status: passed for the binding Issue #68 duration-preset follow-up correction.
+Status: passed for the binding Issue #116 Training presentation follow-up.
+
+## Issue #116 — active/cooldown presentation polish
+
+| Pass | State / form factor | Severity | Finding | Evidence | Owner path | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline | Active / cooldown, iPhone 17, light and dark | P0 | Ready HR is one line (`Пульс HealthKit ✓` or truthful generic `Пульс Готов ✓`), and Stop sits immediately below the `Скорость / Прошло` row while the lower screen remains naturally open. | `/private/tmp/issue116-qa/tall-active-known-source-light.png`, `/private/tmp/issue116-qa/tall-active-generic-ready-light.png`, `/private/tmp/issue116-qa/tall-cooldown-above-light.png`, `/private/tmp/issue116-qa/tall-active-known-source-dark.png` | `ContentView.swift` | Pass |
+| Baseline | Preparing preflight, iPhone 17, light | P0 | Preflight remains explicitly waiting and unsmoothed; it does not reuse active/cooldown presentation history. | `/private/tmp/issue116-qa/tall-hub-preparing-light.png` plus focused policy/source contracts | `ContentView.swift`, `TrainingUIHeartRateReadinessPresentationPolicy.swift` | Pass |
+| Baseline | 10-second active/cooldown hold boundary | P0 | Accepted BPM/source stays presentation-ready for ages below 10 seconds, a new accepted timestamp restarts the window, and age 10 seconds or missing/future evidence resolves unavailable without changing the factual snapshot. | Deterministic focused tests for `8`, `9.999`, `10`, restarted, missing, and future timestamp cases | `TrainingUIHeartRateReadinessPresentationPolicy.swift`, `TrainingUIHeartRatePresentationHoldPolicyTests.swift` | Pass |
+| Baseline | Active, short iPhone portrait, default type | P0 | Speed, elapsed, and Stop remain in the first viewport immediately below the HR console; the lower area has no bottom Stop inset or hard-coded PiP rectangle. | `/private/tmp/issue116-qa/short-active-known-source-light.png` plus source-order contract | `ContentView.swift` | Pass |
+| Correction 1 | Active / cooldown, short and tall portrait, Accessibility XL | P2 | Inline placement kept the correct source order but moved Stop below the first compact-height viewport. | `/private/tmp/issue116-qa/short-cooldown-above-axl.png` | `ContentView.swift` | Fixed: accessibility sizes place the same metric row and Stop in an upper safe-area block. |
+| Correction 2 | Active / cooldown, short portrait, Accessibility XL | P1 | The first accessibility correction made the upper controls too tall and displaced current HR on the short screen. | `/private/tmp/issue116-qa/short-active-known-source-axl-pass1.png`, `/private/tmp/issue116-qa/short-cooldown-above-axl-pass1.png` | `ContentView.swift` | Fixed: only the pinned critical controls cap at native `xxxLarge`; full-size readiness/HR content remains in the scroll and VoiceOver labels are unchanged. |
+| Final review | Active / cooldown, short portrait, Accessibility XL | P1 | Speed, elapsed, Stop, one-line readiness, and current HR are simultaneously visible; overflow remains naturally scrollable and the tab bar does not cover Stop. | `/private/tmp/issue116-qa/short-active-known-source-axl-pass2.png`, `/private/tmp/issue116-qa/short-cooldown-above-axl-pass2.png` | `ContentView.swift` | Pass |
+| Final review | Runtime, publication, and transport boundary | P0 | The hold is local presentation state driven by the existing Training boundary plus one narrow accepted-timestamp signal. It is not published or passed to preflight, control, predictor, telemetry, persistence, BLE, treadmill, or Stop runtime owners. | UI scope checker, focused tests, unsigned simulator build, and base-to-head source inspection | `ContentView.swift`, `HeartRateLegacyBehaviorContractTests.swift`, `TrainingUIObservationBoundaryTests.swift` | Pass |
+
+Two visual correction passes were used; no P0–P2 finding remains. DEBUG fixtures skip manager startup and guard actions before production callbacks. Simulator QA did not connect to BLE, a treadmill, or a physical device.
 
 ## Issue #68 — direct duration presets
 

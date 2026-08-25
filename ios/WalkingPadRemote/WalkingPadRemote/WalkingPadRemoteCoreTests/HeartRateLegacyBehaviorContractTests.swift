@@ -409,14 +409,18 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(
             readinessChip.contains(".frame(maxWidth: .infinity, alignment: .leading)")
         )
+        XCTAssertTrue(readinessChip.contains("HStack(spacing: 4)"))
+        XCTAssertTrue(readinessChip.contains(".lineLimit(1)"))
+        XCTAssertTrue(readinessChip.contains(".minimumScaleFactor(0.7)"))
+        XCTAssertFalse(readinessChip.contains("VStack(alignment: .leading"))
+        XCTAssertFalse(readinessChip.contains("Доступен"))
 
         XCTAssertTrue(previewFixtures.contains("treadmillReady: Bool = true"))
         XCTAssertTrue(previewFixtures.contains("hrReady: Bool = true"))
-        XCTAssertTrue(previewFixtures.contains("bpm: Int? = 138"))
         XCTAssertTrue(previewFixtures.contains("return hrControl(source: \"Apple Watch\")"))
         XCTAssertTrue(
             previewFixtures.contains(
-                "return hrControl(hrReady: false, bpm: nil, startEnabled: false)"
+                "return hrControl(hrReady: false, startEnabled: false)"
             )
         )
     }
@@ -472,6 +476,13 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
     }
 
     func testTrainingHeartRateUIPublicationCannotBecomeFactualTruth() throws {
+        let holdPolicy = source(
+            relativePath: "WalkingPadRemote/TrainingUIHeartRateReadinessPresentationPolicy.swift"
+        )
+        let capture = try functionBody(
+            "private func captureLastAcceptedHeartRatePresentation()",
+            in: contentViewSource
+        )
         let activePresentation = try functionBody(
             "private func makeProductionActiveWorkoutPresentation(",
             in: contentViewSource
@@ -498,8 +509,30 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
 
         XCTAssertTrue(activePresentation.contains("manager.trainingUIHeartRateSnapshot"))
+        XCTAssertTrue(
+            activePresentation.contains(
+                "TrainingUIHeartRatePresentationHoldPolicy.presentation("
+            )
+        )
         XCTAssertFalse(activePresentation.contains("manager.heartRateBPM"))
         XCTAssertFalse(activePresentation.contains("manager.hrLastValueAt"))
+        XCTAssertFalse(managerSource.contains("TrainingUIHeartRatePresentationHoldPolicy"))
+        XCTAssertFalse(
+            contentViewSource.contains("@Published var lastAcceptedHeartRatePresentation")
+        )
+        XCTAssertTrue(contentViewSource.contains("@State private var lastAcceptedHeartRatePresentation"))
+        XCTAssertTrue(capture.contains("manager.hrLastValueAt"))
+        XCTAssertTrue(capture.contains("manager.lastKnownHeartRateBPM"))
+        XCTAssertTrue(capture.contains("manager.trainingUIHeartRateSnapshot"))
+        for forbidden in ["sendTreadmill", "startHrControl", "stopHrControl", "Telemetry"] {
+            XCTAssertFalse(capture.contains(forbidden), forbidden)
+        }
+        for forbidden in [
+            "BluetoothManager", "HRDomainService", "Telemetry", "predictor", "control",
+            "heartRateBPM =", "factualSnapshot.lastAcceptedAt =",
+        ] {
+            XCTAssertFalse(holdPolicy.contains(forbidden), forbidden)
+        }
 
         for factualConsumer in [controlDecision, telemetryPayload] {
             XCTAssertTrue(factualConsumer.contains("heartRateBPM"))
@@ -515,7 +548,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertEqual(
             contentViewSource.components(separatedBy: "manager.trainingUIHeartRateSnapshot")
                 .count - 1,
-            2
+            4
         )
         XCTAssertFalse(nativeDelivery.contains("trainingUIHeartRateSnapshot"))
         XCTAssertFalse(staleTimer.contains("trainingUIHeartRateSnapshot"))
@@ -634,9 +667,9 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             in: contentViewSource
         )
 
-        XCTAssertTrue(mapping.contains("currentHeartRateBPM"))
-        XCTAssertTrue(mapping.contains("factualHeartRate < selectedRange.lowerBound"))
-        XCTAssertTrue(mapping.contains("factualHeartRate > selectedRange.upperBound"))
+        XCTAssertTrue(mapping.contains("heartRatePresentation.currentHeartRateBPM"))
+        XCTAssertTrue(mapping.contains("presentedHeartRate < selectedRange.lowerBound"))
+        XCTAssertTrue(mapping.contains("presentedHeartRate > selectedRange.upperBound"))
         XCTAssertTrue(mapping.contains("selectedRange.lowerBound)–\\(selectedRange.upperBound) bpm"))
         XCTAssertTrue(mapping.contains("≤ \\(cooldownTargetBPM) bpm"))
         XCTAssertTrue(mapping.contains("title: \"Скорость\""))
@@ -655,9 +688,24 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(shell.contains("presentation.statusTitle"))
         XCTAssertTrue(shell.contains("Button(\"+5 мин\")"))
         XCTAssertTrue(shell.contains(".controlSize(.large)"))
-        XCTAssertTrue(shell.contains(".frame(height: 48)"))
+        XCTAssertTrue(shell.contains(".frame(minHeight: 48)"))
         XCTAssertTrue(shell.contains("Label(\"Стоп\""))
         XCTAssertTrue(shell.contains("guard !presentation.isPreview else { return }"))
+        XCTAssertTrue(shell.contains("ScrollView"))
+        XCTAssertTrue(shell.contains("dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(shell.contains(".safeAreaInset(edge: .top"))
+        XCTAssertTrue(shell.contains(".dynamicTypeSize(...DynamicTypeSize.xxxLarge)"))
+        XCTAssertFalse(shell.contains(".safeAreaInset(edge: .bottom"))
+        XCTAssertFalse(shell.lowercased().contains("picture in picture"))
+        XCTAssertFalse(shell.lowercased().contains("pip"))
+        assertOrdered(
+            [
+                "secondaryMetrics",
+                "stopControl",
+                "extendControl",
+            ],
+            in: shell
+        )
         XCTAssertFalse(shell.contains("BluetoothManager"))
         for removedFocusDetail in [
             "Решение алгоритма", "След. решение", "Прогноз", "Удары/м",
