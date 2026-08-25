@@ -305,6 +305,80 @@ public struct RecorderHealthEvent: Codable, Hashable, Sendable {
     }
 }
 
+public enum AppLifecycleState: String, Codable, Hashable, Sendable {
+    case active
+    case inactive
+    case background
+}
+
+public enum AppWorkoutLifecycleStage: String, Codable, Hashable, Sendable {
+    case idle
+    case preflight
+    case main
+    case cooldown
+    case stopping
+    case recovery
+}
+
+public enum AppBackgroundPolicyAction: String, Codable, Hashable, Sendable {
+    case foreground
+    case awaitingSystemTransition
+    case continueEventDriven
+    case blockUncommitted
+    case recoveryOnly
+    case terminalOnly
+    case noActiveWorkout
+}
+
+public struct AppLifecycleEvent: Codable, Hashable, Sendable {
+    public let previousState: AppLifecycleState
+    public let currentState: AppLifecycleState
+    public let workoutStage: AppWorkoutLifecycleStage
+    public let hasCommittedWorkout: Bool
+    public let policyAction: AppBackgroundPolicyAction
+    public let policyReason: String
+    public let controlLoopPermitted: Bool
+    public let heartRateProviderState: String
+    public let lastHeartRateFactualAt: Date?
+    public let lastHeartRateReceivedAt: Date?
+    public let lastHeartRateAgeSeconds: Double?
+    public let treadmillConnectionState: ConnectionState
+    public let treadmillControlReady: Bool
+    public let treadmillProtocol: String
+
+    public init(
+        previousState: AppLifecycleState,
+        currentState: AppLifecycleState,
+        workoutStage: AppWorkoutLifecycleStage,
+        hasCommittedWorkout: Bool,
+        policyAction: AppBackgroundPolicyAction,
+        policyReason: String,
+        controlLoopPermitted: Bool,
+        heartRateProviderState: String,
+        lastHeartRateFactualAt: Date?,
+        lastHeartRateReceivedAt: Date?,
+        lastHeartRateAgeSeconds: Double?,
+        treadmillConnectionState: ConnectionState,
+        treadmillControlReady: Bool,
+        treadmillProtocol: String
+    ) {
+        self.previousState = previousState
+        self.currentState = currentState
+        self.workoutStage = workoutStage
+        self.hasCommittedWorkout = hasCommittedWorkout
+        self.policyAction = policyAction
+        self.policyReason = policyReason
+        self.controlLoopPermitted = controlLoopPermitted
+        self.heartRateProviderState = heartRateProviderState
+        self.lastHeartRateFactualAt = lastHeartRateFactualAt
+        self.lastHeartRateReceivedAt = lastHeartRateReceivedAt
+        self.lastHeartRateAgeSeconds = lastHeartRateAgeSeconds
+        self.treadmillConnectionState = treadmillConnectionState
+        self.treadmillControlReady = treadmillControlReady
+        self.treadmillProtocol = treadmillProtocol
+    }
+}
+
 public enum WorkoutEventPayload: Codable, Hashable, Sendable {
     case sessionLifecycle(SessionLifecycleEvent)
     case workoutPhase(WorkoutPhaseTransition)
@@ -317,6 +391,7 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
     case safety(SafetyEvent)
     case stopEvidence(StopEvidenceEvent)
     case recorderHealth(RecorderHealthEvent)
+    case appLifecycle(AppLifecycleEvent)
     case heartRateEvidence(HeartRateRuntimeEvidence)
     case treadmillEvidence(TreadmillTelemetryEvidence)
 
@@ -333,6 +408,7 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
         case .safety: .safety
         case .stopEvidence: .stopEvidence
         case .recorderHealth: .recorderHealth
+        case .appLifecycle: .appLifecycle
         case .heartRateEvidence: .heartRateEvidence
         case .treadmillEvidence: .treadmillEvidence
         }
@@ -405,6 +481,7 @@ public enum WorkoutEventKind: String, Codable, Hashable, Sendable {
     case safety
     case stopEvidence
     case recorderHealth
+    case appLifecycle
     case heartRateEvidence
     case treadmillEvidence
 }

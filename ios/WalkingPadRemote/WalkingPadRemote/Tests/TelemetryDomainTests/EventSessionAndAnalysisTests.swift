@@ -3,6 +3,31 @@ import TelemetryDomain
 import XCTest
 
 final class EventSessionAndAnalysisTests: XCTestCase {
+    func testAppLifecycleEvidenceIsTypedAndRoundTrips() throws {
+        let factualAt = Date(timeIntervalSince1970: 1_000)
+        let receivedAt = factualAt.addingTimeInterval(2)
+        let payload = WorkoutEventPayload.appLifecycle(AppLifecycleEvent(
+            previousState: .inactive,
+            currentState: .background,
+            workoutStage: .cooldown,
+            hasCommittedWorkout: true,
+            policyAction: .continueEventDriven,
+            policyReason: "committed_workout_background_event_driven",
+            controlLoopPermitted: true,
+            heartRateProviderState: "collecting",
+            lastHeartRateFactualAt: factualAt,
+            lastHeartRateReceivedAt: receivedAt,
+            lastHeartRateAgeSeconds: 3,
+            treadmillConnectionState: .connected,
+            treadmillControlReady: true,
+            treadmillProtocol: "walkingPad"
+        ))
+
+        XCTAssertEqual(payload.kind, .appLifecycle)
+        let encoded = try JSONEncoder().encode(payload)
+        XCTAssertEqual(try JSONDecoder().decode(WorkoutEventPayload.self, from: encoded), payload)
+    }
+
     func testControlDecisionPreservesActualObservationReferencesAndContext() throws {
         let decision = makeDecision()
 
