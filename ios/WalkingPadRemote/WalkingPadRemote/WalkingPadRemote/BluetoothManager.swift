@@ -1180,38 +1180,63 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var hrFailureReports: [HrFailureReport] = []
     @Published var loggingEnabled: Bool = false
     @Published var lastCommandLine: String = ""
-    @Published var debugLog: String = ""
+    @Published private(set) var debugLog: String = ""
     @Published var lastTrainingLogPath: String = ""
     @Published private(set) var trainingLogsInventory: TrainingTelemetryWriter.TrainingLogsInventory = .empty
+    private let debugLogStore = DebugLogStore()
+    private var debugLogPublicationState = DebugLogPublicationState()
+    private var debugLogPresentationTimer: Timer?
 
     private func appendLog(_ line: String) {
         guard loggingEnabled else { return }
         let entry = "[\(Date().formatted(date: .omitted, time: .standard))] \(line)"
-        DispatchQueue.main.async {
-            // Keep a rolling log: cap by lines and by total UTF-8 bytes
-            let maxLines = 4000
-            let maxBytes = 250_000 // ~250 KB
-            var lines = self.debugLog.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            lines.append(entry)
-            // Enforce line cap first
-            if lines.count > maxLines {
-                lines.removeFirst(lines.count - maxLines)
+        debugLogStore.append(entry)
+    }
+
+    func startDebugLogPresentation() {
+        guard debugLogPresentationTimer == nil else { return }
+
+        refreshDebugLogSnapshot()
+        let timer = Timer(timeInterval: DebugLogPublicationPolicy.refreshInterval, repeats: true) {
+            [weak self] _ in
+            self?.refreshDebugLogSnapshot()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        debugLogPresentationTimer = timer
+    }
+
+    func stopDebugLogPresentation() {
+        debugLogPresentationTimer?.invalidate()
+        debugLogPresentationTimer = nil
+    }
+
+    func makeDebugLogSnapshot(completion: @escaping (String) -> Void) {
+        debugLogStore.snapshot(after: nil) { snapshot in
+            DispatchQueue.main.async {
+                completion(snapshot?.text ?? "")
             }
-            // Enforce byte cap by keeping the newest suffix that fits
-            var kept: [String] = []
-            kept.reserveCapacity(min(lines.count, maxLines))
-            var totalBytes = 0
-            for l in lines.reversed() {
-                let bytes = l.lengthOfBytes(using: .utf8) + 1 // + newline
-                if totalBytes + bytes > maxBytes { break }
-                kept.append(l)
-                totalBytes += bytes
-                if kept.count >= maxLines { break }
+        }
+    }
+
+    func clearDebugLog() {
+        debugLogStore.clear { [weak self] revision in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.debugLogPublicationState.markPublished(revision: revision)
+                self.debugLog = ""
             }
-            if kept.isEmpty {
-                kept = [lines.last ?? entry]
+        }
+    }
+
+    private func refreshDebugLogSnapshot() {
+        let publishedRevision = debugLogPublicationState.publishedRevision
+        debugLogStore.snapshot(after: publishedRevision) { [weak self] snapshot in
+            guard let snapshot else { return }
+            DispatchQueue.main.async {
+                guard let self,
+                      let text = self.debugLogPublicationState.consume(snapshot) else { return }
+                self.debugLog = text
             }
-            self.debugLog = kept.reversed().joined(separator: "\n")
         }
     }
 
