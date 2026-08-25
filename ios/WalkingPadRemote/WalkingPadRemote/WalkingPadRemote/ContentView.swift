@@ -553,7 +553,6 @@ private extension TrainingUIObservationBoundary {
             manager.$isConnected.map { _ in () }.eraseToAnyPublisher(),
             manager.$isTreadmillControlReady.map { _ in () }.eraseToAnyPublisher(),
             manager.$trainingUIHeartRateSnapshot.map { _ in () }.eraseToAnyPublisher(),
-            manager.heartRateFactualState.$lastValueAt.map { _ in () }.eraseToAnyPublisher(),
             manager.$trainingUITreadmillSpeedKmh.map { _ in () }.eraseToAnyPublisher(),
             manager.$hrTargetBPM.map { _ in () }.eraseToAnyPublisher(),
             manager.$hrZone1Max.map { _ in () }.eraseToAnyPublisher(),
