@@ -2,23 +2,33 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class TrainingUIHeartRateReadinessPresentationPolicyTests: XCTestCase {
-    func testFreshHeartRateIsReadyBeforePreflight() {
+    func testFreshHeartRateWithKnownSourceIsOneLineReadyBeforePreflight() {
         let presentation = TrainingUIHeartRateReadinessPresentationPolicy.presentation(
             isFresh: true,
-            currentHeartRateBPM: 77,
             sourceLabel: "HealthKit",
             isPreparing: false
         )
 
-        XCTAssertEqual(presentation.value, "77 bpm")
-        XCTAssertEqual(presentation.sourceLabel, "HealthKit")
+        XCTAssertEqual(presentation.value, "HealthKit")
+        XCTAssertNil(presentation.sourceLabel)
+        XCTAssertTrue(presentation.isReady)
+    }
+
+    func testFreshHeartRateWithoutKnownSourceUsesTruthfulGenericReadyValue() {
+        let presentation = TrainingUIHeartRateReadinessPresentationPolicy.presentation(
+            isFresh: true,
+            sourceLabel: nil,
+            isPreparing: false
+        )
+
+        XCTAssertEqual(presentation.value, "Готов")
+        XCTAssertNil(presentation.sourceLabel)
         XCTAssertTrue(presentation.isReady)
     }
 
     func testFreshHeartRateWaitsDuringPreflightWithoutSourceClaim() {
         let presentation = TrainingUIHeartRateReadinessPresentationPolicy.presentation(
             isFresh: true,
-            currentHeartRateBPM: 77,
             sourceLabel: "HealthKit",
             isPreparing: true
         )
@@ -31,7 +41,6 @@ final class TrainingUIHeartRateReadinessPresentationPolicyTests: XCTestCase {
     func testUnavailableHeartRateUsesSameWaitingPresentationDuringPreflight() {
         let presentation = TrainingUIHeartRateReadinessPresentationPolicy.presentation(
             isFresh: false,
-            currentHeartRateBPM: nil,
             sourceLabel: nil,
             isPreparing: true
         )
@@ -49,7 +58,6 @@ final class TrainingUIHeartRateReadinessPresentationPolicyTests: XCTestCase {
     func testUnavailableHeartRateBeforePreflightKeepsExistingPresentation() {
         let presentation = TrainingUIHeartRateReadinessPresentationPolicy.presentation(
             isFresh: false,
-            currentHeartRateBPM: nil,
             sourceLabel: nil,
             isPreparing: false
         )

@@ -59,6 +59,37 @@ final class TrainingUIObservationBoundaryTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
+    func testRepeatedAcceptedSameBPMTimestampsDoNotAddBoundaryInvalidations() {
+        let heartRateSnapshot = PassthroughSubject<Void, Never>()
+        let oneHertzTiming = PassthroughSubject<Void, Never>()
+        let acceptedSameBPMTimestamp = PassthroughSubject<Void, Never>()
+        let boundary = TrainingUIObservationBoundary(
+            signals: [
+                heartRateSnapshot.eraseToAnyPublisher(),
+                oneHertzTiming.eraseToAnyPublisher(),
+            ]
+        )
+        var publications = 0
+        let cancellable = boundary.objectWillChange.sink { publications += 1 }
+
+        for _ in 0..<8 {
+            acceptedSameBPMTimestamp.send()
+        }
+        XCTAssertEqual(publications, 0)
+
+        heartRateSnapshot.send()
+        XCTAssertEqual(publications, 1)
+
+        for _ in 0..<8 {
+            acceptedSameBPMTimestamp.send()
+        }
+        XCTAssertEqual(publications, 1)
+
+        oneHertzTiming.send()
+        XCTAssertEqual(publications, 2)
+        withExtendedLifetime(cancellable) {}
+    }
+
     func testProductionWiringIncludesTrainingStateAndExcludesBroadManagerObservation() throws {
         let source = try String(
             contentsOf: packageRoot
@@ -105,6 +136,7 @@ final class TrainingUIObservationBoundaryTests: XCTestCase {
             XCTAssertTrue(wiring.contains(requiredPublisher), requiredPublisher)
         }
         XCTAssertFalse(wiring.contains("$discoveryUIPeripherals"))
+        XCTAssertFalse(wiring.contains("heartRateFactualState.$lastValueAt"))
         XCTAssertFalse(wiring.contains("manager.objectWillChange"))
         XCTAssertTrue(source.contains("ControlSwipeView(manager: manager)"))
         XCTAssertTrue(source.contains(".equatable()"))
