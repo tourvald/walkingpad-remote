@@ -201,6 +201,43 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         try await eventually { await persistence.finalizations.count == 1 }
     }
 
+    func testWorkoutAnalysisExportCannotColdPrepareStoreOrResumeAnalyzer() async throws {
+        let persistence = RuntimePersistence()
+        let factoryCallCount = LockedCounter()
+        let coordinator = TelemetryV2RuntimeCoordinator {
+            factoryCallCount.increment()
+            return persistence
+        }
+        let request = WorkoutAnalysisExportRequest(
+            sessionID: SessionID(rawValue: UUID()),
+            exactProfileLocalIdentifier: "profile-a"
+        )
+
+        do {
+            _ = try await coordinator.exportWorkoutAnalysis(request)
+            XCTFail("A cold export must not prepare the store as a side effect")
+        } catch let error as TelemetryWorkoutReadError {
+            XCTAssertEqual(error, .unavailable("telemetry-v2-store-not-ready"))
+        }
+        XCTAssertEqual(factoryCallCount.value, 0)
+        let coldResumeCount = await persistence.pendingAnalysisResumeCallCount
+        let coldRecoveryCount = await persistence.unfinishedCallCount
+        XCTAssertEqual(coldResumeCount, 0)
+        XCTAssertEqual(coldRecoveryCount, 0)
+
+        coordinator.prepareStoreAndRecover()
+        try await eventually { coordinator.status == .idle && factoryCallCount.value == 1 }
+        try await eventually { await persistence.pendingAnalysisResumeCallCount == 1 }
+        do {
+            _ = try await coordinator.exportWorkoutAnalysis(request)
+            XCTFail("The injected read failure must be surfaced")
+        } catch let error as TelemetryWorkoutReadError {
+            XCTAssertEqual(error, .unavailable("injected-read-failure"))
+        }
+        let preparedResumeCount = await persistence.pendingAnalysisResumeCallCount
+        XCTAssertEqual(preparedResumeCount, 1)
+    }
+
     func testReadBeforeFailedStorePreparationSurfacesExplicitUnavailableError() async throws {
         enum FactoryFailure: Error { case unavailable }
         let coordinator = TelemetryV2RuntimeCoordinator {
@@ -1381,6 +1418,19 @@ private final class ManualRuntimeClock: TelemetryV2RuntimeClock, @unchecked Send
     }
 }
 
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue = 0
+
+    var value: Int {
+        lock.withLock { storedValue }
+    }
+
+    func increment() {
+        lock.withLock { storedValue += 1 }
+    }
+}
+
 private actor RuntimePersistence:
     TelemetryRecorderPersistence,
     TelemetryPostWorkoutAnalysisCapability,
@@ -1415,6 +1465,7 @@ private actor RuntimePersistence:
     private var analysisContinuation: CheckedContinuation<Void, Never>?
     private var migrationContinuation: CheckedContinuation<Void, Never>?
     private(set) var analysisSessionIDs: [SessionID] = []
+    private(set) var pendingAnalysisResumeCallCount = 0
     private(set) var migrationRequests: [LegacyTelemetryMigrationRequest] = []
     private(set) var migrationCallCount = 0
     private(set) var migrationCompletionCount = 0
@@ -1488,6 +1539,12 @@ private actor RuntimePersistence:
         throw TelemetryWorkoutReadError.unavailable("injected-read-failure")
     }
 
+    func exportWorkoutAnalysis(
+        _ request: WorkoutAnalysisExportRequest
+    ) async throws -> WorkoutAnalysisExportArtifact {
+        throw TelemetryWorkoutReadError.unavailable("injected-read-failure")
+    }
+
     func unfinishedSessions() async throws -> [WorkoutSessionRecord] {
         unfinishedCallCount += 1
         return []
@@ -1504,7 +1561,8 @@ private actor RuntimePersistence:
     }
 
     func resumePendingWorkoutAnalyses() async -> [PostWorkoutAnalysisTriggerResult] {
-        []
+        pendingAnalysisResumeCallCount += 1
+        return []
     }
 
     func migrateLegacyTelemetry(

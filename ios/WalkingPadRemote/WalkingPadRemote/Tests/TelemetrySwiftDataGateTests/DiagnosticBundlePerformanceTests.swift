@@ -23,6 +23,23 @@ private struct DiagnosticBundleBenchmarkResult: Codable {
     let mainActorMaximumGapSeconds: Double
 }
 
+private struct WorkoutAnalysisExportBenchmarkResult: Codable {
+    let representedMinutes: Int
+    let frameRowCount: Int
+    let eventRowCount: Int
+    let metadataRowCount: Int
+    let fileBytes: Int64
+    let wallTimeSeconds: Double
+    let storeFetchCount: Int
+    let maximumStoreFetchLimit: Int
+    let maximumBufferedTimelineRows: Int
+    let baselineResidentBytes: UInt64
+    let peakResidentBytes: UInt64
+    let peakResidentDeltaBytes: UInt64
+    let mainActorHeartbeatCount: Int
+    let mainActorMaximumGapSeconds: Double
+}
+
 final class DiagnosticBundlePerformanceTests: XCTestCase {
     func testEmptyStoreProducesSupportOnlyBundle() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
@@ -100,6 +117,107 @@ final class DiagnosticBundlePerformanceTests: XCTestCase {
             let data = try JSONEncoder.sorted.encode(result)
             print("DIAGNOSTIC_BUNDLE_BENCHMARK \(String(decoding: data, as: UTF8.self))")
         }
+    }
+
+    func testWorkoutAnalysisThirtyAndOneHundredTwentyMinutePerformance() async throws {
+        for representedMinutes in [30, 120] {
+            let result = try await runWorkoutAnalysisWorkload(
+                representedMinutes: representedMinutes
+            )
+            XCTAssertEqual(result.frameRowCount, representedMinutes * 60 - 20)
+            XCTAssertGreaterThan(result.eventRowCount, 0)
+            XCTAssertLessThanOrEqual(result.eventRowCount, 20)
+            XCTAssertGreaterThan(result.metadataRowCount, 0)
+            XCTAssertGreaterThan(result.fileBytes, 0)
+            XCTAssertLessThan(result.fileBytes, Int64(representedMinutes) * 150_000)
+            XCTAssertLessThan(result.wallTimeSeconds, 10)
+            XCTAssertLessThanOrEqual(result.maximumStoreFetchLimit, 128)
+            XCTAssertLessThanOrEqual(result.maximumBufferedTimelineRows, 256)
+            XCTAssertLessThanOrEqual(
+                result.storeFetchCount,
+                5 + ((result.frameRowCount + 127) / 128)
+            )
+            XCTAssertLessThan(result.peakResidentDeltaBytes, 128 * 1024 * 1024)
+            XCTAssertGreaterThan(result.mainActorHeartbeatCount, 0)
+            XCTAssertLessThan(result.mainActorMaximumGapSeconds, 1.0)
+            let data = try JSONEncoder.sorted.encode(result)
+            print("WORKOUT_ANALYSIS_EXPORT_BENCHMARK \(String(decoding: data, as: UTF8.self))")
+        }
+    }
+
+    private func runWorkoutAnalysisWorkload(
+        representedMinutes: Int
+    ) async throws -> WorkoutAnalysisExportBenchmarkResult {
+        let profile = profile(
+            name: "analysis-\(representedMinutes)-minute",
+            sessionCount: 1,
+            secondsPerSession: representedMinutes * 60
+        )
+        let generator = TelemetryGateFixtureGenerator(profile: profile)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "WorkoutAnalysisBenchmark_\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try await Task.detached {
+            try TelemetryStoreFactory.make(.onDisk(root.appendingPathComponent("TelemetryV2.store")))
+        }.value
+        try await persistFixture(generator: generator, store: store)
+
+        let baselineResidentBytes = currentResidentBytes()
+        let memorySampler = Task.detached(priority: .utility) {
+            var peak = currentResidentBytes()
+            while !Task.isCancelled {
+                peak = max(peak, currentResidentBytes())
+                try? await Task.sleep(for: .milliseconds(2))
+            }
+            return peak
+        }
+        let heartbeat = await MainActor.run { BenchmarkMainActorHeartbeat() }
+        let heartbeatTask = Task { @MainActor in await heartbeat.run() }
+        defer {
+            memorySampler.cancel()
+            heartbeatTask.cancel()
+        }
+
+        let started = ContinuousClock.now
+        let session = generator.session(index: 0)
+        let artifact = try await store.exportWorkoutAnalysis(
+            WorkoutAnalysisExportRequest(
+                sessionID: session.sessionID,
+                exactProfileLocalIdentifier: session.profileLocalIdentifier,
+                batchSize: 128
+            )
+        )
+        defer {
+            try? FileManager.default.removeItem(at: artifact.fileURL.deletingLastPathComponent())
+        }
+        let wallTimeSeconds = started.duration(to: .now).seconds
+        memorySampler.cancel()
+        heartbeatTask.cancel()
+        let peakResidentBytes = await memorySampler.value
+        _ = await heartbeatTask.result
+        let heartbeatSnapshot = await MainActor.run { heartbeat.snapshot }
+        let diagnostics = artifact.diagnostics
+        return WorkoutAnalysisExportBenchmarkResult(
+            representedMinutes: representedMinutes,
+            frameRowCount: diagnostics.frameRowCount,
+            eventRowCount: diagnostics.eventRowCount,
+            metadataRowCount: diagnostics.metadataRowCount,
+            fileBytes: diagnostics.fileByteCount,
+            wallTimeSeconds: wallTimeSeconds,
+            storeFetchCount: diagnostics.storeFetchCount,
+            maximumStoreFetchLimit: diagnostics.maximumStoreFetchLimit,
+            maximumBufferedTimelineRows: diagnostics.maximumBufferedTimelineRows,
+            baselineResidentBytes: baselineResidentBytes,
+            peakResidentBytes: peakResidentBytes,
+            peakResidentDeltaBytes: peakResidentBytes > baselineResidentBytes
+                ? peakResidentBytes - baselineResidentBytes
+                : 0,
+            mainActorHeartbeatCount: heartbeatSnapshot.count,
+            mainActorMaximumGapSeconds: heartbeatSnapshot.maximumGapSeconds
+        )
     }
 
     private func runWorkload(

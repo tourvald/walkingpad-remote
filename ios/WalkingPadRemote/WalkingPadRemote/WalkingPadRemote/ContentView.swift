@@ -3598,6 +3598,8 @@ private struct WorkoutStatsView: View {
     @State private var monthOffset: Int = 0
     @State private var showPlanSheet: Bool = false
     @State private var pageHeights: [StatsScope: CGFloat] = [:]
+    @State private var workoutAnalysisExportTask: Task<Void, Never>?
+    @State private var exportingWorkoutID: String?
 
     private var scopeSelection: Binding<StatsScope> {
         Binding(
@@ -3634,8 +3636,10 @@ private struct WorkoutStatsView: View {
                         entries: manager.telemetryV2WorkoutHistory,
                         readState: manager.telemetryV2WorkoutHistoryState,
                         hasMore: manager.telemetryV2WorkoutHistoryHasMore,
+                        exportingWorkoutID: exportingWorkoutID,
                         onRetry: { manager.refreshWorkoutHistoryFromV2(reset: true) },
-                        onLoadMore: { manager.loadNextWorkoutHistoryPageFromV2() }
+                        onLoadMore: { manager.loadNextWorkoutHistoryPageFromV2() },
+                        onExportAnalysis: startWorkoutAnalysisExport
                     )
                     .padding(.horizontal)
                     .padding(.bottom)
@@ -3648,6 +3652,34 @@ private struct WorkoutStatsView: View {
             }
             .sheet(isPresented: $showPlanSheet) {
                 ZonePlanSheet(planMinutes: $manager.zonePlanMinutes, ranges: zoneRanges)
+            }
+            .onDisappear {
+                workoutAnalysisExportTask?.cancel()
+                workoutAnalysisExportTask = nil
+                exportingWorkoutID = nil
+            }
+        }
+    }
+
+    private func startWorkoutAnalysisExport(_ entry: WorkoutHistoryProjection) {
+        presentWorkoutAnalysisExportWarning {
+            workoutAnalysisExportTask?.cancel()
+            exportingWorkoutID = entry.id
+            workoutAnalysisExportTask = Task { @MainActor in
+                defer {
+                    exportingWorkoutID = nil
+                    workoutAnalysisExportTask = nil
+                }
+                do {
+                    try await prepareAndPresentWorkoutAnalysisExport(
+                        manager: manager,
+                        entry: entry
+                    )
+                } catch is CancellationError {
+                    // Cancellation removes only the temporary export artifact.
+                } catch {
+                    presentWorkoutAnalysisExportFailure(error)
+                }
             }
         }
     }
@@ -4075,8 +4107,10 @@ private struct WorkoutHistoryCard: View {
     let entries: [WorkoutHistoryProjection]
     let readState: BluetoothManager.WorkoutReadState
     let hasMore: Bool
+    let exportingWorkoutID: String?
     let onRetry: () -> Void
     let onLoadMore: () -> Void
+    let onExportAnalysis: (WorkoutHistoryProjection) -> Void
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -4147,6 +4181,27 @@ private struct WorkoutHistoryCard: View {
                                     .font(.caption2.weight(.semibold))
                                     .foregroundColor(entry.averageHeartRate == nil ? .secondary : .red)
                             }
+                        }
+                        if entry.origin == .nativeV2 {
+                            Button {
+                                onExportAnalysis(entry)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    if exportingWorkoutID == entry.id {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else {
+                                        Image(systemName: "square.and.arrow.up")
+                                    }
+                                    Text("Экспорт данных тренировки")
+                                }
+                                .font(.caption.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
+                            .disabled(exportingWorkoutID != nil)
+                            .accessibilityLabel("Экспорт данных тренировки")
                         }
                         if entry.id != entries.last?.id {
                             Divider()
@@ -4865,6 +4920,61 @@ private func presentTelemetryV2ExportWarning(
         onContinue()
     })
     root.present(alert, animated: true)
+}
+
+private func presentWorkoutAnalysisExportWarning(
+    onContinue: @escaping () -> Void
+) {
+    guard let root = activeRootViewController() else { return }
+    let alert = UIAlertController(
+        title: "Данные о здоровье",
+        message: "Файл содержит пульс и данные выбранной тренировки. Делитесь им только с доверенным получателем. Исходные данные не будут изменены или удалены.",
+        preferredStyle: .alert
+    )
+    alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+    alert.addAction(UIAlertAction(title: "Продолжить", style: .default) { _ in
+        onContinue()
+    })
+    root.present(alert, animated: true)
+}
+
+@MainActor
+private func prepareAndPresentWorkoutAnalysisExport(
+    manager: BluetoothManager,
+    entry: WorkoutHistoryProjection
+) async throws {
+    let artifact = try await manager.prepareWorkoutAnalysisExport(for: entry)
+    do {
+        try Task.checkCancellation()
+        guard let root = activeRootViewController() else {
+            manager.finalizeWorkoutAnalysisExport(artifact)
+            return
+        }
+        let activity = UIActivityViewController(
+            activityItems: [artifact.fileURL],
+            applicationActivities: nil
+        )
+        activity.completionWithItemsHandler = { _, _, _, _ in
+            Task { @MainActor in
+                manager.finalizeWorkoutAnalysisExport(artifact)
+            }
+        }
+        root.present(activity, animated: true)
+    } catch {
+        manager.finalizeWorkoutAnalysisExport(artifact)
+        throw error
+    }
+}
+
+@MainActor
+private func presentWorkoutAnalysisExportFailure(_ error: Error) {
+    let failure = UIAlertController(
+        title: "Не удалось экспортировать тренировку",
+        message: error.localizedDescription,
+        preferredStyle: .alert
+    )
+    failure.addAction(UIAlertAction(title: "OK", style: .default))
+    activeRootViewController()?.present(failure, animated: true)
 }
 
 @MainActor
