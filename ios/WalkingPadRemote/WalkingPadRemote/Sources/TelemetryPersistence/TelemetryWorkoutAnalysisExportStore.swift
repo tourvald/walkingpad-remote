@@ -411,10 +411,9 @@ private extension TelemetryStore {
         let safety = WorkoutEventKind.safety.rawValue
         let stopEvidence = WorkoutEventKind.stopEvidence.rawValue
         let recorderHealth = WorkoutEventKind.recorderHealth.rawValue
-        let appLifecycle = WorkoutEventKind.appLifecycle.rawValue
         let selectedKinds = [
             lifecycle, phase, source, connection, decision, command, cooldown,
-            manualStop, safety, stopEvidence, recorderHealth, appLifecycle,
+            manualStop, safety, stopEvidence, recorderHealth,
         ]
         var descriptor: FetchDescriptor<TelemetryWorkoutEventV1>
         if let afterElapsed {
@@ -571,6 +570,18 @@ private extension TelemetryStore {
                 detail: stopConclusion(value.conclusion)
             )
         case let .recorderHealth(value):
+            if let lifecycle = AppLifecycleEvidencePersistence.event(from: value) {
+                return simpleEvent(
+                    common,
+                    name: "app_lifecycle_\(lifecycle.currentState.rawValue)",
+                    detail: [
+                        lifecycle.workoutStage.rawValue,
+                        lifecycle.policyAction.rawValue,
+                        lifecycle.policyReason,
+                        lifecycle.treadmillConnectionState.rawValue,
+                    ].joined(separator: ";")
+                )
+            }
             return simpleEvent(
                 common,
                 name: "recorder_\(value.kind.rawValue)",
@@ -579,17 +590,6 @@ private extension TelemetryStore {
                     recorderDetailCode(value.detailCode),
                 ].compactMap { $0 }
                     .joined(separator: ";")
-            )
-        case let .appLifecycle(value):
-            return simpleEvent(
-                common,
-                name: "app_lifecycle_\(value.currentState.rawValue)",
-                detail: [
-                    value.workoutStage.rawValue,
-                    value.policyAction.rawValue,
-                    value.policyReason,
-                    value.treadmillConnectionState.rawValue,
-                ].joined(separator: ";")
             )
         case .heartRateEvidence, .treadmillEvidence:
             throw TelemetryWorkoutReadError.corruptProjection("unselected-analysis-event-kind")

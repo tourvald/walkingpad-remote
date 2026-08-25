@@ -37,7 +37,28 @@ struct WorkoutLifecyclePolicyDecision: Equatable {
     let reason: String
 }
 
+struct WorkoutIdleTimerOwnership: Equatable {
+    private(set) var isOwned = false
+
+    mutating func update(
+        _ input: WorkoutLifecyclePolicyInput
+    ) -> Bool? {
+        let shouldOwn = WorkoutLifecyclePolicy.shouldOwnIdleTimer(input)
+        guard shouldOwn != isOwned else { return nil }
+        isOwned = shouldOwn
+        return shouldOwn
+    }
+}
+
 enum WorkoutLifecyclePolicy {
+    static func shouldOwnIdleTimer(
+        _ input: WorkoutLifecyclePolicyInput
+    ) -> Bool {
+        input.appState == .active
+            && input.hasCommittedWorkout
+            && (input.stage == .main || input.stage == .cooldown)
+    }
+
     static func evaluate(
         _ input: WorkoutLifecyclePolicyInput
     ) -> WorkoutLifecyclePolicyDecision {

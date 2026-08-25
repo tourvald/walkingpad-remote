@@ -391,7 +391,6 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
     case safety(SafetyEvent)
     case stopEvidence(StopEvidenceEvent)
     case recorderHealth(RecorderHealthEvent)
-    case appLifecycle(AppLifecycleEvent)
     case heartRateEvidence(HeartRateRuntimeEvidence)
     case treadmillEvidence(TreadmillTelemetryEvidence)
 
@@ -408,7 +407,6 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
         case .safety: .safety
         case .stopEvidence: .stopEvidence
         case .recorderHealth: .recorderHealth
-        case .appLifecycle: .appLifecycle
         case .heartRateEvidence: .heartRateEvidence
         case .treadmillEvidence: .treadmillEvidence
         }
@@ -433,6 +431,49 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
         default:
             WorkoutEventCausalIDs(decisionID: nil, commandID: nil, attemptID: nil)
         }
+    }
+}
+
+/// Keeps lifecycle evidence readable by the accepted rollback decoder, which
+/// already understands `recorderHealth` and can safely ignore this record class.
+public enum AppLifecycleEvidencePersistence {
+    public static let affectedRecordClass = "app_lifecycle_evidence_v1"
+    private static let detailPrefix = "app_lifecycle_v1:"
+
+    public static func payload(
+        for event: AppLifecycleEvent
+    ) throws -> WorkoutEventPayload {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        let encoded = try encoder.encode(event).base64EncodedString()
+        return .recorderHealth(RecorderHealthEvent(
+            kind: .persistence,
+            affectedRecordClass: affectedRecordClass,
+            detailCode: detailPrefix + encoded
+        ))
+    }
+
+    public static func event(
+        from payload: WorkoutEventPayload
+    ) -> AppLifecycleEvent? {
+        guard case let .recorderHealth(health) = payload else { return nil }
+        return event(from: health)
+    }
+
+    public static func event(
+        from health: RecorderHealthEvent
+    ) -> AppLifecycleEvent? {
+        guard health.kind == .persistence,
+              health.affectedRecordClass == affectedRecordClass,
+              let detailCode = health.detailCode,
+              detailCode.hasPrefix(detailPrefix),
+              let data = Data(base64Encoded: String(detailCode.dropFirst(detailPrefix.count)))
+        else {
+            return nil
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        return try? decoder.decode(AppLifecycleEvent.self, from: data)
     }
 }
 
@@ -481,7 +522,6 @@ public enum WorkoutEventKind: String, Codable, Hashable, Sendable {
     case safety
     case stopEvidence
     case recorderHealth
-    case appLifecycle
     case heartRateEvidence
     case treadmillEvidence
 }

@@ -1051,7 +1051,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 #endif
 
     // HR control
-    @Published var isHrControlRunning: Bool = false
+    @Published var isHrControlRunning: Bool = false {
+        didSet { synchronizeWorkoutIdleTimerOwnership() }
+    }
     @Published var isHrControlStartAllowed: Bool = false
     @Published var hrControlStartBlockReasonText: String? = nil
     @Published private(set) var isNativeHeartRatePreflightActive: Bool = false
@@ -1066,11 +1068,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published private(set) var nativeWorkoutRecoveryStatusText: String? = nil
 
     private var nativeHeartRatePreflightEngine = NativeHeartRatePreflightEngine()
-    private var nativeHeartRateAppActivity: NativeHeartRatePreflightEngine.AppActivity = .inactive
+    private var nativeHeartRateAppActivity: NativeHeartRatePreflightEngine.AppActivity = .inactive {
+        didSet { synchronizeWorkoutIdleTimerOwnership() }
+    }
     private var isTrainingHubVisible = false
     private var nativeHeartRateFlowOwnsController = false
     private var nativeHeartRateProviderLifecycle = NativeHeartRateProviderLifecycle()
-    private var nativeHealthKitWorkoutCommitted = false
+    private var nativeHealthKitWorkoutCommitted = false {
+        didSet { synchronizeWorkoutIdleTimerOwnership() }
+    }
+    private var workoutIdleTimerOwnership = WorkoutIdleTimerOwnership()
     private var nativeHealthKitWorkoutFinishInFlight = false
     private var nativePreflightCommitTimestamps: (
         acquisitionStartedAt: Date,
@@ -5345,6 +5352,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return .idle
     }
 
+    private func synchronizeWorkoutIdleTimerOwnership() {
+        let hasCommittedWorkout = nativeHealthKitWorkoutCommitted && isHrControlRunning
+        guard let shouldDisable = workoutIdleTimerOwnership.update(
+            WorkoutLifecyclePolicyInput(
+                appState: currentWorkoutLifecycleAppState,
+                stage: currentWorkoutLifecycleStage,
+                hasCommittedWorkout: hasCommittedWorkout
+            )
+        ) else {
+            return
+        }
+#if canImport(UIKit)
+        UIApplication.shared.isIdleTimerDisabled = shouldDisable
+#endif
+    }
+
     private func recordWorkoutLifecycleTransition(
         from previousState: WorkoutLifecycleAppState,
         to currentState: WorkoutLifecycleAppState,
@@ -5404,25 +5427,30 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               ) else {
             return
         }
-        _ = telemetryV2Coordinator.observeEvent(
-            .appLifecycle(AppLifecycleEvent(
-                previousState: telemetryPreviousState,
-                currentState: telemetryState,
-                workoutStage: telemetryStage,
-                hasCommittedWorkout: hasCommittedWorkout,
-                policyAction: telemetryAction,
-                policyReason: decision.reason,
-                controlLoopPermitted: decision.permitsControlLoop,
-                heartRateProviderState: iPhoneHealthKitHeartRateProvider.state.rawValue,
-                lastHeartRateFactualAt: lastFactualAt,
-                lastHeartRateReceivedAt: lastReceivedAt,
-                lastHeartRateAgeSeconds: lastAgeSeconds,
-                treadmillConnectionState: connectionState,
-                treadmillControlReady: isTreadmillControlReady,
-                treadmillProtocol: treadmillProtocol.rawValue
-            )),
-            occurredAt: occurredAt
+        let lifecycleEvent = AppLifecycleEvent(
+            previousState: telemetryPreviousState,
+            currentState: telemetryState,
+            workoutStage: telemetryStage,
+            hasCommittedWorkout: hasCommittedWorkout,
+            policyAction: telemetryAction,
+            policyReason: decision.reason,
+            controlLoopPermitted: decision.permitsControlLoop,
+            heartRateProviderState: iPhoneHealthKitHeartRateProvider.state.rawValue,
+            lastHeartRateFactualAt: lastFactualAt,
+            lastHeartRateReceivedAt: lastReceivedAt,
+            lastHeartRateAgeSeconds: lastAgeSeconds,
+            treadmillConnectionState: connectionState,
+            treadmillControlReady: isTreadmillControlReady,
+            treadmillProtocol: treadmillProtocol.rawValue
         )
+        do {
+            _ = telemetryV2Coordinator.observeEvent(
+                try AppLifecycleEvidencePersistence.payload(for: lifecycleEvent),
+                occurredAt: occurredAt
+            )
+        } catch {
+            appendLog("Lifecycle V2 compatibility encoding failed")
+        }
     }
 
     private func commitExistingHrControl(preflightLatencySeconds: TimeInterval) {

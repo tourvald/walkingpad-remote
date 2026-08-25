@@ -16,7 +16,7 @@ final class WorkoutLifecycleIntegrationContractTests: XCTestCase {
         for token in [
             "recordWorkoutLifecycleTransition(",
             "logTrainingEvent(\"app_lifecycle\"",
-            ".appLifecycle(AppLifecycleEvent(",
+            "AppLifecycleEvidencePersistence.payload(for: lifecycleEvent)",
             "\"hr_last_factual_at\"",
             "\"hr_last_received_at\"",
             "\"treadmill_control_ready\"",
@@ -41,9 +41,10 @@ final class WorkoutLifecycleIntegrationContractTests: XCTestCase {
         }
     }
 
-    func testBackgroundCapabilityIsBluetoothCentralOnlyAndIdleTimerRemainsSystemOwned() throws {
+    func testBackgroundCapabilityIsBluetoothCentralOnlyAndIdleTimerIsNarrowlyOwned() throws {
         let project = try source("WalkingPadRemote.xcodeproj/project.pbxproj")
         let infoPlist = try source("WalkingPadRemote/Info.plist")
+        let manager = try source("WalkingPadRemote/BluetoothManager.swift")
         let appSources = try FileManager.default.contentsOfDirectory(
             at: sourceRoot.appendingPathComponent("WalkingPadRemote", isDirectory: true),
             includingPropertiesForKeys: nil
@@ -66,7 +67,19 @@ final class WorkoutLifecycleIntegrationContractTests: XCTestCase {
         )
         XCTAssertFalse(infoPlist.contains("<string>audio</string>"))
         XCTAssertFalse(project.contains("bluetooth-peripheral"))
-        XCTAssertFalse(appSources.contains("isIdleTimerDisabled"))
+        XCTAssertEqual(
+            appSources.components(separatedBy: "UIApplication.shared.isIdleTimerDisabled").count - 1,
+            1
+        )
+        for token in [
+            "@Published var isHrControlRunning: Bool = false {",
+            "private var nativeHeartRateAppActivity:",
+            "private var nativeHealthKitWorkoutCommitted = false {",
+            "didSet { synchronizeWorkoutIdleTimerOwnership() }",
+            "WorkoutLifecyclePolicy.shouldOwnIdleTimer(input)",
+        ] {
+            XCTAssertTrue(manager.contains(token) || appSources.contains(token), token)
+        }
     }
 
     private var sourceRoot: URL {

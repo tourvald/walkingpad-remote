@@ -6,7 +6,7 @@ final class EventSessionAndAnalysisTests: XCTestCase {
     func testAppLifecycleEvidenceIsTypedAndRoundTrips() throws {
         let factualAt = Date(timeIntervalSince1970: 1_000)
         let receivedAt = factualAt.addingTimeInterval(2)
-        let payload = WorkoutEventPayload.appLifecycle(AppLifecycleEvent(
+        let event = AppLifecycleEvent(
             previousState: .inactive,
             currentState: .background,
             workoutStage: .cooldown,
@@ -21,11 +21,23 @@ final class EventSessionAndAnalysisTests: XCTestCase {
             treadmillConnectionState: .connected,
             treadmillControlReady: true,
             treadmillProtocol: "walkingPad"
-        ))
+        )
+        let payload = try AppLifecycleEvidencePersistence.payload(for: event)
 
-        XCTAssertEqual(payload.kind, .appLifecycle)
+        XCTAssertEqual(payload.kind, .recorderHealth)
+        XCTAssertEqual(AppLifecycleEvidencePersistence.event(from: payload), event)
         let encoded = try JSONEncoder().encode(payload)
+        let encodedText = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        XCTAssertTrue(encodedText.contains("recorderHealth"))
+        XCTAssertFalse(encodedText.contains("appLifecycle"))
         XCTAssertEqual(try JSONDecoder().decode(WorkoutEventPayload.self, from: encoded), payload)
+        guard case let .recorderHealth(rollbackPayload) = try JSONDecoder().decode(
+            AcceptedRollbackWorkoutEventPayload.self,
+            from: encoded
+        ) else {
+            return XCTFail("Rollback decoder did not recognize the compatibility envelope")
+        }
+        XCTAssertEqual(rollbackPayload.affectedRecordClass, "app_lifecycle_evidence_v1")
     }
 
     func testControlDecisionPreservesActualObservationReferencesAndContext() throws {
@@ -271,6 +283,22 @@ final class EventSessionAndAnalysisTests: XCTestCase {
             payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
         )
     }
+}
+
+private enum AcceptedRollbackWorkoutEventPayload: Codable {
+    case sessionLifecycle(SessionLifecycleEvent)
+    case workoutPhase(WorkoutPhaseTransition)
+    case sourceTransition(SourceTransition)
+    case connectionTransition(ConnectionTransition)
+    case controlDecision(ControlDecision)
+    case commandLifecycle(CommandLifecycleRecord)
+    case cooldown(CooldownEvent)
+    case manualStop(ManualStopEvent)
+    case safety(SafetyEvent)
+    case stopEvidence(StopEvidenceEvent)
+    case recorderHealth(RecorderHealthEvent)
+    case heartRateEvidence(HeartRateRuntimeEvidence)
+    case treadmillEvidence(TreadmillTelemetryEvidence)
 }
 
 private struct WorkoutEventCodingFixture: Encodable {
