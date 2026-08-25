@@ -98,6 +98,7 @@ public enum TreadmillObservationQualityFlag: String, Codable, Hashable, Sendable
     case invalidNativeValue
     case unitsNotRead
     case unitsUnknown
+    case unitsImperial
     case unitsStale
     case unitsMalformed
     case unitsInvalidChecksum
@@ -419,13 +420,14 @@ public struct TreadmillObservationNormalizer: Sendable {
                     quality.insert(.unitsStale)
                     return nil
                 }
-                let nativeUnit: TreadmillNativeSpeedUnit = unit == .milesPerHour
-                    ? .milesPerHour
-                    : .kilometresPerHour
+                guard unit == .kilometresPerHour else {
+                    quality.insert(.unitsImperial)
+                    return nil
+                }
                 return FactualSpeedKilometresPerHour.normalized(
                     from: NativeTreadmillSpeed(
                         value: nativeSpeed.scaledValue,
-                        unit: nativeUnit
+                        unit: .kilometresPerHour
                     ),
                     provenance: .decodedDeviceReport
                 )

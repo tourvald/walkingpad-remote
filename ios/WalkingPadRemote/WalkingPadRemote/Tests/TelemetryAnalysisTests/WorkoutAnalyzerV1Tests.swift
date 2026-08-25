@@ -35,6 +35,123 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         )
     }
 
+    func testTinyStartupFactualSpeedSliceCannotBecomeWorkoutAverage() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 1_620)
+        let treadmill = stride(from: 0, through: 20, by: 5).enumerated().map {
+            fixture.treadmill(
+                ordinal: $0.offset + 1,
+                seconds: Double($0.element),
+                speed: Double(2 + $0.offset),
+                factual: true
+            )
+        }
+        let result = try WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                treadmill: treadmill,
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 1_620)
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(1_700)
+        )
+        let detail = try decodeDetail(result)
+
+        XCTAssertNil(result.keyMetrics.averageFactualSpeedKilometresPerHour)
+        XCTAssertEqual(
+            detail.quality.treadmillFactualCoverage.coveredSeconds,
+            25,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            detail.quality.treadmillFactualCoverage.coverageRatio!,
+            25.0 / 1_620.0,
+            accuracy: 0.000_001
+        )
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.code == "average-factual-speed-insufficient-coverage"
+                && $0.detail?.contains("required=0.900000") == true
+        })
+        XCTAssertTrue(result.exclusions.contains {
+            $0.code == "sourceCoverageUnavailable.average-factual-speed-insufficient-coverage"
+        })
+    }
+
+    func testAdequateFactualCoverageProducesNormalWorkoutAverage() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 100)
+        let treadmill = stride(from: 0, through: 85, by: 5).enumerated().map {
+            fixture.treadmill(
+                ordinal: $0.offset + 1,
+                seconds: Double($0.element),
+                speed: $0.offset.isMultiple(of: 2) ? 4 : 6,
+                factual: true
+            )
+        }
+        let result = try WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                treadmill: treadmill,
+                events: fixture.phaseEvents(mainAt: 0, finishedAt: 100)
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(120)
+        )
+        let detail = try decodeDetail(result)
+
+        XCTAssertEqual(
+            detail.quality.treadmillFactualCoverage.coverageRatio!,
+            WorkoutAnalyzerV1.minimumAverageFactualSpeedCoverageRatio,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            result.keyMetrics.averageFactualSpeedKilometresPerHour!,
+            5,
+            accuracy: 0.000_001
+        )
+        XCTAssertFalse(detail.quality.issues.contains {
+            $0.code == "average-factual-speed-insufficient-coverage"
+        })
+    }
+
+    func testRealisticSparseSessionUsesFreshCanonicalCoverageAcrossCooldown() throws {
+        let sessionSeconds = 1_620
+        let fixture = AnalysisFixture(sessionSeconds: Double(sessionSeconds))
+        let spacing = Double(sessionSeconds) / 49.0
+        let treadmill = (0..<49).map { index in
+            fixture.treadmill(
+                ordinal: index + 1,
+                seconds: Double(index) * spacing,
+                speed: index < 40 ? 6 : 3,
+                factual: true
+            )
+        }
+        let frames = (0..<sessionSeconds).map { second -> CanonicalFrame in
+            let observationIndex = min(48, Int(Double(second) / spacing))
+            let observation = treadmill[observationIndex]
+            let age = Double(second) - Double(observationIndex) * spacing
+            return fixture.treadmillFrame(
+                observation: observation,
+                second: Int64(second),
+                freshness: age <= 30 ? .fresh : .stale
+            )
+        }
+        let result = try WorkoutAnalyzerV1.analyze(
+            fixture.input(
+                treadmill: treadmill,
+                events: fixture.cooldownEvents(start: 1_320, end: 1_620, target: 115),
+                frames: frames
+            ),
+            generatedAt: fixture.baseDate.addingTimeInterval(1_700)
+        )
+        let detail = try decodeDetail(result)
+
+        XCTAssertEqual(treadmill.count, 49)
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(detail.quality.treadmillFactualCoverage.coverageRatio),
+            WorkoutAnalyzerV1.minimumAverageFactualSpeedCoverageRatio
+        )
+        XCTAssertNotNil(result.keyMetrics.averageFactualSpeedKilometresPerHour)
+        XCTAssertTrue(detail.quality.phases.allSatisfy {
+            ($0.treadmillCoverage.coverageRatio ?? 0)
+                >= WorkoutAnalyzerV1.minimumAverageFactualSpeedCoverageRatio
+        })
+    }
+
     func testDuplicateAndOutOfOrderNativeSamplesCannotChangeDurationMetrics() throws {
         let fixture = AnalysisFixture(sessionSeconds: 20)
         let heartRate = [
@@ -1946,6 +2063,40 @@ private struct AnalysisFixture {
             precedingGap: CanonicalGapBoundary(
                 missingSinceElapsedSecond: 7,
                 kind: .noObservation
+            )
+        )
+    }
+
+    func treadmillFrame(
+        observation: TreadmillObservation,
+        second: Int64,
+        freshness: FreshnessState
+    ) -> CanonicalFrame {
+        CanonicalFrame(
+            frameID: FrameID(rawValue: uuid(9_000 + Int(second))),
+            recordID: RecordID(rawValue: uuid(11_000 + Int(second))),
+            sessionID: session.sessionID,
+            canonicalElapsedSecond: second,
+            materializedAt: RecordTimestamp(
+                recordedAt: baseDate.addingTimeInterval(Double(second)),
+                elapsed: elapsed(Double(second))
+            ),
+            heartRateEvidence: nil,
+            treadmillEvidence: TreadmillFrameEvidence(
+                observationID: observation.observationID,
+                recordID: observation.recordID,
+                sourceID: observation.source.id,
+                nativeSpeed: observation.nativeSpeed,
+                factualSpeed: observation.factualSpeed,
+                deviceState: observation.deviceState,
+                measuredAt: observation.timestamp.measuredAt,
+                receivedAt: observation.timestamp.receivedAt,
+                evidenceElapsed: observation.timestamp.effectiveElapsed,
+                ageAtMaterialization: elapsed(
+                    max(0, Double(second) - observation.timestamp.effectiveElapsed.seconds)
+                ),
+                freshness: freshness,
+                provenance: observation.provenance
             )
         )
     }

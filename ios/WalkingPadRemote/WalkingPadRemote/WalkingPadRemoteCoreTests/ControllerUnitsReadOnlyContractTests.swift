@@ -84,6 +84,32 @@ final class ControllerUnitsReadOnlyContractTests: XCTestCase {
         XCTAssertTrue(parser.contains("rawControllerUnit: data[13]"))
     }
 
+    func testActiveUnitsRefreshUsesOnlyProvenMotionIdleWindow() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let manager = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("WalkingPadRemote/BluetoothManager.swift"),
+            encoding: .utf8
+        )
+        let tick = try functionBody("private func tickTelemetry()", in: manager)
+        let maintenance = try functionBody(
+            "private func maintainControllerUnitsTruthDuringActiveWorkout(",
+            in: manager
+        )
+        let request = try functionBody("private func requestControllerUnitsTruth(", in: manager)
+
+        XCTAssertTrue(tick.contains("maintainControllerUnitsTruthDuringActiveWorkout"))
+        XCTAssertTrue(maintenance.contains("motionQueueIdle: commandQueue.isEmpty"))
+        XCTAssertTrue(maintenance.contains("!isCommandQueueProcessing"))
+        XCTAssertTrue(maintenance.contains("nextCommandAllowedAt <= now"))
+        XCTAssertTrue(maintenance.contains("controllerUnitsNextScheduledMotionLeadSeconds"))
+        XCTAssertTrue(maintenance.contains("ControllerUnitsRefreshPolicy.activeWorkoutRefresh"))
+        XCTAssertTrue(request.contains("BLETransportCodec.buildWalkingPadQueryParamsPacket()"))
+        XCTAssertFalse(maintenance.contains("sendTreadmill"))
+        XCTAssertFalse(maintenance.contains("isHrControlStartAllowed ="))
+    }
+
     private func functionBody(_ signature: String, in source: String) throws -> String {
         guard let signatureRange = source.range(of: signature),
               let openingBrace = source[signatureRange.upperBound...].firstIndex(of: "{") else {

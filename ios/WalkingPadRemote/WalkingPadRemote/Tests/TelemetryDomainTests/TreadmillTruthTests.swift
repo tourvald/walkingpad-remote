@@ -36,7 +36,7 @@ final class TreadmillTruthTests: XCTestCase {
         XCTAssertEqual(evidence.connectionEpoch, epoch)
     }
 
-    func testWalkingPadImperialTruthNormalizesThroughExplicitPhysicalUnit() throws {
+    func testWalkingPadImperialTruthRemainsNativeAndNeverBecomesMetricFactualTruth() {
         let epoch = connectionEpoch(2)
         var normalizer = TreadmillObservationNormalizer()
         let evidence = normalizer.normalize(
@@ -57,12 +57,76 @@ final class TreadmillTruthTests: XCTestCase {
             recordedAt: recordedAt
         )
 
-        XCTAssertEqual(
-            try XCTUnwrap(evidence.factualSpeed).value,
-            2.5 * 1.609_344,
-            accuracy: 0.000_001
+        XCTAssertEqual(evidence.nativeSpeed?.scaledValue, 2.5)
+        XCTAssertNil(evidence.factualSpeed)
+        XCTAssertTrue(evidence.quality.contains(.unitsImperial))
+    }
+
+    func testWalkingPadRefreshedMetricTruthRetainsSparseFactualSpeedThroughCooldown() throws {
+        let epoch = connectionEpoch(20)
+        var normalizer = TreadmillObservationNormalizer()
+
+        for second in stride(from: 0, through: 1_860, by: 33) {
+            let observationAt = receivedAt.addingTimeInterval(TimeInterval(second))
+            let refreshSecond = second < 22 ? 0 : 22 + ((second - 22) / 20) * 20
+            let evidence = normalizer.normalize(
+                .walkingPad(
+                    speedRawTenths: min(97, 20 + (second % 78)),
+                    rawState: 1,
+                    deviceState: .moving,
+                    checksumValid: true,
+                    connectionEpoch: epoch,
+                    receivedAt: observationAt
+                ),
+                unitsTruth: .valid(
+                    unit: .kilometresPerHour,
+                    connectionEpoch: epoch,
+                    observedAt: receivedAt.addingTimeInterval(TimeInterval(refreshSecond))
+                ),
+                observationID: ObservationID(),
+                recordedAt: observationAt
+            )
+
+            XCTAssertNotNil(evidence.factualSpeed, "Expected factual speed at second \(second)")
+            XCTAssertFalse(evidence.quality.contains(.unitsStale))
+        }
+    }
+
+    func testWalkingPadStaleTruthNeedsNewValidEvidenceBeforeFactualSpeedReturns() throws {
+        let epoch = connectionEpoch(21)
+        let input = TreadmillProviderObservation.walkingPad(
+            speedRawTenths: 42,
+            rawState: 1,
+            deviceState: .moving,
+            checksumValid: true,
+            connectionEpoch: epoch,
+            receivedAt: receivedAt
         )
-        XCTAssertEqual(evidence.quality.values, [.missingMeasurementTime])
+        var normalizer = TreadmillObservationNormalizer()
+        let stale = normalizer.normalize(
+            input,
+            unitsTruth: .valid(
+                unit: .kilometresPerHour,
+                connectionEpoch: epoch,
+                observedAt: receivedAt.addingTimeInterval(-31)
+            ),
+            observationID: ObservationID(),
+            recordedAt: recordedAt
+        )
+        let refreshed = normalizer.normalize(
+            input,
+            unitsTruth: .valid(
+                unit: .kilometresPerHour,
+                connectionEpoch: epoch,
+                observedAt: receivedAt
+            ),
+            observationID: ObservationID(),
+            recordedAt: recordedAt
+        )
+
+        XCTAssertNil(stale.factualSpeed)
+        XCTAssertTrue(stale.quality.contains(.unitsStale))
+        XCTAssertEqual(try XCTUnwrap(refreshed.factualSpeed).value, 4.2, accuracy: 0.000_001)
     }
 
     func testWalkingPadUnknownStaleMalformedAndOldEpochTruthNeverNormalizes() {

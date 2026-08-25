@@ -209,6 +209,7 @@ struct ControllerUnitsDiagnosticSnapshot: Equatable {
 enum ControllerUnitsRefreshTrigger: String, Equatable {
     case connectionReady = "connection_ready"
     case gateBlockedAuto = "gate_blocked_auto"
+    case activeWorkoutIdleWindow = "active_workout_idle_window"
 }
 
 struct ControllerUnitsRefreshDecision: Equatable {
@@ -219,6 +220,8 @@ struct ControllerUnitsRefreshDecision: Equatable {
 
 enum ControllerUnitsRefreshPolicy {
     static let minimumQueryInterval: TimeInterval = 5
+    static let activeWorkoutQueryInterval: TimeInterval = 20
+    static let requiredMotionLeadSeconds = 2
 
     static func initialQuery(
         transportReady: Bool,
@@ -247,6 +250,26 @@ enum ControllerUnitsRefreshPolicy {
             return ControllerUnitsRefreshDecision(trigger: nil)
         }
         return ControllerUnitsRefreshDecision(trigger: .gateBlockedAuto)
+    }
+
+    static func activeWorkoutRefresh(
+        isHrControlRunning: Bool,
+        transportReady: Bool,
+        motionQueueIdle: Bool,
+        secondsUntilNextScheduledMotion: Int,
+        lastQueryAt: Date?,
+        now: Date
+    ) -> ControllerUnitsRefreshDecision {
+        guard isHrControlRunning,
+              transportReady,
+              motionQueueIdle,
+              secondsUntilNextScheduledMotion > requiredMotionLeadSeconds,
+              lastQueryAt.map({
+                  now.timeIntervalSince($0) >= activeWorkoutQueryInterval
+              }) ?? true else {
+            return ControllerUnitsRefreshDecision(trigger: nil)
+        }
+        return ControllerUnitsRefreshDecision(trigger: .activeWorkoutIdleWindow)
     }
 
     static func throttleAllowsQuery(lastQueryAt: Date?, now: Date) -> Bool {

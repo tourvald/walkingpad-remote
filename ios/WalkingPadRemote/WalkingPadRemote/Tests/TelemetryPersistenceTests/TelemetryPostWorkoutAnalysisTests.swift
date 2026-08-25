@@ -94,6 +94,47 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
         XCTAssertGreaterThan(detail.quality.heartRateCoverage.coveredSeconds, 0)
     }
 
+    func testCurrentAnalyzerDoesNotReuseLegacyPartialSpeedAnalysis() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = fixtureSession(seed: 42, lifecycle: .completed)
+        try await store.insertSession(session)
+        let legacy = TelemetryPersistenceFixtures.analysis(
+            seed: 42,
+            session: session,
+            version: "workout-analyzer-v1"
+        )
+        try await store.insertAnalysis(legacy)
+        let before = try await store.fetchWorkoutHistoryPage(
+            filter: WorkoutReadFilter(profileScope: .exact("profile-a")),
+            after: nil,
+            limit: 10
+        )
+        XCTAssertNil(before.items.first?.analyzerVersion)
+        XCTAssertNil(before.items.first?.averageSpeed)
+
+        let outcome = try await store.analyzeTerminalWorkout(
+            sessionID: session.sessionID,
+            generatedAt: session.endedAt!.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(outcome.triggerResult, .inserted)
+        XCTAssertEqual(outcome.analysis?.analyzerVersion, WorkoutAnalyzerV1.analyzerVersion)
+        XCTAssertNotEqual(outcome.analysis?.analysisID, legacy.analysisID)
+        let counts = try await store.counts()
+        let current = try await store.fetchAnalyses(
+            sessionID: session.sessionID,
+            analyzerVersion: WorkoutAnalyzerV1.analyzerVersion
+        )
+        let after = try await store.fetchWorkoutHistoryPage(
+            filter: WorkoutReadFilter(profileScope: .exact("profile-a")),
+            after: nil,
+            limit: 10
+        )
+        XCTAssertEqual(counts.analyses, 2)
+        XCTAssertEqual(current.count, 1)
+        XCTAssertEqual(after.items.first?.analyzerVersion, WorkoutAnalyzerV1.analyzerVersion.rawValue)
+    }
+
     func testResumeAnalyzesEveryPendingTerminalSessionWithoutDuplicatingExistingResult() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let complete = fixtureSession(seed: 50, lifecycle: .completed)

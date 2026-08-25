@@ -147,8 +147,8 @@ private final class WorkoutExportStream {
         directoryURL = root
         rawURL = root.appendingPathComponent("raw_evidence_v1.jsonl")
         normalizedURL = root.appendingPathComponent("normalized_evidence_v1.csv")
-        summaryJSONLURL = root.appendingPathComponent("session_summary_v1.jsonl")
-        summaryCSVURL = root.appendingPathComponent("session_summary_v1.csv")
+        summaryJSONLURL = root.appendingPathComponent("session_summary_v2.jsonl")
+        summaryCSVURL = root.appendingPathComponent("session_summary_v2.csv")
         manifestURL = root.appendingPathComponent("manifest.json")
 
         try FileManager.default.createDirectory(
@@ -179,7 +179,9 @@ private final class WorkoutExportStream {
             [
                 "summary_version", "id", "origin", "started_at", "ended_at",
                 "duration_s", "target_bpm", "average_hr_bpm", "average_speed_kmh",
-                "average_speed_evidence", "beats_per_metre", "zone_1_s", "zone_2_s",
+                "average_speed_evidence", "factual_speed_covered_s",
+                "factual_speed_uncovered_s", "factual_speed_coverage_ratio",
+                "factual_speed_required_ratio", "beats_per_metre", "zone_1_s", "zone_2_s",
                 "zone_3_s", "zone_4_s", "zone_5_s", "healthkit_workout_uuid",
                 "lifecycle_state", "recorder_complete", "analysis_grade",
                 "identity_status", "possible_duplicate", "adaptation_eligible",
@@ -231,6 +233,10 @@ private final class WorkoutExportStream {
                 Self.numberString(projection.averageHeartRate),
                 Self.numberString(projection.averageSpeed?.kilometresPerHour),
                 projection.averageSpeed?.evidenceKind.rawValue ?? "",
+                Self.numberString(projection.factualSpeedCoverage?.coveredSeconds),
+                Self.numberString(projection.factualSpeedCoverage?.uncoveredSeconds),
+                Self.numberString(projection.factualSpeedCoverage?.coverageRatio),
+                Self.numberString(projection.factualSpeedCoverage?.requiredRatio),
                 Self.numberString(projection.beatsPerMetre),
                 Self.numberString(zones[safe: 0] ?? nil),
                 Self.numberString(zones[safe: 1] ?? nil),

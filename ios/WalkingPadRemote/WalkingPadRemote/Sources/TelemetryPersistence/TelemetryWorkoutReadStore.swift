@@ -692,6 +692,20 @@ private extension TelemetryStore {
                 provenance: "telemetry-v2-analysis-factual"
             )
         }
+        let factualSpeedCoverage = detail.map {
+            WorkoutFactualSpeedCoverageProjection(
+                coveredSeconds: $0.quality.treadmillFactualCoverage.coveredSeconds,
+                uncoveredSeconds: $0.quality.treadmillFactualCoverage.uncoveredSeconds,
+                coverageRatio: $0.quality.treadmillFactualCoverage.coverageRatio,
+                requiredRatio: WorkoutAnalyzerV1.minimumAverageFactualSpeedCoverageRatio
+            )
+        }
+        let factualSpeedCoverageWarnings: [String] = factualSpeedCoverage.flatMap { coverage in
+            guard coverage.coverageRatio.map({ $0 >= coverage.requiredRatio }) == true else {
+                return ["average-factual-speed-unavailable-insufficient-coverage"]
+            }
+            return []
+        } ?? []
         var unavailable: [String] = []
         if durationSeconds == nil { unavailable.append("duration") }
         if configuration?.targetHeartRate == nil { unavailable.append("targetHeartRate") }
@@ -738,7 +752,9 @@ private extension TelemetryStore {
                 unavailableMetrics: unavailable,
                 warnings: (model.incompleteReason.map { [$0] } ?? [])
                     + exactImportedHealthKitEvidence.warnings
-            )
+                    + factualSpeedCoverageWarnings
+            ),
+            factualSpeedCoverage: factualSpeedCoverage
         )
     }
 
@@ -936,8 +952,12 @@ private extension TelemetryStore {
     func latestAnalysisModel(
         sessionID: String
     ) throws -> TelemetryWorkoutAnalysisV1? {
+        let currentAnalyzerVersion = WorkoutAnalyzerV1.analyzerVersion.rawValue
         var descriptor = FetchDescriptor<TelemetryWorkoutAnalysisV1>(
-            predicate: #Predicate { $0.sessionID == sessionID },
+            predicate: #Predicate {
+                $0.sessionID == sessionID
+                    && $0.analyzerVersion == currentAnalyzerVersion
+            },
             sortBy: [
                 SortDescriptor(\.generatedAt, order: .reverse),
                 SortDescriptor(\.analysisID),

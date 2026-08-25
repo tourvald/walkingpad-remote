@@ -3,7 +3,7 @@
 Status: implemented Analyzer V1 contract.
 
 This document owns the concrete metric definitions and lifecycle for
-`workout-analyzer-v1`. The canonical evidence, causal, and safety rules remain
+`workout-analyzer-v1.1`. The canonical evidence, causal, and safety rules remain
 owned by the [data contract](data-contract.md),
 [treadmill truth contract](treadmill-truth-and-command-lifecycle.md), and
 [safety boundary](safety-boundary.md).
@@ -55,9 +55,24 @@ from covered-duration denominators and is never counted as zero, in-zone,
 error-free, stable, or recovered. Sample count is used only for event/evidence
 counts and distributions; it is never duration.
 
-Canonical frames participate in the deterministic evidence hash but not in V1
-metric timelines. They cannot create a native sample, factual speed, or hold,
-and cannot bridge or backfill a gap.
+The workout-level factual average speed uses the persisted one-second canonical
+frame ledger when frames are present. A second is covered only when that frame
+contains factual normalized speed and explicitly marks the referenced native
+observation fresh; a stale or missing frame remains uncovered. This is a
+materialized bounded hold of decoded factual evidence, not interpolation or a
+desired/commanded/estimated-speed fallback. Inputs without canonical frames use
+the existing native-observation five-second hold as a deterministic legacy
+fallback.
+
+The average is available only when this factual-speed coverage is at least 90%
+of the terminal session duration. This reuses Analyzer V1's accepted
+high-coverage boundary so a small startup slice cannot be presented as a
+representative full-workout average. Lower coverage keeps the average
+unavailable and `workout-session-summary-v2` exports covered seconds, uncovered
+seconds, the coverage ratio, the required ratio, and an explicit warning.
+Desired, commanded, controller-target, expected, and modeled speed never fill
+coverage. Canonical frames still cannot turn missing or non-factual native
+evidence into factual speed or bridge a missing frame.
 
 ## Data quality
 
@@ -167,9 +182,9 @@ unavailable because V1 has no typed persisted blocker evidence.
 
 Analyzer metadata includes:
 
-- analyzer version `workout-analyzer-v1`;
+- analyzer version `workout-analyzer-v1.1`;
 - detail schema version `1`;
-- metric definition `timestamp-hold-metrics-v1`;
+- metric definition `timestamp-hold-metrics-v2`;
 - accepted telemetry schema range `1.0.0...1.0.0`;
 - complete analyzer policy;
 - generation timestamp;
@@ -183,7 +198,9 @@ if its logical payload differs, persistence reports a conflict rather than
 overwriting evidence or the prior result.
 
 On store preparation, terminal sessions are scanned in deterministic session
-order and missing results are recomputed. Completed, incomplete, and cancelled
+order and results missing the current analyzer identity are recomputed. The
+version bump prevents a stored `workout-analyzer-v1` partial-speed result from
+being reused as the current result. Completed, incomplete, and cancelled
 sessions are eligible; created, running, and paused sessions are not. Analyzer
 failure is contained as an analysis failure and cannot change recorder
 finalization or product session completion.
