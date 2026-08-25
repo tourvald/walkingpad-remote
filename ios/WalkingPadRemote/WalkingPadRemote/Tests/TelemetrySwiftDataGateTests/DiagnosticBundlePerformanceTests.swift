@@ -125,8 +125,8 @@ final class DiagnosticBundlePerformanceTests: XCTestCase {
                 representedMinutes: representedMinutes
             )
             XCTAssertEqual(result.frameRowCount, representedMinutes * 60 - 20)
-            XCTAssertGreaterThan(result.eventRowCount, 0)
-            XCTAssertLessThanOrEqual(result.eventRowCount, 20)
+            let commandCount = representedMinutes * 2
+            XCTAssertEqual(result.eventRowCount, 20 + commandCount * 2)
             XCTAssertGreaterThan(result.metadataRowCount, 0)
             XCTAssertGreaterThan(result.fileBytes, 0)
             XCTAssertLessThan(result.fileBytes, Int64(representedMinutes) * 150_000)
@@ -136,6 +136,7 @@ final class DiagnosticBundlePerformanceTests: XCTestCase {
             XCTAssertLessThanOrEqual(
                 result.storeFetchCount,
                 5 + ((result.frameRowCount + 127) / 128)
+                    + ((20 + commandCount * 5 + 127) / 128)
             )
             XCTAssertLessThan(result.peakResidentDeltaBytes, 128 * 1024 * 1024)
             XCTAssertGreaterThan(result.mainActorHeartbeatCount, 0)
@@ -164,6 +165,11 @@ final class DiagnosticBundlePerformanceTests: XCTestCase {
             try TelemetryStoreFactory.make(.onDisk(root.appendingPathComponent("TelemetryV2.store")))
         }.value
         try await persistFixture(generator: generator, store: store)
+        try await persistProductionTreadmillSidecar(
+            session: generator.session(index: 0),
+            representedMinutes: representedMinutes,
+            store: store
+        )
 
         let baselineResidentBytes = currentResidentBytes()
         let memorySampler = Task.detached(priority: .utility) {
@@ -362,6 +368,147 @@ final class DiagnosticBundlePerformanceTests: XCTestCase {
             try await append(.analysis(generator.analysis(sessionIndex: sessionIndex)))
         }
         try await flush(force: true)
+    }
+
+    private func persistProductionTreadmillSidecar(
+        session: WorkoutSessionRecord,
+        representedMinutes: Int,
+        store: TelemetryStore
+    ) async throws {
+        let epoch = TreadmillConnectionEpoch(rawValue: workoutAnalysisBenchmarkUUID(
+            namespace: 1,
+            index: representedMinutes
+        ))
+        var normalizer = TreadmillObservationNormalizer()
+        var records: [TelemetryGateRecord] = []
+        records.reserveCapacity(representedMinutes * 10)
+
+        func append(_ evidence: TreadmillTelemetryEvidence, at date: Date) {
+            let elapsedMicroseconds = Int64(
+                (date.timeIntervalSince(session.startedAt) * 1_000_000).rounded()
+            )
+            records.append(.event(WorkoutEvent(
+                recordID: RecordID(rawValue: workoutAnalysisBenchmarkUUID(
+                    namespace: 2,
+                    index: records.count
+                )),
+                sessionID: session.sessionID,
+                timestamp: EventTimestamp(
+                    occurredAt: date,
+                    recordedAt: date.addingTimeInterval(0.001),
+                    occurredElapsed: ElapsedDuration(microseconds: elapsedMicroseconds),
+                    recordedElapsed: ElapsedDuration(
+                        microseconds: elapsedMicroseconds + 1_000
+                    )
+                ),
+                payload: EventPayloadEnvelope(
+                    schemaVersion: 1,
+                    payload: .treadmillEvidence(evidence)
+                )
+            )))
+        }
+
+        for commandIndex in 0..<(representedMinutes * 2) {
+            let commandID = CommandID(rawValue: workoutAnalysisBenchmarkUUID(
+                namespace: 3,
+                index: commandIndex
+            ))
+            let attemptID = CommandAttemptID(rawValue: workoutAnalysisBenchmarkUUID(
+                namespace: 4,
+                index: commandIndex
+            ))
+            let enqueuedAt = session.startedAt.addingTimeInterval(
+                Double(commandIndex * 30) + 0.1
+            )
+            let sentAt = enqueuedAt.addingTimeInterval(0.125)
+            append(
+                .commandEnqueued(TreadmillCommandEnqueuedEvidence(
+                    commandID: commandID,
+                    decisionID: nil,
+                    kind: .setSpeed(
+                        TreadmillCommandedSpeedRepresentation.walkingPad(
+                            rawControllerTenths: 50 + commandIndex % 20
+                        )
+                    ),
+                    protocolKind: .walkingPad,
+                    connectionEpoch: epoch,
+                    enqueuedAt: enqueuedAt
+                )),
+                at: enqueuedAt
+            )
+            append(
+                .commandQueueDelay(TreadmillCommandQueueDelayEvidence(
+                    commandID: commandID,
+                    decisionID: nil,
+                    connectionEpoch: epoch,
+                    enqueuedAt: enqueuedAt,
+                    sentAt: sentAt
+                )),
+                at: sentAt
+            )
+            append(
+                .sendAttempt(TreadmillCommandSendAttemptEvidence(
+                    commandID: commandID,
+                    decisionID: nil,
+                    attemptID: attemptID,
+                    attemptNumber: 1,
+                    protocolKind: .walkingPad,
+                    connectionEpoch: epoch,
+                    sentAt: sentAt,
+                    writeType: .withoutResponse
+                )),
+                at: sentAt
+            )
+            let unitsAt = sentAt.addingTimeInterval(0.025)
+            let unitsTruth = TreadmillUnitsTruth.valid(
+                unit: .kilometresPerHour,
+                connectionEpoch: epoch,
+                observedAt: unitsAt
+            )
+            append(
+                .unitsTruth(TreadmillUnitsTruthEvidence(
+                    truth: unitsTruth,
+                    observedAt: unitsAt
+                )),
+                at: unitsAt
+            )
+            let observedAt = sentAt.addingTimeInterval(0.075)
+            let observation = normalizer.normalize(
+                .walkingPad(
+                    speedRawTenths: 50 + commandIndex % 20,
+                    rawState: 2,
+                    deviceState: .moving,
+                    checksumValid: true,
+                    connectionEpoch: epoch,
+                    receivedAt: observedAt
+                ),
+                unitsTruth: unitsTruth,
+                observationID: ObservationID(rawValue: workoutAnalysisBenchmarkUUID(
+                    namespace: 5,
+                    index: commandIndex
+                )),
+                recordedAt: observedAt.addingTimeInterval(0.001)
+            )
+            append(.observation(observation), at: observation.recordedAt)
+        }
+
+        for start in stride(from: 0, to: records.count, by: 128) {
+            try await store.insertGateBatch(
+                Array(records[start..<min(start + 128, records.count)])
+            )
+        }
+    }
+
+    private func workoutAnalysisBenchmarkUUID(namespace: Int, index: Int) -> UUID {
+        let value = String(
+            format: "A1230000-0000-%04X-8000-%012llX",
+            namespace,
+            UInt64(index + 1)
+        )
+        guard let uuid = UUID(uuidString: value) else {
+            preconditionFailure("Invalid deterministic benchmark UUID")
+        }
+        return uuid
     }
 
     private func profile(

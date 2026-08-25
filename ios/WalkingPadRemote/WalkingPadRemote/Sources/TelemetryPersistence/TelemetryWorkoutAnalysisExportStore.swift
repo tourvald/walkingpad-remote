@@ -406,13 +406,16 @@ private extension TelemetryStore {
         let connection = WorkoutEventKind.connectionTransition.rawValue
         let decision = WorkoutEventKind.controlDecision.rawValue
         let command = WorkoutEventKind.commandLifecycle.rawValue
+        let treadmill = WorkoutEventKind.treadmillEvidence.rawValue
         let cooldown = WorkoutEventKind.cooldown.rawValue
         let manualStop = WorkoutEventKind.manualStop.rawValue
         let safety = WorkoutEventKind.safety.rawValue
         let stopEvidence = WorkoutEventKind.stopEvidence.rawValue
         let recorderHealth = WorkoutEventKind.recorderHealth.rawValue
+        // V1 indexes the typed envelope kind, not treadmill subtypes. Keep the
+        // keyset fetch bounded and allowlist command projections after decode.
         let selectedKinds = [
-            lifecycle, phase, source, connection, decision, command, cooldown,
+            lifecycle, phase, source, connection, decision, command, treadmill, cooldown,
             manualStop, safety, stopEvidence, recorderHealth,
         ]
         var descriptor: FetchDescriptor<TelemetryWorkoutEventV1>
@@ -445,7 +448,7 @@ private extension TelemetryStore {
         descriptor.fetchLimit = limit
         let models = try modelContext.fetch(descriptor)
         return AnalysisEventPage(
-            projections: try models.map {
+            projections: try models.compactMap {
                 try Self.analysisEventProjection(
                     Self.domainEvent($0),
                     sessionID: sessionReference
@@ -460,7 +463,7 @@ private extension TelemetryStore {
     static func analysisEventProjection(
         _ event: WorkoutEvent,
         sessionID: SessionID
-    ) throws -> WorkoutAnalysisEventProjection {
+    ) throws -> WorkoutAnalysisEventProjection? {
         let decisionRef = event.decisionID.map { reference("decision", $0.description, sessionID) }
         let commandRef = event.commandID.map { reference("command", $0.description, sessionID) }
         let attemptRef = event.attemptID.map { reference("attempt", $0.description, sessionID) }
@@ -540,6 +543,8 @@ private extension TelemetryStore {
                 commandedSpeedNativeUnit: lifecycle.commandedUnit,
                 commandAttemptNumber: lifecycle.attemptNumber, endReason: nil
             )
+        case let .treadmillEvidence(value):
+            return treadmillCommandProjection(value, common: common)
         case let .cooldown(value):
             return .init(
                 elapsedMicroseconds: common.0, occurredAt: common.1, kind: common.2,
@@ -591,9 +596,88 @@ private extension TelemetryStore {
                 ].compactMap { $0 }
                     .joined(separator: ";")
             )
-        case .heartRateEvidence, .treadmillEvidence:
+        case .heartRateEvidence:
             throw TelemetryWorkoutReadError.corruptProjection("unselected-analysis-event-kind")
         }
+    }
+
+    static func treadmillCommandProjection(
+        _ evidence: TreadmillTelemetryEvidence,
+        common: (Int64, Date, String, String?, String?, String?)
+    ) -> WorkoutAnalysisEventProjection? {
+        let projection: (
+            name: String,
+            detail: String?,
+            commandedValue: Double?,
+            commandedUnit: String?,
+            attemptNumber: Int?
+        )
+        switch evidence {
+        case let .commandEnqueued(value):
+            let command = commandKind(value.kind)
+            let detail = [
+                "protocol=\(treadmillProtocol(value.protocolKind))",
+                command.detail.map { "kind=\($0)" },
+            ].compactMap { $0 }.joined(separator: ";")
+            projection = (
+                command.name,
+                detail,
+                command.commandedValue,
+                command.commandedUnit,
+                nil
+            )
+        case let .sendAttempt(value):
+            projection = (
+                "command_send_attempt",
+                "protocol=\(treadmillProtocol(value.protocolKind));write=\(writeType(value.writeType))",
+                nil,
+                nil,
+                Int(value.attemptNumber)
+            )
+        case let .acknowledgement(value):
+            projection = (
+                "command_acknowledged",
+                "association=\(association(value.association));protocol=\(treadmillProtocol(value.protocolKind))",
+                nil,
+                nil,
+                nil
+            )
+        case let .commandTimeout(value):
+            projection = (
+                "command_timed_out",
+                "association=\(association(value.association));protocol=\(treadmillProtocol(value.protocolKind))",
+                nil,
+                nil,
+                nil
+            )
+        case let .commandFailed(value):
+            projection = ("command_failed", failureReason(value.reason), nil, nil, nil)
+        case let .commandCancelled(value):
+            projection = ("command_cancelled", cancellationReason(value.reason), nil, nil, nil)
+        case .observation, .unitsTruth, .decision, .commandQueueDelay,
+             .unassociatedWrite, .writeResult, .stopEvidence:
+            return nil
+        }
+        return .init(
+            elapsedMicroseconds: common.0,
+            occurredAt: common.1,
+            kind: common.2,
+            name: projection.name,
+            detail: projection.detail,
+            phase: nil,
+            targetHeartRate: nil,
+            decisionReference: common.3,
+            commandReference: common.4,
+            attemptReference: common.5,
+            configurationReference: nil,
+            decisionAction: nil,
+            decisionReason: nil,
+            desiredSpeedKilometresPerHour: nil,
+            commandedSpeedNativeValue: projection.commandedValue,
+            commandedSpeedNativeUnit: projection.commandedUnit,
+            commandAttemptNumber: projection.attemptNumber,
+            endReason: nil
+        )
     }
 
     static func simpleEvent(
@@ -747,14 +831,14 @@ private extension TelemetryStore {
     ) -> (name: String, detail: String?, commandedValue: Double?, commandedUnit: String?, attemptNumber: Int?) {
         switch lifecycle {
         case let .enqueued(kind):
-            switch kind {
-            case let .setSpeed(speed):
-                return ("command_enqueued_set_speed", nil, speed.nativeValue, nativeUnit(speed.nativeUnit), nil)
-            case .stop:
-                return ("command_enqueued_stop", nil, nil, nil, nil)
-            case .other:
-                return ("command_enqueued_other", "opaque-command-kind", nil, nil, nil)
-            }
+            let command = commandKind(kind)
+            return (
+                command.name,
+                command.detail,
+                command.commandedValue,
+                command.commandedUnit,
+                nil
+            )
         case let .sendAttempt(_, attemptNumber):
             return ("command_send_attempt", nil, nil, nil, Int(attemptNumber))
         case .acknowledged:
@@ -767,6 +851,47 @@ private extension TelemetryStore {
             return ("command_cancelled", cancellationReason(reason), nil, nil, nil)
         case let .failed(_, reason):
             return ("command_failed", failureReason(reason), nil, nil, nil)
+        }
+    }
+
+    static func commandKind(
+        _ kind: CommandKind
+    ) -> (name: String, detail: String?, commandedValue: Double?, commandedUnit: String?) {
+        switch kind {
+        case let .setSpeed(speed):
+            (
+                "command_enqueued_set_speed",
+                nil,
+                speed.nativeValue,
+                nativeUnit(speed.nativeUnit)
+            )
+        case .stop:
+            ("command_enqueued_stop", nil, nil, nil)
+        case .other:
+            ("command_enqueued_other", "opaque-command-kind", nil, nil)
+        }
+    }
+
+    static func treadmillProtocol(_ value: TreadmillProtocolKind) -> String {
+        switch value {
+        case .walkingPad: "walkingpad"
+        case .ftms: "ftms"
+        case .fitShow: "fitshow"
+        case .unknown: "unknown"
+        }
+    }
+
+    static func writeType(_ value: TreadmillCommandWriteType) -> String {
+        switch value {
+        case .withResponse: "with-response"
+        case .withoutResponse: "without-response"
+        }
+    }
+
+    static func association(_ value: LegacyAcknowledgementAssociation) -> String {
+        switch value {
+        case .unresolvedByLegacyRuntime: "unresolved"
+        case .deterministicallyCorrelated: "deterministic"
         }
     }
 

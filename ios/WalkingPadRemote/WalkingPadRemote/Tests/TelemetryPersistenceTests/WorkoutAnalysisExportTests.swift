@@ -291,6 +291,321 @@ final class WorkoutAnalysisExportTests: XCTestCase {
         }
     }
 
+    func testProductionWalkingPadCommandEvidenceAppearsWithoutDiagnosticChatter() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = session(
+            profile: "profile-production-command",
+            configuration: configuration(target: 135),
+            seed: 30
+        )
+        try await store.insertSession(session)
+
+        let treadmillSource = TelemetryPersistenceFixtures.source(seed: 201, kind: .bluetooth)
+        try await store.insertFrame(
+            frame(
+                seed: 301,
+                session: session,
+                second: 2,
+                heartRate: nil,
+                treadmill: treadmillEvidence(source: treadmillSource)
+            )
+        )
+
+        let decisionID = DecisionID(rawValue: uuid(3_001))
+        let commandID = CommandID(rawValue: uuid(3_002))
+        let attemptID = CommandAttemptID(rawValue: uuid(3_003))
+        let epoch = TreadmillConnectionEpoch(rawValue: uuid(3_004))
+        let enqueuedAt = session.startedAt.addingTimeInterval(1.1)
+        let sentAt = session.startedAt.addingTimeInterval(1.234_567)
+        var normalizer = TreadmillObservationNormalizer()
+        let observation = normalizer.normalize(
+            .walkingPad(
+                speedRawTenths: 55,
+                rawState: 2,
+                deviceState: .moving,
+                checksumValid: true,
+                connectionEpoch: epoch,
+                receivedAt: session.startedAt.addingTimeInterval(1.4)
+            ),
+            unitsTruth: .valid(
+                unit: .kilometresPerHour,
+                connectionEpoch: epoch,
+                observedAt: session.startedAt
+            ),
+            observationID: ObservationID(rawValue: uuid(3_005)),
+            recordedAt: session.startedAt.addingTimeInterval(1.401)
+        )
+        let events: [(Int64, WorkoutEventPayload)] = [
+            (
+                1_000_000,
+                .controlDecision(ControlDecision(
+                    decisionID: decisionID,
+                    observationsUsed: [],
+                    target: .heartRate(beatsPerMinute: 135),
+                    action: .enqueueSpeed(DesiredSpeedKilometresPerHour(value: 5.6)),
+                    reason: .belowTarget,
+                    versions: session.versions,
+                    configurationSnapshotID: session.configuration.id
+                ))
+            ),
+            (
+                1_050_000,
+                .treadmillEvidence(.decision(TreadmillControlDecisionEvidence(
+                    decisionID: decisionID,
+                    source: .heartRateControl,
+                    intent: .other("private-production-decision-detail"),
+                    heartRateInputs: [],
+                    occurredAt: session.startedAt.addingTimeInterval(1.05),
+                    connectionEpoch: epoch
+                )))
+            ),
+            (
+                1_100_000,
+                .treadmillEvidence(.commandEnqueued(TreadmillCommandEnqueuedEvidence(
+                    commandID: commandID,
+                    decisionID: decisionID,
+                    kind: .setSpeed(
+                        TreadmillCommandedSpeedRepresentation.walkingPad(
+                            rawControllerTenths: 56
+                        )
+                    ),
+                    protocolKind: .walkingPad,
+                    connectionEpoch: epoch,
+                    enqueuedAt: enqueuedAt
+                )))
+            ),
+            (
+                1_234_567,
+                .treadmillEvidence(.commandQueueDelay(TreadmillCommandQueueDelayEvidence(
+                    commandID: commandID,
+                    decisionID: decisionID,
+                    connectionEpoch: epoch,
+                    enqueuedAt: enqueuedAt,
+                    sentAt: sentAt
+                )))
+            ),
+            (
+                1_234_567,
+                .treadmillEvidence(.sendAttempt(TreadmillCommandSendAttemptEvidence(
+                    commandID: commandID,
+                    decisionID: decisionID,
+                    attemptID: attemptID,
+                    attemptNumber: 1,
+                    protocolKind: .walkingPad,
+                    connectionEpoch: epoch,
+                    sentAt: sentAt,
+                    writeType: .withoutResponse
+                )))
+            ),
+            (
+                1_300_000,
+                .treadmillEvidence(.unitsTruth(TreadmillUnitsTruthEvidence(
+                    truth: .valid(
+                        unit: .kilometresPerHour,
+                        connectionEpoch: epoch,
+                        observedAt: session.startedAt
+                    ),
+                    observedAt: session.startedAt.addingTimeInterval(1.3)
+                )))
+            ),
+            (1_401_000, .treadmillEvidence(.observation(observation))),
+        ]
+        for (index, item) in events.enumerated() {
+            try await store.insertEvent(event(
+                seed: 300 + index,
+                session: session,
+                elapsedMicroseconds: item.0,
+                payload: item.1
+            ))
+        }
+
+        let request = WorkoutAnalysisExportRequest(
+            sessionID: session.sessionID,
+            exactProfileLocalIdentifier: session.profileLocalIdentifier,
+            batchSize: 2
+        )
+        let first = try await store.exportWorkoutAnalysis(request)
+        defer { try? FileManager.default.removeItem(at: first.fileURL.deletingLastPathComponent()) }
+        let second = try await store.exportWorkoutAnalysis(request)
+        defer { try? FileManager.default.removeItem(at: second.fileURL.deletingLastPathComponent()) }
+        XCTAssertEqual(try Data(contentsOf: first.fileURL), try Data(contentsOf: second.fileURL))
+
+        let rows = try parseCSV(first.fileURL)
+        let header = rows[0]
+        let timeline = rows.dropFirst().map { Dictionary(uniqueKeysWithValues: zip(header, $0)) }
+        let frames = timeline.filter { $0["row_type"] == "frame" }
+        let exportedEvents = timeline.filter { $0["row_type"] == "event" }
+        let decision = try XCTUnwrap(
+            exportedEvents.first { $0["event_name"] == "control_decision" }
+        )
+        let enqueued = try XCTUnwrap(
+            exportedEvents.first { $0["event_name"] == "command_enqueued_set_speed" }
+        )
+        let sent = try XCTUnwrap(
+            exportedEvents.first { $0["event_name"] == "command_send_attempt" }
+        )
+
+        XCTAssertEqual(
+            Set(exportedEvents.compactMap { $0["event_name"] }),
+            ["control_decision", "command_enqueued_set_speed", "command_send_attempt"]
+        )
+        XCTAssertEqual(enqueued["event_kind"], "treadmillEvidence")
+        XCTAssertEqual(sent["event_kind"], "treadmillEvidence")
+        XCTAssertEqual(decision["desired_speed_kmh"], "5.600000")
+        XCTAssertEqual(decision["commanded_speed_native_value"], "")
+        XCTAssertEqual(enqueued["desired_speed_kmh"], "")
+        XCTAssertEqual(enqueued["commanded_speed_native_value"], "56.000000")
+        XCTAssertEqual(
+            enqueued["commanded_speed_native_unit"],
+            "controller-native:walkingpad-tenths"
+        )
+        XCTAssertEqual(sent["elapsed_s"], "1.234567")
+        XCTAssertEqual(sent["command_attempt_number"], "1")
+        XCTAssertEqual(sent["event_detail"], "protocol=walkingpad;write=without-response")
+        XCTAssertEqual(enqueued["command_ref"], sent["command_ref"])
+        XCTAssertEqual(enqueued["decision_ref"], sent["decision_ref"])
+        XCTAssertFalse(sent["attempt_ref"]!.isEmpty)
+        XCTAssertEqual(try XCTUnwrap(frames.first)["factual_speed_kmh"], "5.500000")
+        XCTAssertEqual(try XCTUnwrap(frames.first)["command_ref"], "")
+        XCTAssertFalse(exportedEvents.contains { event in
+            [
+                "treadmill_decision", "treadmill_observation", "treadmill_units_truth",
+                "command_queue_delay",
+            ]
+                .contains(event["event_name"]!)
+        })
+
+        let csv = try String(contentsOf: first.fileURL, encoding: .utf8)
+        for privateValue in [
+            commandID.description, attemptID.description, decisionID.description,
+            epoch.description, observation.observationID.description,
+            treadmillSource.stableLocalKey, "private-production-decision-detail",
+        ] {
+            XCTAssertFalse(csv.contains(privateValue), "CSV leaked \(privateValue)")
+        }
+    }
+
+    func testProductionCommandTerminalFactsKeepUnknownAssociationAndRedactStrings() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let sentinel = "private-command@example.com/raw-protocol-label"
+        let session = session(
+            profile: "profile-production-terminal",
+            configuration: configuration(target: 135),
+            seed: 31
+        )
+        try await store.insertSession(session)
+
+        let decisionID = DecisionID(rawValue: uuid(3_101))
+        let commandID = CommandID(rawValue: uuid(3_102))
+        let attemptID = CommandAttemptID(rawValue: uuid(3_103))
+        let epoch = TreadmillConnectionEpoch(rawValue: uuid(3_104))
+        let base = session.startedAt
+        let payloads: [WorkoutEventPayload] = [
+            .treadmillEvidence(.commandEnqueued(TreadmillCommandEnqueuedEvidence(
+                commandID: commandID,
+                decisionID: decisionID,
+                kind: .other(sentinel),
+                protocolKind: .walkingPad,
+                connectionEpoch: epoch,
+                enqueuedAt: base
+            ))),
+            .treadmillEvidence(.acknowledgement(.unresolved(
+                protocolKind: .walkingPad,
+                connectionEpoch: epoch,
+                receivedAt: base.addingTimeInterval(1),
+                recordedAt: base.addingTimeInterval(1.001)
+            ))),
+            .treadmillEvidence(.commandTimeout(LegacyCommandTimeoutObservation(
+                protocolKind: .walkingPad,
+                connectionEpoch: epoch,
+                occurredAt: base.addingTimeInterval(2)
+            ))),
+            .treadmillEvidence(.commandFailed(TreadmillCommandFailureObservation(
+                commandID: commandID,
+                decisionID: decisionID,
+                attemptID: attemptID,
+                connectionEpoch: epoch,
+                occurredAt: base.addingTimeInterval(3),
+                reason: .other(sentinel)
+            ))),
+            .treadmillEvidence(.commandCancelled(TreadmillCommandCancellationObservation(
+                commandID: commandID,
+                decisionID: decisionID,
+                connectionEpoch: epoch,
+                occurredAt: base.addingTimeInterval(4),
+                reason: .safetyGate(sentinel)
+            ))),
+            .treadmillEvidence(.writeResult(LegacyWriteResultObservation(
+                protocolKind: .walkingPad,
+                connectionEpoch: epoch,
+                occurredAt: base.addingTimeInterval(5),
+                status: .succeeded
+            ))),
+            .treadmillEvidence(.unassociatedWrite(UnassociatedLegacyWriteObservation(
+                protocolKind: .walkingPad,
+                connectionEpoch: epoch,
+                sentAt: base.addingTimeInterval(6),
+                writeType: .withoutResponse
+            ))),
+        ]
+        for (index, payload) in payloads.enumerated() {
+            try await store.insertEvent(event(
+                seed: 400 + index,
+                session: session,
+                elapsedMicroseconds: Int64(index) * 1_000_000,
+                payload: payload
+            ))
+        }
+
+        let artifact = try await store.exportWorkoutAnalysis(
+            WorkoutAnalysisExportRequest(
+                sessionID: session.sessionID,
+                exactProfileLocalIdentifier: session.profileLocalIdentifier,
+                batchSize: 2
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: artifact.fileURL.deletingLastPathComponent()) }
+        let rows = try parseCSV(artifact.fileURL)
+        let header = rows[0]
+        let events = rows.dropFirst()
+            .map { Dictionary(uniqueKeysWithValues: zip(header, $0)) }
+            .filter { $0["row_type"] == "event" }
+        let names = Set(events.compactMap { $0["event_name"] })
+
+        XCTAssertTrue(names.isSuperset(of: [
+            "command_enqueued_other", "command_acknowledged", "command_timed_out",
+            "command_failed", "command_cancelled",
+        ]))
+        XCTAssertFalse(names.contains("command_write_result_succeeded"))
+        XCTAssertFalse(names.contains("unassociated_write"))
+        for name in ["command_acknowledged", "command_timed_out"] {
+            let event = try XCTUnwrap(events.first { $0["event_name"] == name })
+            XCTAssertEqual(event["command_ref"], "")
+            XCTAssertEqual(event["attempt_ref"], "")
+            XCTAssertEqual(event["event_detail"], "association=unresolved;protocol=walkingpad")
+        }
+        let failed = try XCTUnwrap(events.first { $0["event_name"] == "command_failed" })
+        let cancelled = try XCTUnwrap(
+            events.first { $0["event_name"] == "command_cancelled" }
+        )
+        XCTAssertFalse(failed["command_ref"]!.isEmpty)
+        XCTAssertFalse(failed["attempt_ref"]!.isEmpty)
+        XCTAssertEqual(failed["event_detail"], "other")
+        XCTAssertFalse(cancelled["command_ref"]!.isEmpty)
+        XCTAssertEqual(cancelled["attempt_ref"], "")
+        XCTAssertEqual(cancelled["event_detail"], "safety-gate")
+
+        let csv = try String(contentsOf: artifact.fileURL, encoding: .utf8)
+        XCTAssertFalse(csv.contains(sentinel))
+        for privateValue in [
+            commandID.description, attemptID.description, decisionID.description,
+            epoch.description,
+        ] {
+            XCTAssertFalse(csv.contains(privateValue), "CSV leaked \(privateValue)")
+        }
+        XCTAssertTrue(csv.contains("opaque-command-kind"))
+    }
+
     func testCrossProfileAndNonNativeSessionRequestsAreRejectedBeforeTimelineReads() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = session(profile: "profile-a", configuration: configuration(target: 135))
