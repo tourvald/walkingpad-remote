@@ -4,6 +4,62 @@ import TelemetryDomain
 import XCTest
 
 final class WorkoutAnalysisExportTests: XCTestCase {
+    func testRollbackCompatibleLifecycleEvidenceRemainsInAnalysisExport() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = session(
+            profile: "profile-lifecycle",
+            configuration: configuration(target: 135),
+            seed: 122
+        )
+        try await store.insertSession(session)
+        let lifecycle = AppLifecycleEvent(
+            previousState: .inactive,
+            currentState: .background,
+            workoutStage: .cooldown,
+            hasCommittedWorkout: true,
+            policyAction: .continueEventDriven,
+            policyReason: "committed_workout_background_event_driven",
+            controlLoopPermitted: true,
+            heartRateProviderState: "collecting",
+            lastHeartRateFactualAt: TelemetryPersistenceFixtures.baseDate,
+            lastHeartRateReceivedAt: TelemetryPersistenceFixtures.baseDate
+                .addingTimeInterval(1),
+            lastHeartRateAgeSeconds: 2,
+            treadmillConnectionState: .connected,
+            treadmillControlReady: true,
+            treadmillProtocol: "WalkingPad"
+        )
+        let payload = try AppLifecycleEvidencePersistence.payload(for: lifecycle)
+        try await store.insertEvent(event(
+            seed: 122,
+            session: session,
+            elapsedMicroseconds: 1_000_000,
+            payload: payload
+        ))
+
+        let stored = try await store.fetchEvents(sessionID: session.sessionID)
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(
+            AppLifecycleEvidencePersistence.event(from: stored[0].payload.payload),
+            lifecycle
+        )
+
+        let artifact = try await store.exportWorkoutAnalysis(
+            WorkoutAnalysisExportRequest(
+                sessionID: session.sessionID,
+                exactProfileLocalIdentifier: session.profileLocalIdentifier
+            )
+        )
+        defer {
+            try? FileManager.default.removeItem(
+                at: artifact.fileURL.deletingLastPathComponent()
+            )
+        }
+        let csv = try String(contentsOf: artifact.fileURL, encoding: .utf8)
+        XCTAssertTrue(csv.contains("app_lifecycle_background"))
+        XCTAssertTrue(csv.contains("cooldown;continueEventDriven;"))
+    }
+
     func testSingleWorkoutCSVPreservesTruthTimelineMetadataPrivacyAndDeterminism() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let configuration = ImmutableConfigurationSnapshot(

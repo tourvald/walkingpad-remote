@@ -125,6 +125,7 @@ let package = Package(
                 "DebugTrainingLogsCard.swift",
                 "DevicePickerView.swift",
                 "IPhoneHealthKitLiveHeartRateProvider.swift",
+                "Info.plist",
                 "PlankTimerView.swift",
                 "StatsRightAlignedBlock.swift",
                 "StatusPillsRow.swift",
@@ -163,7 +164,8 @@ let package = Package(
                 "TrainingUIObservationBoundary.swift",
                 "TrainingUITreadmillPublicationPolicy.swift",
                 "TreadmillControlReadinessPolicy.swift",
-                "TreadmillCommandTelemetrySidecar.swift"
+                "TreadmillCommandTelemetrySidecar.swift",
+                "WorkoutLifecyclePolicy.swift"
             ]
         ),
         .testTarget(

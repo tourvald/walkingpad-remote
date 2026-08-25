@@ -570,6 +570,18 @@ private extension TelemetryStore {
                 detail: stopConclusion(value.conclusion)
             )
         case let .recorderHealth(value):
+            if let lifecycle = AppLifecycleEvidencePersistence.event(from: value) {
+                return simpleEvent(
+                    common,
+                    name: "app_lifecycle_\(lifecycle.currentState.rawValue)",
+                    detail: [
+                        lifecycle.workoutStage.rawValue,
+                        lifecycle.policyAction.rawValue,
+                        lifecycle.policyReason,
+                        lifecycle.treadmillConnectionState.rawValue,
+                    ].joined(separator: ";")
+                )
+            }
             return simpleEvent(
                 common,
                 name: "recorder_\(value.kind.rawValue)",

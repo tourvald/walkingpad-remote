@@ -305,6 +305,80 @@ public struct RecorderHealthEvent: Codable, Hashable, Sendable {
     }
 }
 
+public enum AppLifecycleState: String, Codable, Hashable, Sendable {
+    case active
+    case inactive
+    case background
+}
+
+public enum AppWorkoutLifecycleStage: String, Codable, Hashable, Sendable {
+    case idle
+    case preflight
+    case main
+    case cooldown
+    case stopping
+    case recovery
+}
+
+public enum AppBackgroundPolicyAction: String, Codable, Hashable, Sendable {
+    case foreground
+    case awaitingSystemTransition
+    case continueEventDriven
+    case blockUncommitted
+    case recoveryOnly
+    case terminalOnly
+    case noActiveWorkout
+}
+
+public struct AppLifecycleEvent: Codable, Hashable, Sendable {
+    public let previousState: AppLifecycleState
+    public let currentState: AppLifecycleState
+    public let workoutStage: AppWorkoutLifecycleStage
+    public let hasCommittedWorkout: Bool
+    public let policyAction: AppBackgroundPolicyAction
+    public let policyReason: String
+    public let controlLoopPermitted: Bool
+    public let heartRateProviderState: String
+    public let lastHeartRateFactualAt: Date?
+    public let lastHeartRateReceivedAt: Date?
+    public let lastHeartRateAgeSeconds: Double?
+    public let treadmillConnectionState: ConnectionState
+    public let treadmillControlReady: Bool
+    public let treadmillProtocol: String
+
+    public init(
+        previousState: AppLifecycleState,
+        currentState: AppLifecycleState,
+        workoutStage: AppWorkoutLifecycleStage,
+        hasCommittedWorkout: Bool,
+        policyAction: AppBackgroundPolicyAction,
+        policyReason: String,
+        controlLoopPermitted: Bool,
+        heartRateProviderState: String,
+        lastHeartRateFactualAt: Date?,
+        lastHeartRateReceivedAt: Date?,
+        lastHeartRateAgeSeconds: Double?,
+        treadmillConnectionState: ConnectionState,
+        treadmillControlReady: Bool,
+        treadmillProtocol: String
+    ) {
+        self.previousState = previousState
+        self.currentState = currentState
+        self.workoutStage = workoutStage
+        self.hasCommittedWorkout = hasCommittedWorkout
+        self.policyAction = policyAction
+        self.policyReason = policyReason
+        self.controlLoopPermitted = controlLoopPermitted
+        self.heartRateProviderState = heartRateProviderState
+        self.lastHeartRateFactualAt = lastHeartRateFactualAt
+        self.lastHeartRateReceivedAt = lastHeartRateReceivedAt
+        self.lastHeartRateAgeSeconds = lastHeartRateAgeSeconds
+        self.treadmillConnectionState = treadmillConnectionState
+        self.treadmillControlReady = treadmillControlReady
+        self.treadmillProtocol = treadmillProtocol
+    }
+}
+
 public enum WorkoutEventPayload: Codable, Hashable, Sendable {
     case sessionLifecycle(SessionLifecycleEvent)
     case workoutPhase(WorkoutPhaseTransition)
@@ -357,6 +431,49 @@ public enum WorkoutEventPayload: Codable, Hashable, Sendable {
         default:
             WorkoutEventCausalIDs(decisionID: nil, commandID: nil, attemptID: nil)
         }
+    }
+}
+
+/// Keeps lifecycle evidence readable by the accepted rollback decoder, which
+/// already understands `recorderHealth` and can safely ignore this record class.
+public enum AppLifecycleEvidencePersistence {
+    public static let affectedRecordClass = "app_lifecycle_evidence_v1"
+    private static let detailPrefix = "app_lifecycle_v1:"
+
+    public static func payload(
+        for event: AppLifecycleEvent
+    ) throws -> WorkoutEventPayload {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        let encoded = try encoder.encode(event).base64EncodedString()
+        return .recorderHealth(RecorderHealthEvent(
+            kind: .persistence,
+            affectedRecordClass: affectedRecordClass,
+            detailCode: detailPrefix + encoded
+        ))
+    }
+
+    public static func event(
+        from payload: WorkoutEventPayload
+    ) -> AppLifecycleEvent? {
+        guard case let .recorderHealth(health) = payload else { return nil }
+        return event(from: health)
+    }
+
+    public static func event(
+        from health: RecorderHealthEvent
+    ) -> AppLifecycleEvent? {
+        guard health.kind == .persistence,
+              health.affectedRecordClass == affectedRecordClass,
+              let detailCode = health.detailCode,
+              detailCode.hasPrefix(detailPrefix),
+              let data = Data(base64Encoded: String(detailCode.dropFirst(detailPrefix.count)))
+        else {
+            return nil
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        return try? decoder.decode(AppLifecycleEvent.self, from: data)
     }
 }
 

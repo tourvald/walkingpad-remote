@@ -46,9 +46,22 @@
 		E37051B82F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "WalkingPadRemoteWatch Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D12200012FA0000000000001 /* Exceptions for "WalkingPadRemote" folder in "WalkingPadRemote" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E37051752F22AB0C00D2FA22 /* WalkingPadRemote */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E37051782F22AB0C00D2FA22 /* WalkingPadRemote */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D12200012FA0000000000001 /* Exceptions for "WalkingPadRemote" folder in "WalkingPadRemote" target */,
+			);
 			path = WalkingPadRemote;
 			sourceTree = "<group>";
 		};
@@ -164,6 +177,11 @@
 				TargetAttributes = {
 					E37051752F22AB0C00D2FA22 = {
 						CreatedOnToolsVersion = 26.2;
+						SystemCapabilities = {
+							com.apple.BackgroundModes = {
+								enabled = 1;
+							};
+						};
 					};
 					E37051B72F233FBE00D2FA22 = {
 						CreatedOnToolsVersion = 26.2;
@@ -393,6 +411,7 @@
 				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WalkingPadRemote/Info.plist;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to your walking pad via Bluetooth.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Read heart rate to control walking pad workouts.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Start a workout session to measure heart rate.";
@@ -429,6 +448,7 @@
 				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WalkingPadRemote/Info.plist;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to your walking pad via Bluetooth.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Read heart rate to control walking pad workouts.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Start a workout session to measure heart rate.";

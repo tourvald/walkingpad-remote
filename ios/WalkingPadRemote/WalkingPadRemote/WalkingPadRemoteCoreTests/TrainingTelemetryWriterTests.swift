@@ -3,6 +3,44 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class TrainingTelemetryWriterTests: XCTestCase {
+    func testLifecycleEvidenceIsMaterializedInRawCsv() {
+        let payload: [String: Any] = [
+            "event": "app_lifecycle",
+            "app_state_previous": "inactive",
+            "app_state": "background",
+            "workout_lifecycle_stage": "cooldown",
+            "workout_committed": true,
+            "background_policy_action": "continueEventDriven",
+            "background_policy_reason": "committed_workout_background_event_driven",
+            "background_control_loop_permitted": true,
+            "native_hr_provider_state": "collecting",
+            "hr_last_factual_at": "2026-08-25T18:15:55.000Z",
+            "hr_last_received_at": "2026-08-25T18:15:57.000Z",
+            "hr_last_age_s": 3.5,
+            "treadmill_connection_state": "connected",
+            "treadmill_control_ready": true,
+            "treadmill_protocol": "walkingPad",
+        ]
+
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        let row = TrainingTelemetryWriter.csvRow(
+            sourceFile: "lifecycle.jsonl",
+            payload: payload
+        )
+
+        XCTAssertEqual(row.count, headers.count)
+        XCTAssertEqual(row[headers.firstIndex(of: "app_state")!], "background")
+        XCTAssertEqual(row[headers.firstIndex(of: "workout_lifecycle_stage")!], "cooldown")
+        XCTAssertEqual(row[headers.firstIndex(of: "workout_committed")!], "true")
+        XCTAssertEqual(
+            row[headers.firstIndex(of: "background_policy_action")!],
+            "continueEventDriven"
+        )
+        XCTAssertEqual(row[headers.firstIndex(of: "native_hr_provider_state")!], "collecting")
+        XCTAssertEqual(row[headers.firstIndex(of: "hr_last_age_s")!], "3.5")
+        XCTAssertEqual(row[headers.firstIndex(of: "treadmill_control_ready")!], "true")
+    }
+
     func testStopTruthFieldsAreMaterializedInRawCsv() {
         let payload: [String: Any] = [
             "event": "stop_observation_finished",
