@@ -4,6 +4,7 @@ import XCTest
 final class WorkoutReadCutoverContractTests: XCTestCase {
     private lazy var managerSource = source("BluetoothManager.swift")
     private lazy var contentSource = source("ContentView.swift")
+    private lazy var trainingLogsCardSource = source("DebugTrainingLogsCard.swift")
 
     func testNormalHistoryStatisticsAndExportUIUseOnlyTelemetryV2() {
         XCTAssertTrue(contentSource.contains("manager.telemetryV2WorkoutHistory"))
@@ -13,6 +14,24 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
         XCTAssertFalse(contentSource.contains("manager.prepareTrainingLogsCsvExport"))
         XCTAssertFalse(contentSource.contains("manager.prepareTrainingSessionSummaryCsvExport"))
         XCTAssertFalse(contentSource.contains("manager.clearTrainingLogsForActiveProfile"))
+    }
+
+    func testDebugSharesOneCompleteDiagnosticItemBehindPlainLanguageScopes() {
+        XCTAssertTrue(trainingLogsCardSource.contains("Поделиться диагностикой"))
+        XCTAssertTrue(trainingLogsCardSource.contains("presentation.diagnosticScopeOptions"))
+        XCTAssertTrue(trainingLogsCardSource.contains("controllerUnitsDiagnosticReport"))
+        XCTAssertTrue(trainingLogsCardSource.contains("heartRateDiagnosticReport"))
+        XCTAssertFalse(trainingLogsCardSource.contains("Export Training CSV"))
+        XCTAssertFalse(trainingLogsCardSource.contains("Export Session Summary"))
+        XCTAssertFalse(trainingLogsCardSource.contains("onExportRaw"))
+        XCTAssertFalse(trainingLogsCardSource.contains("onExportSessionSummary"))
+
+        XCTAssertTrue(contentSource.contains("Все доступные тренировки"))
+        XCTAssertTrue(contentSource.contains("Последние "))
+        XCTAssertTrue(contentSource.contains("Данные о здоровье"))
+        XCTAssertTrue(contentSource.contains("activityItems: [archiveURL]"))
+        XCTAssertFalse(contentSource.contains("activityItems: artifact.fileURLs"))
+        XCTAssertTrue(contentSource.contains("manager.finalizeTelemetryV2Export"))
     }
 
     func testLegacyHistoryIsPrivateShadowEvidenceAndCannotGateStart() throws {

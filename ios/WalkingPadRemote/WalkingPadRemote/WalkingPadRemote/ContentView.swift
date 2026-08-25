@@ -4266,13 +4266,10 @@ private struct DebugView: View {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
-    private func trainingLogsMenuItemTitle(
-        scope: TrainingLogCsvExportScope,
-        sessionSummaryOnly: Bool
-    ) -> String {
+    private func trainingLogsMenuItemTitle(scope: TrainingLogCsvExportScope) -> String {
         switch scope {
         case .all:
-            return sessionSummaryOnly ? "Все V2 summary" : "Все V2 evidence"
+            return "Все доступные тренировки"
         case .lastCompletedWorkouts(let limit):
             return "Последние \(limit) завершённых"
         }
@@ -4332,23 +4329,16 @@ private struct DebugView: View {
         let unavailableCount = entries.filter { !$0.quality.unavailableMetrics.isEmpty }.count
         let possibleDuplicateCount = entries.filter(\.quality.possibleDuplicate).count
         let detailLines = [
-            "Export формируется потоково из Telemetry V2 и включает manifest, raw JSONL, normalized CSV и session summary.",
-            "Legacy JSONL и UserDefaults shadow history не читаются, не очищаются и не удаляются.",
-            "Поля HealthKit linkage и version context сохраняются; device/profile identifiers исключены.",
+            "Пакет содержит техническую диагностику тренировок и пульса, включая данные о здоровье.",
+            "В один файл входят полные исходные данные, сводка, версии и признаки качества.",
+            "Legacy evidence не читается и не удаляется; device/profile identifiers исключены.",
             readStatusText,
         ]
 
-        let rawExportOptions = trainingLogScopeOptions.map { scope in
-            DebugTrainingLogsCard.Presentation.ExportOption(
-                id: "raw_\(scope.logDescription)",
-                title: trainingLogsMenuItemTitle(scope: scope, sessionSummaryOnly: false),
-                scope: scope
-            )
-        }
-        let summaryExportOptions = trainingLogScopeOptions.map { scope in
-            DebugTrainingLogsCard.Presentation.ExportOption(
-                id: "summary_\(scope.logDescription)",
-                title: trainingLogsMenuItemTitle(scope: scope, sessionSummaryOnly: true),
+        let diagnosticScopeOptions = trainingLogScopeOptions.map { scope in
+            DebugTrainingLogsCard.Presentation.DiagnosticScopeOption(
+                id: scope.logDescription,
+                title: trainingLogsMenuItemTitle(scope: scope),
                 scope: scope
             )
         }
@@ -4388,15 +4378,12 @@ private struct DebugView: View {
             deviceMetrics: [],
             writerHealthMetrics: telemetryV2WriterHealthMetrics,
             writerHealthDetailLines: telemetryV2WriterHealthDetailLines,
-            rawExportOptions: rawExportOptions,
-            rawExportSubtitle: readReady ? "Raw + normalized + manifest" : "V2 read unavailable",
-            canExportRaw: readReady,
-            sessionSummaryOptions: summaryExportOptions,
-            sessionSummarySubtitle: readReady
-                ? "V2 summary + quality fields"
-                : "V2 read unavailable",
-            canExportSessionSummary: readReady,
-            clearSubtitle: "Source evidence is immutable in this cutover.",
+            diagnosticScopeOptions: diagnosticScopeOptions,
+            diagnosticShareSubtitle: readReady
+                ? "Тренировки, пульс, версии и качество данных"
+                : "Данные Telemetry V2 недоступны",
+            canShareDiagnostics: readReady,
+            clearSubtitle: "Исходные данные остаются без изменений.",
             canClear: false,
             clearConfirmationMessage: "",
             detailLines: detailLines,
@@ -4797,11 +4784,8 @@ private struct DebugView: View {
                                 manager.startTreadmillTestRun()
                             }
                         },
-                        onExportRaw: { scope in
-                            exportTrainingHistoryCsv(manager: manager, scope: scope)
-                        },
-                        onExportSessionSummary: { scope in
-                            exportTrainingSessionSummaryCsv(manager: manager, scope: scope)
+                        onShareDiagnostics: { scope in
+                            shareTrainingDiagnostics(manager: manager, scope: scope)
                         }
                     )
 
@@ -4839,14 +4823,7 @@ private func copyLogs(lastCmd: String, hrStatus: String, log: String) {
     UIPasteboard.general.string = text
 }
 
-private func exportTrainingHistoryCsv(
-    manager: BluetoothManager,
-    scope: TrainingLogCsvExportScope
-) {
-    presentTelemetryV2ExportWarning(manager: manager, scope: scope)
-}
-
-private func exportTrainingSessionSummaryCsv(
+private func shareTrainingDiagnostics(
     manager: BluetoothManager,
     scope: TrainingLogCsvExportScope
 ) {
@@ -4859,17 +4836,31 @@ private func presentTelemetryV2ExportWarning(
 ) {
     guard let root = activeRootViewController() else { return }
     let alert = UIAlertController(
-        title: "Health Data Export",
-        message: "The export contains heart-rate and workout health data. Share it only with a trusted recipient. Source evidence will not be deleted.",
+        title: "Данные о здоровье",
+        message: "Диагностический пакет содержит пульс и данные тренировок. Делитесь им только с доверенным получателем. Исходные данные не будут удалены.",
         preferredStyle: .alert
     )
-    alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-    alert.addAction(UIAlertAction(title: "Continue", style: .default) { _ in
+    alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+    alert.addAction(UIAlertAction(title: "Продолжить", style: .default) { _ in
         Task { @MainActor in
             do {
                 let artifact = try await manager.prepareTelemetryV2Export(scope: scope)
+                let archiveURL: URL
+                do {
+                    let archiveName = diagnosticArchiveName()
+                    archiveURL = try await Task.detached(priority: .userInitiated) {
+                        try DiagnosticZipArchive.create(
+                            directoryURL: artifact.directoryURL,
+                            fileURLs: artifact.fileURLs,
+                            archiveName: archiveName
+                        )
+                    }.value
+                } catch {
+                    manager.finalizeTelemetryV2Export(artifact, completed: false)
+                    throw error
+                }
                 let activity = UIActivityViewController(
-                    activityItems: artifact.fileURLs,
+                    activityItems: [archiveURL],
                     applicationActivities: nil
                 )
                 activity.completionWithItemsHandler = { _, completed, _, _ in
@@ -4880,7 +4871,7 @@ private func presentTelemetryV2ExportWarning(
                 activeRootViewController()?.present(activity, animated: true)
             } catch {
                 let failure = UIAlertController(
-                    title: "Telemetry V2 Export Failed",
+                    title: "Не удалось подготовить диагностику",
                     message: error.localizedDescription,
                     preferredStyle: .alert
                 )
@@ -4890,6 +4881,15 @@ private func presentTelemetryV2ExportWarning(
         }
     })
     root.present(alert, animated: true)
+}
+
+private func diagnosticArchiveName(now: Date = Date()) -> String {
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+    return "WalkingPad_Diagnostics_\(formatter.string(from: now)).zip"
 }
 
 private func activeRootViewController() -> UIViewController? {

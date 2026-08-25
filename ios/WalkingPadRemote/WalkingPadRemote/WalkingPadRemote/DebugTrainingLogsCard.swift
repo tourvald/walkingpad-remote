@@ -9,7 +9,7 @@ struct DebugTrainingLogsCard: View {
             let tint: Color
         }
 
-        struct ExportOption: Identifiable {
+        struct DiagnosticScopeOption: Identifiable {
             let id: String
             let title: String
             let scope: TrainingLogCsvExportScope
@@ -31,12 +31,9 @@ struct DebugTrainingLogsCard: View {
         let deviceMetrics: [Metric]
         let writerHealthMetrics: [Metric]
         let writerHealthDetailLines: [String]
-        let rawExportOptions: [ExportOption]
-        let rawExportSubtitle: String
-        let canExportRaw: Bool
-        let sessionSummaryOptions: [ExportOption]
-        let sessionSummarySubtitle: String
-        let canExportSessionSummary: Bool
+        let diagnosticScopeOptions: [DiagnosticScopeOption]
+        let diagnosticShareSubtitle: String
+        let canShareDiagnostics: Bool
         let clearSubtitle: String
         let canClear: Bool
         let clearConfirmationMessage: String
@@ -46,16 +43,10 @@ struct DebugTrainingLogsCard: View {
 
     let presentation: Presentation
     let onToggleTestRun: () -> Void
-    let onExportRaw: (TrainingLogCsvExportScope) -> Void
-    let onExportSessionSummary: (TrainingLogCsvExportScope) -> Void
+    let onShareDiagnostics: (TrainingLogCsvExportScope) -> Void
 
     private let metricColumns = [
         GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10)
-    ]
-
-    private let actionColumns = [
         GridItem(.flexible(), spacing: 10),
         GridItem(.flexible(), spacing: 10)
     ]
@@ -175,39 +166,24 @@ struct DebugTrainingLogsCard: View {
                     }
                 }
 
-                LazyVGrid(columns: actionColumns, spacing: 10) {
-                    Menu {
-                        ForEach(presentation.rawExportOptions) { option in
-                            Button(option.title) {
-                                onExportRaw(option.scope)
-                            }
+                Menu {
+                    ForEach(presentation.diagnosticScopeOptions) { option in
+                        Button(option.title) {
+                            onShareDiagnostics(option.scope)
                         }
-                    } label: {
-                        DebugActionTileLabel(
-                            title: "Export Training CSV",
-                            subtitle: presentation.rawExportSubtitle,
-                            tint: .accentColor,
-                            enabled: presentation.canExportRaw
-                        )
                     }
-                    .disabled(!presentation.canExportRaw)
-
-                    Menu {
-                        ForEach(presentation.sessionSummaryOptions) { option in
-                            Button(option.title) {
-                                onExportSessionSummary(option.scope)
-                            }
-                        }
-                    } label: {
-                        DebugActionTileLabel(
-                            title: "Export Session Summary",
-                            subtitle: presentation.sessionSummarySubtitle,
-                            tint: Color.blue,
-                            enabled: presentation.canExportSessionSummary
-                        )
-                    }
-                    .disabled(!presentation.canExportSessionSummary)
+                } label: {
+                    DebugActionTileLabel(
+                        title: "Поделиться диагностикой",
+                        subtitle: presentation.diagnosticShareSubtitle,
+                        tint: .accentColor,
+                        enabled: presentation.canShareDiagnostics
+                    )
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .disabled(!presentation.canShareDiagnostics)
+                .accessibilityLabel("Поделиться диагностикой")
+                .accessibilityHint("Выберите объём тренировок для диагностического пакета")
 
                 Text(presentation.clearSubtitle)
                     .font(.caption)
