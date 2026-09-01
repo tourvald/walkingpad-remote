@@ -163,6 +163,58 @@ final class WalkingPadStartTransactionTests: XCTestCase {
         XCTAssertTrue(body.contains("after: scheduled.delay"))
     }
 
+    func testHrCommitRejectsAmbiguousWalkingPadMotionBeforeSessionSideEffects() throws {
+        let commit = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)"
+        )
+
+        assertOrdered(
+            [
+                "WalkingPadStartTransaction.plan(",
+                "factualObservation: currentWalkingPadFactualMotionObservation()",
+                "guard case .commands = admission else",
+                "abortNativeHeartRateFlow(reason: .superseded)",
+                "return",
+                "resetSessionStats()",
+                "startTrainingStructuredLog(trigger: \"start_hr\")",
+                "isHrControlRunning = true",
+                "beginTelemetryV2Session(legacySessionID: legacySessionID)",
+            ],
+            in: commit
+        )
+    }
+
+    func testHrCommitRollsBackEveryCommittedBoundaryWhenMotionRecheckFails() throws {
+        let commit = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)"
+        )
+        let rollback = try functionBody(
+            "private func rollbackCommittedHrControlBeforeMotion()"
+        )
+
+        assertOrdered(
+            [
+                "beginTelemetryV2Session(legacySessionID: legacySessionID)",
+                "persistQualifyingNativeHeartRateBeforeMotion()",
+                "guard startWithSpeed(initialMotionTargetSpeedKmh) else",
+                "rollbackCommittedHrControlBeforeMotion()",
+            ],
+            in: commit
+        )
+        assertOrdered(
+            [
+                "stopTrainingStructuredLog(reason: \"motion_admission_failed\")",
+                "isHrControlRunning = false",
+                "hrControlStartedAt = nil",
+                "hrControlStartedBelt = false",
+                "abortNativeHeartRateFlow(reason: .superseded)",
+                "endTelemetryV2Session(reason: \"motion_admission_failed\")",
+            ],
+            in: rollback
+        )
+        XCTAssertFalse(rollback.contains("stopBelt"))
+    }
+
     func testProductionStopRaceInvalidatesDelayedStartCommands() throws {
         let startBody = try functionBody("func startWithSpeed(_ kmh: Double)")
         let scheduleBody = try functionBody("private func scheduleWrite(")

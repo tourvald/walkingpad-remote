@@ -67,9 +67,12 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
         ], in: commit)
         assertOrdered([
             "controllerUnitsGateDecision()",
+            "WalkingPadStartTransaction.plan(",
+            "guard case .commands = admission else",
             "isHrControlRunning = true",
             "beginTelemetryV2Session(legacySessionID: legacySessionID)",
-            "startWithSpeed",
+            "guard startWithSpeed(initialMotionTargetSpeedKmh) else",
+            "rollbackCommittedHrControlBeforeMotion()",
         ], in: productionStart)
         XCTAssertEqual(productionStart.components(separatedBy: "isHrControlRunning = true").count - 1, 1)
     }
