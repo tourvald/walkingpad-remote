@@ -4287,16 +4287,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         let v = clampRunningSpeedKmh(kmh)
         let old = deviceTargetSpeedKmh
-        let walkingPadTransaction = treadmillProtocol == .walkingPad
+        let walkingPadPlan = treadmillProtocol == .walkingPad
             ? WalkingPadStartTransaction.plan(
                 isStartTransactionInFlight: isWalkingPadStartTransactionInFlight,
-                previousCommandedSpeedKmh: old,
                 factualObservation: currentWalkingPadFactualMotionObservation(),
                 targetSpeedKmh: v
             )
             : nil
-        guard walkingPadTransaction?.isEmpty != true else {
-            appendLog("WalkingPad start ignored: start transaction already in flight")
+        if case .blocked(let reason)? = walkingPadPlan {
+            appendLog("WalkingPad motion command blocked: \(reason.rawValue)")
+            if reason == .ambiguousMotion {
+                infoToastMessage = "Дождитесь актуального статуса дорожки"
+            }
             return
         }
         endStopObservationForNewMotion()
@@ -4314,7 +4316,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let shouldSendStart = speedKmh <= 0.2 && old <= 0.1
         switch treadmillProtocol {
         case .walkingPad:
-            let transaction = walkingPadTransaction ?? []
+            guard case .commands(let transaction)? = walkingPadPlan else { return }
             if transaction.contains(where: { $0.command == .modeManual }) {
                 walkingPadStartTransactionConnectionEpoch = treadmillTelemetryConnectionEpoch
             }

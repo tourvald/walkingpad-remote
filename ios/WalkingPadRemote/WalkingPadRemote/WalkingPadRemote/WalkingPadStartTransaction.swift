@@ -45,26 +45,39 @@ enum WalkingPadStartTransaction {
         let delay: TimeInterval
     }
 
+    enum BlockReason: String, Equatable {
+        case startTransactionInFlight = "start_transaction_in_flight"
+        case ambiguousMotion = "ambiguous_motion"
+    }
+
+    enum Plan: Equatable {
+        case commands([ScheduledCommand])
+        case blocked(BlockReason)
+    }
+
     static func plan(
         isStartTransactionInFlight: Bool,
-        previousCommandedSpeedKmh: Double,
         factualObservation: FactualMotionObservation?,
         targetSpeedKmh: Double
-    ) -> [ScheduledCommand] {
-        guard !isStartTransactionInFlight else { return [] }
-        if factualObservation?.isFreshCurrent == true,
-           factualObservation?.motion == .moving {
-            return [ScheduledCommand(command: .speed(targetSpeedKmh), delay: 0.2)]
+    ) -> Plan {
+        guard !isStartTransactionInFlight else {
+            return .blocked(.startTransactionInFlight)
         }
-        let ownsStartPrerequisites = previousCommandedSpeedKmh <= 0.1
-            || factualObservation?.isFreshCurrentStop == true
-        if ownsStartPrerequisites {
-            return [
+        guard factualObservation?.isFreshCurrent == true else {
+            return .blocked(.ambiguousMotion)
+        }
+        if factualObservation?.motion == .moving {
+            return .commands([
+                ScheduledCommand(command: .speed(targetSpeedKmh), delay: 0.2),
+            ])
+        }
+        if factualObservation?.isFreshCurrentStop == true {
+            return .commands([
                 ScheduledCommand(command: .modeManual, delay: 0),
                 ScheduledCommand(command: .start, delay: 0.2),
                 ScheduledCommand(command: .speed(targetSpeedKmh), delay: 0.45),
-            ]
+            ])
         }
-        return [ScheduledCommand(command: .speed(targetSpeedKmh), delay: 0.2)]
+        return .blocked(.ambiguousMotion)
     }
 }

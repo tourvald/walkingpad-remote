@@ -16,86 +16,73 @@ final class WalkingPadStartTransactionTests: XCTestCase {
         XCTAssertEqual(
             WalkingPadStartTransaction.plan(
                 isStartTransactionInFlight: false,
-                previousCommandedSpeedKmh: 0,
-                factualObservation: nil,
+                factualObservation: freshObservation(.stopped),
                 targetSpeedKmh: 3.0
             ),
-            [
+            .commands([
                 .init(command: .modeManual, delay: 0),
                 .init(command: .start, delay: 0.2),
                 .init(command: .speed(3.0), delay: 0.45),
-            ]
+            ])
         )
     }
 
     func testOrdinaryStopThenSecondStartInSameConnectionOwnsPrerequisitesAgain() {
         let firstStart = WalkingPadStartTransaction.plan(
             isStartTransactionInFlight: false,
-            previousCommandedSpeedKmh: 0,
-            factualObservation: nil,
+            factualObservation: freshObservation(.stopped),
             targetSpeedKmh: 3.0
         )
 
         // An ordinary Stop does not need to mutate any start-transaction cache.
         let secondStart = WalkingPadStartTransaction.plan(
             isStartTransactionInFlight: false,
-            previousCommandedSpeedKmh: 0,
-            factualObservation: nil,
+            factualObservation: freshObservation(.stopped),
             targetSpeedKmh: 3.4
         )
 
-        XCTAssertEqual(firstStart.map(\.command), [.modeManual, .start, .speed(3.0)])
-        XCTAssertEqual(secondStart.map(\.command), [.modeManual, .start, .speed(3.4)])
+        XCTAssertEqual(commands(from: firstStart).map(\.command), [.modeManual, .start, .speed(3.0)])
+        XCTAssertEqual(commands(from: secondStart).map(\.command), [.modeManual, .start, .speed(3.4)])
     }
 
     func testSpeedAdjustmentWhileMovingDoesNotResendPrerequisites() {
-        for previousCommandedSpeedKmh in [0.0, 3.0] {
-            XCTAssertEqual(
-                WalkingPadStartTransaction.plan(
-                    isStartTransactionInFlight: false,
-                    previousCommandedSpeedKmh: previousCommandedSpeedKmh,
-                    factualObservation: .init(
-                        motion: .moving,
-                        ageSeconds: 0.5,
-                        isCurrentConnectionEpoch: true
-                    ),
-                    targetSpeedKmh: 3.8
-                ),
-                [.init(command: .speed(3.8), delay: 0.2)]
-            )
-        }
+        XCTAssertEqual(
+            WalkingPadStartTransaction.plan(
+                isStartTransactionInFlight: false,
+                factualObservation: freshObservation(.moving),
+                targetSpeedKmh: 3.8
+            ),
+            .commands([.init(command: .speed(3.8), delay: 0.2)])
+        )
     }
 
     func testDisconnectReconnectDoesNotChangeStoppedStartContract() {
         let beforeDisconnect = WalkingPadStartTransaction.plan(
             isStartTransactionInFlight: false,
-            previousCommandedSpeedKmh: 0,
-            factualObservation: nil,
+            factualObservation: freshObservation(.stopped),
             targetSpeedKmh: 3.0
         )
         let afterReconnect = WalkingPadStartTransaction.plan(
             isStartTransactionInFlight: false,
-            previousCommandedSpeedKmh: 0,
-            factualObservation: nil,
+            factualObservation: freshObservation(.stopped),
             targetSpeedKmh: 3.0
         )
 
         XCTAssertEqual(afterReconnect, beforeDisconnect)
-        XCTAssertEqual(afterReconnect.map(\.command), [.modeManual, .start, .speed(3.0)])
+        XCTAssertEqual(commands(from: afterReconnect).map(\.command), [.modeManual, .start, .speed(3.0)])
     }
 
     func testHighPriorityStopPreemptsPartiallyQueuedSecondStartAndTelemetrySidecar() {
         let epoch = TreadmillConnectionEpoch(rawValue: UUID())
         let secondStart = WalkingPadStartTransaction.plan(
             isStartTransactionInFlight: false,
-            previousCommandedSpeedKmh: 0,
-            factualObservation: nil,
+            factualObservation: freshObservation(.stopped),
             targetSpeedKmh: 3.0
         )
         var queue: [CommandQueueService.Command] = []
         var sidecar = TreadmillCommandTelemetrySidecar()
 
-        for scheduled in secondStart {
+        for scheduled in commands(from: secondStart) {
             let label = scheduled.command.label
             let command = CommandQueueService.Command(data: Data(), label: label)
             _ = CommandQueueService.enqueueRegular(
@@ -134,17 +121,17 @@ final class WalkingPadStartTransactionTests: XCTestCase {
         let epoch = TreadmillConnectionEpoch(rawValue: UUID())
         let plan = WalkingPadStartTransaction.plan(
             isStartTransactionInFlight: false,
-            previousCommandedSpeedKmh: 0,
-            factualObservation: nil,
+            factualObservation: freshObservation(.stopped),
             targetSpeedKmh: 3.0
         )
 
-        XCTAssertEqual(plan.map { $0.command.label }, [
+        let commands = commands(from: plan)
+        XCTAssertEqual(commands.map { $0.command.label }, [
             "MODE MANUAL",
             "START",
             "SPEED 3.0 km/h",
         ])
-        XCTAssertEqual(plan.map { evidence(for: $0.command, epoch: epoch).kind }, [
+        XCTAssertEqual(commands.map { evidence(for: $0.command, epoch: epoch).kind }, [
             .other("mode_manual"),
             .other("start"),
             .setSpeed(TreadmillCommandedSpeedRepresentation.walkingPad(rawControllerTenths: 30)),
@@ -159,7 +146,6 @@ final class WalkingPadStartTransactionTests: XCTestCase {
             [
                 "WalkingPadStartTransaction.plan(",
                 "isStartTransactionInFlight: isWalkingPadStartTransactionInFlight",
-                "previousCommandedSpeedKmh: old",
                 "factualObservation: currentWalkingPadFactualMotionObservation()",
                 "case .modeManual:",
                 "buildCmdPacket(cmd: 0x02, value: 0x01)",
@@ -215,7 +201,7 @@ final class WalkingPadStartTransactionTests: XCTestCase {
         assertOrdered(
             [
                 "WalkingPadStartTransaction.plan(",
-                "guard walkingPadTransaction?.isEmpty != true",
+                "if case .blocked(let reason)? = walkingPadPlan",
                 "resetCommandQueue(reason: \"startWithSpeed\")",
                 "walkingPadStartTransactionConnectionEpoch = treadmillTelemetryConnectionEpoch",
                 "for scheduled in transaction",
@@ -243,22 +229,17 @@ final class WalkingPadStartTransactionTests: XCTestCase {
         )
     }
 
-    func testFreshFactualStopOverridesStaleCommandedMovingState() {
+    func testFreshFactualStopOwnsFullTransaction() {
         let plan = WalkingPadStartTransaction.plan(
             isStartTransactionInFlight: false,
-            previousCommandedSpeedKmh: 3.0,
-            factualObservation: .init(
-                motion: .stopped,
-                ageSeconds: 0.5,
-                isCurrentConnectionEpoch: true
-            ),
+            factualObservation: freshObservation(.stopped),
             targetSpeedKmh: 3.2
         )
 
-        XCTAssertEqual(plan.map(\.command), [.modeManual, .start, .speed(3.2)])
+        XCTAssertEqual(commands(from: plan).map(\.command), [.modeManual, .start, .speed(3.2)])
     }
 
-    func testStaleOrWrongEpochStopDoesNotCreateDuplicateMotionCommands() {
+    func testStaleOrWrongEpochStopFailsClosedInsteadOfTrustingLocalMovingIntent() {
         for observation in [
             WalkingPadStartTransaction.FactualMotionObservation(
                 motion: .stopped,
@@ -274,11 +255,10 @@ final class WalkingPadStartTransactionTests: XCTestCase {
             XCTAssertEqual(
                 WalkingPadStartTransaction.plan(
                     isStartTransactionInFlight: false,
-                    previousCommandedSpeedKmh: 3.0,
                     factualObservation: observation,
                     targetSpeedKmh: 3.4
                 ),
-                [.init(command: .speed(3.4), delay: 0.2)]
+                .blocked(.ambiguousMotion)
             )
         }
     }
@@ -286,16 +266,55 @@ final class WalkingPadStartTransactionTests: XCTestCase {
     func testRepeatedStartWhileTransactionIsInFlightEmitsNoDuplicateCommands() {
         let plan = WalkingPadStartTransaction.plan(
             isStartTransactionInFlight: true,
-            previousCommandedSpeedKmh: 3.0,
-            factualObservation: .init(
-                motion: .stopped,
-                ageSeconds: 0.5,
-                isCurrentConnectionEpoch: true
-            ),
+            factualObservation: freshObservation(.stopped),
             targetSpeedKmh: 3.4
         )
 
-        XCTAssertTrue(plan.isEmpty)
+        XCTAssertEqual(plan, .blocked(.startTransactionInFlight))
+    }
+
+    func testMissingFactualEvidenceFailsClosed() {
+        XCTAssertEqual(
+            WalkingPadStartTransaction.plan(
+                isStartTransactionInFlight: false,
+                factualObservation: nil,
+                targetSpeedKmh: 3.4
+            ),
+            .blocked(.ambiguousMotion)
+        )
+    }
+
+    func testFreshUnknownMotionFailsClosed() {
+        XCTAssertEqual(
+            WalkingPadStartTransaction.plan(
+                isStartTransactionInFlight: false,
+                factualObservation: freshObservation(.unknown),
+                targetSpeedKmh: 3.0
+            ),
+            .blocked(.ambiguousMotion)
+        )
+    }
+
+    private func freshObservation(
+        _ motion: WalkingPadStartTransaction.ObservedMotion
+    ) -> WalkingPadStartTransaction.FactualMotionObservation {
+        .init(
+            motion: motion,
+            ageSeconds: 0.5,
+            isCurrentConnectionEpoch: true
+        )
+    }
+
+    private func commands(
+        from plan: WalkingPadStartTransaction.Plan,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> [WalkingPadStartTransaction.ScheduledCommand] {
+        guard case .commands(let commands) = plan else {
+            XCTFail("Expected commands, got \(plan)", file: file, line: line)
+            return []
+        }
+        return commands
     }
 
     private func evidence(
