@@ -400,7 +400,8 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
                 "if endedConnectionAttempt",
                 "self.resetProtocolState()",
                 "self.connectedPeripheral = nil",
-                "self.manualModeSet = false",
+                "self.isConnected = false",
+                "self.connectedPeripheralId = nil",
             ],
             in: didDisconnect
         )
