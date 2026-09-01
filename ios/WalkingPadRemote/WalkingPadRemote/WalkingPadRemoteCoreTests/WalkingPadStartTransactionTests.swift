@@ -170,15 +170,80 @@ final class WalkingPadStartTransactionTests: XCTestCase {
 
         assertOrdered(
             [
-                "WalkingPadStartTransaction.plan(",
+                "WalkingPadStartTransaction.hrStartAdmission(",
                 "factualObservation: currentWalkingPadFactualMotionObservation()",
-                "guard case .commands = admission else",
+                "case .blocked(let reason):",
                 "abortNativeHeartRateFlow(reason: .superseded)",
                 "return",
                 "resetSessionStats()",
                 "startTrainingStructuredLog(trigger: \"start_hr\")",
                 "isHrControlRunning = true",
                 "beginTelemetryV2Session(legacySessionID: legacySessionID)",
+            ],
+            in: commit
+        )
+    }
+
+    func testHrAdmissionKeepsStoppedMovingAdoptionActiveTargetAndAmbiguousBoundaries() {
+        XCTAssertEqual(
+            WalkingPadStartTransaction.hrStartAdmission(
+                isStartTransactionInFlight: false,
+                factualObservation: freshObservation(.stopped),
+                hasActiveTarget: true,
+                targetSpeedKmh: 3.4
+            ),
+            .commands([
+                .init(command: .modeManual, delay: 0),
+                .init(command: .start, delay: 0.2),
+                .init(command: .speed(3.4), delay: 0.45),
+            ])
+        )
+        XCTAssertEqual(
+            WalkingPadStartTransaction.hrStartAdmission(
+                isStartTransactionInFlight: false,
+                factualObservation: freshObservation(.moving),
+                hasActiveTarget: false,
+                targetSpeedKmh: 3.0
+            ),
+            .commands([.init(command: .speed(3.0), delay: 0.2)])
+        )
+        XCTAssertEqual(
+            WalkingPadStartTransaction.hrStartAdmission(
+                isStartTransactionInFlight: false,
+                factualObservation: freshObservation(.moving),
+                hasActiveTarget: true,
+                targetSpeedKmh: 3.4
+            ),
+            .noMotionCommand
+        )
+        XCTAssertEqual(
+            WalkingPadStartTransaction.hrStartAdmission(
+                isStartTransactionInFlight: false,
+                factualObservation: nil,
+                hasActiveTarget: true,
+                targetSpeedKmh: 3.4
+            ),
+            .blocked(.ambiguousMotion)
+        )
+    }
+
+    func testHrCommitExecutesOnlyTheAdmittedMotionOutput() throws {
+        let commit = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)"
+        )
+
+        assertOrdered(
+            [
+                "WalkingPadStartTransaction.hrStartAdmission(",
+                "hasActiveTarget: deviceTargetSpeedKmh > 0.1",
+                "case .commands:",
+                "motionTargetSpeedKmh = walkingPadTargetSpeedKmh",
+                "case .noMotionCommand:",
+                "motionTargetSpeedKmh = nil",
+                "case .blocked(let reason):",
+                "abortNativeHeartRateFlow(reason: .superseded)",
+                "if let motionTargetSpeedKmh",
+                "guard startWithSpeed(motionTargetSpeedKmh) else",
             ],
             in: commit
         )
@@ -196,7 +261,7 @@ final class WalkingPadStartTransactionTests: XCTestCase {
             [
                 "beginTelemetryV2Session(legacySessionID: legacySessionID)",
                 "persistQualifyingNativeHeartRateBeforeMotion()",
-                "guard startWithSpeed(initialMotionTargetSpeedKmh) else",
+                "guard startWithSpeed(motionTargetSpeedKmh) else",
                 "rollbackCommittedHrControlBeforeMotion()",
             ],
             in: commit

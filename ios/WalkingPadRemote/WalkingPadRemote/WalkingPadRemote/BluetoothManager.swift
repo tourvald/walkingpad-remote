@@ -5507,15 +5507,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
 
         let initialMotionTargetSpeedKmh: Double? = {
-            if treadmillProtocol == .walkingPad {
-                if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
-                    return 3.0
-                }
-                if deviceTargetSpeedKmh <= 0.1 {
-                    return desiredSpeedKmh
-                }
-                return deviceTargetSpeedKmh
-            }
             if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
                 return 3.0
             }
@@ -5524,19 +5515,26 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             return nil
         }()
-        if treadmillProtocol == .walkingPad,
-           let initialMotionTargetSpeedKmh {
-            let admission = WalkingPadStartTransaction.plan(
+        var motionTargetSpeedKmh = initialMotionTargetSpeedKmh
+        if treadmillProtocol == .walkingPad {
+            let walkingPadTargetSpeedKmh = clampRunningSpeedKmh(
+                initialMotionTargetSpeedKmh ?? deviceTargetSpeedKmh
+            )
+            let admission = WalkingPadStartTransaction.hrStartAdmission(
                 isStartTransactionInFlight: isWalkingPadStartTransactionInFlight,
                 factualObservation: currentWalkingPadFactualMotionObservation(),
-                targetSpeedKmh: clampRunningSpeedKmh(initialMotionTargetSpeedKmh)
+                hasActiveTarget: deviceTargetSpeedKmh > 0.1,
+                targetSpeedKmh: walkingPadTargetSpeedKmh
             )
-            guard case .commands = admission else {
-                if case .blocked(let reason) = admission {
-                    appendLog("HR start blocked before commit: \(reason.rawValue)")
-                    if reason == .ambiguousMotion {
-                        infoToastMessage = "Дождитесь актуального статуса дорожки"
-                    }
+            switch admission {
+            case .commands:
+                motionTargetSpeedKmh = walkingPadTargetSpeedKmh
+            case .noMotionCommand:
+                motionTargetSpeedKmh = nil
+            case .blocked(let reason):
+                appendLog("HR start blocked before commit: \(reason.rawValue)")
+                if reason == .ambiguousMotion {
+                    infoToastMessage = "Дождитесь актуального статуса дорожки"
                 }
                 abortNativeHeartRateFlow(reason: .superseded)
                 return
@@ -5584,9 +5582,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         nativePreflightCommitTimestamps = nil
         beginTelemetryV2Session(legacySessionID: legacySessionID)
         persistQualifyingNativeHeartRateBeforeMotion()
-        if let initialMotionTargetSpeedKmh {
+        if let motionTargetSpeedKmh {
             hrControlStartedBelt = true
-            guard startWithSpeed(initialMotionTargetSpeedKmh) else {
+            guard startWithSpeed(motionTargetSpeedKmh) else {
                 rollbackCommittedHrControlBeforeMotion()
                 return
             }

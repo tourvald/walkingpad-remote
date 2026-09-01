@@ -55,6 +55,12 @@ enum WalkingPadStartTransaction {
         case blocked(BlockReason)
     }
 
+    enum HrStartAdmission: Equatable {
+        case commands([ScheduledCommand])
+        case noMotionCommand
+        case blocked(BlockReason)
+    }
+
     static func plan(
         isStartTransactionInFlight: Bool,
         factualObservation: FactualMotionObservation?,
@@ -79,5 +85,29 @@ enum WalkingPadStartTransaction {
             ])
         }
         return .blocked(.ambiguousMotion)
+    }
+
+    static func hrStartAdmission(
+        isStartTransactionInFlight: Bool,
+        factualObservation: FactualMotionObservation?,
+        hasActiveTarget: Bool,
+        targetSpeedKmh: Double
+    ) -> HrStartAdmission {
+        guard factualObservation?.isFreshCurrent == true else {
+            return .blocked(.ambiguousMotion)
+        }
+        if factualObservation?.motion == .moving, hasActiveTarget {
+            return .noMotionCommand
+        }
+        switch plan(
+            isStartTransactionInFlight: isStartTransactionInFlight,
+            factualObservation: factualObservation,
+            targetSpeedKmh: targetSpeedKmh
+        ) {
+        case .commands(let commands):
+            return .commands(commands)
+        case .blocked(let reason):
+            return .blocked(reason)
+        }
     }
 }
