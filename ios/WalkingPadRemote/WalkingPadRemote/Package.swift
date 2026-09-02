@@ -166,6 +166,7 @@ let package = Package(
                 "TreadmillControlReadinessPolicy.swift",
                 "TreadmillCommandTelemetrySidecar.swift",
                 "WalkingPadStatusRefreshPolicy.swift",
+                "WalkingPadStartTransaction.swift",
                 "WorkoutLifecyclePolicy.swift"
             ]
         ),
