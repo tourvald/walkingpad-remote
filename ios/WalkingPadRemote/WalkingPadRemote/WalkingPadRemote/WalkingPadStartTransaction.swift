@@ -1,28 +1,6 @@
 import Foundation
 
 enum WalkingPadStartTransaction {
-    enum ObservedMotion: Equatable {
-        case stopped
-        case moving
-        case unknown
-    }
-
-    struct FactualMotionObservation: Equatable {
-        let motion: ObservedMotion
-        let ageSeconds: TimeInterval
-        let isCurrentConnectionEpoch: Bool
-
-        var isFreshCurrent: Bool {
-            isCurrentConnectionEpoch
-                && ageSeconds >= 0
-                && ageSeconds <= StopObservationPolicy.freshnessInterval
-        }
-
-        var isFreshCurrentStop: Bool {
-            isFreshCurrent && motion == .stopped
-        }
-    }
-
     enum Command: Equatable {
         case modeManual
         case start
@@ -45,69 +23,18 @@ enum WalkingPadStartTransaction {
         let delay: TimeInterval
     }
 
-    enum BlockReason: String, Equatable {
-        case startTransactionInFlight = "start_transaction_in_flight"
-        case ambiguousMotion = "ambiguous_motion"
-    }
-
-    enum Plan: Equatable {
-        case commands([ScheduledCommand])
-        case blocked(BlockReason)
-    }
-
-    enum HrStartAdmission: Equatable {
-        case commands([ScheduledCommand])
-        case noMotionCommand
-        case blocked(BlockReason)
-    }
-
-    static func plan(
-        isStartTransactionInFlight: Bool,
-        factualObservation: FactualMotionObservation?,
+    // Compose the existing Start branch only; readiness and safety stay with the caller.
+    static func commands(
+        shouldSendStart: Bool,
         targetSpeedKmh: Double
-    ) -> Plan {
-        guard !isStartTransactionInFlight else {
-            return .blocked(.startTransactionInFlight)
-        }
-        guard factualObservation?.isFreshCurrent == true else {
-            return .blocked(.ambiguousMotion)
-        }
-        if factualObservation?.motion == .moving {
-            return .commands([
-                ScheduledCommand(command: .speed(targetSpeedKmh), delay: 0.2),
-            ])
-        }
-        if factualObservation?.isFreshCurrentStop == true {
-            return .commands([
+    ) -> [ScheduledCommand] {
+        if shouldSendStart {
+            return [
                 ScheduledCommand(command: .modeManual, delay: 0),
                 ScheduledCommand(command: .start, delay: 0.2),
                 ScheduledCommand(command: .speed(targetSpeedKmh), delay: 0.45),
-            ])
+            ]
         }
-        return .blocked(.ambiguousMotion)
-    }
-
-    static func hrStartAdmission(
-        isStartTransactionInFlight: Bool,
-        factualObservation: FactualMotionObservation?,
-        hasActiveTarget: Bool,
-        targetSpeedKmh: Double
-    ) -> HrStartAdmission {
-        guard factualObservation?.isFreshCurrent == true else {
-            return .blocked(.ambiguousMotion)
-        }
-        if factualObservation?.motion == .moving, hasActiveTarget {
-            return .noMotionCommand
-        }
-        switch plan(
-            isStartTransactionInFlight: isStartTransactionInFlight,
-            factualObservation: factualObservation,
-            targetSpeedKmh: targetSpeedKmh
-        ) {
-        case .commands(let commands):
-            return .commands(commands)
-        case .blocked(let reason):
-            return .blocked(reason)
-        }
+        return [ScheduledCommand(command: .speed(targetSpeedKmh), delay: 0.2)]
     }
 }

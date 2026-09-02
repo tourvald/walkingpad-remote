@@ -1,6 +1,20 @@
 import Foundation
 
 enum HRDomainService {
+    // Motion output after the existing native-HR preflight has committed, not admission.
+    static func initialMotionTargetSpeedKmh(
+        deviceTargetSpeedKmh: Double,
+        speedKmh: Double,
+        desiredSpeedKmh: Double
+    ) -> Double? {
+        if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
+            return 3.0
+        } else if deviceTargetSpeedKmh <= 0.1 {
+            return desiredSpeedKmh
+        }
+        return nil
+    }
+
     struct AdaptiveStepSelection {
         let level: Int
         let stepKmh: Double
