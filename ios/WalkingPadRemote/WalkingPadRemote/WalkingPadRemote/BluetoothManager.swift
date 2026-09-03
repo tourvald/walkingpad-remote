@@ -310,7 +310,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     )
     private var latestTreadmillObservationEvidence: TreadmillObservationEvidence?
-    private var walkingPadStartTransactionConnectionEpoch: TreadmillConnectionEpoch?
     private var treadmillCommandTelemetrySidecar = TreadmillCommandTelemetrySidecar()
     private var treadmillCommandAttemptNumbers: [CommandID: UInt16] = [:]
     private struct TreadmillCommandTelemetryRequest {
@@ -4245,71 +4244,27 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopBeltWithToggle(reason: "manual")
     }
 
-    private func currentWalkingPadFactualMotionObservation(
-        now: Date = Date()
-    ) -> WalkingPadStartTransaction.FactualMotionObservation? {
-        guard let observation = latestTreadmillObservationEvidence,
-              observation.protocolKind == .walkingPad,
-              let factualSpeedKmh = observation.factualSpeed?.value else {
-            return nil
-        }
-        let motion: WalkingPadStartTransaction.ObservedMotion
-        if observation.deviceState == .moving || factualSpeedKmh > 0.1 {
-            motion = .moving
-        } else if observation.deviceState == .stopped {
-            motion = .stopped
-        } else {
-            motion = .unknown
-        }
-        return WalkingPadStartTransaction.FactualMotionObservation(
-            motion: motion,
-            ageSeconds: now.timeIntervalSince(observation.receivedAt),
-            isCurrentConnectionEpoch: observation.connectionEpoch
-                == treadmillTelemetryConnectionEpoch
-        )
-    }
-
-    private var isWalkingPadStartTransactionInFlight: Bool {
-        walkingPadStartTransactionConnectionEpoch != nil
-            && walkingPadStartTransactionConnectionEpoch == treadmillTelemetryConnectionEpoch
-    }
-
-    @discardableResult
-    func startWithSpeed(_ kmh: Double) -> Bool {
+    func startWithSpeed(_ kmh: Double) {
         guard !blocksNonStopTreadmillMotion else {
             infoToastMessage = "Сначала завершите восстановленную тренировку"
-            return false
+            return
         }
         guard isTreadmillControlReady else {
             infoToastMessage = isConnected
                 ? "Дождитесь готовности управления дорожкой"
                 : "Не подключено к дорожке"
-            return false
-        }
-        let v = clampRunningSpeedKmh(kmh)
-        let old = deviceTargetSpeedKmh
-        let walkingPadPlan = treadmillProtocol == .walkingPad
-            ? WalkingPadStartTransaction.plan(
-                isStartTransactionInFlight: isWalkingPadStartTransactionInFlight,
-                factualObservation: currentWalkingPadFactualMotionObservation(),
-                targetSpeedKmh: v
-            )
-            : nil
-        if case .blocked(let reason)? = walkingPadPlan {
-            appendLog("WalkingPad motion command blocked: \(reason.rawValue)")
-            if reason == .ambiguousMotion {
-                infoToastMessage = "Дождитесь актуального статуса дорожки"
-            }
-            return false
+            return
         }
         endStopObservationForNewMotion()
         // Cancel any pending delayed writes (e.g. stop retries) before starting a new run.
         resetCommandQueue(reason: "startWithSpeed")
+        let v = clampRunningSpeedKmh(kmh)
         let telemetryDecision = makeTreadmillDecision(
             source: .start,
             intent: .startAtDesiredSpeed(DesiredSpeedKilometresPerHour(value: v))
         )
         defer { observeTreadmillDecision(telemetryDecision) }
+        let old = deviceTargetSpeedKmh
         desiredSpeedKmh = v
         deviceTargetSpeedKmh = v
         recordSpeedChange(from: old, to: v, reason: "manual_go")
@@ -4317,11 +4272,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let shouldSendStart = speedKmh <= 0.2 && old <= 0.1
         switch treadmillProtocol {
         case .walkingPad:
-            guard case .commands(let transaction)? = walkingPadPlan else { return false }
-            if transaction.contains(where: { $0.command == .modeManual }) {
-                walkingPadStartTransactionConnectionEpoch = treadmillTelemetryConnectionEpoch
-            }
-            for scheduled in transaction {
+            for scheduled in WalkingPadStartTransaction.commands(
+                shouldSendStart: shouldSendStart,
+                targetSpeedKmh: v
+            ) {
                 switch scheduled.command {
                 case .modeManual:
                     writeCommand(
@@ -4431,9 +4385,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         case .unknown:
             infoToastMessage = "Неподдерживаемая дорожка (протокол не определён)"
             appendLog("Start skipped: unknown treadmill protocol")
-            return false
         }
-        return true
     }
     func stopBelt() {
         guard isConnected else { return }
@@ -5506,41 +5458,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
-        let initialMotionTargetSpeedKmh: Double? = {
-            if deviceTargetSpeedKmh <= 0.1 && speedKmh <= 0.2 {
-                return 3.0
-            }
-            if deviceTargetSpeedKmh <= 0.1 {
-                return desiredSpeedKmh
-            }
-            return nil
-        }()
-        var motionTargetSpeedKmh = initialMotionTargetSpeedKmh
-        if treadmillProtocol == .walkingPad {
-            let walkingPadTargetSpeedKmh = clampRunningSpeedKmh(
-                initialMotionTargetSpeedKmh ?? deviceTargetSpeedKmh
-            )
-            let admission = WalkingPadStartTransaction.hrStartAdmission(
-                isStartTransactionInFlight: isWalkingPadStartTransactionInFlight,
-                factualObservation: currentWalkingPadFactualMotionObservation(),
-                hasActiveTarget: deviceTargetSpeedKmh > 0.1,
-                targetSpeedKmh: walkingPadTargetSpeedKmh
-            )
-            switch admission {
-            case .commands:
-                motionTargetSpeedKmh = walkingPadTargetSpeedKmh
-            case .noMotionCommand:
-                motionTargetSpeedKmh = nil
-            case .blocked(let reason):
-                appendLog("HR start blocked before commit: \(reason.rawValue)")
-                if reason == .ambiguousMotion {
-                    infoToastMessage = "Дождитесь актуального статуса дорожки"
-                }
-                abortNativeHeartRateFlow(reason: .superseded)
-                return
-            }
-        }
-
         let adaptiveStepDescription = hrAdaptiveStepEnabled
             ? "adaptive_levels=0.1/0.2/0.3/0.4"
             : "step=\(String(format: "%.2f", hrSpeedStepKmh))"
@@ -5582,35 +5499,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         nativePreflightCommitTimestamps = nil
         beginTelemetryV2Session(legacySessionID: legacySessionID)
         persistQualifyingNativeHeartRateBeforeMotion()
-        if let motionTargetSpeedKmh {
+        if let motionTargetSpeedKmh = HRDomainService.initialMotionTargetSpeedKmh(
+            deviceTargetSpeedKmh: deviceTargetSpeedKmh,
+            speedKmh: speedKmh,
+            desiredSpeedKmh: desiredSpeedKmh
+        ) {
             hrControlStartedBelt = true
-            guard startWithSpeed(motionTargetSpeedKmh) else {
-                rollbackCommittedHrControlBeforeMotion()
-                return
-            }
+            startWithSpeed(motionTargetSpeedKmh)
         }
-    }
-
-    private func rollbackCommittedHrControlBeforeMotion() {
-        appendLog("HR start rolled back before motion")
-        logTrainingEvent("hr_control_start_rolled_back", fields: [
-            "reason": "motion_admission_failed",
-        ])
-        stopTrainingStructuredLog(reason: "motion_admission_failed")
-        isHrControlRunning = false
-        hrStatusLine = "HR‑контроль не запущен"
-        hrSessionTotalSeconds = 0
-        hrRemainingSeconds = 0
-        hrNextDecisionSeconds = 0
-        hrProgress = 0
-        hrDecisionDetails = ""
-        hrPredictorStatusLine = ""
-        hrNoDataSeconds = 0
-        clearCooldownRuntimeState()
-        hrControlStartedAt = nil
-        hrControlStartedBelt = false
-        abortNativeHeartRateFlow(reason: .superseded)
-        endTelemetryV2Session(reason: "motion_admission_failed")
     }
 
     private var nativeHeartRateTransportIsValid: Bool {
@@ -6746,7 +6642,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         observeTelemetryImmediately: Bool = true
     ) -> [TreadmillCommandEnqueuedEvidence] {
         let dropped = CommandQueueService.clear(queue: &commandQueue)
-        walkingPadStartTransactionConnectionEpoch = nil
         commandQueueEpoch += 1
         isCommandQueueProcessing = false
         nextCommandAllowedAt = .distantPast
@@ -8721,12 +8616,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             recordedAt: recordedAt
         )
         latestTreadmillObservationEvidence = evidence
-        if evidence.protocolKind == .walkingPad,
-           evidence.connectionEpoch == walkingPadStartTransactionConnectionEpoch,
-           let factualSpeedKmh = evidence.factualSpeed?.value,
-           evidence.deviceState == .moving || factualSpeedKmh > 0.1 {
-            walkingPadStartTransactionConnectionEpoch = nil
-        }
         observeTreadmillTelemetry(.observation(evidence))
         return evidence
     }

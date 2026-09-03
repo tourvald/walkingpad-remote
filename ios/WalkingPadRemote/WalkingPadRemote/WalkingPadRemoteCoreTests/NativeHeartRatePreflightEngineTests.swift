@@ -898,6 +898,104 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         }
     }
 
+    func testStartAfterNormalPreflightCleanupCanCommitAndEmitFullStartOnce() throws {
+        for reason in [NativeHeartRatePreflightEngine.CancellationReason.user,
+                       .timeout, .providerFailure, .treadmillControlLost, .appBackgrounded] {
+            var engine = waitingEngine()
+            var lifecycle = NativeHeartRateProviderLifecycle()
+            lifecycle.bindAttempt(makeIntent().id)
+            let oldGeneration = lifecycle.beginProviderLifecycle()
+            XCTAssertEqual(engine.cancel(reason: reason), [.discard(reason: reason)])
+            let cleanup = lifecycle.beginCleanup()
+            XCTAssertFalse(lifecycle.acceptsObservation(providerIsCollecting: true))
+            XCTAssertTrue(lifecycle.completeCleanup(generation: cleanup, providerIsIdle: true))
+
+            let retryAt = now.addingTimeInterval(40)
+            let retry = NativeHeartRatePreflightEngine.Intent(
+                id: UUID(), targetBPM: 145, durationMinutes: 30, requestedAt: retryAt
+            )
+            lifecycle.bindAttempt(retry.id)
+            let generation = lifecycle.beginProviderLifecycle()
+            XCTAssertFalse(lifecycle.acceptsProviderCompletion(generation: oldGeneration))
+            XCTAssertTrue(lifecycle.acceptsProviderCompletion(generation: generation, attemptID: retry.id))
+            XCTAssertEqual(engine.requestStart(intent: retry, safety: safeFacts()), [.prepare])
+            XCTAssertEqual(engine.providerPrepared(at: retryAt), [
+                .startCollection(intent: retry, acquisitionStartedAt: retryAt),
+            ])
+            XCTAssertEqual(engine.collectionStarted(
+                intentID: retry.id, acquisitionStartedAt: retryAt, now: retryAt
+            ), [])
+            XCTAssertTrue(lifecycle.acceptsObservation(providerIsCollecting: true))
+            // A callback from the old acquisition cannot satisfy the new attempt.
+            XCTAssertEqual(engine.receive(
+                nativeObservation(), safety: safeFacts(), now: retryAt, freshnessLimit: 7
+            ), [])
+            let receivedAt = retryAt.addingTimeInterval(1)
+            let observation = nativeObservation(measuredAt: receivedAt, receivedAt: receivedAt)
+            let effects = engine.receive(
+                observation, safety: safeFacts(), now: receivedAt, freshnessLimit: 7
+            )
+            XCTAssertEqual(effects, [
+                .commit(intent: retry, observation: observation, acquisitionStartedAt: retryAt),
+            ])
+            XCTAssertTrue(NativeHeartRatePreflightEngine.RuntimePolicy.permitsProductionCommit(
+                intent: retry, now: receivedAt, flowOwnsController: true,
+                nativeWorkoutAlreadyCommitted: false, providerIsCollecting: true,
+                observationIsQualifying: observation.isQualifying(
+                    collectionStartedAt: retryAt, now: receivedAt, freshnessLimit: 7
+                ), safety: safeFacts()
+            ))
+            let target = try XCTUnwrap(HRDomainService.initialMotionTargetSpeedKmh(
+                deviceTargetSpeedKmh: 0, speedKmh: 0, desiredSpeedKmh: 4.2
+            ))
+            XCTAssertEqual(WalkingPadStartTransaction.commands(
+                shouldSendStart: true, targetSpeedKmh: target
+            ), [
+                .init(command: .modeManual, delay: 0),
+                .init(command: .start, delay: 0.2),
+                .init(command: .speed(3), delay: 0.45),
+            ])
+            XCTAssertEqual(engine.receive(
+                observation, safety: safeFacts(), now: receivedAt, freshnessLimit: 7
+            ), [])
+        }
+    }
+
+    func testAcceptedNegativeSafetyFactsStillForbidProductionCommit() {
+        for safety in [
+            safeFacts(treadmillControlReady: false), safeFacts(transportValid: false),
+            safeFacts(controllerUnitsAllowed: false), safeFacts(appActivity: .inactive),
+            safeFacts(appActivity: .background), safeFacts(hasConflictingWorkout: true),
+            safeFacts(stopInProgress: true),
+        ] {
+            XCTAssertFalse(NativeHeartRatePreflightEngine.RuntimePolicy.permitsProductionCommit(
+                intent: makeIntent(), now: now.addingTimeInterval(2), flowOwnsController: true,
+                nativeWorkoutAlreadyCommitted: false, providerIsCollecting: true,
+                observationIsQualifying: true, safety: safety
+            ))
+        }
+    }
+
+    func testMissingStaleAndNonqualifyingNativeHeartRateCannotCommit() {
+        var withoutHR = waitingEngine()
+        XCTAssertEqual(withoutHR.safetyChanged(
+            safeFacts(), now: now.addingTimeInterval(2), freshnessLimit: 7
+        ), [])
+        let samples: [NativeHeartRatePreflightEngine.Observation] = [
+            nativeObservation(source: .legacyWatch),
+            nativeObservation(measuredAt: now.addingTimeInterval(-1)),
+            nativeObservation(measuredAt: now, receivedAt: now),
+            .init(source: .nativeHealthKit, beatsPerMinute: 0,
+                  measuredAt: now.addingTimeInterval(9), receivedAt: now.addingTimeInterval(9)),
+        ]
+        for sample in samples {
+            var engine = waitingEngine()
+            XCTAssertEqual(engine.receive(
+                sample, safety: safeFacts(), now: now.addingTimeInterval(9), freshnessLimit: 7
+            ), [])
+        }
+    }
+
     private func preparedEngine() -> NativeHeartRatePreflightEngine {
         var engine = NativeHeartRatePreflightEngine()
         _ = engine.requestWarmPreparation()
@@ -948,6 +1046,7 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
     private func safeFacts(
         appActivity: NativeHeartRatePreflightEngine.AppActivity = .active,
         treadmillControlReady: Bool = true,
+        transportValid: Bool = true,
         controllerUnitsAllowed: Bool = true,
         hasConflictingWorkout: Bool = false,
         stopInProgress: Bool = false,
@@ -956,7 +1055,7 @@ final class NativeHeartRatePreflightEngineTests: XCTestCase {
         .init(
             appActivity: appActivity,
             treadmillControlReady: treadmillControlReady,
-            transportValid: true,
+            transportValid: transportValid,
             controllerUnitsAllowed: controllerUnitsAllowed,
             hasConflictingWorkout: hasConflictingWorkout,
             stopInProgress: stopInProgress,

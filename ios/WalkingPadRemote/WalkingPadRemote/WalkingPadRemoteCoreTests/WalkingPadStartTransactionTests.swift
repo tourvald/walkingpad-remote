@@ -5,478 +5,234 @@ import XCTest
 
 final class WalkingPadStartTransactionTests: XCTestCase {
     private lazy var bluetoothManagerSource: String = {
-        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let sourceURL = testsDirectory
-            .deletingLastPathComponent()
-            .appendingPathComponent("WalkingPadRemote/BluetoothManager.swift")
-        return (try? String(contentsOf: sourceURL, encoding: .utf8)) ?? ""
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        return try! String(
+            contentsOf: directory.deletingLastPathComponent()
+                .appendingPathComponent("WalkingPadRemote/BluetoothManager.swift"),
+            encoding: .utf8
+        )
     }()
 
-    func testFirstStoppedStartOwnsFullPrerequisiteTransaction() {
-        XCTAssertEqual(
-            WalkingPadStartTransaction.plan(
-                isStartTransactionInFlight: false,
-                factualObservation: freshObservation(.stopped),
-                targetSpeedKmh: 3.0
-            ),
-            .commands([
-                .init(command: .modeManual, delay: 0),
-                .init(command: .start, delay: 0.2),
-                .init(command: .speed(3.0), delay: 0.45),
-            ])
-        )
+    func testAcceptedStartComposesFullSequenceWithoutAnyObservationPrerequisite() {
+        XCTAssertEqual(WalkingPadStartTransaction.commands(
+            shouldSendStart: true, targetSpeedKmh: 3.0
+        ), [
+            .init(command: .modeManual, delay: 0),
+            .init(command: .start, delay: 0.2),
+            .init(command: .speed(3.0), delay: 0.45),
+        ])
     }
 
-    func testOrdinaryStopThenSecondStartInSameConnectionOwnsPrerequisitesAgain() {
-        let firstStart = WalkingPadStartTransaction.plan(
-            isStartTransactionInFlight: false,
-            factualObservation: freshObservation(.stopped),
-            targetSpeedKmh: 3.0
-        )
-
-        // An ordinary Stop does not need to mutate any start-transaction cache.
-        let secondStart = WalkingPadStartTransaction.plan(
-            isStartTransactionInFlight: false,
-            factualObservation: freshObservation(.stopped),
-            targetSpeedKmh: 3.4
-        )
-
-        XCTAssertEqual(commands(from: firstStart).map(\.command), [.modeManual, .start, .speed(3.0)])
-        XCTAssertEqual(commands(from: secondStart).map(\.command), [.modeManual, .start, .speed(3.4)])
+    func testAlreadyMovingAdjustmentIsSpeedOnlyAtOriginalDelay() {
+        XCTAssertEqual(WalkingPadStartTransaction.commands(
+            shouldSendStart: false, targetSpeedKmh: 3.8
+        ), [.init(command: .speed(3.8), delay: 0.2)])
     }
 
-    func testSpeedAdjustmentWhileMovingDoesNotResendPrerequisites() {
-        XCTAssertEqual(
-            WalkingPadStartTransaction.plan(
-                isStartTransactionInFlight: false,
-                factualObservation: freshObservation(.moving),
-                targetSpeedKmh: 3.8
-            ),
-            .commands([.init(command: .speed(3.8), delay: 0.2)])
-        )
-    }
-
-    func testDisconnectReconnectDoesNotChangeStoppedStartContract() {
-        let beforeDisconnect = WalkingPadStartTransaction.plan(
-            isStartTransactionInFlight: false,
-            factualObservation: freshObservation(.stopped),
-            targetSpeedKmh: 3.0
-        )
-        let afterReconnect = WalkingPadStartTransaction.plan(
-            isStartTransactionInFlight: false,
-            factualObservation: freshObservation(.stopped),
-            targetSpeedKmh: 3.0
-        )
-
-        XCTAssertEqual(afterReconnect, beforeDisconnect)
-        XCTAssertEqual(commands(from: afterReconnect).map(\.command), [.modeManual, .start, .speed(3.0)])
-    }
-
-    func testHighPriorityStopPreemptsPartiallyQueuedSecondStartAndTelemetrySidecar() {
+    func testOrdinaryStopThenSecondWorkoutOnSameConnectionResendsMode() {
         let epoch = TreadmillConnectionEpoch(rawValue: UUID())
-        let secondStart = WalkingPadStartTransaction.plan(
-            isStartTransactionInFlight: false,
-            factualObservation: freshObservation(.stopped),
-            targetSpeedKmh: 3.0
-        )
         var queue: [CommandQueueService.Command] = []
         var sidecar = TreadmillCommandTelemetrySidecar()
-
-        for scheduled in commands(from: secondStart) {
-            let label = scheduled.command.label
-            let command = CommandQueueService.Command(data: Data(), label: label)
-            _ = CommandQueueService.enqueueRegular(
-                queue: &queue,
-                command: command,
-                isSpeedLabel: isSpeedLabel
+        for speed in [3.0, 3.4] {
+            let commands = WalkingPadStartTransaction.commands(shouldSendStart: true, targetSpeedKmh: speed)
+            enqueue(commands, epoch: epoch, queue: &queue, sidecar: &sidecar)
+            XCTAssertEqual(queue.map(\.label), [
+                "MODE MANUAL", "START", String(format: "SPEED %.1f km/h", speed),
+            ])
+            XCTAssertEqual(commands.map(\.delay), [0, 0.2, 0.45])
+            for command in queue {
+                guard case .matched(let current) = sidecar.dequeue(
+                    expectedLabel: command.label, currentEpoch: epoch
+                ) else { return XCTFail("Expected current-connection command evidence") }
+                XCTAssertEqual(current.connectionEpoch, epoch)
+            }
+            _ = CommandQueueService.clear(queue: &queue)
+            CommandQueueService.replaceWithHighPriority(
+                queue: &queue, command: .init(data: Data(), label: "STOP")
             )
-            _ = sidecar.enqueueRegular(
-                label: label,
-                evidence: evidence(for: scheduled.command, epoch: epoch),
-                isSpeedLabel: isSpeedLabel
-            )
+            _ = sidecar.replaceWithHighPriority(label: "STOP", evidence: evidence(kind: .stop, epoch: epoch))
+            XCTAssertEqual(queue.map(\.label), ["STOP"])
+            _ = CommandQueueService.clear(queue: &queue)
+            _ = sidecar.clear()
+            // Normal workout end does not reset a mode/start cache: none exists.
         }
+    }
 
-        let stopEvidence = evidence(kind: .stop, epoch: epoch)
-        CommandQueueService.replaceWithHighPriority(
-            queue: &queue,
-            command: .init(data: Data([0x00]), label: "STOP")
-        )
-        let superseded = sidecar.replaceWithHighPriority(
-            label: "STOP",
-            evidence: stopEvidence
-        )
+    func testHighPriorityStopPreemptsEveryQueuedPrefixOfSecondStart() {
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let first = WalkingPadStartTransaction.commands(shouldSendStart: true, targetSpeedKmh: 3.0)
+        let second = WalkingPadStartTransaction.commands(shouldSendStart: true, targetSpeedKmh: 3.4)
+        XCTAssertEqual(first.map(\.command).prefix(2), second.map(\.command).prefix(2))
+        for count in 1...second.count {
+            var queue: [CommandQueueService.Command] = []
+            var sidecar = TreadmillCommandTelemetrySidecar()
+            enqueue(Array(second.prefix(count)), epoch: epoch, queue: &queue, sidecar: &sidecar)
+            CommandQueueService.replaceWithHighPriority(
+                queue: &queue, command: .init(data: Data(), label: "STOP")
+            )
+            let stop = evidence(kind: .stop, epoch: epoch)
+            let cancelled = sidecar.replaceWithHighPriority(label: "STOP", evidence: stop)
+            XCTAssertEqual(cancelled.map(\.kind), second.prefix(count).map { kind(for: $0.command) })
+            XCTAssertEqual(queue.map(\.label), ["STOP"])
+            XCTAssertEqual(sidecar.dequeue(expectedLabel: "STOP", currentEpoch: epoch), .matched(stop))
+            XCTAssertEqual(sidecar.count, 0)
+        }
+    }
 
-        XCTAssertEqual(queue.map(\.label), ["STOP"])
-        XCTAssertEqual(sidecar.count, 1)
-        XCTAssertEqual(superseded.map(\.kind), [
-            .other("mode_manual"),
-            .other("start"),
-            .setSpeed(TreadmillCommandedSpeedRepresentation.walkingPad(rawControllerTenths: 30)),
-        ])
-        XCTAssertEqual(sidecar.dequeue(expectedLabel: "STOP", currentEpoch: epoch), .matched(stopEvidence))
+    func testReconnectDropsOldQueueAndNewConnectionStillGetsFullStart() {
+        let oldEpoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let newEpoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let commands = WalkingPadStartTransaction.commands(shouldSendStart: true, targetSpeedKmh: 3.0)
+        var queue: [CommandQueueService.Command] = []
+        var sidecar = TreadmillCommandTelemetrySidecar()
+        enqueue(commands, epoch: oldEpoch, queue: &queue, sidecar: &sidecar)
+        XCTAssertEqual(CommandQueueService.clear(queue: &queue), 3)
+        XCTAssertEqual(sidecar.clear().map(\.connectionEpoch), Array(repeating: oldEpoch, count: 3))
+        enqueue(commands, epoch: newEpoch, queue: &queue, sidecar: &sidecar)
+        XCTAssertEqual(queue.map(\.label), ["MODE MANUAL", "START", "SPEED 3.0 km/h"])
+        for command in queue {
+            guard case .matched(let current) = sidecar.dequeue(
+                expectedLabel: command.label, currentEpoch: newEpoch
+            ) else { return XCTFail("Expected new-connection evidence") }
+            XCTAssertEqual(current.connectionEpoch, newEpoch)
+        }
     }
 
     func testCommandLabelsAndTelemetryKindsRemainExact() {
-        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
-        let plan = WalkingPadStartTransaction.plan(
-            isStartTransactionInFlight: false,
-            factualObservation: freshObservation(.stopped),
-            targetSpeedKmh: 3.0
-        )
-
-        let commands = commands(from: plan)
-        XCTAssertEqual(commands.map { $0.command.label }, [
-            "MODE MANUAL",
-            "START",
-            "SPEED 3.0 km/h",
-        ])
-        XCTAssertEqual(commands.map { evidence(for: $0.command, epoch: epoch).kind }, [
-            .other("mode_manual"),
-            .other("start"),
+        let commands = WalkingPadStartTransaction.commands(shouldSendStart: true, targetSpeedKmh: 3.0)
+        XCTAssertEqual(commands.map { $0.command.label }, ["MODE MANUAL", "START", "SPEED 3.0 km/h"])
+        XCTAssertEqual(commands.map { kind(for: $0.command) }, [
+            .other("mode_manual"), .other("start"),
             .setSpeed(TreadmillCommandedSpeedRepresentation.walkingPad(rawControllerTenths: 30)),
         ])
     }
 
-    func testProductionIntegrationUsesStatelessPlanAndExactTelemetryMapping() throws {
-        let body = try functionBody("func startWithSpeed(_ kmh: Double)")
-
-        XCTAssertFalse(bluetoothManagerSource.contains("manualModeSet"))
-        assertOrdered(
-            [
-                "WalkingPadStartTransaction.plan(",
-                "isStartTransactionInFlight: isWalkingPadStartTransactionInFlight",
-                "factualObservation: currentWalkingPadFactualMotionObservation()",
-                "case .modeManual:",
-                "buildCmdPacket(cmd: 0x02, value: 0x01)",
-                "label: scheduled.command.label",
-                "kind: .other(\"mode_manual\")",
-                "case .start:",
-                "buildCmdPacket(cmd: 0x04, value: 0x01)",
-                "kind: .other(\"start\")",
-                "case .speed(let targetSpeedKmh):",
-                "buildWalkingPadSetSpeedPacket(kmh: targetSpeedKmh)",
-                "kind: treadmillSetSpeedCommandKind(targetSpeedKmh)",
-            ],
-            in: body
-        )
-        XCTAssertTrue(body.contains("after: scheduled.delay"))
+    func testHrMotionOutputsMatchAllPre129BranchesAndThresholds() {
+        let cases: [(target: Double, speed: Double, desired: Double, expected: Double?)] = [
+            (0, 0, 4.2, 3), (0.1, 0.2, 4.2, 3),
+            (0, 0.21, 4.2, 4.2), (0.1, 2.5, 3.4, 3.4),
+            (0.11, 0, 4.2, nil), (3, 0, 4.2, nil), (3, 2.5, 4.2, nil),
+        ]
+        for input in cases {
+            let target = HRDomainService.initialMotionTargetSpeedKmh(
+                deviceTargetSpeedKmh: input.target,
+                speedKmh: input.speed,
+                desiredSpeedKmh: input.desired
+            )
+            XCTAssertEqual(target, input.expected)
+            let commands = target.map {
+                WalkingPadStartTransaction.commands(
+                    shouldSendStart: input.speed <= 0.2 && input.target <= 0.1,
+                    targetSpeedKmh: $0
+                )
+            } ?? []
+            if input.target > 0.1 {
+                XCTAssertTrue(commands.isEmpty, "Active target must not cause extra HR motion output")
+            } else if input.speed > 0.2 {
+                XCTAssertEqual(commands, [.init(command: .speed(input.desired), delay: 0.2)])
+            } else {
+                XCTAssertEqual(commands.map(\.command), [.modeManual, .start, .speed(3)])
+            }
+        }
     }
 
-    func testHrCommitRejectsAmbiguousWalkingPadMotionBeforeSessionSideEffects() throws {
-        let commit = try functionBody(
-            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)"
-        )
-
-        assertOrdered(
-            [
-                "WalkingPadStartTransaction.hrStartAdmission(",
-                "factualObservation: currentWalkingPadFactualMotionObservation()",
-                "case .blocked(let reason):",
-                "abortNativeHeartRateFlow(reason: .superseded)",
-                "return",
-                "resetSessionStats()",
-                "startTrainingStructuredLog(trigger: \"start_hr\")",
-                "isHrControlRunning = true",
-                "beginTelemetryV2Session(legacySessionID: legacySessionID)",
-            ],
-            in: commit
-        )
+    // The iOS adapter is excluded from SwiftPM. Supplement behavioral rule/queue
+    // tests above with wiring checks, including the absence of another admission gate.
+    func testProductionStartHasNoObservationGateOrCrossWorkoutCache() throws {
+        let start = try functionBody("func startWithSpeed(_ kmh: Double)")
+        let commit = try functionBody("private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)")
+        for removed in ["manualModeSet", "currentWalkingPadFactualMotionObservation",
+                        "walkingPadStartTransactionConnectionEpoch", "hrStartAdmission",
+                        "rollbackCommittedHrControlBeforeMotion", "motion_admission_failed"] {
+            XCTAssertFalse(bluetoothManagerSource.contains(removed), removed)
+        }
+        for body in [start, commit] {
+            XCTAssertFalse(body.contains("latestTreadmillObservationEvidence"))
+            XCTAssertFalse(body.contains("Дождитесь актуального статуса дорожки"))
+        }
+        assertOrdered([
+            "guard !blocksNonStopTreadmillMotion", "guard isTreadmillControlReady",
+            "resetCommandQueue(reason: \"startWithSpeed\")", "clampRunningSpeedKmh(kmh)",
+            "let old = deviceTargetSpeedKmh", "deviceTargetSpeedKmh = v",
+            "let shouldSendStart = speedKmh <= 0.2 && old <= 0.1",
+            "WalkingPadStartTransaction.commands(", "shouldSendStart: shouldSendStart",
+        ], in: start)
+        assertOrdered([
+            "nativeHeartRateSafetyFacts().permitsCommit", "unitsDecision.allowed",
+            "isHrControlRunning = true", "persistQualifyingNativeHeartRateBeforeMotion()",
+            "HRDomainService.initialMotionTargetSpeedKmh(",
+            "deviceTargetSpeedKmh: deviceTargetSpeedKmh", "speedKmh: speedKmh",
+            "desiredSpeedKmh: desiredSpeedKmh", "hrControlStartedBelt = true",
+            "startWithSpeed(motionTargetSpeedKmh)",
+        ], in: commit)
+        XCTAssertTrue(try functionBody("private func observeCurrentStopTruth(")
+            .contains("latestTreadmillObservationEvidence"))
     }
 
-    func testHrAdmissionKeepsStoppedMovingAdoptionActiveTargetAndAmbiguousBoundaries() {
-        XCTAssertEqual(
-            WalkingPadStartTransaction.hrStartAdmission(
-                isStartTransactionInFlight: false,
-                factualObservation: freshObservation(.stopped),
-                hasActiveTarget: true,
-                targetSpeedKmh: 3.4
-            ),
-            .commands([
-                .init(command: .modeManual, delay: 0),
-                .init(command: .start, delay: 0.2),
-                .init(command: .speed(3.4), delay: 0.45),
-            ])
-        )
-        XCTAssertEqual(
-            WalkingPadStartTransaction.hrStartAdmission(
-                isStartTransactionInFlight: false,
-                factualObservation: freshObservation(.moving),
-                hasActiveTarget: false,
-                targetSpeedKmh: 3.0
-            ),
-            .commands([.init(command: .speed(3.0), delay: 0.2)])
-        )
-        XCTAssertEqual(
-            WalkingPadStartTransaction.hrStartAdmission(
-                isStartTransactionInFlight: false,
-                factualObservation: freshObservation(.moving),
-                hasActiveTarget: true,
-                targetSpeedKmh: 3.4
-            ),
-            .noMotionCommand
-        )
-        XCTAssertEqual(
-            WalkingPadStartTransaction.hrStartAdmission(
-                isStartTransactionInFlight: false,
-                factualObservation: nil,
-                hasActiveTarget: true,
-                targetSpeedKmh: 3.4
-            ),
-            .blocked(.ambiguousMotion)
-        )
+    func testProductionCommandMappingAndDelayedStopEpochPreemptionStayIntact() throws {
+        let start = try functionBody("func startWithSpeed(_ kmh: Double)")
+        assertOrdered([
+            "case .modeManual:", "buildCmdPacket(cmd: 0x02, value: 0x01)",
+            "label: scheduled.command.label", "requiresControlReadiness: true",
+            "kind: .other(\"mode_manual\")", "case .start:",
+            "buildCmdPacket(cmd: 0x04, value: 0x01)", "after: scheduled.delay",
+            "requiresControlReadiness: true", "kind: .other(\"start\")",
+            "case .speed(let targetSpeedKmh):", "buildWalkingPadSetSpeedPacket(kmh: targetSpeedKmh)",
+            "after: scheduled.delay", "requiresControlReadiness: true",
+            "kind: treadmillSetSpeedCommandKind(targetSpeedKmh)",
+        ], in: start)
+        assertOrdered([
+            "let epoch = commandQueueEpoch", "guard self.commandQueueEpoch == epoch else { return }",
+            "self.writeCommand(",
+        ], in: try functionBody("private func scheduleWrite("))
+        assertOrdered([
+            "if highPriority", "resetCommandQueue(",
+            "CommandQueueService.replaceWithHighPriority", "processCommandQueue()",
+        ], in: try functionBody("private func enqueueCommand("))
+        assertOrdered([
+            "CommandQueueService.clear(queue: &commandQueue)", "commandQueueEpoch += 1",
+        ], in: try functionBody("private func resetCommandQueue("))
     }
 
-    func testHrCommitExecutesOnlyTheAdmittedMotionOutput() throws {
-        let commit = try functionBody(
-            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)"
-        )
-
-        assertOrdered(
-            [
-                "WalkingPadStartTransaction.hrStartAdmission(",
-                "hasActiveTarget: deviceTargetSpeedKmh > 0.1",
-                "case .commands:",
-                "motionTargetSpeedKmh = walkingPadTargetSpeedKmh",
-                "case .noMotionCommand:",
-                "motionTargetSpeedKmh = nil",
-                "case .blocked(let reason):",
-                "abortNativeHeartRateFlow(reason: .superseded)",
-                "if let motionTargetSpeedKmh",
-                "guard startWithSpeed(motionTargetSpeedKmh) else",
-            ],
-            in: commit
-        )
-    }
-
-    func testHrCommitRollsBackEveryCommittedBoundaryWhenMotionRecheckFails() throws {
-        let commit = try functionBody(
-            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)"
-        )
-        let rollback = try functionBody(
-            "private func rollbackCommittedHrControlBeforeMotion()"
-        )
-
-        assertOrdered(
-            [
-                "beginTelemetryV2Session(legacySessionID: legacySessionID)",
-                "persistQualifyingNativeHeartRateBeforeMotion()",
-                "guard startWithSpeed(motionTargetSpeedKmh) else",
-                "rollbackCommittedHrControlBeforeMotion()",
-            ],
-            in: commit
-        )
-        assertOrdered(
-            [
-                "stopTrainingStructuredLog(reason: \"motion_admission_failed\")",
-                "isHrControlRunning = false",
-                "hrControlStartedAt = nil",
-                "hrControlStartedBelt = false",
-                "abortNativeHeartRateFlow(reason: .superseded)",
-                "endTelemetryV2Session(reason: \"motion_admission_failed\")",
-            ],
-            in: rollback
-        )
-        XCTAssertFalse(rollback.contains("stopBelt"))
-    }
-
-    func testProductionStopRaceInvalidatesDelayedStartCommands() throws {
-        let startBody = try functionBody("func startWithSpeed(_ kmh: Double)")
-        let scheduleBody = try functionBody("private func scheduleWrite(")
-        let enqueueBody = try functionBody("private func enqueueCommand(")
-
-        XCTAssertTrue(startBody.contains("case .start:"))
-        XCTAssertTrue(startBody.contains("case .speed(let targetSpeedKmh):"))
-        XCTAssertGreaterThanOrEqual(
-            startBody.components(separatedBy: "after: scheduled.delay").count - 1,
-            2
-        )
-        assertOrdered(
-            [
-                "let epoch = commandQueueEpoch",
-                "guard self.commandQueueEpoch == epoch else { return }",
-                "self.writeCommand(",
-            ],
-            in: scheduleBody
-        )
-        assertOrdered(
-            [
-                "if highPriority",
-                "resetCommandQueue(",
-                "CommandQueueService.replaceWithHighPriority",
-                "processCommandQueue()",
-            ],
-            in: enqueueBody
-        )
-    }
-
-    func testProductionTransactionOwnershipIsBoundedByStopResetAndFactualMoving() throws {
-        let startBody = try functionBody("func startWithSpeed(_ kmh: Double)")
-        let resetBody = try functionBody("private func resetCommandQueue(")
-        let observationBody = try functionBody("private func observeTreadmillProviderObservation(")
-
-        assertOrdered(
-            [
-                "WalkingPadStartTransaction.plan(",
-                "if case .blocked(let reason)? = walkingPadPlan",
-                "resetCommandQueue(reason: \"startWithSpeed\")",
-                "walkingPadStartTransactionConnectionEpoch = treadmillTelemetryConnectionEpoch",
-                "for scheduled in transaction",
-            ],
-            in: startBody
-        )
-        assertOrdered(
-            [
-                "CommandQueueService.clear(queue: &commandQueue)",
-                "walkingPadStartTransactionConnectionEpoch = nil",
-                "commandQueueEpoch += 1",
-            ],
-            in: resetBody
-        )
-        assertOrdered(
-            [
-                "latestTreadmillObservationEvidence = evidence",
-                "evidence.protocolKind == .walkingPad",
-                "let factualSpeedKmh = evidence.factualSpeed?.value",
-                "evidence.deviceState == .moving || factualSpeedKmh > 0.1",
-                "walkingPadStartTransactionConnectionEpoch = nil",
-                "observeTreadmillTelemetry(.observation(evidence))",
-            ],
-            in: observationBody
-        )
-    }
-
-    func testFreshFactualStopOwnsFullTransaction() {
-        let plan = WalkingPadStartTransaction.plan(
-            isStartTransactionInFlight: false,
-            factualObservation: freshObservation(.stopped),
-            targetSpeedKmh: 3.2
-        )
-
-        XCTAssertEqual(commands(from: plan).map(\.command), [.modeManual, .start, .speed(3.2)])
-    }
-
-    func testStaleOrWrongEpochStopFailsClosedInsteadOfTrustingLocalMovingIntent() {
-        for observation in [
-            WalkingPadStartTransaction.FactualMotionObservation(
-                motion: .stopped,
-                ageSeconds: StopObservationPolicy.freshnessInterval + 0.01,
-                isCurrentConnectionEpoch: true
-            ),
-            WalkingPadStartTransaction.FactualMotionObservation(
-                motion: .stopped,
-                ageSeconds: 0.5,
-                isCurrentConnectionEpoch: false
-            ),
-        ] {
-            XCTAssertEqual(
-                WalkingPadStartTransaction.plan(
-                    isStartTransactionInFlight: false,
-                    factualObservation: observation,
-                    targetSpeedKmh: 3.4
-                ),
-                .blocked(.ambiguousMotion)
+    private func enqueue(
+        _ commands: [WalkingPadStartTransaction.ScheduledCommand],
+        epoch: TreadmillConnectionEpoch,
+        queue: inout [CommandQueueService.Command],
+        sidecar: inout TreadmillCommandTelemetrySidecar
+    ) {
+        for scheduled in commands {
+            let label = scheduled.command.label
+            _ = CommandQueueService.enqueueRegular(
+                queue: &queue, command: .init(data: Data(), label: label), isSpeedLabel: isSpeedLabel
+            )
+            _ = sidecar.enqueueRegular(
+                label: label, evidence: evidence(kind: kind(for: scheduled.command), epoch: epoch),
+                isSpeedLabel: isSpeedLabel
             )
         }
     }
 
-    func testRepeatedStartWhileTransactionIsInFlightEmitsNoDuplicateCommands() {
-        let plan = WalkingPadStartTransaction.plan(
-            isStartTransactionInFlight: true,
-            factualObservation: freshObservation(.stopped),
-            targetSpeedKmh: 3.4
-        )
-
-        XCTAssertEqual(plan, .blocked(.startTransactionInFlight))
-    }
-
-    func testMissingFactualEvidenceFailsClosed() {
-        XCTAssertEqual(
-            WalkingPadStartTransaction.plan(
-                isStartTransactionInFlight: false,
-                factualObservation: nil,
-                targetSpeedKmh: 3.4
-            ),
-            .blocked(.ambiguousMotion)
-        )
-    }
-
-    func testFreshUnknownMotionFailsClosed() {
-        XCTAssertEqual(
-            WalkingPadStartTransaction.plan(
-                isStartTransactionInFlight: false,
-                factualObservation: freshObservation(.unknown),
-                targetSpeedKmh: 3.0
-            ),
-            .blocked(.ambiguousMotion)
-        )
-    }
-
-    private func freshObservation(
-        _ motion: WalkingPadStartTransaction.ObservedMotion
-    ) -> WalkingPadStartTransaction.FactualMotionObservation {
-        .init(
-            motion: motion,
-            ageSeconds: 0.5,
-            isCurrentConnectionEpoch: true
-        )
-    }
-
-    private func commands(
-        from plan: WalkingPadStartTransaction.Plan,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) -> [WalkingPadStartTransaction.ScheduledCommand] {
-        guard case .commands(let commands) = plan else {
-            XCTFail("Expected commands, got \(plan)", file: file, line: line)
-            return []
-        }
-        return commands
-    }
-
-    private func evidence(
-        for command: WalkingPadStartTransaction.Command,
-        epoch: TreadmillConnectionEpoch
-    ) -> TreadmillCommandEnqueuedEvidence {
+    private func kind(for command: WalkingPadStartTransaction.Command) -> CommandKind {
         switch command {
-        case .modeManual:
-            return evidence(kind: .other("mode_manual"), epoch: epoch)
-        case .start:
-            return evidence(kind: .other("start"), epoch: epoch)
-        case .speed(let targetSpeedKmh):
-            return evidence(
-                kind: .setSpeed(
-                    TreadmillCommandedSpeedRepresentation.walkingPad(
-                        rawControllerTenths: Int((targetSpeedKmh * 10).rounded())
-                    )
-                ),
-                epoch: epoch
-            )
+        case .modeManual: .other("mode_manual")
+        case .start: .other("start")
+        case .speed(let speed):
+            .setSpeed(TreadmillCommandedSpeedRepresentation.walkingPad(
+                rawControllerTenths: Int((speed * 10).rounded())
+            ))
         }
     }
 
-    private func evidence(
-        kind: CommandKind,
-        epoch: TreadmillConnectionEpoch
-    ) -> TreadmillCommandEnqueuedEvidence {
-        TreadmillCommandEnqueuedEvidence(
-            commandID: CommandID(),
-            decisionID: nil,
-            kind: kind,
-            protocolKind: .walkingPad,
-            connectionEpoch: epoch,
-            enqueuedAt: Date(timeIntervalSince1970: 1_700_000_000)
-        )
+    private func evidence(kind: CommandKind, epoch: TreadmillConnectionEpoch) -> TreadmillCommandEnqueuedEvidence {
+        .init(commandID: CommandID(), decisionID: nil, kind: kind, protocolKind: .walkingPad,
+              connectionEpoch: epoch, enqueuedAt: Date(timeIntervalSince1970: 1_700_000_000))
     }
 
-    private func isSpeedLabel(_ label: String) -> Bool {
-        label.lowercased().hasPrefix("speed")
-    }
+    private func isSpeedLabel(_ label: String) -> Bool { label.lowercased().hasPrefix("speed") }
 
     private func functionBody(_ signature: String) throws -> String {
         guard let signatureRange = bluetoothManagerSource.range(of: signature),
-              let openingBrace = bluetoothManagerSource[signatureRange.upperBound...]
-                .firstIndex(of: "{") else {
+              let openingBrace = bluetoothManagerSource[signatureRange.upperBound...].firstIndex(of: "{") else {
             throw NSError(domain: "WalkingPadStartTransactionTests", code: 1)
         }
         var depth = 0
@@ -486,9 +242,7 @@ final class WalkingPadStartTransactionTests: XCTestCase {
             case "{": depth += 1
             case "}":
                 depth -= 1
-                if depth == 0 {
-                    return String(bluetoothManagerSource[openingBrace...index])
-                }
+                if depth == 0 { return String(bluetoothManagerSource[openingBrace...index]) }
             default: break
             }
             index = bluetoothManagerSource.index(after: index)
@@ -497,18 +251,14 @@ final class WalkingPadStartTransactionTests: XCTestCase {
     }
 
     private func assertOrdered(
-        _ fragments: [String],
-        in text: String,
-        file: StaticString = #filePath,
-        line: UInt = #line
+        _ fragments: [String], in text: String, file: StaticString = #filePath, line: UInt = #line
     ) {
-        var searchStart = text.startIndex
+        var cursor = text.startIndex
         for fragment in fragments {
-            guard let range = text.range(of: fragment, range: searchStart..<text.endIndex) else {
-                XCTFail("Missing or out-of-order fragment: \(fragment)", file: file, line: line)
-                return
+            guard let range = text.range(of: fragment, range: cursor..<text.endIndex) else {
+                return XCTFail("Missing or out-of-order fragment: \(fragment)", file: file, line: line)
             }
-            searchStart = range.upperBound
+            cursor = range.upperBound
         }
     }
 }
