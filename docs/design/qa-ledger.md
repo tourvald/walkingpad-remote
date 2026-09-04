@@ -2,6 +2,21 @@
 
 Status: passed for the binding Issue #113 workout-analysis export interaction.
 
+## Issue #134 — bounded duration ribbon
+
+Execution base: `cd98dcc858129e9ae923e6483200fff7008df64d`. The writable scope is `ContentView.swift`, its existing source-contract tests, and this ledger. The Issue freezes the visual direction; no concept phase or runtime change is needed.
+
+| Pass | State / form factor | Severity | Finding | Evidence | Owner path | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline | 30 minutes, iPhone 17 simulator, light | P1 | The initial viewport shows 20–45 with 30 selected in the third cell, preserving the accepted six-cell appearance. | `/private/tmp/issue134-qa/default-30.png` | `ContentView.swift` | Pass |
+| Baseline | 10 / 60 minutes, iPhone 17 simulator, light | P1 | Native initial scrolling clamps to each boundary and keeps the selected preset fully visible. | `/private/tmp/issue134-qa/edge-10.png`, `/private/tmp/issue134-qa/edge-60.png` | `ContentView.swift` | Pass |
+| Baseline | 30 minutes, Accessibility XL, dark | P1 | Scaled cell widths keep the selected number readable in one horizontal row; the selected blue treatment and Start remain visible. | `/private/tmp/issue134-qa/default-30-accessibility-xl-dark.png` | `ContentView.swift` | Pass |
+| Contract | Selection, scrolling, and preview/preparing ownership | P0 | All eleven presets use the same guarded Button callback. Only taps can call `onSelect`; the Hub forwards `onDurationSelect` to the existing `hrDurationMinutes` assignment. Selection styling and accessibility use `selectedMinutes`, never viewport position. A Boolean gates initial positioning; no duration state or scrolling callback is added. | 48 focused Training UI / legacy behavior source-contract tests; 691 full Swift tests | `ContentView.swift`, `HeartRateLegacyBehaviorContractTests.swift` | Pass |
+| Contract | Native scrolling and scope | P0 | `ScrollView(.horizontal)` uses view-aligned settling without a paging limit; no grid, custom gesture physics, continuous recentering, or animation is present. Start/readiness, runtime, BLE, Watch, telemetry, and persistence owners are unchanged. | Apple `ScrollTargetBehavior`, `ScrollViewProxy.scrollTo`, and `containerRelativeFrame` documentation; UI scope checker; unsigned generic iOS/embedded Watch and simulator builds | `ContentView.swift` | Pass |
+| Evidence limitation | Drag, deceleration, and VoiceOver interaction | P3 | Simulator screenshots validate initial/default and boundary positions, not a recorded finger drag. The available computer UI surface cannot resolve this Xcode Simulator; `simctl` supports fixtures/screenshots but not touch gestures. Callback and accessibility wiring are source-contract covered, not executed UI interaction tests. | Simulator-only fixture workflow; no physical device used | QA environment | Disclosed for PM review |
+
+No visual correction was required. Fixture identifiers are now `duration-10`, `duration-30`, and `duration-60`; the historical Issue #68 evidence below describes its old preset domain. No new dependency or production file was added.
+
 ## Issue #113 — workout analysis export action
 
 | Pass | State / form factor | Severity | Finding | Evidence | Owner path | Status |
