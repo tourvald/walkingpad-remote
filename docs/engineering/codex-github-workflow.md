@@ -45,6 +45,58 @@ A review packet contains the task contract, exact base/head, complete base-to-he
 
 Do not load all skills preemptively. A skill is conditional context, not a repository handbook.
 
+## Model configuration and activation
+
+The parent baseline lives in [`.codex/config.toml`](../../.codex/config.toml).
+Required independent review and safety/scope challenge settings belong to
+[`reviewer.toml`](../../.codex/agents/reviewer.toml) and
+[`scope_challenger.toml`](../../.codex/agents/scope_challenger.toml).
+[`repo_explorer.toml`](../../.codex/agents/repo_explorer.toml) and
+[`docs_researcher.toml`](../../.codex/agents/docs_researcher.toml) retain their
+lower-cost settings for concrete, bounded needs; do not spawn them by default.
+This role allocation is a project decision, not an OpenAI requirement to use
+one model everywhere. The parent remains the sole writer; helpers remain
+read-only and non-recursive.
+
+Checked on 2026-09-08 with the installed Codex CLI `0.153.4`:
+[official model guidance](https://developers.openai.com/api/docs/guides/latest-model),
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference),
+[configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic#configuration-precedence),
+and [subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+Codex supports `model` and `model_reasoning_effort` in project config and
+standalone custom-agent TOML. Responses request fields such as
+`reasoning.effort`, `configuration_update`, and async tool declarations are
+API features, not additional project config keys. No minimum client version
+is asserted by this check.
+
+CLI overrides take precedence over trusted project config (nearest directory
+wins), then selected profile, user config, system config, and defaults.
+Untrusted projects skip project config. For custom agents, the role file's
+explicit model/effort overrides the values resolved from the spawn request,
+`[agents]` defaults, and parent. No global subagent model default is added.
+Start a fresh session in the intended trusted checkout and spawn fresh roles
+after changing these files; an existing session or a ChatGPT model-picker
+selection does not prove activation. Explicit client/session overrides must
+be checked, not assumed to follow the project baseline.
+
+Before rollout, record the client/version, exact checkout, effective
+model/effort, selected role, and permission evidence from client metadata or
+status in a bounded read-only check of the parent and required review roles.
+Configured read-only defaults do not by themselves prove effective sandboxing:
+the client can reapply live parent permission overrides when spawning.
+Do not expand permissions or edit permission policy to make this check pass. Keep evidence concise and
+exclude secrets and full transcripts. TOML parsing and governance/CI validation
+prove static configuration only; record observed activation separately.
+
+If required model/effort activation is unavailable, mismatched, or not exposed
+by the client, mark it `UNVERIFIED`, identify the precise blocker, and request
+a specific PM disposition: rerun in a supported client or explicitly approve
+a named alternative model/effort and its limited scope. Never silently fall
+back or count that required review as completed. Disclose helper fallback and
+mark missing effective helper metadata `UNVERIFIED` as well. Rollout remains
+blocked until required activation is observed or explicitly dispositioned by
+PM; a statically valid Draft PR alone is insufficient.
+
 ## Implementation Issue shape
 
 Implementation Issues contain task-specific material plus:
