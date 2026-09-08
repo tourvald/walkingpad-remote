@@ -5,9 +5,9 @@ description: Use for any WalkingPad code-writing, bug-fix, or refactor task and 
 
 # WalkingPad minimal-code discipline
 
-Goal: the smallest maintainable change that satisfies the contract. This is not code golf; correctness, clarity, and treadmill safety win ties.
+Goal: the smallest maintainable implementation that satisfies the contract. When alternatives are equally clear, correct, and safe, choose the smaller one; compressed syntax, hidden complexity, or fewer required tests do not qualify.
 
-Before adding code, stop at the first option that works:
+Before adding an abstraction, state, file, dependency, or wrapper, check existing owners and platform capabilities in this order:
 
 1. No change needed.
 2. Existing owner/helper/component/pattern.
@@ -19,7 +19,7 @@ Rules:
 
 - Prefer deletion and consolidation over addition.
 - Fix the root cause at the established owner rather than patching each caller.
-- No speculative abstraction: avoid one-implementation protocols, factories, coordinators, pass-through wrappers, parallel state machines, or scaffolding for hypothetical modes.
+- Avoid speculative protocols, factories, coordinators, pass-through wrappers, parallel state machines, or scaffolding for hypothetical modes. An abstraction is justified when it demonstrably improves ownership or testability.
 - Do not add a dependency when the existing stack or a few clear lines suffice.
 - Prefer fewer files, branches, state transitions, timers, passes, allocations, persistence operations, and transport round trips when behavior remains equally clear and correct.
 - Keep SwiftUI presentation-focused; deterministic reusable rules belong in an existing focused seam, not in a new layer by default and not in `BluetoothManager` merely for convenience.
@@ -27,6 +27,6 @@ Rules:
 - Keep comments for non-obvious constraints/invariants/reasons, not narration.
 - Preserve fail-safe behavior, factual telemetry semantics, stop evidence, HR gates, unit semantics, persistence compatibility, privacy, and useful regression coverage.
 
-Before handoff, inspect every added file, dependency, abstraction, state variable, branch, and meaningful block. If removing it still satisfies the Issue and tests, remove it.
+Before handoff, inspect every added file, dependency, abstraction, state variable, branch, and meaningful block. Remove additions unnecessary for the contract, clarity, safety, and required tests.
 
-Report base-to-head production LOC delta and any new file/dependency when practical. Fewer LOC alone is never evidence of faster runtime.
+Fewer LOC alone is never evidence of better code or faster runtime.
