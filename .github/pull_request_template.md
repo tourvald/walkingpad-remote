@@ -1,31 +1,21 @@
 ## Summary
 
-Describe the change in a few sentences.
+- Issue: Closes #...
+- Exact base / head:
+- Changed behavior and scope; behavior/contracts preserved:
+- Reuse/deletion summary; justify new abstractions/dependencies, or state none:
+- Base-to-head LOC added/removed, separating production, tests, and docs/instructions when practical:
 
-## Why
+## Verification
 
-Explain the user or engineering problem this PR solves.
+- Applicable checks: command, result, and evidence link. Explain omitted local suites; omissions do not waive required gates.
+- Required exact-head CI: head, status, and run link. Missing/failed/pending is not a pass.
+- Existing independent review outcome/evidence reference; safety challenge/evidence when applicable:
+- Relevant UI evidence or separately authorized hardware evidence only when the task requires it:
 
-## Testing
+## Risks / Notes
 
-- [ ] `python3 -m compileall scan_ble.py run_live_stats.py run_menu.py run_workout.py tools/mcp_xcode_server.py`
-- [ ] `cd ios/WalkingPadRemote/WalkingPadRemote && swift test`
-- [ ] `xcodebuild -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj -scheme WalkingPadRemote -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build`
-- [ ] Not applicable; explained below
+- Remaining risks, assumptions, blockers, or missing PM decision; relevant compatibility, migration/configuration, rollout/rollback notes:
+- Execution observations: surfaced client/model/effort; elapsed/token usage with measurement scope; subagent purpose; correction count; redundant-check observations. Use `unavailable` for unexposed metrics and links instead of transcripts. Token counts alone do not establish allowance/cost savings.
 
-## Hardware / environment
-
-- Treadmill model:
-- Protocol:
-- iPhone / iOS:
-- Apple Watch / watchOS:
-
-## Screenshots or logs
-
-Add screenshots for UI changes and logs for BLE or protocol changes when relevant.
-
-## Notes for reviewers
-
-- Risk areas:
-- Follow-up work:
-- Docs updated:
+Keep this as one compact evidence packet; omit inapplicable detail rather than adding another audit form.

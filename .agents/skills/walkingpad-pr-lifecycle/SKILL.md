@@ -27,22 +27,16 @@ Never clean, stash, reset, or reuse a dirty user worktree for task edits.
 
 - Trace the existing owner and relevant callers/tests before editing.
 - Make the smallest maintainable in-scope change; do not add adjacent cleanup.
+- Finish authorized work without asking PM to reapprove routine choices. For a real blocker, name the conflicting rule or unresolved fact and the smallest missing decision; do not expand the contract.
 - Preserve runtime, safety, API/data, telemetry, persistence, and device contracts unless the Issue explicitly changes them.
 - Add focused regression coverage when existing tests do not prove the contract.
 - Ordinary implementation never authorizes install, launch, deploy, BLE/hardware activity, or destructive cleanup.
 
 ## 4. Verify
 
-Run focused checks while iterating, then only the applicable repository gates. Typical gates are:
+Run focused checks while iterating, then `git diff --check` and the applicable full gates on the coherent head, using commands from root `AGENTS.md` and the relevant domain contract. Preserve required negative/safety regressions, independent review, safety challenge, and exact-head CI.
 
-```bash
-python3 scripts/check_codex_governance.py
-python3 -m compileall scan_ble.py run_live_stats.py run_menu.py run_workout.py tools/mcp_xcode_server.py
-cd ios/WalkingPadRemote/WalkingPadRemote && swift test
-git diff --check
-```
-
-Run unsigned app builds, UI scope checks, simulator QA, telemetry soak, or domain-specific checks only when the touched scope requires them. Summarize successful logs.
+Repeat successful expensive checks only when a code/base/environment change or concrete finding invalidates their evidence, or a mandatory gate explicitly requires a rerun. Missing, failed, stale, or wrong-head checks are never passes. Docs-only changes do not by themselves require local Swift/Xcode/BLE suites; applicable UI, build, simulator, telemetry, and domain checks still run for their scopes. Summarize results with links instead of repeating successful logs.
 
 ## 5. Inspect and publish
 
@@ -53,6 +47,6 @@ Run unsigned app builds, UI scope checks, simulator QA, telemetry soak, or domai
 
 ## Handoff boundary
 
-Return only the concise review packet: Issue, Draft PR, exact base/head, changed files, checks/CI actually run, and remaining risks. Do not replay the implementation transcript.
+Use the [PR template](../../../.github/pull_request_template.md) as the single compact evidence packet; link to it at handoff instead of creating a second report or replaying transcripts.
 
 Stop at the verified Draft PR. Mark-Ready, merge, deploy/install, device launch, BLE/hardware activity, force-push, destructive cleanup, or the next Issue require the applicable separate role/authorization.
