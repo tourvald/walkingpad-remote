@@ -480,7 +480,7 @@ private func makeHRControlActivePresentation(
 
     let status: (title: String, symbol: String, tint: Color) = {
         guard let presentedHeartRate else {
-            return ("Пульс недоступен", "waveform.path.ecg.slash", .orange)
+            return ("Пульс недоступен", "exclamationmark.circle.fill", .orange)
         }
         if isCooldown {
             return presentedHeartRate <= cooldownTargetBPM
@@ -1280,9 +1280,15 @@ private struct TrainingReadinessStrip: View {
                 Text(item.title)
                     .font(.caption)
                     .foregroundStyle(FocusStyle.secondaryText)
-                Label(item.value, systemImage: item.isReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
+                Label {
+                    Text(item.value)
+                        .foregroundStyle(.primary)
+                } icon: {
+                    Image(systemName: item.isReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(item.tint)
+                }
+                .font(.subheadline.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
                 if let sourceLabel = item.sourceLabel {
                     Text(sourceLabel)
                         .font(.caption)
@@ -1961,7 +1967,7 @@ private struct ActiveWorkoutShell: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         relationStatus(compact: compact)
-                            .labelStyle(.titleOnly)
+                            .labelStyle(.titleAndIcon)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -2100,12 +2106,17 @@ private struct ActiveWorkoutShell: View {
     }
 
     private func relationStatus(compact: Bool) -> some View {
-        Label(
-            presentation.statusTitle == "Пульс недоступен" ? "Нет пульса" : (presentation.statusTitle ?? "Статус недоступен"),
-            systemImage: presentation.statusSystemImage ?? "questionmark.circle"
-        )
+        let title = presentation.statusTitle == "Пульс недоступен"
+            ? "Нет пульса"
+            : (presentation.statusTitle ?? "Статус недоступен")
+        return Label {
+            Text(title)
+                .foregroundStyle(.primary)
+        } icon: {
+            Image(systemName: presentation.statusSystemImage ?? "questionmark.circle")
+                .foregroundStyle(presentation.statusTint)
+        }
         .font(compact ? .caption2.weight(.semibold) : .subheadline.weight(.semibold))
-        .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("workout.status")
         .accessibilityLabel(presentation.statusTitle ?? "Статус недоступен")
