@@ -33,15 +33,15 @@ struct DebugMetricTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.caption2.weight(.medium))
+                .font(.caption.weight(.medium))
                 .foregroundColor(.secondary)
 
             Text(value)
-                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                .font(.system(.title3, design: .rounded, weight: .semibold))
                 .monospacedDigit()
                 .foregroundColor(.primary)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(
@@ -64,16 +64,16 @@ struct DebugActionTileLabel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.caption.weight(.semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundColor(enabled ? .primary : .secondary)
                 .multilineTextAlignment(.leading)
 
             Text(subtitle)
-                .font(.caption2)
-                .foregroundColor(enabled ? .secondary : .secondary.opacity(0.8))
+                .font(.caption)
+                .foregroundColor(.secondary)
                 .multilineTextAlignment(.leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(
@@ -84,6 +84,6 @@ struct DebugActionTileLabel: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(enabled ? tint.opacity(0.28) : Color.secondary.opacity(0.14), lineWidth: 1)
         )
-        .opacity(enabled ? 1.0 : 0.72)
+        .accessibilityElement(children: .combine)
     }
 }

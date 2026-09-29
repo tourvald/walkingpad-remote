@@ -1,6 +1,44 @@
 # Redesign QA ledger
 
-Status: passed for the binding Issue #113 workout-analysis export interaction.
+Status: Focus native implementation and scoped simulator verification completed. Current evidence and limits are recorded in `ui-evolution/native-qa.md`. The concept review and accepted issue QA below are historical.
+
+## Stationary controls follow-up — 2026-09-12
+
+| State / check | Severity | Finding and resolution | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| Ready to active, default portrait | P2 | Visible zone and time controls previously moved 111.33 / 100.33 pt. A common window-relative guide, equal card insets and equal time slots now give zero measured shift. | Native PNG pixel calculation; XCTest anchor + Hub swipe checks | Fixed |
+| Ready, enlarged standard text | P2 | First candidate's fixed header clipped the vertical readiness fallback. Minimum header height and natural flow at enlarged type preserve complete content. | Final `xxxLarge` readiness/controls captures and XCTest | Fixed |
+| Compact screen and large type | P1 | Exact anchored placement is limited to fitting normal-size portrait canvases. Compact/enlarged layouts preserve scrollable content and a fixed visible Stop dock. | Native SE transition/normal/AX5 and all 12 iPhone text categories | Verified adaptive limit |
+| Production boundary | P0 | Only ContentView presentation, its existing layout contract and design evidence changed in this follow-up. Runtime callbacks and observation policy remain unchanged. | 27 focused contracts; unsigned iOS/Watch build; independent read-only diff review | Pass |
+
+## Focus native delivery — 2026-09-12
+
+| State / check | Severity | Finding and resolution | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| Active, compact width / large type | P1 | Bounded scroll viewport and fixed lower dock keep HR/status/speed/time/Stop clear of the adaptive video area; remaining time stays reachable. | Native XCTest geometry, `ui-evolution/native-evidence.json` | Pass |
+| Ready to active | P2 | Shared surface/zone/time/action geometry carries the selected controls into the live workout. Reduce Motion disables the transition. | `ui-evolution/native/start-transition.mp4`, source contract | Pass |
+| Statistics partial | P2 | Footer truncation corrected by measuring the full vertical card. | Final native followup captures | Fixed |
+| Plank AX5 | P2 | Timer caption moved outside the circle; progression and control labels stack. | Final native followup/detail captures | Fixed |
+| Secondary action/status contrast | P2 | Accent secondary buttons use a plain semantic canvas; confirmation text uses primary foreground. | Native captures and independent pixel review | Fixed |
+| Native contrast audit | P3 | Composite zone frames and occluded content reviewed separately; two system navigation-material false positives remain in the raw audit result. | Exact pixel ratios and exclusions in `ui-evolution/native-qa.md` | Reviewed limitation |
+| Frame warning during transition | P2 | Clamp transient zero-size usable width before applying video geometry. Subsequent native run has no recorded runtime warning. | Final correction run | Fixed |
+| Behavior/scope | P0 | Independent exact-base source review and focused regressions preserve commands, factual values, result identity, timers and transport boundaries. | 700 Swift tests, unsigned builds, scope check | Pass |
+
+The owner delegated PM decisions throughout implementation. No P0–P2 source or inspected-layout finding remains. Physical PiP/hardware, spoken VoiceOver and athlete field acceptance remain separate, explicitly unverified evidence.
+
+## UI evolution — 2026-09-12 concept baseline
+
+| Pass | State / form factor | Severity | Finding | Evidence | Owner path | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline | Current main, iPhone 17e simulator, light/dark | P3 | Existing Training lifecycle renders from deterministic fixtures; unsigned simulator build succeeds. | `ui-evolution/baseline/` (eight standard-type captures) | `ContentView.swift` | Baseline captured; not redesign acceptance |
+| Baseline | Active no-HR, maximum Dynamic Type, dark | P2 | Phase and treadmill readiness text truncate; critical speed/time/Stop remain pinned above the scroll. | `ui-evolution/baseline/active-no-hr-ax5-dark.png` | `ContentView.swift` | Open for implementation |
+| Owner requirement | Active/cooldown with third-party PiP | P1 | Current upper content and accessibility inset compete with the desired video area. Both concepts must reserve upper space and protect lower controls. | Owner instruction; `ui-evolution/README.md` | `ContentView.swift` | Included in both concepts; native proof pending |
+| Concept | Initial unconstrained-height mock | P2 | A phone that grows with content cannot prove PiP fit. | Independent read-only review | `ui-evolution/concepts.html` | Corrected to bounded active viewports |
+| Concept correction | 375×667, large text | P2 | Primary-value bounds exceeded the first visible scroll area. | Measured browser geometry | `ui-evolution/concepts.html` | Corrected by retaining side-by-side compact lower metrics; no text-size reduction |
+| Concept final | 64 PiP cases plus 16 other-screen smoke cases | P2 | Check primary value/status visibility, lower Stop visibility and hit height, clear upper reserve, horizontal overflow and script errors. | `ui-evolution/concept-qa.json`, `ui-evolution/concept-focus-pip-light.png`, `ui-evolution/concept-tempo-pip-light.png`, `ui-evolution/concept-focus-pip-small-large-text.png` | `ui-evolution/concepts.html` | Pass for mock; native QA pending |
+| Concept final | Selected text palettes, light/dark, both concepts | P2 | 30 text/background pairs meet 4.5:1; minimum measured ratio is 4.78:1. | Script calculation in `ui-evolution/concept-contrast.json` | `ui-evolution/concepts.html` | Pass for measured mock pairs; not whole-app conformance |
+
+The concept phase changed design artifacts only. It has since been superseded by the owner-authorized native implementation and its separate native QA evidence.
 
 ## Issue #113 — workout analysis export action
 

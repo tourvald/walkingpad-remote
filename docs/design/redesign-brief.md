@@ -1,4 +1,27 @@
-# Issue #59 redesign brief
+# UI evolution — current design review
+
+Status: Focus implemented locally under the owner's explicit delegation of full PM design discretion. Native QA and remaining field-test limits are in `ui-evolution/native-qa.md`; factual contracts below remain unchanged.
+
+Live base verified on 2026-09-12: `f7972a97c64f9310e3a82b32b8152b8d96e2e53a`. Isolated branch: `codex/ui-evolution`.
+
+The delivered native scope covers preparation, active workout, cooldown, results, statistics, plank, settings, device selection, shared diagnostics and companion Watch presentation.
+
+**Additional owner requirement:** the active workout must leave usable space for an external Picture in Picture video, such as YouTube. Both concepts reserve the upper area and keep workout controls below it. This is space planning, not an embedded video player or an assertion that the app controls another app's PiP window.
+
+**Acceptance standard:** the owner explicitly requires Apple design standards. The implementation must be assessed against Apple HIG with native accessibility, layout and interaction evidence; a polished mock alone does not pass.
+
+| Current concept | Benefit | Tradeoff |
+| --- | --- | --- |
+| A — Focus (recommended) | HR-first workout console, restrained neutral surfaces, warm action accent, one consistent visual language. The lower control band protects speed, time, and Stop beneath the video area. | Less visual emphasis on elapsed time than Concept B. |
+| B — Tempo | Time-first workout console, stronger editorial alignment, cool action accent, the same PiP and factual-data boundaries. | HR is secondary, making it less direct for an HR-controlled treadmill. |
+
+The interactive comparison uses synthetic data: [`ui-evolution/concepts.html`](ui-evolution/concepts.html). Current-state evidence, proposed write set, required states, QA criteria, and remaining work are in [`ui-evolution/README.md`](ui-evolution/README.md).
+
+The current selection is recorded in `selected-direction.md`. Tempo is rejected because elapsed-time emphasis is less useful than HR emphasis for this app's core control mode. The following Issue #59 material is historical context and retains its factual-result constraints.
+
+---
+
+# Historical Issue #59 redesign brief
 
 Status: PM selected revised Concept A with a distance-first result hierarchy; implementation is authorized and frozen in `selected-direction.md`.
 

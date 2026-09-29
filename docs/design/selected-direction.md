@@ -1,5 +1,21 @@
 # Selected redesign direction
 
+## Focus — owner-delegated PM decision, 2026-09-12
+
+The owner explicitly authorized implementation and delegated full PM design discretion. Focus is selected: HR-first hierarchy, neutral semantic surfaces, a restrained warm action accent, and a coherent native visual language across the app. No further concept-selection gate remains.
+
+Implement the full scope and Apple HIG acceptance matrix in `ui-evolution/README.md`. Active/cooldown reserve the upper region for third-party PiP, with a stable lower speed/time/Stop band. Compact landscape uses an empty leading video region beside the workout console. Existing Stop/extend/start gates, exact-session result identity, factual HR/speed/distance, missing-data semantics and publication boundaries remain unchanged.
+
+The owner's subsequent athlete-focused direction keeps the selected zone scale and duration controls in one continuous surface. At Start they become the live HR zone scale and remaining-time progress bar through shared SwiftUI geometry. A small heart pulses only while a current non-held HR value is available, the scene is active, and Reduce Motion is off; the animation does not represent measured beat timing. Cooldown time is labelled as a limit, not a promise of completion.
+
+The owner's follow-up requires the visible zones and time to stay at the same vertical position across Start. Both states now resolve a common window-relative guide outside TabView, so hiding the tab bar does not move these anchors. The anchored composition applies to portrait canvases at least 375 points wide and 740 points high, with Dynamic Type through the default `large` category. Compact canvases, landscape and enlarged text use natural flow with the fixed action dock; exact stationary anchors are deliberately not promised there. This keeps readiness and workout text readable without a new layout state or runtime subscription.
+
+Compact layouts adapt the lower dock: portrait uses rows, landscape uses a horizontal control band. The video reserve scales with usable height; larger type keeps HR, status, speed, elapsed time and Stop in the first viewport while zone/time detail can scroll. Target bounds remain available through the zone accessibility summary and Details when compact type layout omits the repeated inline bounds.
+
+The parent agent owns all writes. Simulator/mock fixtures and temporary UI QA harnesses are authorized; actual device/BLE/controller activity is not part of this design task. Existing presentation source-contract tests may be updated to reflect the selected hierarchy without weakening behavioral assertions. The earlier Issue #59 factual result constraints below remain binding.
+
+---
+
 Status: frozen for Issue #59 implementation.
 
 - Related issue: GitHub Issue #59, parent Epic #55.

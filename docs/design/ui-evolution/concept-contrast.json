@@ -1,0 +1,213 @@
+{
+  "mockOnly": true,
+  "checks": [
+    {
+      "concept": "focus",
+      "theme": "light",
+      "pair": "ink/bg",
+      "ratio": 16.3,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "light",
+      "pair": "ink/surface",
+      "ratio": 17.9,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "light",
+      "pair": "muted/bg",
+      "ratio": 5.51,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "light",
+      "pair": "muted/surface",
+      "ratio": 6.05,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "light",
+      "pair": "accent/bg",
+      "ratio": 4.78,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "light",
+      "pair": "accent/surface",
+      "ratio": 5.26,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "light",
+      "pair": "on-action/action",
+      "ratio": 5.1,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "dark",
+      "pair": "ink/bg",
+      "ratio": 17.95,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "dark",
+      "pair": "ink/surface",
+      "ratio": 15.61,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "dark",
+      "pair": "muted/bg",
+      "ratio": 8.47,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "dark",
+      "pair": "muted/surface",
+      "ratio": 7.37,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "dark",
+      "pair": "accent/bg",
+      "ratio": 10.49,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "dark",
+      "pair": "accent/surface",
+      "ratio": 9.13,
+      "pass": true
+    },
+    {
+      "concept": "focus",
+      "theme": "dark",
+      "pair": "on-action/action",
+      "ratio": 8.69,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "light",
+      "pair": "ink/bg",
+      "ratio": 16.3,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "light",
+      "pair": "ink/surface",
+      "ratio": 17.9,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "light",
+      "pair": "muted/bg",
+      "ratio": 5.51,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "light",
+      "pair": "muted/surface",
+      "ratio": 6.05,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "light",
+      "pair": "accent/bg",
+      "ratio": 6.31,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "light",
+      "pair": "accent/surface",
+      "ratio": 6.93,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "light",
+      "pair": "on-action/action",
+      "ratio": 6.78,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "dark",
+      "pair": "ink/bg",
+      "ratio": 17.95,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "dark",
+      "pair": "ink/surface",
+      "ratio": 15.61,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "dark",
+      "pair": "muted/bg",
+      "ratio": 8.47,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "dark",
+      "pair": "muted/surface",
+      "ratio": 7.37,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "dark",
+      "pair": "accent/bg",
+      "ratio": 11.39,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "dark",
+      "pair": "accent/surface",
+      "ratio": 9.91,
+      "pass": true
+    },
+    {
+      "concept": "tempo",
+      "theme": "dark",
+      "pair": "on-action/action",
+      "ratio": 9.9,
+      "pass": true
+    },
+    {
+      "pair": "stop-light",
+      "ratio": 5.88,
+      "pass": true
+    },
+    {
+      "pair": "stop-dark",
+      "ratio": 6.98,
+      "pass": true
+    }
+  ],
+  "allPassed": true,
+  "minimumRatio": 4.78
+}

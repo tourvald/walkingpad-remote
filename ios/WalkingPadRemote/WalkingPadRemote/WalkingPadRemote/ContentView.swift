@@ -24,6 +24,7 @@ struct HrFailureReport: Identifiable {
 struct ContentView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("content_selected_root_tab_v1") private var selectedRootTabRaw: Int = RootTab.control.rawValue
 
     private enum RootTab: Int {
@@ -52,36 +53,42 @@ struct ContentView: View {
     #endif
 
     var body: some View {
-        TabView(selection: rootTabSelection) {
-            ControlSwipeView(manager: manager) {
-                selectedRootTabRaw = RootTab.stats.rawValue
+        GeometryReader { canvas in
+            TabView(selection: rootTabSelection) {
+                ControlSwipeView(manager: manager) {
+                    selectedRootTabRaw = RootTab.stats.rawValue
+                }
+                    .equatable()
+                    .tabItem {
+                        Label("Тренировка", systemImage: "figure.run.circle")
+                    }
+                    .tag(RootTab.control)
+
+                WorkoutStatsView()
+                    .environmentObject(manager)
+                    .tabItem {
+                        Label("Статистика", systemImage: "chart.bar")
+                    }
+                    .tag(RootTab.stats)
+
+                PlankTimerView()
+                    .tabItem {
+                        Label("Планка", systemImage: "timer.circle")
+                    }
+                    .tag(RootTab.plank)
+
+                DebugView()
+                    .environmentObject(manager)
+                    .tabItem {
+                        Label("Отладка", systemImage: "ladybug")
+                    }
+                    .tag(RootTab.debug)
             }
-                .equatable()
-                .tabItem {
-                    Label("Тренировка", systemImage: "figure.run.circle")
-                }
-                .tag(RootTab.control)
-
-            WorkoutStatsView()
-                .environmentObject(manager)
-                .tabItem {
-                    Label("Статистика", systemImage: "chart.bar")
-                }
-                .tag(RootTab.stats)
-
-            PlankTimerView()
-                .tabItem {
-                    Label("Планка", systemImage: "timer.circle")
-                }
-                .tag(RootTab.plank)
-
-            DebugView()
-                .environmentObject(manager)
-                .tabItem {
-                    Label("Отладка", systemImage: "ladybug")
-                }
-                .tag(RootTab.debug)
+            .environment(\.trainingCanvasFrame, canvas.frame(in: .global))
         }
+        .tint(FocusStyle.accent)
+        .environment(\.dynamicTypeSize, previewTypeSize ?? dynamicTypeSize)
+        .preferredColorScheme(previewColorScheme)
         .onAppear {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--training-ui-pressure-baseline") {
@@ -109,6 +116,42 @@ struct ContentView: View {
             }
 #endif
         }
+    }
+
+    private var previewTypeSize: DynamicTypeSize? {
+        #if DEBUG
+        guard isTrainingPreviewLaunch else { return nil }
+        switch ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--focus-size=") }) {
+        case "--focus-size=xSmall": return .xSmall
+        case "--focus-size=small": return .small
+        case "--focus-size=medium": return .medium
+        case "--focus-size=large": return .large
+        case "--focus-size=xLarge": return .xLarge
+        case "--focus-size=xxLarge": return .xxLarge
+        case "--focus-size=xxxLarge": return .xxxLarge
+        case "--focus-size=accessibility1": return .accessibility1
+        case "--focus-size=accessibility2": return .accessibility2
+        case "--focus-size=accessibility3": return .accessibility3
+        case "--focus-size=accessibility4": return .accessibility4
+        case "--focus-size=accessibility5": return .accessibility5
+        default: return nil
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    private var previewColorScheme: ColorScheme? {
+        #if DEBUG
+        guard isTrainingPreviewLaunch else { return nil }
+        switch ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--focus-appearance=") }) {
+        case "--focus-appearance=light": return .light
+        case "--focus-appearance=dark": return .dark
+        default: return nil
+        }
+        #else
+        return nil
+        #endif
     }
 
     private func updateNativeHeartRateLifecycle(_ phase: ScenePhase) {
@@ -175,6 +218,10 @@ private struct TrainingHubPresentation {
     let liveMarkerBPM: Int?
     let targetThresholdBPM: Int?
     let showsExtendAction: Bool
+    let remainingSeconds: Int?
+    let remainingFraction: Double?
+    let remainingTitle: String?
+    let pulseEnabled: Bool
 
     init(
         modeTitle: String,
@@ -198,7 +245,11 @@ private struct TrainingHubPresentation {
         statusTint: Color = .secondary,
         liveMarkerBPM: Int? = nil,
         targetThresholdBPM: Int? = nil,
-        showsExtendAction: Bool = false
+        showsExtendAction: Bool = false,
+        remainingSeconds: Int? = nil,
+        remainingFraction: Double? = nil,
+        remainingTitle: String? = nil,
+        pulseEnabled: Bool = false
     ) {
         self.modeTitle = modeTitle
         self.modeSystemImage = modeSystemImage
@@ -222,6 +273,10 @@ private struct TrainingHubPresentation {
         self.liveMarkerBPM = liveMarkerBPM
         self.targetThresholdBPM = targetThresholdBPM
         self.showsExtendAction = showsExtendAction
+        self.remainingSeconds = remainingSeconds
+        self.remainingFraction = remainingFraction
+        self.remainingTitle = remainingTitle
+        self.pulseEnabled = pulseEnabled
     }
 }
 
@@ -409,6 +464,8 @@ private func makeHRControlActivePresentation(
     isCooldown: Bool,
     cooldownTargetBPM: Int,
     canExtend: Bool,
+    remainingSeconds: Int? = nil,
+    phaseProgress: Double? = nil,
     phaseTitleOverride: String? = nil,
     isPreview: Bool = false
 ) -> TrainingHubPresentation {
@@ -498,7 +555,11 @@ private func makeHRControlActivePresentation(
         statusTint: status.tint,
         liveMarkerBPM: presentedHeartRate,
         targetThresholdBPM: isCooldown ? cooldownTargetBPM : nil,
-        showsExtendAction: !isCooldown && canExtend
+        showsExtendAction: !isCooldown && canExtend,
+        remainingSeconds: remainingSeconds.map { max(0, $0) },
+        remainingFraction: phaseProgress.flatMap { $0.isFinite ? 1 - min(1, max(0, $0)) : nil },
+        remainingTitle: isCooldown ? "Лимит заминки" : "До заминки",
+        pulseEnabled: presentedHeartRate != nil && !heartRatePresentation.isHeld
     )
 }
 
@@ -533,6 +594,9 @@ private func makeProductionActiveWorkoutPresentation(
         return manager.trainingUITreadmillSpeedKmh
     }()
 
+    let isCooldown = manager.isHrControlRunning && manager.hrRemainingSeconds <= 0
+    let hasPhaseCountdown = manager.isHrControlRunning
+        && (!isCooldown || manager.hrCooldownRemainingSeconds > 0)
     return makeHRControlActivePresentation(
         treadmillConnected: manager.isTreadmillControlReady,
         heartRatePresentation: heartRatePresentation,
@@ -540,9 +604,13 @@ private func makeProductionActiveWorkoutPresentation(
         zoneRanges: hrZoneRanges(for: manager),
         factualSpeedKmh: factualSpeedKmh,
         elapsedSeconds: manager.presentedWorkoutElapsedSeconds,
-        isCooldown: manager.isHrControlRunning && manager.hrRemainingSeconds <= 0,
+        isCooldown: isCooldown,
         cooldownTargetBPM: manager.hrCooldownTargetBpm,
         canExtend: manager.canExtendHrSession,
+        remainingSeconds: hasPhaseCountdown
+            ? (isCooldown ? manager.hrCooldownRemainingSeconds : manager.hrRemainingSeconds) : nil,
+        phaseProgress: hasPhaseCountdown
+            ? (isCooldown ? manager.hrCooldownProgress : manager.hrProgress) : nil,
         phaseTitleOverride: manager.presentedWorkoutPhaseTitle
     )
 }
@@ -565,6 +633,9 @@ private extension TrainingUIObservationBoundary {
             manager.$isNativeHeartRatePreflightActive.map { _ in () }.eraseToAnyPublisher(),
             manager.$isHrControlRunning.map { _ in () }.eraseToAnyPublisher(),
             manager.$hrRemainingSeconds.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrCooldownRemainingSeconds.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrProgress.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrCooldownProgress.map { _ in () }.eraseToAnyPublisher(),
             manager.$hrCooldownTargetBpm.map { _ in () }.eraseToAnyPublisher(),
             manager.$timeSec.map { _ in () }.eraseToAnyPublisher(),
             manager.$isNativeWorkoutRecoveryActive.map { _ in () }.eraseToAnyPublisher(),
@@ -778,6 +849,8 @@ private enum TrainingUIUpdatePressureHarness {
             presentation.liveMarkerBPM.map(String.init) ?? "",
             presentation.targetThresholdBPM.map(String.init) ?? "",
             String(presentation.showsExtendAction),
+            presentation.remainingSeconds.map(String.init) ?? "",
+            presentation.remainingFraction.map { String($0) } ?? "",
         ]
     }
 }
@@ -894,6 +967,8 @@ private func activeWorkoutPreviewPresentation(named name: String) -> TrainingHub
             isCooldown: cooldown,
             cooldownTargetBPM: cooldownTarget,
             canExtend: !cooldown,
+            remainingSeconds: cooldown ? 138 : 978,
+            phaseProgress: cooldown ? 0.54 : 0.534,
             isPreview: true
         )
     }
@@ -1077,6 +1152,93 @@ private func trainingResultPreview(named name: String) -> TrainingResultPreview?
 }
 #endif
 
+#if DEBUG
+private struct FocusTrainingTransitionPreview: View {
+    let onSettingsTap: () -> Void
+    let onActivityChange: (Bool) -> Void
+    @Namespace private var transition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var active = false
+    @State private var ending = false
+    @State private var zone = 2
+    @State private var minutes = 35
+    @State private var remaining = 978
+    private let ranges = [60...134, 135...146, 147...158, 159...170, 171...220]
+
+    var body: some View {
+        Group {
+            if ending {
+                TrainingWorkoutEndingView(stopStatusText: "Stop confirming")
+            } else if active {
+                ActiveWorkoutShell(
+                    presentation: makeHRControlActivePresentation(
+                        treadmillConnected: true,
+                        heartRatePresentation: TrainingUIHeartRateActivePresentation(
+                            currentHeartRateBPM: 152, sourceLabel: "HealthKit", isReady: true, isHeld: false
+                        ),
+                        targetZoneIndex: zone, zoneRanges: ranges, factualSpeedKmh: 4.4,
+                        elapsedSeconds: 1122, isCooldown: false, cooldownTargetBPM: 115,
+                        canExtend: true, remainingSeconds: remaining,
+                        phaseProgress: 1122 / Double(1122 + remaining)
+                    ),
+                    onExtend: { remaining += 300 },
+                    onStop: { ending = true },
+                    transitionNamespace: transition
+                )
+            } else {
+                TrainingHubView(
+                    presentation: makeHRControlTrainingHubPresentation(
+                        treadmillConnected: true, hrFresh: true, heartRateSourceLabel: "HealthKit",
+                        targetZoneIndex: zone, zoneRanges: ranges, durationMinutes: minutes,
+                        startEnabled: true, runtimeBlockReason: nil
+                    ),
+                    onTreadmillTap: {}, onZoneTap: { zone = $0 },
+                    onDurationSelect: { minutes = $0 }, onSettingsTap: onSettingsTap,
+                    onStart: { remaining = max(0, minutes * 60 - 1122); active = true },
+                    onCancel: {}, transitionNamespace: transition
+                )
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.38), value: active)
+        .onChange(of: active) { _, value in onActivityChange(value) }
+        .onChange(of: ending) { _, value in if value { onActivityChange(false) } }
+    }
+}
+
+private struct FocusStatisticsPreview {
+    let statistics: WorkoutStatisticsProjection?
+    let entries: [WorkoutHistoryProjection]
+    let state: BluetoothManager.WorkoutReadState
+
+    static var current: Self? {
+        guard let argument = ProcessInfo.processInfo.arguments.first(where: {
+            $0.hasPrefix("--training-hub-preview=focus-statistics-")
+        }) else { return nil }
+        let state = String(argument.split(separator: "-").last ?? "empty")
+        if state == "loading" { return Self(statistics: nil, entries: [], state: .loading) }
+        if state == "failed" { return Self(statistics: nil, entries: [], state: .failed("Preview read failure")) }
+        if state == "empty" { return Self(statistics: nil, entries: [], state: .loaded) }
+        let partial = state == "partial"
+        let statistics = WorkoutStatisticsProjection(
+            totalDurationSeconds: partial ? nil : 8400,
+            averageBeatsPerMetre: partial ? nil : 1.82,
+            zoneSeconds: partial ? [600, nil, 1800, 120, 0] : [840, 2640, 3660, 1140, 120],
+            queryableWorkoutCount: 4, includedWorkoutCount: 4, excludedWorkoutCount: 0,
+            exclusionReasonCounts: [:], workoutsWithUnavailableDuration: partial ? 1 : 0,
+            workoutsWithUnavailableZones: partial ? 1 : 0, isPartial: partial,
+            diagnostics: WorkoutReadDiagnostics(
+                storeFetchCount: 0, maximumStoreFetchLimit: 0,
+                hydratedTimeSeriesRecordCount: 0, exactNativeDuplicateCount: 0
+            )
+        )
+        let result = trainingResultPreview(named: partial ? "summary-partial" : "summary-complete")
+        let entries: [WorkoutHistoryProjection]
+        if case .summary(let resolved) = result { entries = [resolved.projection] } else { entries = [] }
+        return Self(statistics: statistics, entries: entries, state: .loaded)
+    }
+}
+#endif
+
 private struct TrainingReadinessStrip: View {
     let items: [TrainingHubPresentation.Readiness]
     let treadmillInteractive: Bool
@@ -1109,45 +1271,37 @@ private struct TrainingReadinessStrip: View {
     }
 
     private func readinessChip(_ item: TrainingHubPresentation.Readiness) -> some View {
-        HStack(spacing: 7) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: item.systemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(item.tint)
-
-            HStack(spacing: 4) {
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(FocusStyle.accent)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(item.title)
-                    .font(.caption.weight(.semibold))
-                Text(item.value)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                    .foregroundStyle(FocusStyle.secondaryText)
+                Label(item.value, systemImage: item.isReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
                 if let sourceLabel = item.sourceLabel {
                     Text(sourceLabel)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FocusStyle.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
-
-            Image(systemName: item.isReady ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .font(.caption)
-                .foregroundStyle(item.tint)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(.thinMaterial, in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(item.tint.opacity(0.18), lineWidth: 1)
-        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(12)
+        .background(FocusStyle.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             [item.title, item.value, item.sourceLabel].compactMap { $0 }.joined(separator: ", ")
         )
         .accessibilityValue(item.isReady ? "Готово" : "Недоступно")
     }
+
 }
 
 private struct TrainingZoneScale: View {
@@ -1159,10 +1313,9 @@ private struct TrainingZoneScale: View {
     let onSegmentTap: (Int) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .caption2) private var zoneLabelHeight: CGFloat = 12
 
-    private var hasMarkerLayer: Bool {
-        liveMarkerBPM != nil || targetThresholdBPM != nil
-    }
+    private var segmentHeight: CGFloat { max(44, zoneLabelHeight + 24) }
 
     private var aggregateAccessibilityValue: String {
         var parts: [String] = []
@@ -1198,15 +1351,15 @@ private struct TrainingZoneScale: View {
                         }
                     }
                 }
-                .padding(.top, hasMarkerLayer ? 20 : 0)
+                .padding(.top, 20)
 
                 if let targetThresholdBPM {
                     Rectangle()
                         .fill(Color.primary.opacity(0.5))
-                        .frame(width: 2, height: 30)
+                        .frame(width: 2, height: segmentHeight)
                         .position(
                             x: markerX(for: targetThresholdBPM, width: proxy.size.width),
-                            y: 36
+                            y: 20 + segmentHeight / 2
                         )
                         .accessibilityHidden(true)
                 }
@@ -1232,9 +1385,10 @@ private struct TrainingZoneScale: View {
                 }
             }
         }
-        .frame(height: hasMarkerLayer ? 64 : 44)
+        .frame(height: segmentHeight + 20)
         .accessibilityElement(children: interactive ? .contain : .ignore)
         .accessibilityLabel("Пульсовые зоны")
+        .accessibilityIdentifier("training.zones")
         .accessibilityValue(aggregateAccessibilityValue)
     }
 
@@ -1245,7 +1399,7 @@ private struct TrainingZoneScale: View {
         VStack(spacing: 5) {
             Text(segment.title)
                 .font(.caption2.weight(.bold))
-                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                .foregroundStyle(Color.primary)
             Capsule(style: .continuous)
                 .fill(segment.tint.opacity(isSelected ? 0.92 : 0.24))
                 .frame(height: isSelected ? 16 : 10)
@@ -1256,7 +1410,7 @@ private struct TrainingZoneScale: View {
                     }
                 }
         }
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: segmentHeight)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Зона \(segment.id + 1), \(segment.rangeText)")
@@ -1286,6 +1440,36 @@ private struct TrainingZoneScale: View {
     }
 }
 
+private struct TrainingCanvasFrameKey: EnvironmentKey {
+    static let defaultValue = CGRect.zero
+}
+
+private extension EnvironmentValues {
+    var trainingCanvasFrame: CGRect {
+        get { self[TrainingCanvasFrameKey.self] }
+        set { self[TrainingCanvasFrameKey.self] = newValue }
+    }
+}
+
+private struct TrainingVerticalGuide {
+    let anchorsControls: Bool
+    let topHeight: CGFloat
+    let heroHeight: CGFloat
+
+    init(canvas: CGRect, localFrame: CGRect, minimumHeroHeight: CGFloat, dynamicTypeSize: DynamicTypeSize) {
+        let viewport = canvas.isEmpty ? localFrame : canvas
+        // Leave room for the header, controls and Start above the tab bar.
+        // Compact screens and enlarged text retain their natural scrolling layout.
+        anchorsControls = dynamicTypeSize <= .large
+            && viewport.width >= 375 && viewport.width < viewport.height
+            && viewport.height >= 740
+        topHeight = max(0, min(208, viewport.height * 0.25, (viewport.width - 40) * 9 / 16))
+        // Shared window coordinates keep the controls still when the tab bar disappears.
+        let zoneTop = viewport.minY + min(viewport.height * 0.56, viewport.height - 302)
+        heroHeight = max(minimumHeroHeight, zoneTop - localFrame.minY - topHeight - 12 - 20)
+    }
+}
+
 private let trainingDurationPresets = [20, 25, 30, 35, 40, 45]
 
 private struct TrainingDurationPresetSelector: View {
@@ -1300,16 +1484,16 @@ private struct TrainingDurationPresetSelector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("ВРЕМЯ · МИН")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                Text("Время · мин")
+                    .font(.subheadline)
+                    .foregroundStyle(FocusStyle.secondaryText)
 
                 Spacer()
 
                 if !hasPresetSelection {
                     Text("Текущее: \(selectedMinutes) мин")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FocusStyle.secondaryText)
                         .monospacedDigit()
                         .accessibilityLabel("Текущая длительность \(selectedMinutes) минут")
                 }
@@ -1328,6 +1512,8 @@ private struct TrainingDurationPresetSelector: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("training.duration")
     }
 
     @ViewBuilder
@@ -1341,16 +1527,16 @@ private struct TrainingDurationPresetSelector: View {
                 Text("\(minutes)")
                     .font(.subheadline.weight(isSelected ? .bold : .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .foregroundStyle(isSelected ? FocusStyle.actionText : Color.primary)
                     .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
                     .background(
-                        isSelected ? Color.accentColor : Color(.systemBackground).opacity(0.55),
+                        isSelected ? FocusStyle.accent : FocusStyle.surface,
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                     )
                     .overlay {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(
-                                isSelected ? Color.accentColor : Color.secondary.opacity(0.16),
+                                isSelected ? Color.accentColor : FocusStyle.secondaryText.opacity(0.16),
                                 lineWidth: isSelected ? 2 : 1
                             )
                     }
@@ -1372,100 +1558,109 @@ private struct TrainingHubView: View {
     let onSettingsTap: () -> Void
     let onStart: () -> Void
     let onCancel: () -> Void
+    var transitionNamespace: Namespace.ID? = nil
+    @Namespace private var localTransition
+    @Environment(\.trainingCanvasFrame) private var canvasFrame
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .largeTitle) private var minimumHeroHeight: CGFloat = 160
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                TrainingReadinessStrip(
-                    items: presentation.readiness,
-                    treadmillInteractive: !presentation.isPreview && !presentation.isPreparing,
-                    onTreadmillTap: onTreadmillTap
-                )
-                hero
+        GeometryReader { geometry in
+            let guide = TrainingVerticalGuide(
+                canvas: canvasFrame, localFrame: geometry.frame(in: .global),
+                minimumHeroHeight: minimumHeroHeight, dynamicTypeSize: dynamicTypeSize
+            )
+            let anchored = guide.anchorsControls
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(spacing: anchored ? 12 : 20) {
+                        header
+                            .padding(.top, 12)
+                            .frame(minHeight: anchored ? guide.topHeight : nil, alignment: .top)
+                        hero(headerHeight: anchored ? guide.heroHeight : nil)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 24)
+                }
+                .scrollBounceBehavior(.basedOnSize)
                 startArea
-                    .padding(.top, 6)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(FocusStyle.background)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 20)
         }
     }
 
-    private var hero: some View {
-        VStack(spacing: 18) {
-            modeSelector
-
-            VStack(spacing: 4) {
-                Text(presentation.targetTitle)
-                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                    .multilineTextAlignment(.center)
-                Text(presentation.targetValue)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+    private var header: some View {
+        VStack(spacing: 20) {
+            HStack {
+                Text("Тренировка")
+                    .font(.largeTitle.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 8)
+                if !presentation.isPreview && !presentation.isPreparing {
+                    Button(action: onSettingsTap) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.title3)
+                            .frame(width: 44, height: 44)
+                            .background(FocusStyle.surface, in: Circle())
+                    }
+                    .accessibilityLabel("Параметры тренировки")
+                }
             }
-            .accessibilityElement(children: .combine)
+            TrainingReadinessStrip(
+                items: presentation.readiness,
+                treadmillInteractive: !presentation.isPreview && !presentation.isPreparing,
+                onTreadmillTap: onTreadmillTap
+            )
+        }
+    }
 
+    private func hero(headerHeight: CGFloat?) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
+                modeSelector
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(presentation.targetTitle)
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    Text(presentation.targetValue)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(FocusStyle.secondaryText)
+                        .monospacedDigit()
+                }
+                .accessibilityElement(children: .combine)
+            }
+            .frame(height: headerHeight, alignment: .top)
             if !presentation.targetSegments.isEmpty {
                 targetScale
+                    .matchedGeometryEffect(id: "training.zones", in: transitionNamespace ?? localTransition)
             }
-
             if let durationMinutes = presentation.durationMinutes {
                 TrainingDurationPresetSelector(
                     selectedMinutes: durationMinutes,
                     interactive: !presentation.isPreview && !presentation.isPreparing,
                     onSelect: onDurationSelect
                 )
+                .matchedGeometryEffect(id: "training.time", in: transitionNamespace ?? localTransition)
             }
-
             if !presentation.metrics.isEmpty {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) { metricItems }
                     VStack(spacing: 8) { metricItems }
                 }
             }
-
-            if !presentation.isPreview && !presentation.isPreparing {
-                Button(action: onSettingsTap) {
-                    HStack {
-                        Label("Параметры", systemImage: "slider.horizontal.3")
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint("Открывает параметры HR-контроля")
-            }
         }
-        .padding(18)
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay {
-                    LinearGradient(
-                        colors: [Color.accentColor.opacity(0.13), .clear, hrZoneColor((presentation.selectedSegmentID ?? 0) + 1).opacity(0.08)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous)
+                .fill(FocusStyle.surface)
+                .matchedGeometryEffect(id: "training.surface", in: transitionNamespace ?? localTransition)
         }
     }
 
     private var modeSelector: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("РЕЖИМ ТРЕНИРОВКИ")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-
             if presentation.isPreview {
                 modeSelectorLabel
             } else {
@@ -1493,19 +1688,16 @@ private struct TrainingHubView: View {
                 .foregroundStyle(Color.accentColor)
             Text(presentation.modeTitle)
                 .font(.headline)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
             if !presentation.isPreview {
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FocusStyle.secondaryText)
             }
         }
         .foregroundStyle(.primary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color(.systemBackground).opacity(0.62), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(minHeight: 44)
     }
 
     private var targetScale: some View {
@@ -1529,7 +1721,7 @@ private struct TrainingHubView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(metric.title)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FocusStyle.secondaryText)
                     Text(metric.value)
                         .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
@@ -1550,7 +1742,7 @@ private struct TrainingHubView: View {
             if let blocker = presentation.startBlocker {
                 Label(blocker, systemImage: "exclamationmark.circle.fill")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -1561,7 +1753,7 @@ private struct TrainingHubView: View {
                         .font(.headline)
                     Text("Дорожка запустится автоматически, когда появится пульс.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FocusStyle.secondaryText)
                         .multilineTextAlignment(.center)
                     Button("Отмена", role: .cancel, action: onCancel)
                         .buttonStyle(.bordered)
@@ -1578,13 +1770,11 @@ private struct TrainingHubView: View {
                 } label: {
                     Label("Начать тренировку", systemImage: "play.fill")
                         .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.65)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .buttonStyle(FocusActionStyle())
+                .matchedGeometryEffect(id: "training.action", in: transitionNamespace ?? localTransition)
                 .disabled(!presentation.startEnabled)
                 .accessibilityHint("Запускает HR-контроль с выбранной целевой зоной")
             }
@@ -1597,95 +1787,205 @@ private struct ActiveWorkoutShell: View {
     let onExtend: () -> Void
     let onStop: () -> Void
     var stopEnabled = true
+    var transitionNamespace: Namespace.ID? = nil
 
+    @Environment(\.trainingCanvasFrame) private var canvasFrame
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ScaledMetric(relativeTo: .largeTitle) private var primaryValueSize: CGFloat = 86
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Namespace private var localTransition
+    @ScaledMetric(relativeTo: .largeTitle) private var primaryValueSize: CGFloat = 72
+    @ScaledMetric(relativeTo: .largeTitle) private var minimumHeroHeight: CGFloat = 160
     @State private var showExtendConfirm = false
+    @State private var showDetails = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                phaseRow
-                TrainingReadinessStrip(
-                    items: presentation.readiness,
-                    treadmillInteractive: false,
-                    onTreadmillTap: {}
-                )
-                liveHero
-                if !usesAccessibilityControlInset {
-                    secondaryMetrics
-                    stopControl
-                }
-                extendControl
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 20)
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if usesAccessibilityControlInset {
-                VStack(spacing: 10) {
-                    secondaryMetrics
-                    stopControl
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial)
-                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-            }
-        }
-        .alert("Добавить 5 минут?", isPresented: $showExtendConfirm) {
-            Button("Добавить") {
-                guard !presentation.isPreview else { return }
-                onExtend()
-            }
-            Button("Отмена", role: .cancel) {}
-        } message: {
-            Text("Тренировка будет продлена на 5 минут.")
-        }
-    }
-
-    private var phaseRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: presentation.modeSystemImage)
-                .foregroundStyle(Color.accentColor)
-            Text(presentation.phaseTitle ?? presentation.modeTitle)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer()
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var usesAccessibilityControlInset: Bool {
-        dynamicTypeSize.isAccessibilitySize
-    }
-
-    private var liveHero: some View {
-        VStack(spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(presentation.primaryValue ?? "—")
-                    .font(.system(size: primaryValueSize, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.55)
-                    .contentTransition(.numericText())
-                if let unit = presentation.primaryUnit {
-                    Text(unit)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Текущий пульс")
-            .accessibilityValue(
-                [presentation.primaryValue, presentation.primaryUnit]
-                    .compactMap { $0 }
-                    .joined(separator: " ")
+        GeometryReader { geometry in
+            let landscape = geometry.size.width > geometry.size.height
+            let contentWidth = max(0, geometry.size.width - 40)
+            let guide = TrainingVerticalGuide(
+                canvas: canvasFrame, localFrame: geometry.frame(in: .global),
+                minimumHeroHeight: minimumHeroHeight, dynamicTypeSize: dynamicTypeSize
             )
+            let anchored = guide.anchorsControls
+            let scrolling = !anchored
+            let layout = landscape
+                ? AnyLayout(HStackLayout(alignment: .top, spacing: 16))
+                : AnyLayout(VStackLayout(spacing: 12))
+            VStack(spacing: 0) {
+                layout {
+                    pictureInPictureReserve
+                        .frame(
+                            width: landscape ? contentWidth * 0.32 : nil,
+                            height: landscape
+                                ? contentWidth * 0.32 * 9 / 16
+                                : (anchored ? guide.topHeight : min(208, max(0, geometry.size.height) * 0.25, contentWidth * 9 / 16))
+                        )
+                    if scrolling {
+                        ScrollView {
+                            workoutCard(
+                                verticalHero: dynamicTypeSize.isAccessibilitySize && !landscape,
+                                scrolling: true,
+                                headerHeight: anchored ? guide.heroHeight : nil
+                            )
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        workoutCard(verticalHero: false, scrolling: false, headerHeight: anchored ? guide.heroHeight : nil)
+                    }
+                }
+                .padding(.horizontal, 20)
+                workoutDock(scrolling: scrolling, landscape: landscape)
+                    .layoutPriority(1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .sheet(isPresented: $showDetails) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        extendControl
+                        phaseRow
+                        targetSummary
+                        if !presentation.targetSegments.isEmpty {
+                            TrainingZoneScale(
+                                segments: presentation.targetSegments,
+                                selectedSegmentID: presentation.selectedSegmentID,
+                                liveMarkerBPM: presentation.liveMarkerBPM,
+                                targetThresholdBPM: presentation.targetThresholdBPM,
+                                interactive: false,
+                                onSegmentTap: { _ in }
+                            )
+                        }
+                        TrainingReadinessStrip(
+                            items: presentation.readiness,
+                            treadmillInteractive: false,
+                            onTreadmillTap: {}
+                        )
+                    }
+                    .padding(20)
+                }
+                .background(FocusStyle.background)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    stopControl
+                        .padding(20)
+                        .background(FocusStyle.background)
+                }
+                .navigationTitle("Тренировка")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Готово") { showDetails = false }
+                    }
+                }
+            }
+            .alert("Добавить 5 минут?", isPresented: $showExtendConfirm) {
+                Button("Добавить") {
+                    guard !presentation.isPreview else { return }
+                    onExtend()
+                }
+                Button("Отмена", role: .cancel) {}
+            } message: {
+                Text("Тренировка будет продлена на 5 минут.")
+            }
+            .presentationDetents([.medium, .large])
+        }
+    }
 
+    private func workoutDock(scrolling: Bool, landscape: Bool) -> some View {
+        let dockLayout = landscape
+            ? AnyLayout(HStackLayout(alignment: .center, spacing: 16))
+            : AnyLayout(VStackLayout(spacing: 12))
+        return dockLayout {
+            if scrolling {
+                secondaryMetrics(compact: dynamicTypeSize.isAccessibilitySize)
+                    .padding(12)
+                    .background(FocusStyle.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            stopControl
+                .frame(width: landscape ? 190 : nil)
+                .matchedGeometryEffect(id: "training.action", in: transitionNamespace ?? localTransition)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(FocusStyle.background)
+    }
+
+    private var pictureInPictureReserve: some View {
+        Color.clear
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Reserved video area")
+            .accessibilityIdentifier("workout.videoSpace")
+            .accessibilityHidden(!exposesGeometryProbe)
+            .allowsHitTesting(false)
+    }
+
+    private var exposesGeometryProbe: Bool {
+        #if DEBUG
+        return presentation.isPreview && ProcessInfo.processInfo.arguments.contains("--focus-geometry")
+        #else
+        return false
+        #endif
+    }
+
+    private func workoutCard(verticalHero: Bool, scrolling: Bool, headerHeight: CGFloat?) -> some View {
+        let compact = dynamicTypeSize.isAccessibilitySize
+        let heroLayout = verticalHero
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: 16))
+        return VStack(spacing: 0) {
+            VStack(spacing: compact ? 8 : 14) {
+                HStack(spacing: 12) {
+                    Text(compactPhaseTitle)
+                        .font(compact ? .caption2.weight(.semibold) : .headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button { showDetails = true } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.headline)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Детали тренировки и подключения")
+                }
+                heroLayout {
+                    heartRateValue(compact: compact)
+                        .frame(maxWidth: verticalHero ? .infinity : nil, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !compact {
+                            Text(presentation.targetValue)
+                                .font(.caption)
+                                .foregroundStyle(FocusStyle.secondaryText)
+                                .monospacedDigit()
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        relationStatus(compact: compact)
+                            .labelStyle(.titleOnly)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(height: headerHeight, alignment: .top)
+            zoneAndTime(compact: compact)
+            if !scrolling {
+                Spacer(minLength: 12)
+                Divider()
+                    .padding(.bottom, 12)
+                secondaryMetrics(compact: false)
+            }
+        }
+        .padding(compact ? 10 : 20)
+        .frame(maxWidth: .infinity, maxHeight: scrolling ? nil : .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous)
+                .fill(FocusStyle.surface)
+                .matchedGeometryEffect(id: "training.surface", in: transitionNamespace ?? localTransition)
+        }
+    }
+
+    private func zoneAndTime(compact: Bool) -> some View {
+        VStack(spacing: compact ? 8 : 0) {
             if !presentation.targetSegments.isEmpty {
                 TrainingZoneScale(
                     segments: presentation.targetSegments,
@@ -1695,84 +1995,156 @@ private struct ActiveWorkoutShell: View {
                     interactive: false,
                     onSegmentTap: { _ in }
                 )
+                .matchedGeometryEffect(id: "training.zones", in: transitionNamespace ?? localTransition)
             }
+            remainingProgress(compact: compact)
+                .matchedGeometryEffect(id: "training.time", in: transitionNamespace ?? localTransition)
+        }
+    }
 
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 10) {
-                    targetSummary
-                    Spacer(minLength: 8)
-                    relationStatus
+    private var phaseRow: some View {
+        Label(presentation.phaseTitle ?? presentation.modeTitle, systemImage: presentation.modeSystemImage)
+            .font(.headline)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityElement(children: .combine)
+    }
+
+    private var compactPhaseTitle: String {
+        if let phase = presentation.phaseTitle,
+           phase != "ТРЕНИРОВКА", phase != "ЗАМИНКА" {
+            return phase.localizedCapitalized
+        }
+        return presentation.targetTitle
+    }
+
+    private func heartRateValue(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "heart.fill")
+                    .font(compact ? .caption2 : .title2)
+                    .foregroundStyle(FocusStyle.stop)
+                    .symbolEffect(.pulse, isActive: !reduceMotion && scenePhase == .active && presentation.pulseEnabled)
+                    .accessibilityHidden(true)
+                Text(presentation.primaryValue ?? "—")
+                    .font(compact
+                          ? .system(.largeTitle, design: .rounded, weight: .bold)
+                          : .system(size: primaryValueSize, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .fixedSize()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                if compact, let unit = presentation.primaryUnit {
+                    Text(unit)
+                        .font(.caption2)
+                        .foregroundStyle(FocusStyle.secondaryText)
                 }
-                VStack(spacing: 8) {
-                    targetSummary
-                    relationStatus
-                }
+            }
+            if !compact, let unit = presentation.primaryUnit {
+                Text(unit)
+                    .font(compact ? .caption2 : .caption)
+                    .foregroundStyle(FocusStyle.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
-        .padding(18)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(presentation.statusTint.opacity(0.22), lineWidth: 1)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("workout.heartRate")
+        .accessibilityLabel("Текущий пульс")
+        .accessibilityValue(
+            [presentation.primaryValue, presentation.primaryUnit]
+                .compactMap { $0 }
+                .joined(separator: " ")
+        )
+    }
+
+    @ViewBuilder
+    private func remainingProgress(compact: Bool) -> some View {
+        if let seconds = presentation.remainingSeconds,
+           let fraction = presentation.remainingFraction {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(compact
+                         ? (presentation.remainingTitle == "Лимит заминки" ? "Лимит" : "Осталось")
+                         : (presentation.remainingTitle ?? "Осталось"))
+                        .foregroundStyle(FocusStyle.secondaryText)
+                    Spacer(minLength: 4)
+                    Text(formattedTrainingElapsed(seconds))
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
+                }
+                .font(compact ? .caption2 : .subheadline)
+                .fixedSize(horizontal: false, vertical: true)
+                ProgressView(value: fraction)
+                    .tint(FocusStyle.accent)
+                    .scaleEffect(x: 1, y: 2, anchor: .center)
+                    .frame(height: 12)
+                    .frame(height: compact ? 12 : 44)
+                    .accessibilityHidden(true)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("workout.remaining")
+            .accessibilityLabel(presentation.remainingTitle ?? "Осталось")
+            .accessibilityValue(formattedTrainingElapsed(seconds))
         }
     }
 
     private var targetSummary: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(presentation.targetTitle)
-                .font(.subheadline.weight(.semibold))
+                .font(.title2.bold())
             Text(presentation.targetValue)
-                .font(.headline.weight(.bold))
+                .font(.headline)
                 .monospacedDigit()
-                .foregroundStyle(.primary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Цель")
     }
 
-    private var relationStatus: some View {
+    private func relationStatus(compact: Bool) -> some View {
         Label(
-            presentation.statusTitle ?? "Статус недоступен",
+            presentation.statusTitle == "Пульс недоступен" ? "Нет пульса" : (presentation.statusTitle ?? "Статус недоступен"),
             systemImage: presentation.statusSystemImage ?? "questionmark.circle"
         )
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(presentation.statusTint)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(presentation.statusTint.opacity(0.12), in: Capsule(style: .continuous))
+        .font(compact ? .caption2.weight(.semibold) : .subheadline.weight(.semibold))
+        .foregroundStyle(.primary)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("workout.status")
         .accessibilityLabel(presentation.statusTitle ?? "Статус недоступен")
     }
 
-    private var secondaryMetrics: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { metricItems }
-            VStack(spacing: 8) { metricItems }
-        }
-    }
-
-    @ViewBuilder
-    private var metricItems: some View {
-        ForEach(presentation.metrics) { metric in
-            HStack(spacing: 10) {
-                Image(systemName: metric.systemImage)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(metric.title)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private func secondaryMetrics(compact: Bool) -> some View {
+        let stacked = compact && verticalSizeClass != .compact
+        let layout = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        let metricLayout = stacked
+            ? AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 3))
+        return layout {
+            ForEach(presentation.metrics) { metric in
+                metricLayout {
+                    if stacked {
+                        Image(systemName: metric.systemImage)
+                            .font(.caption2)
+                            .foregroundStyle(FocusStyle.secondaryText)
+                            .accessibilityHidden(true)
+                    } else {
+                        Text(metric.title)
+                            .font(compact ? .caption2 : .caption)
+                            .foregroundStyle(FocusStyle.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if stacked { Spacer(minLength: 0) }
                     Text(metric.value)
-                        .font(.title3.weight(.semibold))
+                        .font(compact ? .caption2.weight(.semibold) : .system(.title3, design: .rounded, weight: .semibold))
                         .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("workout.\(metric.id)")
+                .accessibilityLabel(metric.title)
+                .accessibilityValue(metric.value)
             }
-            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-            .padding(.horizontal, 12)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .accessibilityElement(children: .combine)
         }
     }
 
@@ -1781,15 +2153,15 @@ private struct ActiveWorkoutShell: View {
             guard !presentation.isPreview else { return }
             onStop()
         } label: {
-            Label("Стоп", systemImage: "stop.fill")
-                .font(.headline.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+            if verticalSizeClass == .compact {
+                Text("Стоп")
+            } else {
+                Label("Стоп", systemImage: "stop.fill")
+            }
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .tint(.red)
+        .buttonStyle(FocusActionStyle(destructive: true))
         .disabled(!stopEnabled)
+        .accessibilityIdentifier("workout.stop")
         .accessibilityLabel("Остановить HR-контроль")
         .accessibilityHint(
             stopEnabled
@@ -1805,9 +2177,8 @@ private struct ActiveWorkoutShell: View {
                 guard !presentation.isPreview else { return }
                 showExtendConfirm = true
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .frame(minHeight: 48)
+            .buttonStyle(.borderless)
+            .frame(maxWidth: .infinity, minHeight: 44)
             .accessibilityLabel("Продлить тренировку на 5 минут")
         }
     }
@@ -1831,7 +2202,7 @@ private struct TrainingWorkoutEndingView: View {
                 if let status = trainingEndingStatus(from: stopStatusText) {
                     Label(status.title, systemImage: status.systemImage)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(status.tint)
+                        .foregroundStyle(.primary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
@@ -1841,7 +2212,7 @@ private struct TrainingWorkoutEndingView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(24)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(FocusStyle.surface, in: RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous))
             .padding(.horizontal, 16)
             Spacer(minLength: 24)
         }
@@ -1967,7 +2338,7 @@ private struct TrainingWorkoutSummaryView: View {
                     if let startedAt = result.projection.startedAt {
                         Text(Self.dateFormatter.string(from: startedAt))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FocusStyle.secondaryText)
                     }
                 }
 
@@ -1976,7 +2347,7 @@ private struct TrainingWorkoutSummaryView: View {
                 if isPartial {
                     Label("Часть данных недоступна", systemImage: "info.circle")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FocusStyle.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityElement(children: .combine)
                 }
@@ -2023,22 +2394,19 @@ private struct TrainingWorkoutSummaryView: View {
                 .minimumScaleFactor(0.5)
             Text(label)
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FocusStyle.secondaryText)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 18)
         .padding(.vertical, 20)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(FocusStyle.surface, in: RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(label)
         .accessibilityValue(value)
     }
 
     private var secondaryMetricsSection: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { secondaryMetricItems }
-            VStack(spacing: 8) { secondaryMetricItems }
-        }
+        VStack(spacing: 8) { secondaryMetricItems }
     }
 
     @ViewBuilder
@@ -2050,7 +2418,7 @@ private struct TrainingWorkoutSummaryView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(metric.title)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FocusStyle.secondaryText)
                     Text(metric.value)
                         .font(.headline.weight(.semibold))
                         .monospacedDigit()
@@ -2059,7 +2427,7 @@ private struct TrainingWorkoutSummaryView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
             .padding(.horizontal, 12)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(FocusStyle.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(metric.title)
             .accessibilityValue(metric.value)
@@ -2078,12 +2446,12 @@ private struct TrainingWorkoutSummaryView: View {
             } else {
                 Text("Данные по пульсовым зонам недоступны")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FocusStyle.secondaryText)
                     .accessibilityLabel("Данные по пульсовым зонам недоступны")
             }
         }
         .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(FocusStyle.surface, in: RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous))
     }
 
     private func zoneRow(_ zone: ZoneResult) -> some View {
@@ -2122,18 +2490,18 @@ private struct TrainingWorkoutSummaryView: View {
     private var actions: some View {
         VStack(spacing: 8) {
             Button("Готово", action: onDone)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(FocusActionStyle())
                 .controlSize(.large)
                 .frame(maxWidth: .infinity)
             Button("Открыть статистику", action: onOpenStatistics)
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderless)
                 .controlSize(.large)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, minHeight: 44)
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
+        .background(FocusStyle.background)
     }
 }
 
@@ -2154,30 +2522,30 @@ private struct TrainingWorkoutUnavailableView: View {
                     .accessibilityFocused($headingFocused)
                 Text("Не удалось точно определить результат этой тренировки.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FocusStyle.secondaryText)
                     .multilineTextAlignment(.center)
             }
             .padding(24)
             .frame(maxWidth: .infinity)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(FocusStyle.surface, in: RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous))
             .padding(.horizontal, 16)
             Spacer(minLength: 24)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
                 Button("Готово", action: onDone)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(FocusActionStyle())
                     .controlSize(.large)
                     .frame(maxWidth: .infinity)
                 Button("Открыть статистику", action: onOpenStatistics)
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderless)
                     .controlSize(.large)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
             .padding(.horizontal, 16)
             .padding(.top, 10)
             .padding(.bottom, 8)
-            .background(.ultraThinMaterial)
+            .background(FocusStyle.background)
         }
         .onAppear { headingFocused = true }
     }
@@ -2192,6 +2560,9 @@ private struct ControlSwipeView: View, Equatable {
     @State private var presentSuggestedPicker = false
     @State private var showInfoToast = false
     @State private var showParameters = false
+    #if DEBUG
+    @State private var previewWorkoutActive = false
+    #endif
     @State private var lastAcceptedHeartRatePresentation:
         TrainingUIHeartRateAcceptedPresentation?
     @State private var sessionPresentationAnchor: TrainingSessionPresentationAnchor?
@@ -2199,7 +2570,7 @@ private struct ControlSwipeView: View, Equatable {
     @State private var resolvedTrainingResult: ResolvedTrainingResult?
     @State private var trainingResultUnavailable = false
     let onOpenStatistics: () -> Void
-    private let heroAccent: Color = .orange
+    @Namespace private var trainingTransition
 
     init(manager: BluetoothManager, onOpenStatistics: @escaping () -> Void) {
         self.manager = manager
@@ -2281,13 +2652,31 @@ private struct ControlSwipeView: View, Equatable {
     }
 
     private var usesCompactNavigationTitle: Bool {
-        flowTransitionID != "hub"
+        activeWorkoutPresentation == nil && flowTransitionID != "hub"
+    }
+
+    private var trainingTabBarVisibility: Visibility {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--training-hub-preview=focus-transition") {
+            return previewWorkoutActive ? .hidden : .visible
+        }
+        #endif
+        return activeWorkoutPresentation == nil ? .visible : .hidden
     }
 
     @ViewBuilder
     private var trainingFlowContent: some View {
         #if DEBUG
-        if let resultPreview {
+        if ProcessInfo.processInfo.arguments.contains("--training-hub-preview=focus-transition") {
+            FocusTrainingTransitionPreview(
+                onSettingsTap: { showParameters = true },
+                onActivityChange: { previewWorkoutActive = $0 }
+            )
+        } else if ProcessInfo.processInfo.arguments.contains("--training-hub-preview=focus-settings") {
+            HRParametersFormView().environmentObject(manager)
+        } else if let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--training-hub-preview=focus-devices-") }) {
+            DevicePickerVisualPreview(state: String(argument.split(separator: "-").last ?? "list"))
+        } else if let resultPreview {
             switch resultPreview {
             case .ending(let status):
                 TrainingWorkoutEndingView(stopStatusText: status)
@@ -2328,7 +2717,8 @@ private struct ControlSwipeView: View, Equatable {
                 presentation: activePresentation,
                 onExtend: { manager.extendHrSession(minutes: 5) },
                 onStop: { manager.stopHrControl() },
-                stopEnabled: manager.canStopPresentedWorkout
+                stopEnabled: manager.canStopPresentedWorkout,
+                transitionNamespace: trainingTransition
             )
         } else {
             trainingHub
@@ -2350,7 +2740,8 @@ private struct ControlSwipeView: View, Equatable {
             onDurationSelect: { manager.hrDurationMinutes = $0 },
             onSettingsTap: { showParameters = true },
             onStart: { manager.startHrControl() },
-            onCancel: { manager.cancelNativeHeartRatePreflight() }
+            onCancel: { manager.cancelNativeHeartRatePreflight() },
+            transitionNamespace: trainingTransition
         )
         .onAppear { manager.trainingHubDidAppear() }
         .onDisappear { manager.trainingHubDidDisappear() }
@@ -2505,38 +2896,20 @@ private struct ControlSwipeView: View, Equatable {
     var body: some View {
         NavigationStack {
             ZStack {
-                LinearGradient(
-                    colors: [Color(.systemGroupedBackground), Color(.secondarySystemGroupedBackground)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-
-                Circle()
-                    .fill(heroAccent.opacity(0.16))
-                    .frame(width: 260, height: 260)
-                    .blur(radius: 40)
-                    .offset(x: 135, y: -280)
-                    .allowsHitTesting(false)
-
-                Circle()
-                    .fill(Color.teal.opacity(0.1))
-                    .frame(width: 230, height: 230)
-                    .blur(radius: 38)
-                    .offset(x: -140, y: 220)
-                    .allowsHitTesting(false)
+                FocusStyle.background.ignoresSafeArea()
 
                 trainingFlowContent
                     .id(flowTransitionID)
                     .transition(.opacity)
             }
             .animation(
-                reduceMotion ? nil : .easeInOut(duration: 0.2),
+                reduceMotion ? nil : .smooth(duration: 0.38),
                 value: flowTransitionID
             )
             .navigationTitle("Тренировка")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(usesCompactNavigationTitle ? .visible : .hidden, for: .navigationBar)
+            .toolbar(trainingTabBarVisibility, for: .tabBar)
             .navigationDestination(isPresented: $showParameters) {
                 HRParametersFormView()
                     .environmentObject(manager)
@@ -3047,7 +3420,7 @@ private struct HRParametersFormView: View {
         Form {
             Section(
                 header: Text("Профиль"),
-                footer: Text("Профиль разделяет целевой пульс, длительность, заминку, кардио‑зоны, историю тренировок и training export. CSV и session summary теперь выгружаются только по активному профилю, а для объединения логов с разных телефонов дополнительно пишется installation_id.")
+                footer: Text("У каждого профиля свои настройки, история и экспорт тренировок.")
             ) {
                 Picker("Активный профиль", selection: Binding(
                     get: { manager.activeUserProfileID },
@@ -3086,6 +3459,115 @@ private struct HRParametersFormView: View {
                 }
             }
 
+            Section(header: Text("Целевой пульс")) {
+                Stepper(value: Binding(
+                    get: { manager.hrTargetBPM },
+                    set: { manager.hrTargetBPM = max(60, min(220, $0)) }
+                ), in: 60...220, step: 5) {
+                    Text("Целевой пульс: \(manager.hrTargetBPM) bpm")
+                        .monospacedDigit()
+                }
+                Picker("Быстрый выбор", selection: Binding(
+                    get: { manager.hrTargetBPM },
+                    set: { manager.hrTargetBPM = $0 }
+                )) {
+                    ForEach([110, 120, 130, 135, 140], id: \.self) { t in
+                        Text("\(t)").tag(t)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section(header: Text("Длительность")) {
+                Stepper(value: Binding(
+                    get: { manager.hrDurationMinutes },
+                    set: { manager.hrDurationMinutes = max(1, min(120, $0)) }
+                ), in: 1...120, step: 1) {
+                    Text("Время: \(manager.hrDurationMinutes) мин")
+                        .monospacedDigit()
+                }
+                Picker("Быстрый выбор", selection: Binding(
+                    get: { manager.hrDurationMinutes },
+                    set: { manager.hrDurationMinutes = $0 }
+                )) {
+                    ForEach([5, 10, 15, 20, 30], id: \.self) { m in
+                        Text("\(m)").tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section(
+                header: Text("Заминка"),
+                footer: Text("Во время заминки скорость только снижается. Завершение — когда скорость ≤ минимума и пульс ≤ цели 20 сек подряд, либо по таймауту времени заминки.")
+            ) {
+                Stepper(value: Binding(
+                    get: { manager.hrCooldownTargetBpm },
+                    set: { manager.hrCooldownTargetBpm = max(80, min(140, $0)) }
+                ), in: 80...140, step: 5) {
+                    Text("Целевой пульс: \(manager.hrCooldownTargetBpm) bpm")
+                        .monospacedDigit()
+                }
+                Stepper(value: Binding(
+                    get: { manager.hrCooldownMinSpeed },
+                    set: {
+                        let v = max(2.0, min(6.0, $0))
+                        manager.hrCooldownMinSpeed = (v * 10).rounded() / 10.0
+                    }
+                ), in: 2.0...6.0, step: 0.1) {
+                    Text(String(format: "Минимальная скорость: %.1f км/ч", manager.hrCooldownMinSpeed))
+                        .monospacedDigit()
+                }
+                Stepper(value: Binding(
+                    get: { manager.hrCooldownMaxMinutes },
+                    set: { manager.hrCooldownMaxMinutes = max(1, min(30, $0)) }
+                ), in: 1...30, step: 1) {
+                    Text("Время заминки: \(manager.hrCooldownMaxMinutes) мин")
+                        .monospacedDigit()
+                }
+            }
+
+            Section(
+                header: Text("Кардио‑зоны"),
+                footer: Text("Границы задаются верхней границей зоны. Зона 5 начинается выше границы зоны 4.")
+            ) {
+                Stepper(value: Binding(
+                    get: { manager.hrZone1Max },
+                    set: { manager.hrZone1Max = max(80, min(200, $0)) }
+                ), in: 80...200, step: 1) {
+                    Text("Зона 1: ≤ \(manager.hrZone1Max) bpm")
+                        .monospacedDigit()
+                }
+
+                Stepper(value: Binding(
+                    get: { manager.hrZone2Max },
+                    set: { manager.hrZone2Max = max(81, min(210, $0)) }
+                ), in: 81...210, step: 1) {
+                    Text("Зона 2: ≤ \(manager.hrZone2Max) bpm")
+                        .monospacedDigit()
+                }
+
+                Stepper(value: Binding(
+                    get: { manager.hrZone3Max },
+                    set: { manager.hrZone3Max = max(82, min(220, $0)) }
+                ), in: 82...220, step: 1) {
+                    Text("Зона 3: ≤ \(manager.hrZone3Max) bpm")
+                        .monospacedDigit()
+                }
+
+                Stepper(value: Binding(
+                    get: { manager.hrZone4Max },
+                    set: { manager.hrZone4Max = max(83, min(230, $0)) }
+                ), in: 83...230, step: 1) {
+                    Text("Зона 4: ≤ \(manager.hrZone4Max) bpm")
+                        .monospacedDigit()
+                }
+
+                Text("Зона 5: ≥ \(manager.hrZone4Max + 1) bpm")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+
             Section(header: Text("Параметры")) {
                 Toggle(isOn: Binding(
                     get: { manager.hrAdaptiveStepEnabled },
@@ -3107,7 +3589,7 @@ private struct HRParametersFormView: View {
                             Image(systemName: "info.circle")
                                 .font(.system(size: 16, weight: .semibold))
                                 .foregroundStyle(.secondary)
-                                .padding(.leading, 4)
+                                .frame(width: 44, height: 44)
                         }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("Что такое адаптивный шаг")
@@ -3268,6 +3750,8 @@ private struct HRParametersFormView: View {
                         get: { previewHrBpm },
                         set: { previewHrBpm = max(60, min(220, $0)) }
                     ), in: 60...220, step: 1)
+                    .accessibilityLabel("Пульс для примера")
+                    .accessibilityValue("\(sampleBpm) ударов в минуту")
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -3311,115 +3795,6 @@ private struct HRParametersFormView: View {
                 }
             }
 
-            Section(header: Text("Целевой пульс")) {
-                Stepper(value: Binding(
-                    get: { manager.hrTargetBPM },
-                    set: { manager.hrTargetBPM = max(60, min(220, $0)) }
-                ), in: 60...220, step: 5) {
-                    Text("Целевой пульс: \(manager.hrTargetBPM) bpm")
-                        .monospacedDigit()
-                }
-                Picker("Быстрый выбор", selection: Binding(
-                    get: { manager.hrTargetBPM },
-                    set: { manager.hrTargetBPM = $0 }
-                )) {
-                    ForEach([110, 120, 130, 135, 140], id: \.self) { t in
-                        Text("\(t)").tag(t)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Section(header: Text("Длительность")) {
-                Stepper(value: Binding(
-                    get: { manager.hrDurationMinutes },
-                    set: { manager.hrDurationMinutes = max(1, min(120, $0)) }
-                ), in: 1...120, step: 1) {
-                    Text("Длительность: \(manager.hrDurationMinutes) мин")
-                        .monospacedDigit()
-                }
-                Picker("Быстрый выбор", selection: Binding(
-                    get: { manager.hrDurationMinutes },
-                    set: { manager.hrDurationMinutes = $0 }
-                )) {
-                    ForEach([5, 10, 15, 20, 30], id: \.self) { m in
-                        Text("\(m)").tag(m)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Section(
-                header: Text("Заминка"),
-                footer: Text("Во время заминки скорость только снижается. Завершение — когда скорость ≤ минимума и пульс ≤ цели 20 сек подряд, либо по таймауту времени заминки.")
-            ) {
-                Stepper(value: Binding(
-                    get: { manager.hrCooldownTargetBpm },
-                    set: { manager.hrCooldownTargetBpm = max(80, min(140, $0)) }
-                ), in: 80...140, step: 5) {
-                    Text("Целевой пульс: \(manager.hrCooldownTargetBpm) bpm")
-                        .monospacedDigit()
-                }
-                Stepper(value: Binding(
-                    get: { manager.hrCooldownMinSpeed },
-                    set: {
-                        let v = max(2.0, min(6.0, $0))
-                        manager.hrCooldownMinSpeed = (v * 10).rounded() / 10.0
-                    }
-                ), in: 2.0...6.0, step: 0.1) {
-                    Text(String(format: "Минимальная скорость: %.1f км/ч", manager.hrCooldownMinSpeed))
-                        .monospacedDigit()
-                }
-                Stepper(value: Binding(
-                    get: { manager.hrCooldownMaxMinutes },
-                    set: { manager.hrCooldownMaxMinutes = max(1, min(30, $0)) }
-                ), in: 1...30, step: 1) {
-                    Text("Время заминки: \(manager.hrCooldownMaxMinutes) мин")
-                        .monospacedDigit()
-                }
-            }
-
-            Section(
-                header: Text("Кардио‑зоны"),
-                footer: Text("Границы задаются верхней границей зоны. Зона 5 начинается выше границы зоны 4.")
-            ) {
-                Stepper(value: Binding(
-                    get: { manager.hrZone1Max },
-                    set: { manager.hrZone1Max = max(80, min(200, $0)) }
-                ), in: 80...200, step: 1) {
-                    Text("Зона 1: ≤ \(manager.hrZone1Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone2Max },
-                    set: { manager.hrZone2Max = max(81, min(210, $0)) }
-                ), in: 81...210, step: 1) {
-                    Text("Зона 2: ≤ \(manager.hrZone2Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone3Max },
-                    set: { manager.hrZone3Max = max(82, min(220, $0)) }
-                ), in: 82...220, step: 1) {
-                    Text("Зона 3: ≤ \(manager.hrZone3Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone4Max },
-                    set: { manager.hrZone4Max = max(83, min(230, $0)) }
-                ), in: 83...230, step: 1) {
-                    Text("Зона 4: ≤ \(manager.hrZone4Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Text("Зона 5: ≥ \(manager.hrZone4Max + 1) bpm")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-            }
-
             Section(
                 header: Text("Тренд пульса"),
                 footer: Text("Меньше окно и больше α — тренд живее. Больше окно и ниже лимит — спокойнее.")
@@ -3436,6 +3811,8 @@ private struct HRParametersFormView: View {
                         get: { manager.hrTrendWindowSeconds },
                         set: { manager.hrTrendWindowSeconds = max(15, min(30, $0)) }
                     ), in: 15...30, step: 1)
+                    .accessibilityLabel("Окно тренда")
+                    .accessibilityValue("\(Int(manager.hrTrendWindowSeconds)) секунд")
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -3450,6 +3827,8 @@ private struct HRParametersFormView: View {
                         get: { manager.hrTrendEmaAlpha },
                         set: { manager.hrTrendEmaAlpha = max(0.2, min(0.4, $0)) }
                     ), in: 0.2...0.4, step: 0.05)
+                    .accessibilityLabel("Сглаживание")
+                    .accessibilityValue(String(format: "%.2f", manager.hrTrendEmaAlpha))
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -3465,11 +3844,14 @@ private struct HRParametersFormView: View {
                         get: { manager.hrTrendSlopeMaxBpmPerSecond * 60.0 },
                         set: { manager.hrTrendSlopeMaxBpmPerSecond = max(0.3, min(1.0, $0 / 60.0)) }
                     ), in: 18...60, step: 2)
+                    .accessibilityLabel("Лимит тренда")
+                    .accessibilityValue("\(Int(round(manager.hrTrendSlopeMaxBpmPerSecond * 60))) ударов в минуту за минуту")
                 }
             }
         }
         .navigationTitle("Параметры")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
         .onAppear {
             previewHrBpm = Double(manager.hrTargetBPM)
         }
@@ -3572,6 +3954,8 @@ private struct HRParametersFormView: View {
 
 private struct WorkoutStatsView: View {
     @EnvironmentObject private var manager: BluetoothManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private enum StatsScope: String, CaseIterable, Hashable {
         case week
@@ -3605,7 +3989,7 @@ private struct WorkoutStatsView: View {
         Binding(
             get: { scope },
             set: { newValue in
-                withAnimation(.easeInOut(duration: 0.25)) {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
                     scope = newValue
                 }
             }
@@ -3633,8 +4017,8 @@ private struct WorkoutStatsView: View {
                     }
 
                     WorkoutHistoryCard(
-                        entries: manager.telemetryV2WorkoutHistory,
-                        readState: manager.telemetryV2WorkoutHistoryState,
+                        entries: displayedHistoryEntries,
+                        readState: displayedHistoryReadState,
                         hasMore: manager.telemetryV2WorkoutHistoryHasMore,
                         exportingWorkoutID: exportingWorkoutID,
                         onRetry: { manager.refreshWorkoutHistoryFromV2(reset: true) },
@@ -3645,6 +4029,8 @@ private struct WorkoutStatsView: View {
                     .padding(.bottom)
                 }
             }
+            .background(FocusStyle.background)
+            .navigationTitle("Статистика")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("План") { showPlanSheet = true }
@@ -3659,6 +4045,29 @@ private struct WorkoutStatsView: View {
                 exportingWorkoutID = nil
             }
         }
+    }
+
+    private var displayedHistoryEntries: [WorkoutHistoryProjection] {
+        #if DEBUG
+        if let preview = FocusStatisticsPreview.current { return preview.entries }
+        #endif
+        return manager.telemetryV2WorkoutHistory
+    }
+
+    private var displayedHistoryReadState: BluetoothManager.WorkoutReadState {
+        #if DEBUG
+        if let preview = FocusStatisticsPreview.current { return preview.state }
+        #endif
+        return manager.telemetryV2WorkoutHistoryState
+    }
+
+    private func displayedStatistics(for key: String) -> (
+        snapshot: WorkoutStatisticsProjection?, state: BluetoothManager.WorkoutReadState
+    ) {
+        #if DEBUG
+        if let preview = FocusStatisticsPreview.current { return (preview.statistics, preview.state) }
+        #endif
+        return (manager.telemetryV2Statistics[key], manager.telemetryV2StatisticsState[key] ?? .idle)
     }
 
     private func startWorkoutAnalysisExport(_ entry: WorkoutHistoryProjection) {
@@ -3727,6 +4136,7 @@ private struct WorkoutStatsView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(
@@ -3736,6 +4146,9 @@ private struct WorkoutStatsView: View {
             }
         )
         .task(id: "\(manager.workoutStatisticsKey(for: interval))|\(manager.telemetryV2ProjectionGeneration)") {
+            #if DEBUG
+            guard FocusStatisticsPreview.current == nil else { return }
+            #endif
             manager.refreshWorkoutStatisticsFromV2(for: interval)
         }
     }
@@ -3746,8 +4159,11 @@ private struct WorkoutStatsView: View {
                 shiftPeriod(by: -1, for: scope)
             } label: {
                 Image(systemName: "chevron.left")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(scope == .week ? "Предыдущая неделя" : "Предыдущий месяц")
 
             Spacer()
 
@@ -3761,8 +4177,11 @@ private struct WorkoutStatsView: View {
                 shiftPeriod(by: 1, for: scope)
             } label: {
                 Image(systemName: "chevron.right")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(scope == .week ? "Следующая неделя" : "Следующий месяц")
             .disabled(!canGoForward(for: scope))
             .opacity(canGoForward(for: scope) ? 1.0 : 0.35)
         }
@@ -3772,8 +4191,7 @@ private struct WorkoutStatsView: View {
     @ViewBuilder
     private func statsCard(scope: StatsScope, title: String, interval: DateInterval) -> some View {
         let key = manager.workoutStatisticsKey(for: interval)
-        let stats = manager.telemetryV2Statistics[key]
-        let state = manager.telemetryV2StatisticsState[key] ?? .idle
+        let (stats, state) = displayedStatistics(for: key)
         let totalTime = formatTotalTime(stats?.totalDurationSeconds)
         let beatsValue = stats?.averageBeatsPerMetre.map { String(format: "%.2f", $0) } ?? "—"
 
@@ -3783,23 +4201,28 @@ private struct WorkoutStatsView: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(.primary)
 
-                HStack(spacing: 16) {
+                let metricLayout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
+                    : AnyLayout(HStackLayout(spacing: 16))
+                metricLayout {
                     StatTile(title: "Время", value: totalTime, unit: "")
                     StatTile(title: "Удары/м", value: beatsValue, unit: "")
                 }
 
                 if case .loading = state, stats == nil {
-                    ProgressView("Чтение Telemetry V2…")
+                    ProgressView("Загружаем тренировки…")
                         .font(.caption)
                 }
                 if case let .failed(message) = state {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Telemetry V2 недоступна: \(message)")
-                            .font(.caption)
-                            .foregroundColor(.red)
+                        Text("Не удалось обновить статистику")
+                            .font(.subheadline.weight(.semibold))
+                        DisclosureGroup("Сведения об ошибке") {
+                            Text(message).font(.caption).textSelection(.enabled)
+                        }
                         if stats != nil {
-                            Text("Ниже показан последний успешный V2 snapshot; обновление не выполнено.")
-                                .font(.caption2)
+                            Text("Показаны последние загруженные данные; обновление не выполнено.")
+                                .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                         Button("Повторить") {
@@ -3817,15 +4240,15 @@ private struct WorkoutStatsView: View {
                             + statisticsExclusionReasonText(stats.exclusionReasonCounts)
                             + ". Валидные суммы сохранены; исключённые тренировки не считаются нулями."
                     )
-                    .font(.caption2)
-                    .foregroundColor(.orange)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 }
 
                 if let stats,
                    stats.workoutsWithUnavailableDuration > 0
                     || stats.workoutsWithUnavailableZones > 0 {
                     Text("Часть метрик недоступна; пропуски показаны как «—» и не заменены нулями.")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
@@ -3855,7 +4278,10 @@ private struct WorkoutStatsView: View {
 
     @ViewBuilder
     private func zoneSummaryList(scope: StatsScope, zoneSeconds: [Double?]?) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Текущие границы зон")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             ForEach(0..<5, id: \.self) { idx in
                 let seconds = zoneSeconds.flatMap { idx < $0.count ? $0[idx] : nil }
                 let monthPlan = idx < manager.zonePlanMinutes.count ? manager.zonePlanMinutes[idx] : 0
@@ -3990,32 +4416,32 @@ private struct ZoneSummaryRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(achieved ? color : color)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
                 Text(rangeText)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
                 if achieved {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundColor(color)
                 }
             }
             HStack(spacing: 6) {
                 Text("Факт \(ZonePlanProgress.durationText(seconds: actualSeconds))")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundColor(.secondary)
                 Text("·")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundColor(.secondary)
                 if planSeconds > 0 {
                     Text("План \(ZonePlanProgress.durationText(seconds: planSeconds))")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
                     Text("План —")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
@@ -4025,6 +4451,8 @@ private struct ZoneSummaryRow: View {
                     .tint(color)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(achieved ? "План выполнен" : "")
     }
 }
 
@@ -4095,8 +4523,9 @@ private struct ZonePlanRow: View {
                 Text("\(value) мин/мес")
                     .font(.callout.weight(.semibold))
                     .monospacedDigit()
-                Stepper("", value: $value, in: 0...2000, step: step)
+                Stepper(title, value: $value, in: 0...2000, step: step)
                     .labelsHidden()
+                    .accessibilityValue("\(value) минут в месяц")
             }
         }
         .padding(.vertical, 4)
@@ -4127,61 +4556,55 @@ private struct WorkoutHistoryCard: View {
                     .foregroundColor(.secondary)
 
                 if case .loading = readState, entries.isEmpty {
-                    ProgressView("Чтение Telemetry V2…")
+                    ProgressView("Загружаем тренировки…")
                         .font(.caption)
                 } else if case let .failed(message) = readState, entries.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("История Telemetry V2 недоступна: \(message)")
-                            .font(.caption2)
-                            .foregroundColor(.red)
+                        Text("Не удалось загрузить историю")
+                            .font(.subheadline.weight(.semibold))
+                        DisclosureGroup("Сведения об ошибке") {
+                            Text(message).font(.caption).textSelection(.enabled)
+                        }
                         Button("Повторить", action: onRetry)
                             .buttonStyle(.bordered)
                     }
                 } else if entries.isEmpty {
-                    Text("Пока нет данных")
-                        .font(.caption2)
+                    Text("Завершённые тренировки появятся здесь")
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(entries) { entry in
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(entry.startedAt.map(Self.dateFormatter.string(from:)) ?? "Дата неизвестна")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundColor(.primary)
-                                Text("Время: \(formatDuration(entry.durationSeconds))")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text(provenanceText(for: entry))
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundColor(entry.origin == .nativeV2 ? .blue : .orange)
-                                if !entry.quality.warnings.isEmpty {
-                                    Text(entry.quality.warnings.joined(separator: "; "))
-                                        .font(.caption2)
-                                        .foregroundColor(.orange)
-                                }
-                                if let healthKitID = entry.healthKitWorkoutIdentifier {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(entry.startedAt.map(Self.dateFormatter.string(from:)) ?? "Дата неизвестна")
+                                .font(.headline)
+                            VStack(spacing: 8) {
+                                LabeledContent("Время", value: formatDuration(entry.durationSeconds))
+                                LabeledContent("Ср. пульс", value: averageBpmText(for: entry))
+                                LabeledContent("Ср. скорость", value: averageSpeedText(for: entry))
+                                LabeledContent("Удары/м", value: entry.beatsPerMetre.map { String(format: "%.2f", $0) } ?? "—")
+                                LabeledContent("Цель", value: entry.targetHeartRate.map(String.init) ?? "—")
+                            }
+                            .font(.subheadline)
+                            .monospacedDigit()
+                            Text(provenanceText(for: entry))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if !entry.quality.warnings.isEmpty {
+                                Label(entry.quality.warnings.joined(separator: "; "), systemImage: "info.circle")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let healthKitID = entry.healthKitWorkoutIdentifier {
+                                DisclosureGroup("Сведения о записи") {
                                     Text(healthKitLinkageText(for: entry, identifier: healthKitID))
-                                        .font(.caption2.monospaced())
-                                        .foregroundColor(.secondary)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
                                 }
-                            }
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 4) {
-                                Text("Удары/м: \(entry.beatsPerMetre.map { String(format: "%.2f", $0) } ?? "—")")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text("Цель: \(entry.targetHeartRate.map(String.init) ?? "—")")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text("Ср. скорость: \(averageSpeedText(for: entry))")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text("Ср. пульс: \(averageBpmText(for: entry))")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundColor(entry.averageHeartRate == nil ? .secondary : .red)
+                                .font(.subheadline)
                             }
                         }
+                        .padding(.vertical, 8)
                         if entry.origin == .nativeV2 {
                             Button {
                                 onExportAnalysis(entry)
@@ -4216,7 +4639,7 @@ private struct WorkoutHistoryCard: View {
 
                     if case let .failed(message) = readState {
                         Text("Следующая страница недоступна: \(message)")
-                            .font(.caption2)
+                            .font(.caption)
                             .foregroundColor(.red)
                     }
                 }

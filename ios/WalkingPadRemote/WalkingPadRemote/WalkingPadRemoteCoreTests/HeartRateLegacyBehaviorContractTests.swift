@@ -305,16 +305,23 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(hubBody.contains("guard !presentation.isPreview else { return }"))
         XCTAssertTrue(hubBody.contains("onStart()"))
         XCTAssertFalse(hubBody.contains("BluetoothManager"))
-        XCTAssertFalse(hubBody.contains(".safeAreaInset"))
+        XCTAssertTrue(hubBody.contains("TrainingVerticalGuide("))
+        XCTAssertTrue(hubBody.contains("transitionNamespace"))
+        XCTAssertTrue(hubBody.contains("TrainingDurationPresetSelector("))
+        XCTAssertTrue(hubBody.contains("id: \"training.zones\""))
+        XCTAssertTrue(hubBody.contains("id: \"training.time\""))
+        let hubLayout = try functionBody("var body: some View", in: hubBody)
         assertOrdered(
             [
-                "TrainingReadinessStrip(",
-                "hero",
+                "ScrollView",
+                "header\n",
+                "hero(headerHeight:",
                 "startArea",
-                ".padding(.top, 6)",
             ],
-            in: hubBody
+            in: hubLayout
         )
+        XCTAssertTrue(hubBody.contains("TrainingReadinessStrip("))
+        XCTAssertTrue(contentBody.contains(".environment(\\.trainingCanvasFrame, canvas.frame(in: .global))"))
 
         let controlView = try functionBody(
             "private struct ControlSwipeView: View",
@@ -407,12 +414,12 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(readinessItem.contains(".buttonStyle(.plain)"))
         XCTAssertTrue(readinessItem.contains("else {\n            chip"))
         XCTAssertTrue(
-            readinessChip.contains(".frame(maxWidth: .infinity, alignment: .leading)")
+            readinessChip.contains(".frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)")
         )
-        XCTAssertTrue(readinessChip.contains("HStack(spacing: 4)"))
-        XCTAssertTrue(readinessChip.contains(".lineLimit(1)"))
-        XCTAssertTrue(readinessChip.contains(".minimumScaleFactor(0.7)"))
-        XCTAssertFalse(readinessChip.contains("VStack(alignment: .leading"))
+        XCTAssertTrue(readinessChip.contains("VStack(alignment: .leading"))
+        XCTAssertTrue(readinessChip.contains(".fixedSize(horizontal: false, vertical: true)"))
+        XCTAssertFalse(readinessChip.contains(".lineLimit(1)"))
+        XCTAssertFalse(readinessChip.contains(".minimumScaleFactor"))
         XCTAssertFalse(readinessChip.contains("Доступен"))
 
         XCTAssertTrue(previewFixtures.contains("treadmillReady: Bool = true"))
@@ -687,25 +694,29 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(shell.contains("TrainingZoneScale("))
         XCTAssertTrue(shell.contains("presentation.statusTitle"))
         XCTAssertTrue(shell.contains("Button(\"+5 мин\")"))
-        XCTAssertTrue(shell.contains(".controlSize(.large)"))
-        XCTAssertTrue(shell.contains(".frame(minHeight: 48)"))
+        XCTAssertTrue(shell.contains(".buttonStyle(FocusActionStyle(destructive: true))"))
+        XCTAssertTrue(shell.contains("minHeight: 44"))
         XCTAssertTrue(shell.contains("Label(\"Стоп\""))
         XCTAssertTrue(shell.contains("guard !presentation.isPreview else { return }"))
         XCTAssertTrue(shell.contains("ScrollView"))
         XCTAssertTrue(shell.contains("dynamicTypeSize.isAccessibilitySize"))
-        XCTAssertTrue(shell.contains(".safeAreaInset(edge: .top"))
-        XCTAssertTrue(shell.contains(".dynamicTypeSize(...DynamicTypeSize.xxxLarge)"))
-        XCTAssertFalse(shell.contains(".safeAreaInset(edge: .bottom"))
-        XCTAssertFalse(shell.lowercased().contains("picture in picture"))
-        XCTAssertFalse(shell.lowercased().contains("pip"))
-        assertOrdered(
-            [
-                "secondaryMetrics",
-                "stopControl",
-                "extendControl",
-            ],
-            in: shell
-        )
+        XCTAssertTrue(shell.contains(".safeAreaInset(edge: .bottom"))
+        XCTAssertFalse(shell.contains(".dynamicTypeSize(...DynamicTypeSize.xxxLarge)"))
+        XCTAssertTrue(shell.contains("pictureInPictureReserve"))
+        XCTAssertTrue(shell.contains("id: \"training.zones\""))
+        XCTAssertTrue(shell.contains("id: \"training.time\""))
+        XCTAssertTrue(shell.contains(".accessibilityHidden(!exposesGeometryProbe)"))
+        XCTAssertTrue(shell.contains(".disabled(!stopEnabled)"))
+        XCTAssertTrue(shell.contains(".alert(\"Добавить 5 минут?\""))
+        let shellBody = try functionBody("var body: some View", in: shell)
+        assertOrdered(["pictureInPictureReserve", "workoutCard(verticalHero:", "workoutDock(scrolling:"], in: shellBody)
+        let dock = try functionBody("private func workoutDock(", in: shell)
+        assertOrdered(["secondaryMetrics(compact:", "stopControl"], in: dock)
+        XCTAssertTrue(shellBody.contains(".layoutPriority(1)"))
+        let detailsStart = try XCTUnwrap(shellBody.range(of: ".sheet(isPresented: $showDetails)"))
+        let detailsEnd = try XCTUnwrap(shellBody.range(of: ".alert(\"Добавить 5 минут?\""))
+        let details = String(shellBody[detailsStart.lowerBound..<detailsEnd.lowerBound])
+        XCTAssertTrue(details.contains("stopControl"), "Details must keep the existing Stop action reachable")
         XCTAssertFalse(shell.contains("BluetoothManager"))
         for removedFocusDetail in [
             "Решение алгоритма", "След. решение", "Прогноз", "Удары/м",
@@ -765,6 +776,28 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(fixtures.contains("startHrControl"))
         XCTAssertFalse(fixtures.contains("stopHrControl"))
         XCTAssertFalse(fixtures.contains("sendTreadmill"))
+    }
+
+    func testActiveTimeAndPulsePresentationRemainBoundToRuntimeFacts() throws {
+        let production = try functionBody(
+            "private func makeProductionActiveWorkoutPresentation(", in: contentViewSource
+        )
+        let mapping = try functionBody(
+            "private func makeHRControlActivePresentation(", in: contentViewSource
+        )
+        let shell = try functionBody("private struct ActiveWorkoutShell: View", in: contentViewSource)
+        XCTAssertTrue(production.contains("let hasPhaseCountdown = manager.isHrControlRunning"))
+        XCTAssertTrue(production.contains("(!isCooldown || manager.hrCooldownRemainingSeconds > 0)"))
+        XCTAssertTrue(production.contains("manager.hrCooldownRemainingSeconds : manager.hrRemainingSeconds"))
+        XCTAssertTrue(production.contains("manager.hrCooldownProgress : manager.hrProgress"))
+        XCTAssertFalse(production.contains("manager.hrDurationMinutes"))
+        XCTAssertTrue(mapping.contains("1 - min(1, max(0, $0))"))
+        XCTAssertTrue(mapping.contains("\"Лимит заминки\" : \"До заминки\""))
+        XCTAssertTrue(mapping.contains("presentedHeartRate != nil && !heartRatePresentation.isHeld"))
+        XCTAssertTrue(shell.contains("!reduceMotion && scenePhase == .active && presentation.pulseEnabled"))
+        XCTAssertFalse(shell.contains("Timer"))
+        XCTAssertFalse(shell.contains("Date()"))
+        XCTAssertFalse(shell.contains("hrDurationMinutes"))
     }
 
     func testWorkoutResultFlowUsesExactNativeProjectionAndFactualPresentationData() throws {

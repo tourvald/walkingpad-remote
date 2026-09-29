@@ -8,6 +8,9 @@ import AudioToolbox
 #endif
 
 struct PlankTimerView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .largeTitle) private var timerValueSize: CGFloat = 58
     private let minBaseDurationSeconds: Int = 5
     private let maxDurationSeconds: Int = 1800
     private let holdToMeasureDuration: Double = 3.0
@@ -133,7 +136,7 @@ struct PlankTimerView: View {
         case .cancelCurrentSet:
             return [Color.red.opacity(0.6), Color.red]
         case .none:
-            return [Color.accentColor.opacity(0.55), Color.accentColor]
+            return [FocusStyle.accent, FocusStyle.accent]
         }
     }
 
@@ -250,61 +253,19 @@ struct PlankTimerView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                LinearGradient(
-                    colors: [Color(.systemGroupedBackground), Color(.secondarySystemGroupedBackground)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-
-                Circle()
-                    .fill(stateAccentColor.opacity(0.2))
-                    .frame(width: 260, height: 260)
-                    .blur(radius: 32)
-                    .offset(x: 140, y: -260)
-                    .allowsHitTesting(false)
-
-                Circle()
-                    .fill(Color.blue.opacity(0.14))
-                    .frame(width: 230, height: 230)
-                    .blur(radius: 38)
-                    .offset(x: -150, y: -140)
-                    .allowsHitTesting(false)
-
-                Circle()
-                    .fill(Color.teal.opacity(0.1))
-                    .frame(width: 280, height: 280)
-                    .blur(radius: 42)
-                    .offset(x: -120, y: 300)
-                    .allowsHitTesting(false)
+                FocusStyle.background.ignoresSafeArea()
 
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 16) {
                         VStack(alignment: .leading, spacing: 14) {
-                            HStack(alignment: .top, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Планка")
-                                        .font(.title3.weight(.bold))
-                                    Text("Фокус на технике, стабильный рост нагрузки и аккуратный контроль прогрессии.")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer(minLength: 0)
-                                Label(modeLabel, systemImage: modeIcon)
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(
-                                        Capsule(style: .continuous)
-                                            .fill(stateAccentColor.opacity(0.2))
-                                    )
-                                    .overlay(
-                                        Capsule(style: .continuous)
-                                            .stroke(stateAccentColor.opacity(0.4), lineWidth: 1)
-                                    )
-                            }
+                            Label(modeLabel, systemImage: modeIcon)
+                                .font(.headline)
+                                .foregroundStyle(FocusStyle.accent)
 
-                            HStack(spacing: 10) {
+                            let metricsLayout = dynamicTypeSize.isAccessibilitySize
+                                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                                : AnyLayout(HStackLayout(spacing: 10))
+                            metricsLayout {
                                 heroMetric(
                                     icon: "bolt.circle.fill",
                                     title: "База",
@@ -322,38 +283,13 @@ struct PlankTimerView: View {
                                 )
                             }
                         }
-                        .padding(16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            stateAccentColor.opacity(0.22),
-                                            Color(.secondarySystemGroupedBackground).opacity(0.92)
-                                        ],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .stroke(stateAccentColor.opacity(0.3), lineWidth: 1)
-                        )
+                        .padding(20)
+                        .background(FocusStyle.surface, in: RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous))
 
                         VStack(spacing: 12) {
                             ZStack {
                                 Circle()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [
-                                                Color(.secondarySystemGroupedBackground),
-                                                Color(.systemBackground)
-                                            ],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
+                                    .fill(FocusStyle.surface)
 
                                 Circle()
                                     .stroke(Color(.tertiarySystemFill), lineWidth: 14)
@@ -371,26 +307,37 @@ struct PlankTimerView: View {
                                     .rotationEffect(.degrees(-90))
                                     .opacity((isRunning || isMeasuring || holdAction != nil) ? 1.0 : 0.55)
 
-                                Circle()
-                                    .stroke(stateAccentColor.opacity(0.16), lineWidth: 3)
-                                    .padding(24)
-
                                 VStack(spacing: 6) {
                                     Text(timeText)
-                                        .font(.system(size: 58, weight: .bold, design: .rounded))
+                                        .font(dynamicTypeSize.isAccessibilitySize
+                                            ? .system(.largeTitle, design: .rounded, weight: .bold)
+                                            : .system(size: timerValueSize, weight: .bold, design: .rounded))
                                         .monospacedDigit()
                                         .minimumScaleFactor(0.65)
                                         .foregroundColor(.primary)
-                                    Text(durationCaption)
-                                        .font(.caption2.weight(.medium))
-                                        .foregroundColor(.secondary)
+                                    if !dynamicTypeSize.isAccessibilitySize {
+                                        Text(durationCaption)
+                                            .font(.caption.weight(.medium))
+                                            .foregroundColor(.secondary)
+                                    }
                                 }
                                 .padding(.horizontal, 12)
                             }
-                            .frame(width: 270, height: 270)
+                            .aspectRatio(1, contentMode: .fit)
+                            .frame(maxWidth: 340)
                             .contentShape(Circle())
                             .accessibilityLabel("Таймер планки")
+                            .accessibilityValue("\(timeText), \(durationCaption)")
                             .accessibilityAddTraits(.isButton)
+                            .accessibilityAction { handleCircleTap() }
+                            .accessibilityActions {
+                                if !isRunning && !isMeasuring {
+                                    Button("Начать замер") { showMeasurementStartConfirmation = true }
+                                }
+                                if isRunning {
+                                    Button("Сбросить") { resetTimer() }
+                                }
+                            }
                             .simultaneousGesture(
                                 DragGesture(minimumDistance: 0)
                                     .onChanged { _ in
@@ -401,16 +348,23 @@ struct PlankTimerView: View {
                                     }
                             )
 
+                            if dynamicTypeSize.isAccessibilitySize {
+                                Text(durationCaption)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
                             Text(statusText)
                                 .font(.footnote)
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
-                                .frame(maxWidth: 280)
+                                .frame(maxWidth: .infinity)
 
                             if showCompletionBanner {
                                 Label("Подход завершён", systemImage: "checkmark.circle.fill")
                                     .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(Color.green)
+                                    .foregroundStyle(.primary)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 8)
                                     .background(
@@ -421,25 +375,30 @@ struct PlankTimerView: View {
                                         Capsule(style: .continuous)
                                             .stroke(Color.green.opacity(0.35), lineWidth: 1)
                                     )
-                                    .transition(.move(edge: .top).combined(with: .opacity))
+                                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                             }
                         }
                         .padding(18)
                         .frame(maxWidth: .infinity)
                         .background(
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .fill(.ultraThinMaterial)
+                            RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous)
+                                .fill(FocusStyle.surface)
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous)
                                 .stroke(Color(.separator).opacity(0.2), lineWidth: 1)
                         )
 
                         VStack(spacing: 12) {
-                            HStack {
+                            let progressionLayout = dynamicTypeSize.isAccessibilitySize
+                                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                                : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+                            progressionLayout {
                                 Label("Прогрессия", systemImage: "chart.line.uptrend.xyaxis")
                                     .font(.headline)
-                                Spacer()
+                                    .labelStyle(.titleOnly)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                                 Text("\(completedSetsCount) \(plankWord(for: completedSetsCount))")
                                     .font(.subheadline.weight(.semibold))
                                     .monospacedDigit()
@@ -454,10 +413,10 @@ struct PlankTimerView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
 
                             Stepper(value: increaseStepBinding, in: 1...120) {
-                                HStack {
+                                progressionLayout {
                                     Text("Добавлять секунд")
                                         .font(.subheadline)
-                                    Spacer()
+                                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                                     Text("+\(safeIncreaseStepSeconds) сек")
                                         .font(.subheadline.weight(.semibold))
                                         .monospacedDigit()
@@ -465,10 +424,10 @@ struct PlankTimerView: View {
                             }
 
                             Stepper(value: increaseEveryBinding, in: 1...200) {
-                                HStack {
+                                progressionLayout {
                                     Text("Повышать каждые")
                                         .font(.subheadline)
-                                    Spacer()
+                                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                                     Text("\(safeIncreaseEveryCount) \(plankWord(for: safeIncreaseEveryCount))")
                                         .font(.subheadline.weight(.semibold))
                                         .monospacedDigit()
@@ -476,10 +435,10 @@ struct PlankTimerView: View {
                             }
 
                             Stepper(value: estimatedWeeklySetsBinding, in: 1...200) {
-                                HStack {
+                                progressionLayout {
                                     Text("Планок в неделю")
                                         .font(.subheadline)
-                                    Spacer()
+                                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                                     Text("\(safeEstimatedWeeklySets) / нед")
                                         .font(.subheadline.weight(.semibold))
                                         .monospacedDigit()
@@ -488,7 +447,7 @@ struct PlankTimerView: View {
 
                             Divider()
 
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            progressionLayout {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Прогноз через год")
                                         .font(.subheadline)
@@ -496,7 +455,7 @@ struct PlankTimerView: View {
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
-                                Spacer()
+                                if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                                 Text("\(projectedDurationText)")
                                     .font(.title3.weight(.semibold))
                                     .monospacedDigit()
@@ -505,11 +464,11 @@ struct PlankTimerView: View {
                         }
                         .padding(16)
                         .background(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous)
                                 .fill(Color(.secondarySystemGroupedBackground))
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            RoundedRectangle(cornerRadius: FocusStyle.cornerRadius, style: .continuous)
                                 .stroke(Color(.tertiarySystemFill), lineWidth: 1)
                         )
                         .disabled(isRunning || isMeasuring)
@@ -524,8 +483,7 @@ struct PlankTimerView: View {
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 10)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.red)
+                            .buttonStyle(FocusActionStyle(destructive: true))
                         }
                     }
                     .padding(.horizontal, 16)
@@ -586,8 +544,7 @@ struct PlankTimerView: View {
             Text(value)
                 .font(.subheadline.weight(.semibold))
                 .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
@@ -830,7 +787,7 @@ struct PlankTimerView: View {
     }
 
     private func showCompletionBannerTemporarily() {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)) {
             showCompletionBanner = true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {

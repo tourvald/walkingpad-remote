@@ -128,19 +128,11 @@ struct DevicePickerView: View {
                             manager.connectToKnownPeripheral(id: kp.id)
                             dismiss()
                         } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(kp.name)
-                                        .foregroundStyle(.primary)
-                                    Text("ID: \(shortId(kp.id))")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if manager.connectedPeripheralId == kp.id {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                                }
-                            }
+                            DevicePickerRow(
+                                name: kp.name,
+                                detail: "ID: \(shortId(kp.id))",
+                                connected: manager.connectedPeripheralId == kp.id
+                            )
                         }
                     }
                     .onLongPressGesture(minimumDuration: 0.25, pressing: { pressing in
@@ -201,7 +193,7 @@ struct DevicePickerView: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Text(lastUpdateText)
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -244,29 +236,11 @@ struct DevicePickerView: View {
                         manager.connectToDiscovered(id: d.id)
                         dismiss()
                     } label: {
-                        HStack(spacing: 12) {
-                            Circle()
-                                .fill(rssiColor(d.rssi))
-                                .frame(width: 10, height: 10)
-                                .accessibilityLabel(Text("Сигнал: \(d.rssi) dBm"))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(d.name.isEmpty ? "Без имени" : d.name)
-                                    .foregroundStyle(.primary)
-                                HStack(spacing: 6) {
-                                    Text("Сигнал: \(d.rssi) dBm")
-                                    Text("•")
-                                    Text(d.isKnown ? "Известная" : "Новая")
-                                    Text("•")
-                                    Text("ID: \(shortId(d.id))")
-                                }
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if manager.connectedPeripheralId == d.id {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            }
-                        }
+                        DevicePickerRow(
+                            name: d.name.isEmpty ? "Без имени" : d.name,
+                            detail: "Сигнал: \(d.rssi) dBm · \(d.isKnown ? "Известная" : "Новая") · ID: \(shortId(d.id))",
+                            connected: manager.connectedPeripheralId == d.id
+                        )
                     }
                 }
             }
@@ -287,6 +261,13 @@ struct DevicePickerView: View {
             }
             .disabled(refreshDisabled)
 
+            .accessibilityLabel("Повторить поиск")
+        }
+    }
+
+    private var scanOptions: some View {
+        Section("Поиск и подключение") {
+            let refreshDisabled = manager.isConnected || scenePhase != .active || !btMonitor.isPoweredOn
             Toggle(isOn: Binding(get: { isScanning }, set: { newVal in
                 isScanning = newVal
                 if newVal {
@@ -295,18 +276,15 @@ struct DevicePickerView: View {
                     manager.stopDiscoveryScan()
                 }
             })) {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .foregroundStyle(isScanning ? .primary : .secondary)
+                Text("Сканирование Bluetooth")
             }
-            .labelsHidden()
             .accessibilityLabel("Сканирование Bluetooth")
             .disabled(refreshDisabled)
 
             Toggle(isOn: Binding(get: { manager.allowAutoConnectUnknown }, set: { manager.allowAutoConnectUnknown = $0 })) {
-                Image(systemName: manager.allowAutoConnectUnknown ? "bolt.horizontal.circle.fill" : "bolt.horizontal.circle")
+                Text("Автоподключение к неизвестным")
             }
             .help("Разрешать автоподключение к неизвестным")
-            .labelsHidden()
             .accessibilityLabel("Автоподключение к неизвестным")
         }
     }
@@ -316,14 +294,18 @@ struct DevicePickerView: View {
             List {
                 KnownPeripheralsSection()
                 DiscoveredPeripheralsSection()
+                scanOptions
 
                 if manager.allowAutoConnectUnknown {
-                    Section(footer: Text("Автоподключение к неизвестным включено — приложение может подключиться к ближайшей дорожке этой модели без подтверждения.").font(.caption2).foregroundStyle(.secondary)) { EmptyView() }
+                    Section(footer: Text("Автоподключение к неизвестным включено — приложение может подключиться к ближайшей дорожке этой модели без подтверждения.").font(.caption).foregroundStyle(.secondary)) { EmptyView() }
                 } else {
-                    Section(footer: Text("Автоподключение к неизвестным выключено — новые дорожки появятся в списке, но подключение будет только вручную.").font(.caption2).foregroundStyle(.secondary)) { EmptyView() }
+                    Section(footer: Text("Автоподключение к неизвестным выключено — новые дорожки появятся в списке, но подключение будет только вручную.").font(.caption).foregroundStyle(.secondary)) { EmptyView() }
                 }
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Выбрать дорожку")
+            .navigationBarTitleDisplayMode(.inline)
+            .tint(FocusStyle.accent)
             .transaction { transaction in
                 transaction.animation = nil
             }
@@ -457,3 +439,74 @@ struct RenameKnownDeviceSheet: View {
 #Preview("RenameKnownDeviceSheet") {
     RenameKnownDeviceSheet(id: UUID(), initialName: "Дорожка 1") { _ in }
 }
+
+private struct DevicePickerRow: View {
+    let name: String
+    let detail: String
+    let connected: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "figure.walk.motion")
+                .font(.title3)
+                .foregroundStyle(FocusStyle.accent)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(name)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if connected {
+                    Label("Подключена", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+}
+
+#if DEBUG
+struct DevicePickerVisualPreview: View {
+    let state: String
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if state == "list" || state == "connected" {
+                    Section("Известные") {
+                        DevicePickerRow(name: "WalkingPad", detail: "ID: A123", connected: state == "connected")
+                    }
+                    Section("Найденные рядом") {
+                        DevicePickerRow(name: "Дорожка с длинным названием", detail: "Сигнал: −52 dBm · Новая · ID: B456", connected: false)
+                    }
+                } else {
+                    Section("Найденные рядом") {
+                        if state == "scanning" {
+                            ProgressView("Сканирование устройств…")
+                        } else {
+                            Text("Нет найденных устройств")
+                            Button("Повторить поиск") {}
+                        }
+                    }
+                }
+                Section("Поиск и подключение") {
+                    Toggle("Сканирование Bluetooth", isOn: .constant(state == "scanning"))
+                    Toggle("Автоподключение к неизвестным", isOn: .constant(false))
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Выбрать дорожку")
+            .navigationBarTitleDisplayMode(.inline)
+            .tint(FocusStyle.accent)
+        }
+    }
+}
+#endif

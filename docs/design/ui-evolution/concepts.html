@@ -1,0 +1,339 @@
+<div id="walkingpad-concepts">
+  <div class="wp-review" aria-label="Сравнение двух концепций">
+    <div class="wp-choices" role="group" aria-label="Концепция">
+      <button type="button" data-concept="focus" aria-pressed="true">A · Focus</button>
+      <button type="button" data-concept="tempo" aria-pressed="false">B · Tempo</button>
+    </div>
+    <label class="wp-scenario-label">Экран
+      <select aria-label="Экран концепции" id="wp-scenario">
+        <option value="ready">Подготовка</option>
+        <option value="active" selected>Тренировка · PiP</option>
+        <option value="cooldown">Заминка</option>
+        <option value="no-hr">Нет пульса</option>
+        <option value="disconnected">Нет связи</option>
+        <option value="ending">Завершение</option>
+        <option value="result">Результат</option>
+        <option value="partial">Неполный результат</option>
+        <option value="stats">Статистика</option>
+        <option value="plank">Планка</option>
+        <option value="settings">Параметры</option>
+        <option value="devices">Дорожки</option>
+      </select>
+    </label>
+  </div>
+  <div class="wp-demo-label">КОНЦЕПЦИЯ · ДЕМОНСТРАЦИОННЫЕ ДАННЫЕ</div>
+  <section class="wp-phone" aria-label="WalkingPad — концепция интерфейса">
+    <div class="wp-status" aria-hidden="true"><span>9:41</span><span class="wp-status-icons"><i data-lucide="signal"></i><i data-lucide="wifi"></i><i data-lucide="battery-full"></i></span></div>
+    <div class="wp-content"></div>
+    <nav class="wp-tabbar" aria-label="Основная навигация">
+      <button type="button" data-screen="ready"><i data-lucide="activity" aria-hidden="true"></i><span>Тренировка</span></button>
+      <button type="button" data-screen="stats"><i data-lucide="chart-no-axes-column-increasing" aria-hidden="true"></i><span>Статистика</span></button>
+      <button type="button" data-screen="plank"><i data-lucide="timer" aria-hidden="true"></i><span>Планка</span></button>
+      <button type="button" data-screen="debug"><i data-lucide="bug" aria-hidden="true"></i><span>Отладка</span></button>
+    </nav>
+    <div class="wp-home" aria-hidden="true"></div>
+    <div class="wp-overlay" hidden></div>
+  </section>
+</div>
+<style>
+  #walkingpad-concepts { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; --wp-bg: light-dark(#f4f4f6,#0c0c0e); --wp-surface: light-dark(#fff,#1c1c1f); --wp-ink: light-dark(#171719,#f5f5f7); --wp-muted: light-dark(#626269,#aaaab2); --wp-line: light-dark(#dedee3,#353539); --wp-accent: light-dark(#b64b00,#ffab67); --wp-action: light-dark(#bc4a00,#ff9b50); --wp-on-action: light-dark(#fff,#261001); --wp-soft: light-dark(#fff0e4,#342417); --wp-green: light-dark(#237640,#7edb96); --wp-red: light-dark(#ba2936,#ff8790); --wp-red-bg: light-dark(#fff0f1,#38191e); --wp-z1: light-dark(#2b75d3,#72b3ff); --wp-z2: light-dark(#267f47,#66cd88); --wp-z3: light-dark(#936a00,#f4d04c); --wp-z4: light-dark(#b34a10,#ffa05d); --wp-z5: light-dark(#be3245,#ff7c8e); color: var(--wp-ink); }
+  #walkingpad-concepts * { box-sizing: border-box; }
+  #walkingpad-concepts button, #walkingpad-concepts select { font: inherit; cursor: pointer; }
+  #walkingpad-concepts button { -webkit-tap-highlight-color: transparent; }
+  #walkingpad-concepts .wp-review { display: flex; justify-content: center; align-items: center; gap: 14px; flex-wrap: wrap; margin: 0 0 18px; }
+  #walkingpad-concepts .wp-choices { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: var(--wp-bg); }
+  #walkingpad-concepts .wp-choices button { min-height: 44px; padding: 8px 15px; border: 0; border-radius: 10px; color: var(--wp-muted); background: transparent; font-size: 14px; font-weight: 600; }
+  #walkingpad-concepts .wp-choices button[aria-pressed="true"] { color: var(--wp-ink); background: var(--wp-surface); box-shadow: 0 1px 4px #00000014; }
+  #walkingpad-concepts .wp-scenario-label { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--wp-muted); }
+  #walkingpad-concepts select { min-height: 44px; max-width: 190px; border: 1px solid var(--wp-line); border-radius: 10px; padding: 8px 12px; color: var(--wp-ink); background: var(--wp-surface); font-size: 14px; }
+  #walkingpad-concepts .wp-demo-label { text-align: center; font-size: 10px; font-weight: 600; letter-spacing: 1.4px; color: var(--wp-muted); margin-bottom: 10px; }
+  #walkingpad-concepts .wp-phone { width: min(100%,390px); margin: 0 auto; border-radius: 34px; background: var(--wp-bg); border: 1px solid var(--wp-line); overflow: hidden; position: relative; --wp-scale: 1; font-size: calc(15px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-status { display: flex; justify-content: space-between; align-items: center; padding: 18px 26px 8px; font-size: 14px; font-weight: 600; }
+  #walkingpad-concepts .wp-status-icons { display: flex; align-items: center; gap: 4px; }
+  #walkingpad-concepts .wp-status-icons svg { width: 16px; height: 16px; }
+  #walkingpad-concepts .wp-content { padding: 14px 22px 24px; min-height: 550px; }
+  #walkingpad-concepts .wp-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 24px; }
+  #walkingpad-concepts h1, #walkingpad-concepts h2, #walkingpad-concepts p { margin: 0; }
+  #walkingpad-concepts h1 { font-size: calc(29px * var(--wp-scale)); line-height: 1.1; font-weight: 700; letter-spacing: -1px; overflow-wrap: anywhere; }
+  #walkingpad-concepts h2 { font-size: calc(17px * var(--wp-scale)); line-height: 1.3; font-weight: 650; letter-spacing: -.3px; }
+  #walkingpad-concepts .wp-icon-button { flex: 0 0 44px; display: grid; place-items: center; height: 44px; width: 44px; border: 0; border-radius: 50%; color: var(--wp-ink); background: var(--wp-surface); }
+  #walkingpad-concepts .wp-icon-button svg { width: 20px; height: 20px; }
+  #walkingpad-concepts .wp-eyebrow { color: var(--wp-muted); font-size: calc(11px * var(--wp-scale)); font-weight: 650; letter-spacing: 1.25px; text-transform: uppercase; line-height: 1.5; }
+  #walkingpad-concepts .wp-muted { color: var(--wp-muted); }
+  #walkingpad-concepts .wp-small { font-size: calc(12px * var(--wp-scale)); line-height: 1.5; }
+  #walkingpad-concepts .wp-readiness { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+  #walkingpad-concepts .wp-ready-item { border: 0; text-align: left; background: var(--wp-surface); color: var(--wp-ink); border-radius: 16px; padding: 12px; display: flex; align-items: center; gap: 8px; min-height: 58px; }
+  #walkingpad-concepts .wp-ready-item svg { color: var(--wp-green); width: 18px; height: 18px; flex-shrink: 0; }
+  #walkingpad-concepts .wp-ready-item span { display: block; font-size: calc(12px * var(--wp-scale)); font-weight: 650; }
+  #walkingpad-concepts .wp-ready-item small { display: block; color: var(--wp-muted); font-size: calc(11px * var(--wp-scale)); margin-top: 3px; font-weight: 400; }
+  #walkingpad-concepts .wp-surface { padding: 22px; background: var(--wp-surface); border-radius: 24px; }
+  #walkingpad-concepts .wp-mode { display: flex; align-items: center; gap: 7px; font-size: calc(13px * var(--wp-scale)); font-weight: 600; color: var(--wp-accent); margin-bottom: 24px; }
+  #walkingpad-concepts .wp-mode svg { width: 16px; height: 16px; }
+  #walkingpad-concepts .wp-target { font-size: calc(42px * var(--wp-scale)); font-weight: 700; line-height: 1.13; letter-spacing: -1.8px; margin-top: 4px; }
+  #walkingpad-concepts .wp-target-sub { font-size: calc(17px * var(--wp-scale)); color: var(--wp-muted); margin-top: 7px; }
+  #walkingpad-concepts .wp-zones { display: grid; grid-template-columns: repeat(5,1fr); gap: 6px; margin: 22px 0 2px; position: relative; }
+  #walkingpad-concepts .wp-marker { position: absolute; width: 2px; height: 14px; background: var(--wp-ink); top: -9px; transform: translateX(-1px); }
+  #walkingpad-concepts .wp-marker:before { content: ''; position: absolute; width: 6px; height: 6px; border-radius: 50%; left: -2px; top: -2px; background: var(--wp-ink); }
+  #walkingpad-concepts .wp-zone { border: 0; background: transparent; color: var(--wp-muted); padding: 4px 0; min-height: 44px; text-align: center; font-size: calc(11px * var(--wp-scale)); font-weight: 600; }
+  #walkingpad-concepts .wp-zone i { display: block; height: 6px; margin-top: 8px; border-radius: 5px; background: var(--zone); opacity: .28; }
+  #walkingpad-concepts .wp-zone[aria-pressed="true"] { color: var(--wp-ink); }
+  #walkingpad-concepts .wp-zone[aria-pressed="true"] i { opacity: 1; height: 9px; margin-top: 5px; }
+  #walkingpad-concepts .wp-section { margin-top: 24px; }
+  #walkingpad-concepts .wp-section-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+  #walkingpad-concepts .wp-presets { display: grid; grid-template-columns: repeat(6,1fr); gap: 6px; }
+  #walkingpad-concepts .wp-presets button { min-width: 0; height: 46px; background: var(--wp-surface); color: var(--wp-ink); border: 0; border-radius: 12px; font-size: calc(14px * var(--wp-scale)); font-weight: 600; font-variant-numeric: tabular-nums; }
+  #walkingpad-concepts .wp-presets button[aria-pressed="true"] { color: var(--wp-on-action); background: var(--wp-action); }
+  #walkingpad-concepts .wp-primary, #walkingpad-concepts .wp-stop, #walkingpad-concepts .wp-secondary { width: 100%; min-height: 58px; padding: 14px 12px; border: 0; border-radius: 18px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: calc(16px * var(--wp-scale)); font-weight: 650; line-height: 1.35; }
+  #walkingpad-concepts .wp-primary { background: var(--wp-action); color: var(--wp-on-action); }
+  #walkingpad-concepts .wp-primary:disabled { background: var(--wp-line); color: var(--wp-muted); cursor: default; }
+  #walkingpad-concepts .wp-primary svg, #walkingpad-concepts .wp-stop svg, #walkingpad-concepts .wp-secondary svg { width: 18px; height: 18px; flex-shrink: 0; }
+  #walkingpad-concepts .wp-stop { background: light-dark(#bf2836,#ff7482); color: light-dark(#fff,#31050a); }
+  #walkingpad-concepts .wp-secondary { background: transparent; color: var(--wp-accent); min-height: 48px; font-size: calc(14px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-actions { display: grid; gap: 8px; margin-top: 24px; }
+  #walkingpad-concepts .wp-phase { display: flex; align-items: center; gap: 6px; font-size: calc(12px * var(--wp-scale)); font-weight: 600; color: var(--wp-accent); }
+  #walkingpad-concepts .wp-phase svg { width: 15px; height: 15px; }
+  #walkingpad-concepts .wp-live { text-align: center; padding: 24px 0 12px; }
+  #walkingpad-concepts .wp-live-label { color: var(--wp-muted); display: flex; align-items: center; justify-content: center; gap: 5px; font-size: calc(13px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-live-label svg { width: 14px; height: 14px; color: var(--wp-red); }
+  #walkingpad-concepts .wp-number { font-size: calc(92px * var(--wp-scale)); line-height: 1.1; font-weight: 650; letter-spacing: -5px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  #walkingpad-concepts .wp-unit { font-size: calc(13px * var(--wp-scale)); color: var(--wp-muted); margin-top: 0; }
+  #walkingpad-concepts .wp-zone-state { display: inline-flex; align-items: center; gap: 6px; margin-top: 18px; padding: 8px 12px; border-radius: 12px; color: var(--wp-ink); background: var(--wp-bg); font-size: calc(13px * var(--wp-scale)); font-weight: 600; }
+  #walkingpad-concepts .wp-zone-state svg { width: 14px; height: 14px; color: var(--wp-green); }
+  #walkingpad-concepts .wp-metrics { display: grid; grid-template-columns: 1fr 1fr; margin-top: 24px; gap: 16px; }
+  #walkingpad-concepts .wp-metric { min-width: 0; }
+  #walkingpad-concepts .wp-metric strong { display: block; font-size: calc(31px * var(--wp-scale)); line-height: 1.1; font-weight: 600; letter-spacing: -1px; font-variant-numeric: tabular-nums; margin-top: 8px; }
+  #walkingpad-concepts .wp-metric strong small { font-size: calc(12px * var(--wp-scale)); color: var(--wp-muted); letter-spacing: 0; font-weight: 500; }
+  #walkingpad-concepts .wp-metric-label { font-size: calc(12px * var(--wp-scale)); color: var(--wp-muted); }
+  #walkingpad-concepts .wp-tabbar { display: grid; grid-template-columns: repeat(4,1fr); margin: 0 12px; padding: 6px 2px; border-radius: 24px; background: var(--wp-surface); }
+  #walkingpad-concepts .wp-tabbar button { color: var(--wp-muted); background: transparent; border: 0; min-height: 50px; padding: 6px 1px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; font-weight: 500; border-radius: 18px; }
+  #walkingpad-concepts .wp-tabbar button[aria-current="page"] { color: var(--wp-accent); background: var(--wp-soft); }
+  #walkingpad-concepts .wp-tabbar svg { width: 20px; height: 20px; }
+  #walkingpad-concepts .wp-home { width: 112px; height: 4px; background: var(--wp-ink); border-radius: 4px; margin: 15px auto 8px; }
+  #walkingpad-concepts .wp-rule { height: 1px; background: var(--wp-line); margin: 20px 0; }
+  #walkingpad-concepts .wp-result-hero { padding: 12px 0 6px; }
+  #walkingpad-concepts .wp-result-hero .wp-number { font-size: calc(72px * var(--wp-scale)); margin-top: 10px; }
+  #walkingpad-concepts .wp-result-hero .wp-number small { font-size: calc(24px * var(--wp-scale)); letter-spacing: -.5px; color: var(--wp-muted); font-weight: 500; }
+  #walkingpad-concepts .wp-zone-row { display: grid; grid-template-columns: 48px 1fr 48px; align-items: center; gap: 12px; margin-top: 13px; font-size: calc(12px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-zone-track { background: var(--wp-bg); border-radius: 6px; height: 6px; }
+  #walkingpad-concepts .wp-zone-track i { display: block; background: var(--zone); border-radius: 6px; height: 6px; }
+  #walkingpad-concepts .wp-note { font-size: calc(13px * var(--wp-scale)); line-height: 1.5; color: var(--wp-muted); margin-top: 16px; }
+  #walkingpad-concepts .wp-warning { padding: 12px 14px; border-radius: 14px; background: var(--wp-soft); color: var(--wp-ink); font-size: calc(13px * var(--wp-scale)); line-height: 1.5; margin-top: 16px; }
+  #walkingpad-concepts .wp-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 15px 0; border-bottom: 1px solid var(--wp-line); }
+  #walkingpad-concepts .wp-row:last-child { border-bottom: 0; }
+  #walkingpad-concepts .wp-row strong { display: block; font-size: calc(14px * var(--wp-scale)); font-weight: 600; }
+  #walkingpad-concepts .wp-row small { display: block; color: var(--wp-muted); font-size: calc(12px * var(--wp-scale)); margin-top: 4px; line-height: 1.4; }
+  #walkingpad-concepts .wp-row button { border: 0; min-height: 44px; padding: 6px; background: transparent; color: var(--wp-accent); }
+  #walkingpad-concepts .wp-row svg { width: 17px; height: 17px; }
+  #walkingpad-concepts .wp-period { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; background: var(--wp-line); border-radius: 11px; margin-bottom: 22px; }
+  #walkingpad-concepts .wp-period button { border: 0; min-height: 40px; padding: 8px; border-radius: 8px; color: var(--wp-ink); background: transparent; font-size: calc(13px * var(--wp-scale)); font-weight: 600; }
+  #walkingpad-concepts .wp-period button[aria-pressed="true"] { background: var(--wp-surface); }
+  #walkingpad-concepts .wp-chart { display: grid; grid-template-columns: repeat(7,1fr); align-items: end; gap: 12px; margin: 24px 0 4px; height: 115px; }
+  #walkingpad-concepts .wp-bar { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 8px; font-size: 11px; color: var(--wp-muted); }
+  #walkingpad-concepts .wp-bar i { width: min(100%,22px); height: var(--height); min-height: 3px; background: var(--wp-action); border-radius: 6px; display: block; }
+  #walkingpad-concepts .wp-timer { width: min(100%,244px); aspect-ratio: 1; margin: 30px auto 20px; border: 7px solid var(--wp-action); border-radius: 50%; background: var(--wp-surface); display: flex; align-items: center; justify-content: center; flex-direction: column; color: var(--wp-ink); }
+  #walkingpad-concepts .wp-timer .wp-number { font-size: calc(54px * var(--wp-scale)); letter-spacing: -2.5px; }
+  #walkingpad-concepts .wp-timer-label { color: var(--wp-accent); font-size: calc(13px * var(--wp-scale)); margin-top: 8px; font-weight: 600; }
+  #walkingpad-concepts details { margin-top: 16px; color: var(--wp-muted); font-size: calc(12px * var(--wp-scale)); line-height: 1.5; }
+  #walkingpad-concepts summary { cursor: pointer; min-height: 44px; padding: 12px 0; }
+  #walkingpad-concepts .wp-empty { text-align: center; padding: 60px 10px; }
+  #walkingpad-concepts .wp-empty > svg { color: var(--wp-accent); width: 40px; height: 40px; margin-bottom: 20px; }
+  #walkingpad-concepts .wp-overlay { position: absolute; inset: 0; background: #00000050; display: grid; place-items: center; padding: 20px; z-index: 3; }
+  #walkingpad-concepts .wp-overlay[hidden] { display: none; }
+  #walkingpad-concepts .wp-dialog { width: 100%; padding: 24px; background: var(--wp-surface); border-radius: 24px; box-shadow: 0 10px 60px #00000030; }
+  #walkingpad-concepts .wp-dialog p { color: var(--wp-muted); font-size: 14px; line-height: 1.5; margin: 12px 0 20px; }
+  #walkingpad-concepts .wp-phone[data-concept="tempo"] { --wp-accent: light-dark(#384fbe,#b6c3ff); --wp-action: light-dark(#414fbf,#c0caff); --wp-on-action: light-dark(#fff,#171e4c); --wp-soft: light-dark(#e8edff,#252b47); }
+  #walkingpad-concepts .wp-phone[data-concept="tempo"] h1 { font-weight: 650; letter-spacing: -1.3px; }
+  #walkingpad-concepts .wp-phone[data-concept="tempo"] .wp-target { font-size: calc(54px * var(--wp-scale)); letter-spacing: -2.4px; }
+  #walkingpad-concepts .wp-phone[data-concept="tempo"] .wp-surface { border-radius: 20px; }
+  #walkingpad-concepts .wp-phone[data-concept="tempo"] .wp-training-hero { border-left: 4px solid var(--wp-action); }
+  #walkingpad-concepts .wp-phone[data-concept="tempo"] .wp-live { text-align: left; padding: 22px 0 8px; }
+  #walkingpad-concepts .wp-phone[data-concept="tempo"] .wp-live-label { justify-content: flex-start; }
+  #walkingpad-concepts .wp-phone[data-concept="tempo"] .wp-live .wp-number { font-size: calc(64px * var(--wp-scale)); letter-spacing: -3px; }
+  #walkingpad-concepts .wp-phone[data-large="true"] .wp-readiness, #walkingpad-concepts .wp-phone[data-large="true"] .wp-metrics { grid-template-columns: 1fr; }
+  #walkingpad-concepts .wp-phone[data-large="true"] .wp-presets { grid-template-columns: repeat(3,1fr); }
+  #walkingpad-concepts .wp-phone[data-large="true"] .wp-number { font-size: calc(60px * var(--wp-scale)); letter-spacing: -3px; }
+  #walkingpad-concepts .wp-phone[data-large="true"] .wp-zone-row { grid-template-columns: 60px 1fr 55px; gap: 6px; }
+  #walkingpad-concepts .wp-phone[data-workout="true"] { height: var(--wp-phone-height,852px); display: flex; flex-direction: column; }
+  #walkingpad-concepts .wp-phone[data-workout="true"] .wp-status { flex-shrink: 0; }
+  #walkingpad-concepts .wp-phone[data-workout="true"] .wp-content { flex: 1; min-height: 0; padding-top: 4px; padding-bottom: 12px; }
+  #walkingpad-concepts .wp-workout-layout { height: 100%; display: flex; flex-direction: column; gap: 12px; }
+  #walkingpad-concepts .wp-video-space { flex-shrink: 0; height: min(186px,calc(var(--wp-phone-height,852px) * .23)); position: relative; }
+  #walkingpad-concepts .wp-pip-demo { height: calc(100% - 8px); aspect-ratio: 16 / 9; max-width: 100%; margin-left: auto; background: #20272e; border: 1px solid #4c5660; border-radius: 16px; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; box-shadow: 0 4px 12px #00000029; font-size: 12px; }
+  #walkingpad-concepts .wp-pip-demo svg { width: 26px; height: 26px; color: #dde6ed; }
+  #walkingpad-concepts .wp-workout-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; min-height: 38px; }
+  #walkingpad-concepts .wp-workout-heading h1 { font-size: calc(20px * var(--wp-scale)); letter-spacing: -.5px; }
+  #walkingpad-concepts .wp-workout-heading button { width: auto; padding: 8px 0 8px 12px; font-size: calc(13px * var(--wp-scale)); min-height: 44px; }
+  #walkingpad-concepts .wp-workout-scroll { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
+  #walkingpad-concepts .wp-workout-scroll .wp-surface { padding: 10px 18px 14px; }
+  #walkingpad-concepts .wp-workout-scroll .wp-live { padding: 4px 0 2px; }
+  #walkingpad-concepts .wp-workout-scroll .wp-number { font-size: calc(65px * var(--wp-scale)); letter-spacing: -3px; }
+  #walkingpad-concepts .wp-workout-scroll .wp-zone-state { margin-top: 7px; padding: 5px 8px; font-size: calc(12px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-workout-scroll .wp-zones { margin-top: 18px; }
+  #walkingpad-concepts .wp-workout-scroll .wp-note { margin-top: 8px; font-size: calc(12px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-workout-dock { flex-shrink: 0; }
+  #walkingpad-concepts .wp-workout-dock .wp-metrics { margin: 0 0 12px; gap: 10px; }
+  #walkingpad-concepts .wp-workout-dock .wp-metric strong { margin-top: 5px; font-size: calc(28px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-workout-dock .wp-stop { min-height: 56px; }
+  #walkingpad-concepts .wp-phone[data-workout="true"] .wp-tabbar { flex-shrink: 0; }
+  #walkingpad-concepts .wp-phone[data-workout="true"] .wp-home { flex-shrink: 0; }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-layout { gap: 5px; }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-scroll .wp-live { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; text-align: left; }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-scroll .wp-number { grid-column: 1; grid-row: 2 / 4; font-size: calc(44px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-scroll .wp-live-label { justify-content: flex-start; }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-scroll .wp-unit { align-self: center; }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-scroll .wp-zone-state { margin-top: 2px; align-self: center; }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-scroll .wp-zones { margin-top: 12px; }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-scroll .wp-zone { min-height: 34px; }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-dock .wp-metric strong { font-size: calc(24px * var(--wp-scale)); }
+  #walkingpad-concepts .wp-phone[data-compact="true"] .wp-workout-dock .wp-metrics { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 359px) {
+    #walkingpad-concepts .wp-content { padding-left: 16px; padding-right: 16px; }
+    #walkingpad-concepts .wp-surface { padding: 18px; }
+    #walkingpad-concepts .wp-presets { grid-template-columns: repeat(3,1fr); }
+    #walkingpad-concepts .wp-ready-item { gap: 6px; padding: 10px; }
+  }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('walkingpad-concepts');
+  const phone = root.querySelector('.wp-phone');
+  const content = root.querySelector('.wp-content');
+  const scenario = root.querySelector('#wp-scenario');
+  const overlay = root.querySelector('.wp-overlay');
+  const state = { concept: 'focus', screen: 'active', zone: 3, minutes: 30, appearance: 'system', largeText: false, period: 'week', plankRunning: false, showPiP: true, phoneSize: '393x852' };
+  const ranges = ['60–134','135–146','147–158','159–170','171–220'];
+  const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
+  const heading = (title, action = 'settings', glyph = 'sliders-horizontal') => `<header class="wp-header"><h1>${title}</h1><button type="button" class="wp-icon-button" data-screen="${action}" aria-label="${action === 'ready' ? 'Вернуться к тренировке' : 'Параметры'}">${icon(glyph)}</button></header>`;
+  const action = (label, attr, style = 'primary', glyph = '') => `<button type="button" class="wp-${style}" ${attr}>${glyph ? icon(glyph) : ''}${label}</button>`;
+  const metric = (title,value,unit='') => `<div class="wp-metric"><span class="wp-metric-label">${title}</span><strong>${value}${unit ? ` <small>${unit}</small>` : ''}</strong></div>`;
+  function zones(interactive = true, bpm = null) {
+    const bounds = [[60,134],[135,146],[147,158],[159,170],[171,220]];
+    const index = bpm === null ? -1 : bounds.findIndex(([low,high]) => bpm >= low && bpm <= high);
+    const fraction = index < 0 ? null : (index + (bpm-bounds[index][0])/(bounds[index][1]-bounds[index][0]))/5;
+    const marker = fraction === null ? '' : `<span class="wp-marker" style="left:${fraction*100}%" aria-hidden="true"></span>`;
+    return `<div class="wp-zones" role="group" aria-label="Пульсовые зоны${bpm === null ? '' : ', текущий пульс '+bpm}">${marker}${ranges.map((r,i) => `<${interactive ? 'button type="button"' : 'div'} class="wp-zone" ${interactive ? `data-zone="${i+1}"` : ''} aria-label="Зона ${i+1}, ${r} ударов в минуту" ${interactive ? `aria-pressed="${state.zone === i+1}"` : ''} style="--zone:var(--wp-z${i+1})">${state.zone === i+1 ? '✓ ' : ''}Z${i+1}<i style="${state.zone === i+1 ? 'opacity:1' : ''}"></i></${interactive ? 'button' : 'div'}>`).join('')}</div>`;
+  }
+  function ready() {
+    return heading('Тренировка') + `<div class="wp-readiness"><button type="button" class="wp-ready-item" data-screen="devices">${icon('check-circle-2')}<span>Дорожка<small>Подключена</small></span></button><div class="wp-ready-item">${icon('heart')}<span>Пульс готов<small>HealthKit</small></span></div></div>
+      <div class="wp-surface wp-training-hero"><div class="wp-mode">${icon('heart-pulse')} HR-контроль</div><div class="wp-eyebrow">Целевая зона</div><div class="wp-target">Зона ${state.zone}</div><p class="wp-target-sub">${ranges[state.zone-1]} <span class="wp-small">уд/мин</span></p>${zones()}</div>
+      <section class="wp-section"><div class="wp-section-title"><h2>Длительность</h2><span class="wp-muted wp-small">мин</span></div><div class="wp-presets">${[20,25,30,35,40,45].map(v => `<button type="button" data-minutes="${v}" aria-label="${v} минут" aria-pressed="${state.minutes === v}">${v}</button>`).join('')}</div></section>
+      <div class="wp-actions">${action('Начать тренировку','data-screen="active"','primary','play')}</div>`;
+  }
+  function active() {
+    const cool = state.screen === 'cooldown';
+    const missing = state.screen === 'no-hr';
+    const disconnected = state.screen === 'disconnected';
+    const bpm = missing ? '—' : cool ? '124' : '152';
+    const tempo = state.concept === 'tempo';
+    const relation = missing ? 'Сигнал недоступен' : cool ? 'Пульс выше цели' : state.zone < 3 ? 'Выше целевой зоны' : state.zone > 3 ? 'Ниже целевой зоны' : 'В целевой зоне';
+    const target = cool ? 'Цель заминки · ≤ 115 уд/мин' : `Зона ${state.zone} · ${ranges[state.zone-1]} уд/мин`;
+    const metrics = `<div class="wp-metrics">${metric('Скорость',disconnected ? '—' : cool ? '3,0' : '4,4','км/ч')}${metric(tempo ? 'Пульс' : 'Прошло',tempo ? bpm : '18:42',tempo ? 'уд/мин' : '')}</div>`;
+    const stop = action('Остановить','data-stop','stop','square');
+    const warning = missing ? '<p class="wp-warning">Нет актуального пульса. Остановка остаётся доступной.</p>' : disconnected ? '<p class="wp-warning">Связь с дорожкой потеряна. Скорость неизвестна.</p>' : '';
+    const hero = `<section class="wp-surface wp-training-hero"><div class="wp-live"><div class="wp-live-label">${icon(tempo ? 'clock-3' : 'heart')} ${tempo ? 'Прошло' : 'Пульс'}</div><div class="wp-number">${tempo ? '18:42' : bpm}</div>${tempo ? '' : '<div class="wp-unit">уд/мин</div>'}<div class="wp-zone-state">${icon(missing ? 'signal-zero' : cool ? 'arrow-down' : 'check')} ${relation}</div></div>${zones(false,missing ? null : Number(bpm))}<p class="wp-note" style="text-align:center">${target}</p></section>`;
+    const video = `<div class="wp-video-space" aria-label="Свободная верхняя область под внешнее окно видео">${state.showPiP ? `<div class="wp-pip-demo" role="img" aria-label="Пример размещения внешнего видео в режиме картинка в картинке">${icon('picture-in-picture-2')}<span>Пример видео · PiP</span></div>` : ''}</div>`;
+    return `<div class="wp-workout-layout">${video}<header class="wp-workout-heading"><h1>${cool ? 'Заминка' : 'Тренировка'}</h1>${cool ? '<span class="wp-phase">Восстановление</span>' : action('+5 минут','data-extend','secondary')}</header><div class="wp-workout-scroll">${hero}${warning}</div><div class="wp-workout-dock">${metrics}${stop}</div></div>`;
+  }
+  function result() {
+    const partial = state.screen === 'partial';
+    const vals = ['3:20','5:40','18:10','2:50','0:00'];
+    const widths = [11.1,18.9,60.6,9.4,0];
+    return heading('Итог тренировки','ready','x') + `<div class="wp-result-hero"><div class="wp-eyebrow">Сегодня · 30 минут</div><div class="wp-number">${partial ? '30:00' : '2,20'}${partial ? '' : ' <small>км</small>'}</div><p class="wp-muted">${partial ? 'Продолжительность' : 'Дистанция'}</p></div>
+      <div class="wp-metrics">${metric('Средний пульс','149','уд/мин')}${partial ? '' : metric('Средняя скорость','4,4','км/ч')}</div>
+      <section class="wp-section wp-surface"><h2>Время в зонах</h2>${vals.map((v,i) => `<div class="wp-zone-row" style="--zone:var(--wp-z${i+1})"><span>Зона ${i+1}</span><div class="wp-zone-track" aria-hidden="true"><i style="width:${widths[i]}%"></i></div><span style="text-align:right;font-variant-numeric:tabular-nums">${v}</span></div>`).join('')}</section>
+      ${partial ? '<p class="wp-note">Часть данных недоступна</p>' : ''}<div class="wp-actions">${action('Готово','data-screen="ready"')}${action('Открыть статистику','data-screen="stats"','secondary')}</div>`;
+  }
+  function stats() {
+    const month = state.period === 'month';
+    const days = month ? ['1–7','8–14','15–21','22–30'] : ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+    const times = month ? [30,94,0,0] : [30,0,34,0,30,0,0];
+    const history = month ? [['Сегодня','30 мин','149'],['9 сентября','34 мин','146'],['7 сентября','30 мин','148'],['3 сентября','30 мин','147']] : [['Сегодня','30 мин','149'],['9 сентября','34 мин','146'],['7 сентября','30 мин','148']];
+    return heading('Статистика') + `<div class="wp-period" role="group" aria-label="Период статистики"><button type="button" data-period="week" aria-pressed="${!month}">Неделя</button><button type="button" data-period="month" aria-pressed="${month}">Месяц</button></div>
+      <div class="wp-surface"><div class="wp-eyebrow">${month ? 'Сентябрь' : '7–13 сентября'}</div><div class="wp-result-hero"><div class="wp-number">${month ? '124' : '94'} <small>мин</small></div></div><p class="wp-muted wp-small">${month ? '4 тренировки' : '3 тренировки'}</p><div class="wp-chart" style="grid-template-columns:repeat(${days.length},1fr)" role="img" aria-label="Продолжительность тренировок: ${days.map((d,i)=>`${d} ${times[i]} минут`).join(', ')}">${days.map((d,i) => `<div class="wp-bar"><i style="--height:${times[i]/Math.max(...times)*85}%"></i><span>${d}</span></div>`).join('')}</div></div>
+      <section class="wp-section"><h2>История тренировок</h2>${history.map(([date,time,hr]) => `<div class="wp-row"><div><strong>${date}</strong><small>HR-контроль · ${time}</small></div><div style="text-align:right"><strong>${hr} <span class="wp-small wp-muted">уд/мин</span></strong><small>Средний пульс</small></div></div>`).join('')}<details><summary>Данные и качество измерений</summary><p>Средние показатели основаны на доступных измерениях. Если данных не хватает, показатель остаётся недоступным.</p></details></section>`;
+  }
+  function plank() {
+    return heading('Планка') + `<div class="wp-eyebrow">${state.plankRunning ? 'Подход идёт' : 'Следующий подход'}</div><button type="button" class="wp-timer" data-plank aria-label="${state.plankRunning ? 'Сбросить подход' : 'Начать подход на 60 секунд'}"><span class="wp-number">${state.plankRunning ? '0:59' : '1:00'}</span><span class="wp-timer-label">${state.plankRunning ? 'Сбросить' : 'Начать подход'}</span></button><p class="wp-small wp-muted" style="text-align:center">Удерживайте круг, чтобы ${state.plankRunning ? 'отменить подход' : 'замерить свою планку'}</p>
+      <section class="wp-section wp-surface"><div class="wp-section-title"><h2>Ваш ритм</h2>${icon('trending-up')}</div><div class="wp-row"><div><strong>После 3 подходов</strong><small>Прибавить 5 секунд</small></div><strong>2 / 3</strong></div><div class="wp-row"><span class="wp-small wp-muted">Следующая длительность</span><strong>1:05</strong></div></section>`;
+  }
+  function settings() {
+    return heading('Параметры','ready','arrow-left') + `<div class="wp-surface"><div class="wp-row"><div><strong>Профиль</strong><small>Пользователь 1</small></div>${icon('user-round')}</div><div class="wp-row"><div><strong>Источник пульса</strong><small>HealthKit на iPhone</small></div>${icon('heart')}</div></div>
+      <section class="wp-section wp-surface"><h2>Тренировка</h2><div class="wp-row"><strong>Целевая зона</strong><span>Зона ${state.zone}</span></div><div class="wp-row"><strong>Длительность</strong><span>${state.minutes} мин</span></div><div class="wp-row"><strong>Заминка</strong><span>115 уд/мин</span></div><details><summary>Настройка алгоритма</summary><p>Шаг скорости, пороги адаптивного шага и ограничения остаются в существующей форме параметров.</p></details></section>`;
+  }
+  function devices() {
+    return heading('Дорожки','ready','arrow-left') + `<section class="wp-surface"><div class="wp-eyebrow">Подключена</div><div class="wp-row"><div><strong>WalkingPad</strong><small>Готова к тренировке</small></div><span style="color:var(--wp-green)">${icon('check-circle-2')}</span></div></section><section class="wp-section"><h2>Другие устройства</h2><p class="wp-note">Рядом пока нет других дорожек</p></section>`;
+  }
+  function ending() {
+    return heading('Тренировка','ready','x') + `<section class="wp-empty">${icon('circle-ellipsis')}<h2>Завершаем тренировку…</h2><p class="wp-note">Проверяем остановку дорожки</p></section>`;
+  }
+  function debug() {
+    return heading('Отладка','ready','arrow-left') + `<section class="wp-surface"><h2>Диагностика</h2><div class="wp-row"><strong>Журналы тренировок</strong>${icon('file-text')}</div><div class="wp-row"><strong>Ошибки пульса</strong>${icon('heart-pulse')}</div><div class="wp-row"><strong>Состояние подключения</strong>${icon('radio')}</div></section><p class="wp-note">Пустое состояние демонстрационной сессии</p>`;
+  }
+  function render() {
+    phone.dataset.concept = state.concept;
+    phone.dataset.large = String(state.largeText);
+    const [phoneWidth,phoneHeight] = state.phoneSize.split('x').map(Number);
+    phone.style.width = `min(100%,${phoneWidth}px)`;
+    phone.style.setProperty('--wp-phone-height',`${phoneHeight}px`);
+    phone.dataset.compact = String(phoneHeight < 700);
+    phone.dataset.workout = String(['active','cooldown','no-hr','disconnected'].includes(state.screen));
+    phone.style.setProperty('--wp-scale', state.largeText ? '1.3' : '1');
+    root.style.colorScheme = state.appearance === 'system' ? 'light dark' : state.appearance;
+    root.querySelectorAll('[data-concept]').forEach(button => { if (button.tagName === 'BUTTON') button.setAttribute('aria-pressed',String(button.dataset.concept === state.concept)); });
+    const screen = state.screen;
+    if ([...scenario.options].some(o => o.value === screen)) scenario.value = screen;
+    const renderers = { ready, active, cooldown: active, 'no-hr': active, disconnected: active, result, partial: result, stats, plank, settings, devices, ending, debug };
+    content.innerHTML = (renderers[screen] || ready)();
+    const tab = ['stats','plank','debug'].includes(screen) ? screen : 'ready';
+    root.querySelectorAll('.wp-tabbar button').forEach(button => button.setAttribute('aria-current',button.dataset.screen === tab ? 'page' : 'false'));
+    if (globalThis.lucide) lucide.createIcons({ attrs: { width: 18, height: 18 } });
+  }
+  let dialogTrigger = null;
+  function showExtendDialog(trigger) {
+    dialogTrigger = trigger;
+    overlay.hidden = false;
+    overlay.innerHTML = `<div class="wp-dialog" role="dialog" aria-modal="true" aria-labelledby="wp-dialog-title"><h2 id="wp-dialog-title">Добавить 5 минут?</h2><p>Тренировка продлится ещё 5 минут перед заминкой.</p>${action('Добавить 5 минут','data-confirm-extend')}${action('Отмена','data-close-dialog','secondary')}</div>`;
+    content.inert = true;
+    root.querySelector('.wp-tabbar').inert = true;
+    overlay.querySelector('button').focus();
+  }
+  function closeDialog() {
+    overlay.hidden = true;
+    overlay.innerHTML = '';
+    content.inert = false;
+    root.querySelector('.wp-tabbar').inert = false;
+    if (dialogTrigger?.isConnected) dialogTrigger.focus();
+  }
+  root.addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.dataset.concept) { state.concept = button.dataset.concept; render(); }
+    else if (button.dataset.screen) { closeDialog(); state.screen = button.dataset.screen; render(); }
+    else if (button.dataset.zone) { state.zone = Number(button.dataset.zone); render(); }
+    else if (button.dataset.minutes) { state.minutes = Number(button.dataset.minutes); render(); }
+    else if (button.dataset.period) { state.period = button.dataset.period; render(); }
+    else if (button.hasAttribute('data-stop')) { state.screen = 'ending'; render(); }
+    else if (button.hasAttribute('data-extend')) showExtendDialog(button);
+    else if (button.hasAttribute('data-close-dialog')) closeDialog();
+    else if (button.hasAttribute('data-confirm-extend')) { state.minutes += 5; closeDialog(); }
+    else if (button.hasAttribute('data-plank')) { state.plankRunning = !state.plankRunning; render(); }
+  });
+  overlay.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeDialog(); }
+    if (event.key === 'Tab') {
+      const buttons = [...overlay.querySelectorAll('button')];
+      if (event.shiftKey && document.activeElement === buttons[0]) { event.preventDefault(); buttons.at(-1).focus(); }
+      else if (!event.shiftKey && document.activeElement === buttons.at(-1)) { event.preventDefault(); buttons[0].focus(); }
+    }
+  });
+  scenario.addEventListener('change', () => { closeDialog(); state.screen = scenario.value; render(); });
+  render();
+  if (globalThis.Tweak) {
+    const tweak = new Tweak({ container: phone, onChange: render });
+    tweak.addSelect(state,'appearance',{label:'Оформление',options:[{label:'Как в системе',value:'system'},{label:'Светлое',value:'light'},{label:'Тёмное',value:'dark'}]});
+    tweak.addToggle(state,'largeText',{label:'Крупный текст'});
+    tweak.addToggle(state,'showPiP',{label:'Пример окна PiP'});
+    tweak.addSelect(state,'phoneSize',{label:'Размер iPhone',options:[{label:'393 × 852',value:'393x852'},{label:'375 × 667',value:'375x667'},{label:'430 × 932',value:'430x932'}]});
+  }
+})();
+</script>

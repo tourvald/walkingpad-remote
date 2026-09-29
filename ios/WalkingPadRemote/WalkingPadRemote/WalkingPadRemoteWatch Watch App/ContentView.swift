@@ -13,29 +13,37 @@ struct WatchContentView: View {
             return .green
         }()
 
-        VStack(spacing: 8) {
-            Text("Heart Rate")
+        ScrollView {
+        VStack(spacing: 12) {
+            Text("Пульс")
                 .font(.headline)
-            Text("\(hr.bpm) bpm")
-                .font(.system(size: 32, weight: .bold, design: .rounded))
+            Text(hasHr ? "\(hr.bpm) bpm" : "—")
+                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                .monospacedDigit()
+                .accessibilityLabel("Пульс")
+                .accessibilityValue(hasHr ? "\(hr.bpm) ударов в минуту" : "Недоступен")
                 .foregroundColor(hrColor)
             if hr.isActive {
-                Text("Live")
+                Text("Трансляция пульса")
                     .font(.caption)
                     .foregroundColor(.green)
             } else {
-                Text("Tap to start")
+                Text("Нажмите «Начать»")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-            Button(hr.isActive ? "Stop" : "Start") {
+            Button(hr.isActive ? "Завершить" : "Начать") {
                 if hr.isActive {
                     hr.stop()
                 } else {
                     hr.start()
                 }
             }
+            .buttonStyle(.borderedProminent)
+            .tint(hr.isActive ? .red : .orange)
+            .frame(maxWidth: .infinity, minHeight: 44)
         }
         .padding()
+        }
     }
 }

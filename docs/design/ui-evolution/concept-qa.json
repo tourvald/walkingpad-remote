@@ -1,0 +1,8 @@
+{
+  "mockOnly": true,
+  "cases": 80,
+  "errors": [],
+  "findings": [],
+  "physicalDevice": false,
+  "nativeRedesign": false
+}

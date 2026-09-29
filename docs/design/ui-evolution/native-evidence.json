@@ -1,0 +1,1133 @@
+{
+  "base": "f7972a97c64f9310e3a82b32b8152b8d96e2e53a",
+  "branch": "codex/ui-evolution",
+  "xcode": "27.0 (27A5194q)",
+  "swiftTests": {
+    "total": 700,
+    "skipped": 1,
+    "failures": 0
+  },
+  "finalContracts": {
+    "passed": 27,
+    "log": "/tmp/focus-delivery-contract-tests.log"
+  },
+  "genericIOSBuild": {
+    "result": "BUILD SUCCEEDED",
+    "log": "/tmp/focus-device-delivery.log"
+  },
+  "source": [
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/ContentSharedUIComponents.swift",
+      "sha256": "52a8894887d3e990609c0333862af04e1409469152b68049a3b12bf2755760d3"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/ContentView.swift",
+      "sha256": "3605c4ec3d75084c786e214524edcf4e5532f88fc6316a48ef102efadf63e046"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/DebugSharedUIComponents.swift",
+      "sha256": "d25eedab6a895cbb948aee71058d1a2addd7d0d4815ea45ec1f2cf9f77a710db"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/DevicePickerView.swift",
+      "sha256": "bfd95b94996bd5422453311e78f67dad4a754d13621910e66128968524570252"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/PlankTimerView.swift",
+      "sha256": "31b8ffed77a5faff4c052262468f924b0be5178b997a321564485fa3f1043a6b"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteCoreTests/HeartRateLegacyBehaviorContractTests.swift",
+      "sha256": "cb3d79dec7d675d23408682dcca581bbc25907e826d8f7ebf51b865de266de9a"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteCoreTests/TrainingUIObservationBoundaryTests.swift",
+      "sha256": "2bd8230f66d7e12b93b5ecc90ab71314464ebbfb299874abfb442125b1785356"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteWatch Watch App/ContentView.swift",
+      "sha256": "655232c93002d35584eedccb52cbfbf1efa82e898f35a1851dd35baa5eb359a8"
+    }
+  ],
+  "nativeArtifacts": [
+    {
+      "file": "native/active-light.png",
+      "bytes": 121279,
+      "sha256": "92388d48dfec101124c151b54e1ce56f05eabf65c48625e4b8a2af76104c744b"
+    },
+    {
+      "file": "native/anchors-before-active-light.png",
+      "bytes": 121177,
+      "sha256": "7e90cc4263810ccdacfda5b17cc684bf3d1e115b1d3859a4944376afce1975fb"
+    },
+    {
+      "file": "native/anchors-before-ready-light.png",
+      "bytes": 238858,
+      "sha256": "7b6a3a26435490610ce2026325a15d1cb624f7dff357beba12ab4071853cab63"
+    },
+    {
+      "file": "native/compact-active.png",
+      "bytes": 67469,
+      "sha256": "3373676b8634b5b0e31efb1474d6ad9cd033a79d0a6387d0eb115f4240e68053"
+    },
+    {
+      "file": "native/compact-ready.png",
+      "bytes": 115396,
+      "sha256": "5b7348931844bda6f8f42a07da66489b6280f35d5ccac76a74e4702eb0e8ff3c"
+    },
+    {
+      "file": "native/cooldown-light.png",
+      "bytes": 118152,
+      "sha256": "c69cf65a451b94624c33d4c194e39554fe5c4f48f640b6bfdeeca71e9dc8b3f4"
+    },
+    {
+      "file": "native/ending-confirmed-light.png",
+      "bytes": 140796,
+      "sha256": "061a7f4f948825e72cd1b8b8a435d65d8d3ce391309adc98e10958efa389636c"
+    },
+    {
+      "file": "native/plank-ax5-lower.png",
+      "bytes": 308790,
+      "sha256": "2ff99774d08a4e389027ac68214ffb1ed10d052e78d8ee130c947333698cf72c"
+    },
+    {
+      "file": "native/plank-dark.png",
+      "bytes": 242791,
+      "sha256": "1f9c2059a90bbf527a1b2eaed83a97c2339391c15ac69fd190e184159cf0373b"
+    },
+    {
+      "file": "native/ready-large-text.png",
+      "bytes": 224749,
+      "sha256": "6f152d813f1e303b248b911411127575540137e4972a5e561eb7ab2615d00d94"
+    },
+    {
+      "file": "native/ready-light.png",
+      "bytes": 201149,
+      "sha256": "8ea810e6c7049da57ae3c23cfcea9a8eb8f5ee100e7a9c0be6a0081bb2da1a63"
+    },
+    {
+      "file": "native/result-unavailable-light.png",
+      "bytes": 147370,
+      "sha256": "fa862ff8edb3bc2454269c4214dd4c6a1cdc886d4bec99c6fbb21bdd97f004d0"
+    },
+    {
+      "file": "native/settings-dark.png",
+      "bytes": 261129,
+      "sha256": "b06db6de1370ca9217d5bd15632b59abf616fdb45b6b459270add40ba40636d6"
+    },
+    {
+      "file": "native/start-transition.mp4",
+      "bytes": 48212,
+      "sha256": "7ba05e9edae649b559ec26e46dc1baf52356ebf72a33aa49a5e6c345277603ac"
+    },
+    {
+      "file": "native/statistics-dark.png",
+      "bytes": 227061,
+      "sha256": "4868bf255132c92776fe47f959ecbaf05a68356206956b1997b218a42a055f57"
+    }
+  ],
+  "nativeRuns": [
+    {
+      "bundle": "/tmp/focus-native-qa-small-final.xcresult",
+      "result": "Failed",
+      "passedTests": 5,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "Contrast failed",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 1,
+          "testIdentifierString": "FocusGeometryTests/testAccessibilityAudit()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testAccessibilityAudit",
+          "testName": "testAccessibilityAudit()"
+        }
+      ],
+      "notes": "All required interactions/type/portrait checks passed; raw bundle includes the later-reviewed contrast audit failures."
+    },
+    {
+      "bundle": "/tmp/focus-native-qa-small-v2.xcresult",
+      "result": "Failed",
+      "passedTests": 1,
+      "failedTests": 4,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "Contrast failed",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 1,
+          "testIdentifierString": "FocusGeometryTests/testAccessibilityAudit()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testAccessibilityAudit",
+          "testName": "testAccessibilityAudit()"
+        },
+        {
+          "failureText": "XCTAssertTrue failed - Core value fully in scroll viewport: workout.status",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 3,
+          "testIdentifierString": "FocusGeometryTests/testPortraitAX5()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testPortraitAX5",
+          "testName": "testPortraitAX5()"
+        },
+        {
+          "failureText": "XCTAssertTrue failed - workout.stop (20.0, 628.5, 335.0, 56.0) outside (0.0, 0.0, 375.0, 667.0)",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 4,
+          "testIdentifierString": "FocusGeometryTests/testPortraitDefault()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testPortraitDefault",
+          "testName": "testPortraitDefault()"
+        },
+        {
+          "failureText": "XCTAssertTrue failed",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 5,
+          "testIdentifierString": "FocusGeometryTests/testTransition()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testTransition",
+          "testName": "testTransition()"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "bundle": "/tmp/focus-native-qa-large.xcresult",
+      "result": "Passed",
+      "passedTests": 2,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": [],
+      "notes": ""
+    },
+    {
+      "bundle": "/tmp/focus-native-qa-final-corrections.xcresult",
+      "result": "Passed",
+      "passedTests": 2,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": [],
+      "notes": ""
+    },
+    {
+      "bundle": "/tmp/focus-native-qa-ipad-final.xcresult",
+      "result": "Failed",
+      "passedTests": 1,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertTrue failed - Visible and available: workout.heartRate",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 1,
+          "testIdentifierString": "FocusGeometryTests/testLandscapeDefault()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testLandscapeDefault",
+          "testName": "testLandscapeDefault()"
+        }
+      ],
+      "notes": "Portrait passed; first landscape launch sampled orientation animation before settlement. Rerun in ipad-settled passed."
+    },
+    {
+      "bundle": "/tmp/focus-native-qa-ipad-settled.xcresult",
+      "result": "Passed",
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": [],
+      "notes": ""
+    },
+    {
+      "bundle": "/tmp/focus-native-qa-audit-reviewed.xcresult",
+      "result": "Failed",
+      "passedTests": 1,
+      "failedTests": 1,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "Contrast failed",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 1,
+          "testIdentifierString": "FocusGeometryTests/testAccessibilityAudit()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testAccessibilityAudit",
+          "testName": "testAccessibilityAudit()"
+        }
+      ],
+      "notes": "Two identical system navigation-title contrast false positives; see native-qa.md."
+    },
+    {
+      "bundle": "/tmp/focus-native-qa-last-details.xcresult",
+      "result": "Passed",
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": [],
+      "notes": ""
+    },
+    {
+      "bundle": "/tmp/focus-anchor-pass1.xcresult",
+      "result": "Failed",
+      "passedTests": 1,
+      "failedTests": 2,
+      "skippedTests": 0,
+      "testFailures": [
+        {
+          "failureText": "XCTAssertEqualWithAccuracy failed: (\"494.3333435058594\") is not equal to (\"474.3333435058594\") +/- (\"1.0\")",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 1,
+          "testIdentifierString": "FocusGeometryTests/testFixedAnchorsDefault()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testFixedAnchorsDefault",
+          "testName": "testFixedAnchorsDefault()"
+        },
+        {
+          "failureText": "XCTAssertEqualWithAccuracy failed: (\"494.3333435058594\") is not equal to (\"471.6666564941406\") +/- (\"1.0\")",
+          "targetName": "FocusGeometryTests",
+          "testIdentifier": 2,
+          "testIdentifierString": "FocusGeometryTests/testFixedAnchorsLargestStandardType()",
+          "testIdentifierURL": "test://com.apple.xcode/FocusGeometry/FocusGeometryTests/FocusGeometryTests/testFixedAnchorsLargestStandardType",
+          "testName": "testFixedAnchorsLargestStandardType()"
+        }
+      ],
+      "notes": "Initial AX comparisons mixed interactive/static hidden padding. Native pixel bars already aligned. A separate visible xxxLarge header clipping defect was corrected by the shared enlarged-text fallback."
+    },
+    {
+      "bundle": "/tmp/focus-anchor-pass2.xcresult",
+      "result": "Passed",
+      "passedTests": 4,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    },
+    {
+      "bundle": "/tmp/focus-anchor-se.xcresult",
+      "result": "Passed",
+      "passedTests": 3,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    },
+    {
+      "bundle": "/tmp/focus-anchor-recording.xcresult",
+      "result": "Passed",
+      "passedTests": 1,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "testFailures": []
+    }
+  ],
+  "geometry": [
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{253.5, 80}, {255, 72}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(124 bpm)"
+          },
+          {
+            "frame": "{{524.5, 68}, {110.5, 96}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Выше цели",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 252}, {172.5, 99}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.0 км/ч)"
+          },
+          {
+            "frame": "{{236.57000732421875, 252}, {148, 99}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{457, 258}, {190, 87.5}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": true,
+        "reserve": "{{20, 0}, {200.5, 113}}",
+        "size": "accessibility5",
+        "state": "cooldown-above",
+        "viewport": "{{0, 0}, {667, 375}}"
+      }
+    },
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{253.5, 68}, {112.5, 72}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(—)"
+          },
+          {
+            "frame": "{{382, 80}, {210, 48}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Пульс недоступен",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 252}, {172.5, 99}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.8 км/ч)"
+          },
+          {
+            "frame": "{{236.5, 252}, {148, 99}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{457, 258}, {190, 87.5}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": true,
+        "reserve": "{{20, 0}, {200.5, 113}}",
+        "size": "accessibility5",
+        "state": "active-no-hr",
+        "viewport": "{{0, 0}, {667, 375}}"
+      }
+    },
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{253.5, 80}, {255, 72}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(152 bpm)"
+          },
+          {
+            "frame": "{{524.5, 68}, {89, 96}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "В зоне",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 252}, {172.5, 99}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(4.4 км/ч)"
+          },
+          {
+            "frame": "{{236.5, 252}, {148, 99}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{457, 258}, {190, 87.5}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": true,
+        "reserve": "{{20, 0}, {200.5, 113}}",
+        "size": "accessibility5",
+        "state": "active-in-zone",
+        "viewport": "{{0, 0}, {667, 375}}"
+      }
+    },
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{37, 262}, {255, 72}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(124 bpm)"
+          },
+          {
+            "frame": "{{32, 346}, {210.5, 48}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Выше цели",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 391.5}, {311, 96}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.0 км/ч)"
+          },
+          {
+            "frame": "{{32, 495.5}, {311, 48}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 567.5}, {335, 87.5}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 20}, {335, 162}}",
+        "size": "accessibility5",
+        "state": "cooldown-above",
+        "viewport": "{{0, 0}, {375, 667}}"
+      }
+    },
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{37, 262}, {112.5, 72}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(—)"
+          },
+          {
+            "frame": "{{32, 346}, {210, 48}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Пульс недоступен",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 391.5}, {311, 96}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.8 км/ч)"
+          },
+          {
+            "frame": "{{32, 495.5}, {311, 48}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 567.5}, {335, 87.5}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 20}, {335, 162}}",
+        "size": "accessibility5",
+        "state": "active-no-hr",
+        "viewport": "{{0, 0}, {375, 667}}"
+      }
+    },
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{37, 262}, {255, 72}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(152 bpm)"
+          },
+          {
+            "frame": "{{32, 346}, {123.5, 48}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "В зоне",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 391.5}, {311, 96}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(4.4 км/ч)"
+          },
+          {
+            "frame": "{{32, 495.5}, {311, 48}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 567.5}, {335, 87.5}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 20}, {335, 162}}",
+        "size": "accessibility5",
+        "state": "active-in-zone",
+        "viewport": "{{0, 0}, {375, 667}}"
+      }
+    },
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{40.5, 269.75}, {172.5, 100.5}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(124 bpm)"
+          },
+          {
+            "frame": "{{229, 321.25}, {83.5, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Выше цели",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{38, 556.75}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.0 км/ч)"
+          },
+          {
+            "frame": "{{193.5, 556.75}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 628.5}, {335, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 20}, {335, 162}}",
+        "size": "large",
+        "state": "cooldown-above",
+        "viewport": "{{0, 0}, {375, 667}}"
+      }
+    },
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{40.5, 269.75}, {104.5, 86}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(—)"
+          },
+          {
+            "frame": "{{161, 314}, {83, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Пульс недоступен",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{38, 542.25}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.8 км/ч)"
+          },
+          {
+            "frame": "{{193.5, 542.25}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 614}, {335, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 20}, {335, 162}}",
+        "size": "large",
+        "state": "active-no-hr",
+        "viewport": "{{0, 0}, {375, 667}}"
+      }
+    },
+    {
+      "sourceRun": "small-v2",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{40.5, 269.75}, {172.5, 100.5}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(152 bpm)"
+          },
+          {
+            "frame": "{{229, 321.25}, {49, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "В зоне",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{38, 556.75}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(4.4 км/ч)"
+          },
+          {
+            "frame": "{{193.5, 556.75}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 628.5}, {335, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 20}, {335, 162}}",
+        "size": "large",
+        "state": "active-in-zone",
+        "viewport": "{{0, 0}, {375, 667}}"
+      }
+    },
+    {
+      "sourceRun": "ipad-final",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{406.5, 108}, {172.5, 100.5}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(124 bpm)"
+          },
+          {
+            "frame": "{{595, 159.5}, {83.5, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Выше цели",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 658.5}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.0 км/ч)"
+          },
+          {
+            "frame": "{{469.5, 658.5}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{923, 651.5}, {190, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": true,
+        "reserve": "{{20, 32}, {350, 196.5}}",
+        "size": "large",
+        "state": "cooldown-above",
+        "viewport": "{{0, 0}, {1133, 744}}"
+      }
+    },
+    {
+      "sourceRun": "ipad-final",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{406.5, 108}, {104.5, 86}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(—)"
+          },
+          {
+            "frame": "{{527, 152.25}, {83, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Пульс недоступен",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 658.5}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.8 км/ч)"
+          },
+          {
+            "frame": "{{469.5, 658.5}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{923, 651.5}, {190, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": true,
+        "reserve": "{{20, 32}, {350, 196.5}}",
+        "size": "large",
+        "state": "active-no-hr",
+        "viewport": "{{0, 0}, {1133, 744}}"
+      }
+    },
+    {
+      "sourceRun": "ipad-final",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{54, 454.5}, {50.25, 86.25}}",
+            "hittable": false,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(152 bpm)"
+          },
+          {
+            "frame": "{{595, 159.5}, {49, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "В зоне",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{32, 658.5}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(4.4 км/ч)"
+          },
+          {
+            "frame": "{{469.5, 658.5}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{923, 651.5}, {190, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": true,
+        "reserve": "{{16, 559}, {98.25, 175}}",
+        "size": "large",
+        "state": "active-in-zone",
+        "viewport": "{{0, 177.5}, {372, 566.5}}"
+      }
+    },
+    {
+      "sourceRun": "ipad-final",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{40.5, 328}, {172.5, 100.5}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(124 bpm)"
+          },
+          {
+            "frame": "{{229, 379.5}, {83.5, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Выше цели",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{38, 973.5}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.0 км/ч)"
+          },
+          {
+            "frame": "{{378, 973.5}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 1045}, {704, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 32}, {704, 208}}",
+        "size": "large",
+        "state": "cooldown-above",
+        "viewport": "{{0, 0}, {744, 1133}}"
+      }
+    },
+    {
+      "sourceRun": "ipad-final",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{40.5, 328}, {104.5, 86}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(—)"
+          },
+          {
+            "frame": "{{161, 372.25}, {83, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "Пульс недоступен",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{38, 973.5}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(3.8 км/ч)"
+          },
+          {
+            "frame": "{{378, 973.5}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 1045}, {704, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 32}, {704, 208}}",
+        "size": "large",
+        "state": "active-no-hr",
+        "viewport": "{{0, 0}, {744, 1133}}"
+      }
+    },
+    {
+      "sourceRun": "ipad-final",
+      "test": null,
+      "measurement": {
+        "elements": [
+          {
+            "frame": "{{40.5, 328}, {172.5, 100.5}}",
+            "hittable": true,
+            "id": "workout.heartRate",
+            "label": "Текущий пульс",
+            "value": "Optional(152 bpm)"
+          },
+          {
+            "frame": "{{229, 379.5}, {49, 18}}",
+            "hittable": true,
+            "id": "workout.status",
+            "label": "В зоне",
+            "value": "Optional()"
+          },
+          {
+            "frame": "{{38, 973.5}, {81, 41.5}}",
+            "hittable": true,
+            "id": "workout.speed",
+            "label": "Скорость",
+            "value": "Optional(4.4 км/ч)"
+          },
+          {
+            "frame": "{{378, 973.5}, {58, 41.5}}",
+            "hittable": true,
+            "id": "workout.elapsed",
+            "label": "Прошло",
+            "value": "Optional(18:42)"
+          },
+          {
+            "frame": "{{20, 1045}, {704, 56}}",
+            "hittable": true,
+            "id": "workout.stop",
+            "label": "Остановить HR-контроль",
+            "value": "Optional()"
+          }
+        ],
+        "landscape": false,
+        "reserve": "{{20, 32}, {704, 208}}",
+        "size": "large",
+        "state": "active-in-zone",
+        "viewport": "{{0, 0}, {744, 1133}}"
+      }
+    }
+  ],
+  "limitations": [
+    "No physical iPhone/Watch/treadmill or third-party PiP session.",
+    "Spoken VoiceOver was not exercised; AX structure, actions and geometry were inspected.",
+    "Raw audit has two independently reviewed system-material false positives."
+  ],
+  "finalScope": {
+    "exitCode": 0,
+    "log": "/tmp/focus-anchor-scope.log",
+    "diffCheck": "passed"
+  },
+  "simulatorsAfterQA": "All shut down",
+  "sourceBeforeStationaryFollowup": [
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/ContentSharedUIComponents.swift",
+      "sha256": "52a8894887d3e990609c0333862af04e1409469152b68049a3b12bf2755760d3"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/ContentView.swift",
+      "sha256": "07a5db6daee8b4ebc9089be736cfafe48db0aa7412146dbc509d99ce7fb1d1f5"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/DebugSharedUIComponents.swift",
+      "sha256": "d25eedab6a895cbb948aee71058d1a2addd7d0d4815ea45ec1f2cf9f77a710db"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/DevicePickerView.swift",
+      "sha256": "bfd95b94996bd5422453311e78f67dad4a754d13621910e66128968524570252"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/PlankTimerView.swift",
+      "sha256": "31b8ffed77a5faff4c052262468f924b0be5178b997a321564485fa3f1043a6b"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteCoreTests/HeartRateLegacyBehaviorContractTests.swift",
+      "sha256": "d72d903e13f7f8a52e285ce6fb8710cd1bc19554d18d9e0aa79956e466536fe2"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteCoreTests/TrainingUIObservationBoundaryTests.swift",
+      "sha256": "2bd8230f66d7e12b93b5ecc90ab71314464ebbfb299874abfb442125b1785356"
+    },
+    {
+      "file": "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteWatch Watch App/ContentView.swift",
+      "sha256": "655232c93002d35584eedccb52cbfbf1efa82e898f35a1851dd35baa5eb359a8"
+    }
+  ],
+  "stationaryControls": {
+    "pixels": {
+      "ready": {
+        "zoneBarTopPx": 1555,
+        "zoneBarBottomPx": 1596,
+        "zoneBarCenterPt": 525.1666666666666,
+        "timeMarkCenterPt": 586.1666666666666
+      },
+      "active": {
+        "zoneBarTopPx": 1555,
+        "zoneBarBottomPx": 1596,
+        "zoneBarCenterPt": 525.1666666666666,
+        "timeMarkCenterPt": 586.1666666666666
+      },
+      "deltaZonePt": 0.0,
+      "deltaTimeMarkPt": 0.0
+    },
+    "nativeAX": {
+      "afterTime": "{{40, 538.280029296875}, {310, 52.05328369140625}}",
+      "afterZones": "{{40, 474.33334350585938}, {310, 64.000030517578125}}",
+      "beforeTime": "{{40, 538.280029296875}, {310, 70.05328369140625}}",
+      "beforeZones": "{{40, 494.33334350585938}, {310, 44.000030517578125}}",
+      "size": "large"
+    },
+    "anchorScope": "Portrait outer canvas width >=375pt, height >=740pt, Dynamic Type <=large. Other sizes retain natural scrolling flow.",
+    "sourceContracts": {
+      "passed": 27,
+      "failed": 0,
+      "log": "/tmp/focus-anchor-final-contracts.log"
+    },
+    "genericIOSBuild": {
+      "result": "BUILD SUCCEEDED",
+      "log": "/tmp/focus-anchor-device-final.log"
+    },
+    "recording": {
+      "raw": "/tmp/focus-anchor-transition-raw.mp4",
+      "trimSeconds": [
+        32,
+        35.5
+      ],
+      "outputFPS": 60,
+      "outputWidth": 390
+    },
+    "captures": {
+      "ready-light.png": "/tmp/focus-anchor-pass2-attachments/91CF8F48-FF41-40DD-8F76-AE28050C2865.png",
+      "active-light.png": "/tmp/focus-anchor-pass2-attachments/8F50A4C3-2E70-444C-8E75-54C2963556C3.png",
+      "cooldown-light.png": "/tmp/focus-anchor-pass2-attachments/985FEEE7-78F5-45F4-A47C-20A1865D9BAF.png",
+      "ready-large-text.png": "/tmp/focus-anchor-pass2-attachments/E2D09135-7DD3-4463-B808-7587FA72FC1B.png",
+      "compact-ready.png": "/tmp/focus-anchor-se-attachments/F5E05330-5C45-47E3-B910-C9551EA82877.png",
+      "compact-active.png": "/tmp/focus-anchor-se-attachments/2DC4186C-49DF-48F6-90FB-84C4AB4EEDA0.png",
+      "start-transition.mp4": "/tmp/focus-anchor-pass2/start-transition.mp4"
+    }
+  }
+}
