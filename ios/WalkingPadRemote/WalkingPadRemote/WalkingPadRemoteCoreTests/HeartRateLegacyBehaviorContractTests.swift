@@ -608,7 +608,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
 
         XCTAssertTrue(contentViewSource.contains(
-            "private let trainingDurationPresets = [20, 25, 30, 35, 40, 45]"
+            "private let trainingDurationPresets = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]"
         ))
         XCTAssertTrue(mapping.contains("durationMinutes: durationMinutes"))
         XCTAssertTrue(mapping.contains("metrics: []"))
@@ -620,8 +620,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(selector.contains("Text(\"Текущее: \\(selectedMinutes) мин\")"))
         XCTAssertTrue(selector.contains("guard interactive else { return }"))
         XCTAssertTrue(selector.contains("onSelect(minutes)"))
-        XCTAssertFalse(selector.contains("onAppear"))
-        XCTAssertFalse(selector.contains("@State"))
         XCTAssertFalse(selector.contains("@Binding"))
 
         XCTAssertTrue(controlView.contains(
@@ -634,11 +632,48 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             "duration-20",
             "duration-30",
             "duration-45",
-            "duration-legacy-10",
-            "duration-legacy-60",
+            "duration-10",
+            "duration-60",
         ] {
             XCTAssertTrue(previewFixtures.contains("case \"\(fixture)\""), fixture)
         }
+    }
+
+    func testDurationRibbonViewportCannotSelectOrRecenterAfterPresentation() throws {
+        let selector = try functionBody(
+            "private struct TrainingDurationPresetSelector: View",
+            in: contentViewSource
+        )
+        let appearance = try functionBody(".onAppear", in: selector)
+        let buttonAction = try functionBody("Button ", in: selector)
+        let hub = try functionBody("private struct TrainingHubView: View", in: contentViewSource)
+
+        XCTAssertTrue(selector.contains("ScrollView(.horizontal)"))
+        XCTAssertTrue(selector.contains(".scrollTargetLayout()"))
+        XCTAssertTrue(selector.contains(".scrollTargetBehavior(.viewAligned(limitBehavior: .never))"))
+        for forbidden in ["ViewThatFits", "Grid", ".paging", "DragGesture", ".onChange", ".scrollPosition"] {
+            XCTAssertFalse(selector.contains(forbidden), forbidden)
+        }
+        XCTAssertEqual(buttonAction.split(separator: "\n").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }, ["{", "guard interactive else { return }", "onSelect(minutes)", "}"])
+        XCTAssertEqual(selector.components(separatedBy: "onSelect(minutes)").count - 1, 1)
+        XCTAssertTrue(selector.contains("ForEach(trainingDurationPresets, id: \\.self)"))
+        XCTAssertTrue(selector.contains("let selectedMinutes: Int"))
+        XCTAssertTrue(selector.contains("let isSelected = minutes == selectedMinutes"))
+        XCTAssertTrue(selector.contains(".accessibilityLabel(\"\\(minutes) минут\")"))
+        XCTAssertTrue(selector.contains(".accessibilityValue(isSelected ? \"Выбрано\" : \"Не выбрано\")"))
+        XCTAssertTrue(selector.contains(".accessibilityHidden(!interactive)"))
+        XCTAssertTrue(selector.contains("@ScaledMetric(relativeTo: .subheadline)"))
+        XCTAssertTrue(selector.contains("max(minimumCellWidth, (width - 5 * 6) / 6)"))
+        assertOrdered([
+            "guard !didPositionInitially else { return }",
+            "didPositionInitially = true",
+            "proxy.scrollTo(selectedMinutes, anchor: UnitPoint(x: 0.4, y: 0))",
+        ], in: appearance)
+        XCTAssertFalse(appearance.contains("onSelect"))
+        XCTAssertTrue(hub.contains("interactive: !presentation.isPreview && !presentation.isPreparing"))
+        XCTAssertTrue(hub.contains("onSelect: onDurationSelect"))
     }
 
     func testActiveWorkoutShellIsObservationalSparseAndTransportFree() throws {

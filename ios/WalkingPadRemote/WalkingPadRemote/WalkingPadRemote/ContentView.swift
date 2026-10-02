@@ -823,9 +823,9 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
         return hrControl(durationMinutes: 30)
     case "duration-45":
         return hrControl(durationMinutes: 45)
-    case "duration-legacy-10":
+    case "duration-10":
         return hrControl(durationMinutes: 10)
-    case "duration-legacy-60":
+    case "duration-60":
         return hrControl(durationMinutes: 60)
     case "intervals":
         return TrainingHubPresentation(
@@ -1286,12 +1286,15 @@ private struct TrainingZoneScale: View {
     }
 }
 
-private let trainingDurationPresets = [20, 25, 30, 35, 40, 45]
+private let trainingDurationPresets = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
 
 private struct TrainingDurationPresetSelector: View {
     let selectedMinutes: Int
     let interactive: Bool
     let onSelect: (Int) -> Void
+
+    @ScaledMetric(relativeTo: .subheadline) private var minimumCellWidth = 44
+    @State private var didPositionInitially = false
 
     private var hasPresetSelection: Bool {
         trainingDurationPresets.contains(selectedMinutes)
@@ -1315,16 +1318,21 @@ private struct TrainingDurationPresetSelector: View {
                 }
             }
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 6) {
-                    presetButtons
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        presetButtons
+                    }
+                    .scrollTargetLayout()
+                    .padding(.vertical, 2)
                 }
-
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
-                    spacing: 6
-                ) {
-                    presetButtons
+                .scrollIndicators(.hidden)
+                .scrollTargetBehavior(.viewAligned(limitBehavior: .never))
+                .onAppear {
+                    guard !didPositionInitially else { return }
+                    didPositionInitially = true
+                    // Place 30 third in the usual six-cell viewport; boundaries clamp naturally.
+                    proxy.scrollTo(selectedMinutes, anchor: UnitPoint(x: 0.4, y: 0))
                 }
             }
         }
@@ -1343,6 +1351,9 @@ private struct TrainingDurationPresetSelector: View {
                     .monospacedDigit()
                     .foregroundStyle(isSelected ? Color.white : Color.primary)
                     .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
+                    .containerRelativeFrame(.horizontal) { width, _ in
+                        max(minimumCellWidth, (width - 5 * 6) / 6)
+                    }
                     .background(
                         isSelected ? Color.accentColor : Color(.systemBackground).opacity(0.55),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -1357,6 +1368,7 @@ private struct TrainingDurationPresetSelector: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .id(minutes)
             .accessibilityLabel("\(minutes) минут")
             .accessibilityValue(isSelected ? "Выбрано" : "Не выбрано")
             .accessibilityHidden(!interactive)
