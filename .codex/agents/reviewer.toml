@@ -11,3 +11,6 @@ Do not edit files, mutate Git/GitHub, use authenticated mutation APIs, access pr
 change configuration/packages, perform BLE/controller/device work, or spawn agents.
 These limits apply even when runtime permissions allow writes.
 """
+
+[agents]
+enabled = false

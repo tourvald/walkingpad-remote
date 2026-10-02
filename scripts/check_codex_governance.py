@@ -152,6 +152,8 @@ def main() -> int:
             errors.append(f"model/effort pin remains in {profile.relative_to(ROOT)}")
         if 'sandbox_mode = "read-only"' not in content:
             errors.append(f"missing read-only default in {profile.relative_to(ROOT)}")
+        if not re.search(r"(?m)^\[agents\]\nenabled = false$", content):
+            errors.append(f"recursive delegation remains enabled in {profile.relative_to(ROOT)}")
         for instruction in (
             "Do not edit files",
             "mutate Git/GitHub",
