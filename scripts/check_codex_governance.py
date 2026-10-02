@@ -18,6 +18,9 @@ PR_REVIEW = ROOT / ".agents/skills/walkingpad-pr-review/SKILL.md"
 PERFORMANCE = ROOT / ".agents/skills/walkingpad-performance/SKILL.md"
 ISSUE_TEMPLATE = ROOT / ".github/ISSUE_TEMPLATE/codex-implementation.md"
 TELEMETRY_INDEX = ROOT / "docs/telemetry-v2/index.md"
+CODEX_CONFIG = ROOT / ".codex/config.toml"
+CODEX_ROLES = ("repo_explorer", "docs_researcher", "scope_challenger", "reviewer")
+WORKFLOW = ROOT / "docs/engineering/codex-github-workflow.md"
 
 DEFAULT_MAX_INSTRUCTION_BYTES = 32 * 1024
 INSTRUCTION_FILENAMES = ("AGENTS.override.md", "AGENTS.md")
@@ -108,6 +111,9 @@ def main() -> int:
         PERFORMANCE,
         ISSUE_TEMPLATE,
         TELEMETRY_INDEX,
+        CODEX_CONFIG,
+        WORKFLOW,
+        *(ROOT / f".codex/agents/{role}.toml" for role in CODEX_ROLES),
     )
     for required in required_files:
         if not required.is_file():
@@ -118,6 +124,56 @@ def main() -> int:
             policy_file.read_text(encoding="utf-8")
         ):
             errors.append(f"numeric token control remains in {policy_file.relative_to(ROOT)}")
+
+    if CODEX_CONFIG.is_file():
+        config = CODEX_CONFIG.read_text(encoding="utf-8")
+        for setting in ('model = "gpt-6-luna"', 'model_reasoning_effort = "max"'):
+            if not re.search(rf"(?m)^{re.escape(setting)}$", config):
+                errors.append(f"missing project default in .codex/config.toml: {setting}")
+        if not re.search(
+            r"(?ms)^\[agents\]\s*^max_concurrent_threads_per_session = 3$", config
+        ):
+            errors.append("project config must cap concurrently open helpers at three")
+        if re.search(r"(?m)^\s*default_subagent_(?:model|reasoning_effort)\s*=", config):
+            errors.append("project config must not pin a subagent model or effort")
+
+    for role in CODEX_ROLES:
+        profile = ROOT / f".codex/agents/{role}.toml"
+        if not profile.is_file():
+            continue
+        content = profile.read_text(encoding="utf-8")
+        if not re.search(rf'(?m)^name = "{role}"$', content):
+            errors.append(f"invalid custom-agent name in {profile.relative_to(ROOT)}")
+        if re.search(
+            r"(?m)^\s*(?:model|model_reasoning_effort|default_subagent_model|"
+            r"default_subagent_reasoning_effort)\s*=",
+            content,
+        ):
+            errors.append(f"model/effort pin remains in {profile.relative_to(ROOT)}")
+        if 'sandbox_mode = "read-only"' not in content:
+            errors.append(f"missing read-only default in {profile.relative_to(ROOT)}")
+        for instruction in (
+            "Do not edit files",
+            "mutate Git/GitHub",
+            "production/SSH",
+            "BLE/controller/device work",
+            "spawn agents",
+        ):
+            if instruction not in content:
+                errors.append(f"missing helper boundary in {profile.relative_to(ROOT)}: {instruction}")
+
+    if WORKFLOW.is_file():
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        for contract in (
+            "gpt-6.1-sol / medium",
+            "three helper",
+            "Full Access",
+            "instruction/workflow contract",
+            "joins/closes every",
+            "independent ChatGPT review",
+        ):
+            if contract not in workflow:
+                errors.append(f"missing delegation contract in {WORKFLOW.relative_to(ROOT)}: {contract}")
 
     if ISSUE_TEMPLATE.is_file():
         template = ISSUE_TEMPLATE.read_text(encoding="utf-8")
