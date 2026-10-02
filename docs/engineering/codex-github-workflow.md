@@ -12,6 +12,7 @@ This document defines where project knowledge and workflow rules belong. It link
 | Normal exact-base implementation through one Draft PR | [`walkingpad-pr-lifecycle`](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md) | root instructions and Issue bodies |
 | Minimal code discipline | [`walkingpad-minimal-code`](../../.agents/skills/walkingpad-minimal-code/SKILL.md) | docs-only work |
 | Independent Draft PR / PM review and conditional merge | [`walkingpad-pr-review`](../../.agents/skills/walkingpad-pr-review/SKILL.md) | implementation context/transcripts |
+| Compact PR evidence and execution observations | [PR template](../../.github/pull_request_template.md) | parallel audit forms and repeated handoff reports |
 | Evidence-based runtime optimization | [`walkingpad-performance`](../../.agents/skills/walkingpad-performance/SKILL.md) | ordinary changes without a measured/explicit performance goal |
 | Native iOS redesign | [`walkingpad-ios-redesign`](../../.agents/skills/walkingpad-ios-redesign/SKILL.md) | non-UI work |
 | Safety-critical runtime/control/data changes | [`walkingpad-safety-change`](../../.agents/skills/walkingpad-safety-change/SKILL.md) | ordinary UI/logic changes |
@@ -28,9 +29,9 @@ When authoritative current sources materially conflict, stop and surface the con
 
 Start with the current Issue/task, active decisions, root/nested instructions, current code/tests, and only the skills/domain docs required by the current role.
 
-Read predecessor Issues, PRs, commits, archived notes, broad docs, or long logs only when a named ambiguity cannot be resolved from current authoritative sources. Successful logs are evidence to summarize, not context to reproduce.
+Read predecessor Issues, PRs, commits, archived notes, broad docs, or long logs only when a named ambiguity cannot be resolved from current authoritative sources. Use targeted file/log reads; summarize successful logs instead of reproducing them. Spawn a helper only for a distinct question or risk the parent is not already investigating; required independent review remains a distinct responsibility.
 
-A review packet contains the task contract, exact base/head, complete base-to-head diff, changed-file scope, and concise verification evidence. A correction starts from the exact finding and changed delta rather than replaying repository archaeology or the implementation transcript.
+Use the linked PR evidence and complete base-to-head diff for review. Keep corrections in the existing Issue/chat/worktree/PR, starting from the exact finding and changed delta rather than replaying repository archaeology or implementation context.
 
 ## Task-to-skill routing
 
@@ -44,6 +45,58 @@ A review packet contains the task contract, exact base/head, complete base-to-he
 - `review`: `walkingpad-pr-review`; code diffs also use `walkingpad-minimal-code`.
 
 Do not load all skills preemptively. A skill is conditional context, not a repository handbook.
+
+## Model configuration and activation
+
+The parent baseline lives in [`.codex/config.toml`](../../.codex/config.toml).
+Required independent review and safety/scope challenge settings belong to
+[`reviewer.toml`](../../.codex/agents/reviewer.toml) and
+[`scope_challenger.toml`](../../.codex/agents/scope_challenger.toml).
+[`repo_explorer.toml`](../../.codex/agents/repo_explorer.toml) and
+[`docs_researcher.toml`](../../.codex/agents/docs_researcher.toml) retain their
+lower-cost settings for concrete, bounded needs; do not spawn them by default.
+This role allocation is a project decision, not an OpenAI requirement to use
+one model everywhere. The parent remains the sole writer; helpers remain
+read-only and non-recursive.
+
+Checked on 2026-09-08 with the installed Codex CLI `0.153.4`:
+[official model guidance](https://developers.openai.com/api/docs/guides/latest-model),
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference),
+[configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic#configuration-precedence),
+and [subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+Codex supports `model` and `model_reasoning_effort` in project config and
+standalone custom-agent TOML. Responses request fields such as
+`reasoning.effort`, `configuration_update`, and async tool declarations are
+API features, not additional project config keys. No minimum client version
+is asserted by this check.
+
+CLI overrides take precedence over trusted project config (nearest directory
+wins), then selected profile, user config, system config, and defaults.
+Untrusted projects skip project config. For custom agents, the role file's
+explicit model/effort overrides the values resolved from the spawn request,
+`[agents]` defaults, and parent. No global subagent model default is added.
+Start a fresh session in the intended trusted checkout and spawn fresh roles
+after changing these files; an existing session or a ChatGPT model-picker
+selection does not prove activation. Explicit client/session overrides must
+be checked, not assumed to follow the project baseline.
+
+Before rollout, record the client/version, exact checkout, effective
+model/effort, selected role, and permission evidence from client metadata or
+status in a bounded read-only check of the parent and required review roles.
+Configured read-only defaults do not by themselves prove effective sandboxing:
+the client can reapply live parent permission overrides when spawning.
+Do not expand permissions or edit permission policy to make this check pass. Keep evidence concise and
+exclude secrets and full transcripts. TOML parsing and governance/CI validation
+prove static configuration only; record observed activation separately.
+
+If required model/effort activation is unavailable, mismatched, or not exposed
+by the client, mark it `UNVERIFIED`, identify the precise blocker, and request
+a specific PM disposition: rerun in a supported client or explicitly approve
+a named alternative model/effort and its limited scope. Never silently fall
+back or count that required review as completed. Disclose helper fallback and
+mark missing effective helper metadata `UNVERIFIED` as well. Rollout remains
+blocked until required activation is observed or explicitly dispositioned by
+PM; a statically valid Draft PR alone is insufficient.
 
 ## Implementation Issue shape
 
@@ -85,9 +138,9 @@ Only add an unusual task-specific hard stop when omission would be risky. Do not
 
 ## Review, correction, and handoff
 
-Review uses exact base/head and the complete diff, not implementation transcripts. Findings identify priority, exact location/metadata, consequence, evidence, and smallest safe correction. After a correction, inspect the new delta and rerun only checks invalidated by the delta plus mandatory gates.
+The [review skill](../../.agents/skills/walkingpad-pr-review/SKILL.md) owns findings and simplicity review; the [lifecycle](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md#4-verify) owns verification and rerun conditions. Keep outcomes in the existing PR evidence packet.
 
-Implementation handoff is concise: Issue/PR, exact base/head, changed files, checks/CI, and remaining risks. Required full checks and exact-head CI remain mandatory regardless of context size or token use.
+Token usage is post-hoc evidence, not an arbitrary execution cutoff. Actual client limits are environment blockers to report, never permission to omit mandatory verification. Required full checks and exact-head CI remain mandatory regardless of context size or token use.
 
 ## GitHub metadata discipline
 
