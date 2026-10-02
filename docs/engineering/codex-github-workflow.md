@@ -48,55 +48,61 @@ Do not load all skills preemptively. A skill is conditional context, not a repos
 
 ## Model configuration and activation
 
-The parent baseline lives in [`.codex/config.toml`](../../.codex/config.toml).
-Required independent review and safety/scope challenge settings belong to
-[`reviewer.toml`](../../.codex/agents/reviewer.toml) and
-[`scope_challenger.toml`](../../.codex/agents/scope_challenger.toml).
-[`repo_explorer.toml`](../../.codex/agents/repo_explorer.toml) and
-[`docs_researcher.toml`](../../.codex/agents/docs_researcher.toml) retain their
-lower-cost settings for concrete, bounded needs; do not spawn them by default.
-This role allocation is a project decision, not an OpenAI requirement to use
-one model everywhere. The parent remains the sole writer; helpers remain
-read-only and non-recursive.
+The trusted project default in [`.codex/config.toml`](../../.codex/config.toml)
+is `gpt-6-luna / max`. The owner may select `gpt-6.1-sol / medium` for the
+parent in a supported client. Client/session overrides take precedence over
+project defaults; prompt text alone does not switch models. Never silently
+substitute another pair. Report effective root model/effort from client metadata
+or status when available; otherwise mark them `UNVERIFIED`, not inferred from
+TOML. Static validation of this PR does not prove activation in a new session.
+Check activation in a fresh session in the trusted checkout; the current
+session may retain earlier client settings.
 
-Checked on 2026-09-08 with the installed Codex CLI `0.153.4`:
-[official model guidance](https://developers.openai.com/api/docs/guides/latest-model),
-[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference),
-[configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic#configuration-precedence),
-and [subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents).
-Codex supports `model` and `model_reasoning_effort` in project config and
-standalone custom-agent TOML. Responses request fields such as
-`reasoning.effort`, `configuration_update`, and async tool declarations are
-API features, not additional project config keys. No minimum client version
-is asserted by this check.
+The four existing [custom roles](../../.codex/agents/) have no model or effort
+pins, and the project has no `[agents]` model/effort defaults. They inherit the
+effective parent pair when spawned without overrides: Luna/max or Sol 6.1/medium.
+Do not supply child model/effort overrides or mix pairs under one parent. Check
+effective child settings from client metadata when exposed; report mismatches
+and mark unavailable settings `UNVERIFIED` rather than assuming inheritance.
+The project config caps concurrently open
+helpers at three; the root also limits each assignment to **three helper
+launches total**, including failed launches. Simple tasks remain root-only.
 
-CLI overrides take precedence over trusted project config (nearest directory
-wins), then selected profile, user config, system config, and defaults.
-Untrusted projects skip project config. For custom agents, the role file's
-explicit model/effort overrides the values resolved from the spawn request,
-`[agents]` defaults, and parent. No global subagent model default is added.
-Start a fresh session in the intended trusted checkout and spawn fresh roles
-after changing these files; an existing session or a ChatGPT model-picker
-selection does not prove activation. Explicit client/session overrides must
-be checked, not assumed to follow the project baseline.
+Official [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
+[precedence](https://learn.chatgpt.com/docs/developer-settings), and
+[subagent inheritance/permissions](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+confirm these static keys and inheritance rules. The client can reapply live
+parent permission overrides when spawning a child, including Full Access.
+Thus `sandbox_mode = "read-only"` in a role is a default, **not proof of effective
+isolation**. Helper read-only behavior is an instruction/workflow contract; do
+not require a permission-mode change or add probes, wrappers, or launchers to
+claim a sandbox guarantee.
 
-Before rollout, record the client/version, exact checkout, effective
-model/effort, selected role, and permission evidence from client metadata or
-status in a bounded read-only check of the parent and required review roles.
-Configured read-only defaults do not by themselves prove effective sandboxing:
-the client can reapply live parent permission overrides when spawning.
-Do not expand permissions or edit permission policy to make this check pass. Keep evidence concise and
-exclude secrets and full transcripts. TOML parsing and governance/CI validation
-prove static configuration only; record observed activation separately.
+## Bounded helper research and independent review
 
-If required model/effort activation is unavailable, mismatched, or not exposed
-by the client, mark it `UNVERIFIED`, identify the precise blocker, and request
-a specific PM disposition: rerun in a supported client or explicitly approve
-a named alternative model/effort and its limited scope. Never silently fall
-back or count that required review as completed. Disclose helper fallback and
-mark missing effective helper metadata `UNVERIFIED` as well. Rollout remains
-blocked until required activation is observed or explicitly dispositioned by
-PM; a statically valid Draft PR alone is insufficient.
+The root alone writes, executes task mutations, publishes, and makes final
+decisions. Optional helpers may answer distinct in-scope repository questions
+or research public/official documentation. No recursive delegation. Helpers
+must not edit files, mutate Git/GitHub, use authenticated mutation APIs, access
+production/SSH, change configuration/packages, perform BLE/controller/device
+work, or make external writes, even when runtime permissions permit them.
+
+Before a helper read phase, the root freezes the exact source or base-to-head
+diff and records HEAD, index, worktree, and untracked state. The root performs
+no writes while helpers run. It verifies material findings, joins/closes every
+helper, and rechecks that state before resuming writes. Further research needs
+another frozen read phase within the same three-launch budget; no helper stays
+active during a write phase. Unexpected mutation is a hard stop.
+
+Prefer ChatGPT/GitHub for preparation, caller mapping, bug investigation,
+public documentation, scope/privacy/safety analysis, and fresh independent PR
+review when tools suffice. Codex still reads affected current code/contracts,
+reproduces failures when practical, implements, and verifies. An internal
+`scope_challenger` or `reviewer` is only a critique, never the independent
+safety challenge, independent ChatGPT review, PM acceptance, or physical
+evidence. Independent review uses the live Issue and decisions, exact base/head,
+complete diff, and current exact-head CI; a new head needs a new review. Do not
+duplicate independent reviewers or continue pre-merge review after merge.
 
 ## Implementation Issue shape
 
@@ -138,7 +144,7 @@ Only add an unusual task-specific hard stop when omission would be risky. Do not
 
 ## Review, correction, and handoff
 
-The [review skill](../../.agents/skills/walkingpad-pr-review/SKILL.md) owns findings and simplicity review; the [lifecycle](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md#4-verify) owns verification and rerun conditions. Keep outcomes in the existing PR evidence packet.
+The [review skill](../../.agents/skills/walkingpad-pr-review/SKILL.md) owns independent findings and simplicity review; the [lifecycle](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md#4-verify) owns verification and rerun conditions. Keep outcomes in the existing PR evidence packet. Keep one active executor assignment; only the root claims it and publishes a `## Codex result` linking the live assignment. Do not chain into the next Issue after handoff.
 
 Token usage is post-hoc evidence, not an arbitrary execution cutoff. Actual client limits are environment blockers to report, never permission to omit mandatory verification. Required full checks and exact-head CI remain mandatory regardless of context size or token use.
 

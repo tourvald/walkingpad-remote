@@ -5,7 +5,7 @@
 - GitHub `main` is the canonical development base. Resolve its exact live SHA before implementation; planning-time SHAs are context, not authority.
 - Change only files and external metadata authorized by the current Issue and active PM decisions. Preserve unrelated work and stop when a required change would exceed that scope.
 - Read-only work does not authorize code changes, GitHub mutations, deployment, device access, BLE/controller commands, or other external writes.
-- The parent/Goal agent is the sole writer unless the Issue explicitly says otherwise. Subagents are read-only and conditional on a concrete reduction in mapping, research, safety-review, or final-review risk.
+- The root is the sole writer, publisher, executor owner, and final decision owner. Optional helpers perform bounded read-only research or internal critique under the [Codex/GitHub workflow](docs/engineering/codex-github-workflow.md); their instructions remain binding under Full Access.
 
 ## Skill routing
 
