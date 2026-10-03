@@ -5,6 +5,62 @@ import TelemetryDomain
 import XCTest
 
 final class TelemetryWorkoutReadAndExportTests: XCTestCase {
+    func testCurrentWeekFactualDurationSurvivesLowAnalysisAndMissingSpeedAfterReopen() async throws {
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.timeZone = TimeZone(identifier: "Europe/Moscow")!
+        let date = ISO8601DateFormatter().date(from: "2026-09-15T22:21:00+03:00")!
+        let week = try XCTUnwrap(calendar.dateInterval(of: .weekOfYear, for: date))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("weekly.sqlite")
+        var writer: TelemetryStore? = try TelemetryStoreFactory.make(.onDisk(url))
+        let workout = session(index: 40_001, profile: "weekly-a", startedAt: date, durationSeconds: 1_560)
+        let hr = TelemetryPersistenceFixtures.heartRate(
+            seed: 1, session: workout,
+            source: TelemetryPersistenceFixtures.source(seed: 1), arrivalOrder: 0, bpm: 135
+        )
+        let analysis = try WorkoutAnalyzerV1.analyze(
+            WorkoutAnalysisInput(session: workout, heartRate: [hr], treadmill: [], events: [], frames: []),
+            generatedAt: workout.endedAt!.addingTimeInterval(1)
+        )
+        XCTAssertEqual(analysis.qualityGrade, .low)
+        XCTAssertNil(analysis.keyMetrics.averageFactualSpeedKilometresPerHour)
+        try await writer!.insertSession(workout)
+        try await writer!.insertAnalysis(analysis)
+        let filter = WorkoutReadFilter(
+            profileScope: .exact("weekly-a"), startedAtOrAfter: week.start, startedBefore: week.end
+        )
+        let first = try await writer!.fetchWorkoutStatistics(filter: filter, batchSize: 1)
+        XCTAssertEqual(first.totalDurationSeconds, 1_560)
+        XCTAssertEqual(first.includedWorkoutCount, 1)
+        // Known duration alone is not proof of time in any particular HR zone.
+        XCTAssertEqual(first.zoneSeconds, [nil, nil, nil, nil, nil])
+        for other in [
+            session(index: 40_002, profile: "weekly-a", startedAt: week.start),
+            session(index: 40_003, profile: "weekly-a", startedAt: week.start.addingTimeInterval(-1)),
+            session(index: 40_004, profile: "weekly-a", startedAt: week.end),
+            session(index: 40_005, profile: "weekly-b", startedAt: date),
+        ] {
+            try await writer!.insertSession(other)
+        }
+        let total = try await writer!.fetchWorkoutStatistics(filter: filter, batchSize: 1)
+        XCTAssertEqual(total.totalDurationSeconds, 2_160)
+        XCTAssertEqual(total.queryableWorkoutCount, 2)
+        XCTAssertEqual(total.includedWorkoutCount, 2)
+        writer = nil
+        let reopened = try TelemetryStoreFactory.make(.onDisk(url))
+        let requery = try await reopened.fetchWorkoutStatistics(filter: filter, batchSize: 1)
+        XCTAssertEqual(requery.totalDurationSeconds, total.totalDurationSeconds)
+        XCTAssertEqual(requery.includedWorkoutCount, total.includedWorkoutCount)
+        let page = try await reopened.fetchWorkoutHistoryPage(filter: filter, after: nil, limit: 10)
+        let item = try XCTUnwrap(page.items.first { $0.id == "native:\(workout.sessionID)" })
+        XCTAssertEqual(item.durationSeconds, 1_560)
+        XCTAssertNil(item.averageSpeed)
+        XCTAssertTrue(item.quality.includedInStatistics)
+        XCTAssertFalse(item.quality.adaptationEligible)
+    }
+
     func testFailedLegacyShadowSourceDoesNotBlockOrCorruptNativeV2Read() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let native = session(
@@ -782,6 +838,15 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
             )
         )
 
+        do {
+            _ = try await store.fetchWorkoutStatistics(
+                filter: WorkoutReadFilter(profileScope: .exact("profile-export-error"))
+            )
+            XCTFail("Malformed persisted analysis must not become successful zero statistics")
+        } catch is DecodingError {
+            // Corrupt V2 evidence remains an explicit read failure.
+        }
+
         let temporaryDirectory = FileManager.default.temporaryDirectory
         let before = try exportDirectories(in: temporaryDirectory)
         do {
@@ -809,7 +874,8 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
         index: Int,
         profile: String,
         startedAt: Date,
-        configuration: ImmutableConfigurationSnapshot? = nil
+        configuration: ImmutableConfigurationSnapshot? = nil,
+        durationSeconds: Double = 600
     ) -> WorkoutSessionRecord {
         WorkoutSessionRecord(
             recordID: RecordID(rawValue: uuid(index * 2 + 1)),
@@ -818,8 +884,8 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
             lifecycleState: .completed,
             workoutMode: .heartRateControlled,
             startedAt: startedAt,
-            endedAt: startedAt.addingTimeInterval(600),
-            endedElapsed: ElapsedDuration(microseconds: 600_000_000),
+            endedAt: startedAt.addingTimeInterval(durationSeconds),
+            endedElapsed: ElapsedDuration(microseconds: Int64(durationSeconds * 1_000_000)),
             incompleteReason: nil,
             appContext: AppRuntimeContext(
                 appVersion: "1.2.3",
@@ -844,7 +910,7 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
                 isComplete: true,
                 lostCriticalRecordCount: 0,
                 lostNativeRecordCount: 0,
-                lastPersistedElapsed: ElapsedDuration(microseconds: 600_000_000)
+                lastPersistedElapsed: ElapsedDuration(microseconds: Int64(durationSeconds * 1_000_000))
             )
         )
     }
