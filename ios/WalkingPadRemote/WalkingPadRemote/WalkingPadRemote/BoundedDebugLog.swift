@@ -150,24 +150,6 @@ struct BoundedDebugLogBuffer: Sendable {
     }
 }
 
-enum DebugLogPublicationPolicy {
-    static let refreshInterval: TimeInterval = 0.5
-}
-
-struct DebugLogPublicationState: Sendable {
-    private(set) var publishedRevision: UInt64 = 0
-
-    mutating func consume(_ snapshot: BoundedDebugLogBuffer.Snapshot) -> String? {
-        guard snapshot.revision != publishedRevision else { return nil }
-        publishedRevision = snapshot.revision
-        return snapshot.text
-    }
-
-    mutating func markPublished(revision: UInt64) {
-        publishedRevision = revision
-    }
-}
-
 final class DebugLogStore: @unchecked Sendable {
     private let queue = DispatchQueue(label: "BluetoothManager.debugLog")
     private var buffer: BoundedDebugLogBuffer
@@ -192,13 +174,6 @@ final class DebugLogStore: @unchecked Sendable {
                 return
             }
             completion(buffer.snapshot())
-        }
-    }
-
-    func clear(completion: @escaping (UInt64) -> Void) {
-        queue.async { [self] in
-            buffer.clear()
-            completion(buffer.revision)
         }
     }
 }

@@ -4218,45 +4218,6 @@ private enum HrControlPreviewMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-private struct DebugTreadmillFactualObservationRows: View {
-    @ObservedObject var publisher: TreadmillFactualObservationPublisher
-    let manager: BluetoothManager
-
-    var body: some View {
-        Group {
-            Text(
-                "Reported speed: \(String(format: "%.1f", manager.deviceReportedSpeedKmh))  "
-                    + "AppSpeed: \(String(format: "%.1f", manager.deviceReportedAppSpeedKmh))"
-            )
-            Text(
-                "State \(manager.deviceReportedState)  Mode \(manager.deviceReportedManualMode)  "
-                    + "Button \(manager.deviceReportedButton)  Checksum \(manager.deviceReportedChecksumOk ? "ok" : "bad")"
-            )
-            Text(
-                "Time \(manager.deviceReportedTimeSeconds)s  "
-                    + "Dist \(manager.deviceReportedDistance10m * 10)m  Steps \(manager.deviceReportedSteps)"
-            )
-            if !manager.deviceReportedRawHex.isEmpty {
-                Text("FE01 raw: \(manager.deviceReportedRawHex)")
-            }
-        }
-        .font(.caption)
-        .foregroundColor(.secondary)
-    }
-}
-
-private struct DebugHeartRateFactualObservationRow: View {
-    @ObservedObject var state: HeartRateFactualState
-
-    var body: some View {
-        Text(
-            "HR \(state.heartRateBPM) (last \(state.lastKnownHeartRateBPM))"
-        )
-        .font(.caption)
-        .foregroundColor(.secondary)
-    }
-}
-
 private struct DebugView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @State private var showHrControlPreview = false
@@ -4674,119 +4635,6 @@ private struct DebugView: View {
                         }
                     }
 
-                    DebugSectionCard(
-                        title: "Runtime Snapshot",
-                        subtitle: manager.loggingEnabled
-                            ? "Logging ON · локальные runtime и BLE метрики"
-                            : "Logging OFF · локальные runtime и BLE метрики"
-                    ) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Button("Copy Logs") {
-                                    let lastCommandLine = manager.lastCommandLine
-                                    let hrStatusLine = manager.hrStatusLine
-                                    manager.makeDebugLogSnapshot { log in
-                                        copyLogs(
-                                            lastCmd: lastCommandLine,
-                                            hrStatus: hrStatusLine,
-                                            log: log
-                                        )
-                                    }
-                                }
-                                .buttonStyle(.bordered)
-
-                                Button("Clear") {
-                                    manager.clearDebugLog()
-                                    manager.lastCommandLine = ""
-                                    manager.hrStatusLine = ""
-                                }
-                                .buttonStyle(.bordered)
-
-                                Toggle("Logging", isOn: Binding(
-                                    get: { manager.loggingEnabled },
-                                    set: { manager.loggingEnabled = $0 }
-                                ))
-                                .toggleStyle(.switch)
-
-                                Spacer()
-                            }
-
-                            if !manager.loggingEnabled {
-                                Text("Logging is OFF — turn it on to record new events")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            if !manager.lastCommandLine.isEmpty {
-                                Text("Last cmd: \(manager.lastCommandLine)")
-                                    .font(.caption)
-                            }
-
-                            if !manager.treadmillStatusText.isEmpty {
-                                Text("Treadmill: \(manager.treadmillStatusText)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            if manager.lastNotifyAgeSeconds > 0 {
-                                Text("Last notify: \(manager.lastNotifyAgeSeconds)s ago")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            if !manager.lastCommandAckStatusText.isEmpty {
-                                Text("Cmd ack: \(manager.lastCommandAckStatusText)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            if manager.lastCommandTimeoutsCount > 0 {
-                                Text("Cmd timeouts: \(manager.lastCommandTimeoutsCount)")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            if !manager.hrStatusLine.isEmpty {
-                                Text(manager.hrStatusLine)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            let actualStr = String(format: "%.1f", manager.speedKmh)
-                            let targetStr = String(format: "%.1f", manager.desiredSpeedKmh)
-                            let deviceStr = String(format: "%.1f", manager.deviceTargetSpeedKmh)
-                            Text("Speed \(actualStr)  Target \(targetStr)  AppSet \(deviceStr)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            DebugHeartRateFactualObservationRow(
-                                state: manager.heartRateFactualState
-                            )
-                            DebugTreadmillFactualObservationRows(
-                                publisher: manager.treadmillFactualObservationPublisher,
-                                manager: manager
-                            )
-
-                            let wcState = "WCSession: paired=\(manager.watchPaired ? "yes" : "no") installed=\(manager.watchAppInstalled ? "yes" : "no") reachable=\(manager.watchReachable ? "yes" : "no")"
-                            Text(wcState)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-
-                            if !manager.debugLog.isEmpty {
-                                ScrollView {
-                                    Text(manager.debugLog)
-                                        .font(.system(.caption2, design: .monospaced))
-                                        .foregroundColor(.secondary)
-                                        .multilineTextAlignment(.leading)
-                                        .textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .frame(height: 280)
-                                .padding(.top, 4)
-                            } else {
-                                Text("No logs yet")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-
                     DebugTrainingLogsCard(
                         presentation: trainingLogsCardPresentation,
                         onToggleTestRun: {
@@ -4838,11 +4686,9 @@ private struct DebugView: View {
             }
             .navigationTitle("Отладка")
             .onAppear {
-                manager.startDebugLogPresentation()
                 manager.refreshWorkoutHistoryFromV2(reset: true)
             }
             .onDisappear {
-                manager.stopDebugLogPresentation()
                 diagnosticBundleTask?.cancel()
             }
         }
@@ -4852,16 +4698,6 @@ private struct DebugView: View {
 // MARK: - Small UI helpers
 
 #if canImport(UIKit)
-private func copyLogs(lastCmd: String, hrStatus: String, log: String) {
-    var parts: [String] = []
-    if !lastCmd.isEmpty { parts.append("Last cmd: \(lastCmd)") }
-    if !hrStatus.isEmpty { parts.append(hrStatus) }
-    if !log.isEmpty { parts.append(log) }
-
-    let text = parts.joined(separator: "\n")
-    UIPasteboard.general.string = text
-}
-
 private func presentTelemetryV2ExportWarning(
     onContinue: @escaping () -> Void
 ) {
