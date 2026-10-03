@@ -17,6 +17,7 @@ MINIMAL_CODE = ROOT / ".agents/skills/walkingpad-minimal-code/SKILL.md"
 PR_REVIEW = ROOT / ".agents/skills/walkingpad-pr-review/SKILL.md"
 PERFORMANCE = ROOT / ".agents/skills/walkingpad-performance/SKILL.md"
 ISSUE_TEMPLATE = ROOT / ".github/ISSUE_TEMPLATE/codex-implementation.md"
+PR_TEMPLATE = ROOT / ".github/pull_request_template.md"
 TELEMETRY_INDEX = ROOT / "docs/telemetry-v2/index.md"
 CODEX_CONFIG = ROOT / ".codex/config.toml"
 CODEX_ROLES = ("repo_explorer", "docs_researcher", "scope_challenger", "reviewer")
@@ -112,6 +113,7 @@ def main() -> int:
         PR_REVIEW,
         PERFORMANCE,
         ISSUE_TEMPLATE,
+        PR_TEMPLATE,
         TELEMETRY_INDEX,
         CODEX_CONFIG,
         WORKFLOW,
@@ -170,14 +172,15 @@ def main() -> int:
 
     if ISSUE_TEMPLATE.is_file():
         template = ISSUE_TEMPLATE.read_text(encoding="utf-8")
-        if "Code-growth report:" not in template:
-            errors.append("PR template is missing code-growth evidence")
         for duplicated_heading in ("## Global Telemetry V2 invariants", "## Binding execution contract"):
             if duplicated_heading in template:
                 errors.append(f"issue template repeats {duplicated_heading!r}")
         for required_heading in ("## Applicable contracts", "## Current binding decisions"):
             if required_heading not in template:
                 errors.append(f"issue template is missing {required_heading!r}")
+
+    if PR_TEMPLATE.is_file() and "Code-growth report:" not in PR_TEMPLATE.read_text(encoding="utf-8"):
+        errors.append("PR template is missing code-growth evidence")
 
     if MINIMAL_CODE.is_file() and "scripts/code_growth_report.py" not in MINIMAL_CODE.read_text(encoding="utf-8"):
         errors.append("minimal-code skill is missing code-growth evidence")
