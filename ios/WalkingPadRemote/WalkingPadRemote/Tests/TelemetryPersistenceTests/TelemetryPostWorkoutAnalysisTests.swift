@@ -5,6 +5,71 @@ import TelemetryDomain
 import XCTest
 
 final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
+    func testCompletedMainPhaseZoneExposureReachesScopedStatisticsWithoutSpeed() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = fixtureSession(seed: 61, lifecycle: .completed)
+        let source = TelemetryPersistenceFixtures.source(seed: 61, kind: .watchMediated)
+        try await store.insertSession(session)
+        try await store.insertSource(source, firstSeen: session.startedAt, lastSeen: session.endedAt!)
+        for index in 0..<12 {
+            try await store.insertHeartRate(TelemetryPersistenceFixtures.heartRate(
+                seed: UInt8(62 + index), session: session, source: source,
+                arrivalOrder: UInt64(index + 2), bpm: index < 6 ? 100 : 120,
+                timestamp: TelemetryPersistenceFixtures.timestamp(
+                    elapsedMicroseconds: Int64(index) * 5_000_000
+                )
+            ))
+        }
+        try await store.insertEvent(phaseEvent(
+            seed: 91, session: session, elapsedSeconds: 0, previous: nil, current: .main
+        ))
+        try await store.insertEvent(phaseEvent(
+            seed: 92, session: session, elapsedSeconds: 60, previous: .main, current: .finished
+        ))
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.timeZone = TimeZone(identifier: "Europe/Moscow")!
+        let week = try XCTUnwrap(calendar.dateInterval(of: .weekOfYear, for: session.startedAt))
+        let filter = WorkoutReadFilter(
+            profileScope: .exact(session.profileLocalIdentifier),
+            startedAtOrAfter: week.start, startedBefore: week.end
+        )
+        let before = try await store.fetchWorkoutStatistics(filter: filter)
+        XCTAssertEqual(before.zoneSeconds, [nil, nil, nil, nil, nil])
+
+        let outcome = try await store.analyzeTerminalWorkout(
+            sessionID: session.sessionID, generatedAt: session.endedAt!.addingTimeInterval(1)
+        )
+        XCTAssertEqual(outcome.triggerResult, .inserted)
+        let analysis = try XCTUnwrap(outcome.analysis)
+        XCTAssertNil(analysis.keyMetrics.averageFactualSpeedKilometresPerHour)
+        let detail = try JSONDecoder().decode(
+            WorkoutAnalysisDetailV1.self, from: try XCTUnwrap(analysis.versionedDetailPayload)
+        )
+        // Bounds [90, 110, 130, 150]: 30 factual seconds in Z2, then 30 in Z3.
+        let expected: [Double?] = [0, 30, 30, 0, 0]
+        XCTAssertEqual(detail.control.zoneDurations.map(\.seconds), [0, 30, 30, 0, 0])
+        let history = try await store.fetchWorkoutHistoryPage(filter: filter, after: nil, limit: 10)
+        let workout = try XCTUnwrap(history.items.first)
+        XCTAssertEqual(workout.zoneSeconds, expected)
+        XCTAssertNil(workout.averageSpeed)
+        XCTAssertTrue(workout.quality.includedInStatistics)
+        let statistics = try await store.fetchWorkoutStatistics(filter: filter, batchSize: 1)
+        XCTAssertEqual(statistics.zoneSeconds, expected)
+        XCTAssertEqual(statistics.includedWorkoutCount, 1)
+        XCTAssertEqual(statistics.totalDurationSeconds, 60)
+        let otherProfile = try await store.fetchWorkoutStatistics(
+            filter: WorkoutReadFilter(profileScope: .exact("other-profile"))
+        )
+        XCTAssertEqual(otherProfile.includedWorkoutCount, 0)
+        XCTAssertEqual(otherProfile.zoneSeconds, [nil, nil, nil, nil, nil])
+        let nextWeek = try await store.fetchWorkoutStatistics(filter: WorkoutReadFilter(
+            profileScope: .exact(session.profileLocalIdentifier),
+            startedAtOrAfter: week.end, startedBefore: week.end.addingTimeInterval(604_800)
+        ))
+        XCTAssertEqual(nextWeek.includedWorkoutCount, 0)
+        XCTAssertEqual(nextWeek.zoneSeconds, [nil, nil, nil, nil, nil])
+    }
+
     func testOnlyTerminalSessionsAreEligible() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let running = fixtureSession(seed: 40, lifecycle: .running)
