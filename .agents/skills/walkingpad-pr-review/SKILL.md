@@ -33,3 +33,14 @@ Use an exact expected-head guard when merging, then verify the new `main` and li
 Any non-`GO` verdict, moved head, invalidating base drift, conflict, stale/missing CI, unresolved material finding, or more-specific gate cancels merge authorization.
 
 This standing authorization never covers deploy/install/device launch, BLE/treadmill experiments, controller preference/unit writes outside their own contract, firmware/OTA/service-menu actions, force-push, destructive cleanup, or work on the next Issue.
+
+
+## Autonomous Goal merge exception
+
+Ordinary PM merge authorization above remains the default. An **owner-activated autonomous Goal** may self-merge a non-safety, non-human-gated Issue only when its launch satisfies the fixed-completion-set contract in the [Codex/GitHub workflow](../../../docs/engineering/codex-github-workflow.md#owner-activated-autonomous-goal-mode).
+
+The implementation phase must end before a frozen-diff review phase begins. Re-resolve live `main`, exact base/head, the complete diff, #170 code-growth evidence, mergeability, and exact-head CI from scratch. A separate bounded read-only reviewer may satisfy this code-review gate only for that explicitly activated low-risk mode. Return `NO-GO` on any unresolved material finding or anti-bloat tripwire.
+
+Never self-merge through this exception when the task triggers `walkingpad-safety-change`, treadmill/BLE/control semantics, physical evidence, persistence schema/migration/destructive data or rollback behavior, a new dependency/framework/subsystem, signing/project-wide configuration/deployment, ambiguous product semantics, unavailable external authority/evidence, or stale/missing/failed CI. Such work may reach a verified Draft PR and `BLOCKED FOR PM REVIEW`, then the Goal may continue to another independent eligible Issue.
+
+#170 and #171 themselves are bootstrap/manual-review changes and cannot use this exception.

@@ -86,10 +86,11 @@ active during a write phase. Unexpected mutation is a hard stop.
 Prefer ChatGPT/GitHub for preparation, caller mapping, bug investigation,
 public documentation, scope/privacy/safety analysis, and fresh independent PR
 review when tools suffice. Codex still reads affected current code/contracts,
-reproduces failures when practical, implements, and verifies. An internal
-`scope_challenger` or `reviewer` is only a critique, never the independent
-safety challenge, independent ChatGPT review, PM acceptance, or physical
-evidence. Independent review requirements belong to
+reproduces failures when practical, implements, and verifies. Outside an explicitly owner-activated autonomous Goal, an internal
+`scope_challenger` or `reviewer` is only a critique. Under the autonomous exception below,
+a frozen-diff reviewer may satisfy only the non-safety code-review gate. It never replaces
+a safety challenge, physical evidence, or other external approval required by the Issue.
+Independent review requirements belong to
 [walkingpad-pr-review](../../.agents/skills/walkingpad-pr-review/SKILL.md).
 
 ## Implementation Issue shape
@@ -128,6 +129,24 @@ For every code PR, use `python3 scripts/code_growth_report.py <base> <head>` as 
 The report is not a LOC score. Candidate matches require reviewer judgment. A narrow bug fix crossing >5 production files or >500 production LOC churn stops for PM unless the live Issue explicitly authorizes broad mechanical scope. New dependencies, persistence/schema/migration surfaces, production subsystems, or broad signing/project/configuration changes remain explicit PM-stop categories.
 
 An authorized multi-Issue autonomous Goal records its Goal-start SHA and repeats the report from that SHA to current `main` after every three merged software Issues and at final completion. Inspect cumulative evidence for stranded intermediate code, duplicate owners, one-consumer abstractions, dormant state, and unjustified growth. Record findings in the relevant audit/follow-up Issue; cumulative review does not authorize opportunistic cleanup.
+
+## Owner-activated autonomous Goal mode
+
+The ordinary lifecycle still ends at a verified Draft PR. A Goal may continue through review, merge, Issue disposition, and the next Issue only when the repository owner explicitly launches it under this section.
+
+Activation must record the exact Goal-start `main` SHA, a fixed Issue completion-set, autonomous merge authority, and any human-gated Issues. One root owns writes, works one Issue at a time from fresh live `main`, and does not recursively add newly discovered follow-up Issues to the active completion-set. A new P0/P1 may block the affected task but does not silently broaden scope.
+
+Before an autonomous merge, implementation and review are distinct phases. Freeze exact base/head and worktree state; stop writes during the review; review the complete diff and live Issue decisions rather than the implementation transcript; use a separate bounded read-only reviewer when available; verify exact-head CI and the code-growth report independently; and obtain a fresh `GO`. In this explicitly activated mode only, that frozen-diff reviewer may satisfy the ordinary independent **code-review** gate for non-safety, non-human-gated work. It never substitutes for a safety challenge, physical evidence, or an external approval required by the Issue.
+
+A Goal may self-merge only a fixed-set Issue with explicit product semantics when live base/head, mergeability, exact-head CI, review, and #170 anti-bloat evidence are all clean. Use an expected-head merge guard and verify the resulting `main`.
+
+Stop that Issue for human/PM review instead of self-merging if it touches treadmill safety/control (including Start, Stop, speed, cooldown, controller units or BLE command semantics), triggers `walkingpad-safety-change`, requires physical evidence, changes persistence schema/migration/destructive user-data or rollback behavior, adds an external dependency, changes signing/entitlements/project-wide configuration/deployment, creates a production framework/subsystem/architecture boundary, crosses an unresolved #170 tripwire, has ambiguous product semantics, lacks independent `GO`/green exact-head CI, or needs unavailable external authority/evidence. A human-gated Issue may still reach a verified Draft PR and then the Goal may continue to another independent eligible Issue.
+
+Eligible no-code investigations may be dispositioned and closed when their live Issue explicitly defines that outcome. Externally blocked Issues remain open. New audit findings may create focused follow-up Issues, but those are outside the current Goal unless a later owner launch includes them.
+
+Every autonomous code PR uses #170 evidence. Preserve the Goal-start SHA; after every three autonomous merges and at final completion, review Goal-start -> current-`main` growth for stranded intermediate code, duplicate owners, one-consumer abstractions, dormant state, and unjustified growth. This review records follow-ups; it does not authorize opportunistic cleanup.
+
+#170 and #171 are bootstrap changes and are never merged using this exception; both require the ordinary human-reviewed lifecycle first.
 
 ## Review, correction, and handoff
 

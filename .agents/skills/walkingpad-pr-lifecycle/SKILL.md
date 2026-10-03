@@ -49,4 +49,6 @@ Repeat successful expensive checks only when a code/base/environment change or c
 
 Use the [PR template](../../../.github/pull_request_template.md) as the single compact evidence packet; link to it at handoff instead of creating a second report or replaying transcripts.
 
-Stop at the verified Draft PR. Mark-Ready, merge, deploy/install, device launch, BLE/hardware activity, force-push, destructive cleanup, or the next Issue require the applicable separate role/authorization.
+Stop at the verified Draft PR by default. Mark-Ready, merge, deploy/install, device launch, BLE/hardware activity, force-push, destructive cleanup, or the next Issue require the applicable separate role/authorization.
+
+The only implementation-lifecycle exception is an **owner-activated autonomous Goal** that satisfies the activation contract in [the Codex/GitHub workflow](../../../docs/engineering/codex-github-workflow.md#owner-activated-autonomous-goal-mode). That mode may continue beyond Draft only through the review/merge gates in `walkingpad-pr-review`; human-gated categories still stop at a verified Draft PR.
