@@ -1,6 +1,22 @@
 # Historical Stop / units / history evidence manifest
 
-Inventory: 2026-10-03; canonical base [`main@db7c40556a4cea1aef7865d45740c601e63c6d65`](https://github.com/tourvald/walkingpad-remote/commit/db7c40556a4cea1aef7865d45740c601e63c6d65). Authority: [Issue #12 assignment](https://github.com/tourvald/walkingpad-remote/issues/12#issuecomment-5968017543), **Phase 1 + Phase 2 preparation only**. No historical ref mutation is authorized. Recommendations below are not deletion approval; every listed ref remains retained at this snapshot.
+Phase 1 snapshot: 2026-10-03; then-canonical base [`main@db7c40556a4cea1aef7865d45740c601e63c6d65`](https://github.com/tourvald/walkingpad-remote/commit/db7c40556a4cea1aef7865d45740c601e63c6d65). Authority: [Issue #12 assignment](https://github.com/tourvald/walkingpad-remote/issues/12#issuecomment-5968017543), **Phase 1 + Phase 2 preparation only**. No historical ref mutation is authorized. Recommendations below are not deletion approval; every listed ref remains retained at this snapshot.
+
+## Phase 3 final disposition — 2026-10-03
+
+Authority: [PM approval](https://github.com/tourvald/walkingpad-remote/issues/12#issuecomment-5968454978) and [Phase 3 assignment](https://github.com/tourvald/walkingpad-remote/issues/12#issuecomment-5968456801). Canonical `main` remained `6f9cd1fb0f2df33ca6e69ec8149a139eba0d1f89` throughout deletion. This section supersedes the pending DELETE recommendations and retention snapshot below; historical evidence links and causal limits are unchanged.
+
+Immediately before **each** deletion, the target and containing live refs were fetched; target SHA equalled the approved SHA, retained head equalled its pre-delete SHA, `main` was unchanged, and `git merge-base --is-ancestor` passed. Each ordinary `git push origin --delete <approved-branch>` was followed by remote-absence and containment verification.
+
+| Deleted remote branch | Former approved head | Retained containing ref / unchanged head | Final verification |
+|---|---|---|---|
+| `wip/ksf0-stop-forensics` | `b2b20f03be80c07f23196b5cedf0a3d705d68306` | `wip/units-safety-full-stack` / `5be5056f4680df7c073f7dc43443dc98163a9dee` | Remote ref absent; former commit remains ancestor |
+| `safety/units-gate-with-queryparams` | `5bb0299c4a849a0eb152e7476d2b90c74431552a` | `codex/units-recovery-flow` / `0d29bb41250b2b3b937553a4a29c4e64faf4c3da` | Remote ref absent; former commit remains ancestor |
+| `codex/remove-imperial-hr-cap` | `cb3acf6945171f60603e4371fef5c3e6652ca807` | `codex/units-recovery-flow` / `0d29bb41250b2b3b937553a4a29c4e64faf4c3da` | Remote ref absent; former commit remains ancestor |
+
+Full branch inventory before deletion: **76 heads**; after deletion: **73 heads**. Set comparison found exactly the three approved refs absent, no added refs, and every remaining head identical (including `main`, all modern `codex/issue-*` branches and the Phase 1 docs branch). Tags were also identical. Publishing this final docs task branch adds one new head separately; it is not another cleanup deletion.
+
+Remaining **RETAIN TEMPORARILY**: `wip/units-safety-full-stack` at `5be5056f4680df7c073f7dc43443dc98163a9dee`, `codex/units-recovery-flow` at `0d29bb41250b2b3b937553a4a29c4e64faf4c3da`, and `codex/units-diagnostics-prereq-clean-20260706` at `0fad0ed8867b1609c1b3f0cfd0b06db69dd05931`. Remaining **KEEP**: `ios/hr-decision-engine-and-background` at `4e0898266ffcb36e523d7f7d179351483f63a00d` and all 18 modern evidence refs at the exact heads in the historical table below. Their reasons and risks are unchanged. No further deletion is authorized; the containing refs must continue preserving H1–H9. No tag, force update, history rewrite, merge/cherry-pick, runtime or device action occurred.
 
 ## Canonical current behavior
 
@@ -33,7 +49,7 @@ Fresh enumeration used `git ls-remote --heads origin`: **75 heads**, including `
 
 Search covered all public Issue/PR bodies and all repository Issue comments available at the snapshot, plus current `docs/`, `.agents/` and `AGENTS.md`: historical names remain referenced by [audit #1](https://github.com/tourvald/walkingpad-remote/issues/1), closed [#5](https://github.com/tourvald/walkingpad-remote/issues/5), closed [#6](https://github.com/tourvald/walkingpad-remote/issues/6), current [#12](https://github.com/tourvald/walkingpad-remote/issues/12), and [#106 parser finding](https://github.com/tourvald/walkingpad-remote/issues/106#issuecomment-5401077034). No current docs/governance reference to the seven historical branch names was found before this manifest. Exact-head search also found the HR/background SHA in [#144’s stale-checkout blocker](https://github.com/tourvald/walkingpad-remote/issues/144#issuecomment-5962712444); it is workflow failure evidence, not an active development base. The #106 reference is specifically preserved by H7/H9. Existing current docs and archive notes remain the source for accepted implementation evidence; this manifest does not replace them.
 
-## Topology and PM deletion gate
+## Phase 1 topology and PM deletion-gate recommendations
 
 Full history was fetched before comparison (the initial local clone was shallow). Counts below are **main-only / branch-only commits**, not useful-patch counts. All seven historical refs diverge from `main` at `e06b91a4694fae0744adb506d35e3fadac207b5b`; they are not merged/ancestors of current `main`. Exact containment: H1 head → WIP units head; HR/background head → WIP units and recovery heads; safety head → cap-removal head → recovery head. Independent prereq is not contained in those stacks.
 
