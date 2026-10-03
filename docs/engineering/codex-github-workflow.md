@@ -121,6 +121,14 @@ Review exact base/head via walkingpad-pr-review.
 
 Only add an unusual task-specific hard stop when omission would be risky. Do not repeat the Issue body, global invariants, standard checks, or lifecycle steps.
 
+## Anti-bloat evidence
+
+For every code PR, use `python3 scripts/code_growth_report.py <base> <head>` as compact exact-diff evidence alongside `walkingpad-minimal-code`. Use `--narrow-bugfix` for narrow bug-fix Issues. The report separates production, tests, docs/governance, and tooling/config changes; lists new production files; and conservatively surfaces added durable state, timers/polling, abstraction declarations, and dependency/configuration paths.
+
+The report is not a LOC score. Candidate matches require reviewer judgment. A narrow bug fix crossing >5 production files or >500 production LOC churn stops for PM unless the live Issue explicitly authorizes broad mechanical scope. New dependencies, persistence/schema/migration surfaces, production subsystems, or broad signing/project/configuration changes remain explicit PM-stop categories.
+
+An authorized multi-Issue autonomous Goal records its Goal-start SHA and repeats the report from that SHA to current `main` after every three merged software Issues and at final completion. Inspect cumulative evidence for stranded intermediate code, duplicate owners, one-consumer abstractions, dormant state, and unjustified growth. Record findings in the relevant audit/follow-up Issue; cumulative review does not authorize opportunistic cleanup.
+
 ## Review, correction, and handoff
 
 The [lifecycle](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md) owns implementation, verification, publication, and handoff; the [review skill](../../.agents/skills/walkingpad-pr-review/SKILL.md) owns independent review and PM merge gates. Use the [PR template](../../.github/pull_request_template.md) as the evidence packet. Keep one active executor assignment; only the root claims it and publishes a `## Codex result` linking that assignment.
