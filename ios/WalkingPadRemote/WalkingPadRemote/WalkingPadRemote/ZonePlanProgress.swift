@@ -34,7 +34,7 @@ enum ZonePlanProgress {
 
     static func durationText(seconds: Double?) -> String {
         guard let seconds, seconds.isFinite, seconds >= 0 else { return "—" }
-        let totalSeconds = Int(seconds.rounded(.down))
+        let totalSeconds = Int(seconds.rounded(.toNearestOrAwayFromZero))
         let hours = totalSeconds / 3_600
         let minutes = (totalSeconds % 3_600) / 60
         let remainingSeconds = totalSeconds % 60

@@ -61,6 +61,82 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
         XCTAssertFalse(item.quality.adaptationEligible)
     }
 
+    func testNativeFractionalZonesMatchDetailsAndAggregateWithoutRoundingOrDurationFallback() async throws {
+        let exposures = [[1.1, 1.49, 1.5, 1.9, 1.5], [0.4, 0.51, 0.5, 0.1, 0.2]]
+        let config = ImmutableConfigurationSnapshot(
+            id: ConfigurationSnapshotID(rawValue: uuid(910_161)), formatVersion: 1,
+            format: .canonicalJSON,
+            canonicalPayload: Data(#"{"targetHeartRate":100,"heartRateZones":[90,110,130,150],"cooldownTargetHeartRate":120,"cooldownMinimumSpeedKilometresPerHour":2.0}"#.utf8),
+            contentHash: ContentHash(algorithm: .sha256, lowercaseHexDigest: String(repeating: "e", count: 64))
+        )
+        var canonicalTotals: [Double?]?
+        for order in [[0, 1], [1, 0]] {
+            let store = try TelemetryStoreFactory.make(.inMemory)
+            for index in order {
+                let seconds = exposures[index]
+                let duration = seconds.reduce(0, +)
+                let workout = session(
+                    index: 41_000 + index, profile: "fractional-zones",
+                    startedAt: Date(timeIntervalSince1970: 1_900_010_000 + Double(index)),
+                    configuration: config, durationSeconds: duration
+                )
+                var elapsed = 0.0
+                let hr = seconds.enumerated().map { zone, value in
+                    defer { elapsed += value }
+                    return TelemetryPersistenceFixtures.heartRate(
+                        seed: UInt8(zone + 1), session: workout,
+                        source: TelemetryPersistenceFixtures.source(seed: 1),
+                        arrivalOrder: UInt64(zone + 2), bpm: UInt16(80 + zone * 20),
+                        timestamp: TelemetryPersistenceFixtures.timestamp(
+                            elapsedMicroseconds: Int64((elapsed * 1_000_000).rounded())
+                        )
+                    )
+                }
+                let events = [(0.0, WorkoutPhaseTransition(previous: nil, current: .main)),
+                              (duration, WorkoutPhaseTransition(previous: .main, current: .finished))]
+                    .enumerated().map { ordinal, entry in
+                        WorkoutEvent(
+                            recordID: RecordID(rawValue: uuid(420_000 + index * 10 + ordinal)),
+                            sessionID: workout.sessionID,
+                            timestamp: EventTimestamp(
+                                occurredAt: workout.startedAt.addingTimeInterval(entry.0),
+                                recordedAt: workout.startedAt.addingTimeInterval(entry.0),
+                                occurredElapsed: ElapsedDuration(microseconds: Int64((entry.0 * 1_000_000).rounded())),
+                                recordedElapsed: ElapsedDuration(microseconds: Int64((entry.0 * 1_000_000).rounded()))
+                            ), sourceID: nil,
+                            payload: EventPayloadEnvelope(schemaVersion: 1, payload: .workoutPhase(entry.1))
+                        )
+                    }
+                let analysis = try WorkoutAnalyzerV1.analyze(
+                    WorkoutAnalysisInput(session: workout, heartRate: hr, treadmill: [], events: events, frames: []),
+                    generatedAt: workout.endedAt!.addingTimeInterval(1)
+                )
+                try await store.insertSession(workout)
+                try await store.insertAnalysis(analysis)
+                let single = WorkoutReadFilter(profileScope: .exact("fractional-zones"),
+                                               startedAtOrAfter: workout.startedAt, startedBefore: workout.startedAt.addingTimeInterval(0.5))
+                let detail = try await store.fetchWorkoutHistoryPage(filter: single, after: nil, limit: 1)
+                let statistics = try await store.fetchWorkoutStatistics(filter: single, batchSize: 1)
+                XCTAssertEqual(try XCTUnwrap(detail.items.first?.zoneSeconds), statistics.zoneSeconds)
+                for (actual, expected) in zip(statistics.zoneSeconds, seconds) {
+                    XCTAssertEqual(try XCTUnwrap(actual), expected, accuracy: 0.000_001)
+                }
+            }
+            let filter = WorkoutReadFilter(profileScope: .exact("fractional-zones"))
+            for batchSize in [1, 10] {
+                let statistics = try await store.fetchWorkoutStatistics(filter: filter, batchSize: batchSize)
+                if let canonicalTotals {
+                    XCTAssertEqual(statistics.zoneSeconds, canonicalTotals)
+                } else {
+                    canonicalTotals = statistics.zoneSeconds
+                }
+                for (actual, expected) in zip(statistics.zoneSeconds, [1.5, 2, 2, 2, 1.7]) {
+                    XCTAssertEqual(try XCTUnwrap(actual), expected, accuracy: 0.000_001)
+                }
+            }
+        }
+    }
+
     func testFailedLegacyShadowSourceDoesNotBlockOrCorruptNativeV2Read() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let native = session(

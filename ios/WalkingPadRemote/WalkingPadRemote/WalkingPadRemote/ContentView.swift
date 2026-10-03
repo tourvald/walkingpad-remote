@@ -2105,7 +2105,7 @@ private struct TrainingWorkoutSummaryView: View {
 
     private func zoneRow(_ zone: ZoneResult) -> some View {
         let title = "Z\(zone.id + 1)"
-        let value = zone.seconds.map(formattedWorkoutResultDuration) ?? "Недоступно"
+        let value = zone.seconds.map { ZonePlanProgress.durationText(seconds: $0) } ?? "Недоступно"
         return VStack(alignment: .leading, spacing: 6) {
             ViewThatFits(in: .horizontal) {
                 HStack {

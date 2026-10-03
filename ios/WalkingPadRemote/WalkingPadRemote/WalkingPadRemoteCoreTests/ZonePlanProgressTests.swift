@@ -111,6 +111,25 @@ final class ZonePlanProgressTests: XCTestCase {
         XCTAssertEqual(ZonePlanProgress.durationText(seconds: 90 * 60), "1:30:00")
     }
 
+    func testCanonicalZoneDurationRoundsOnceAtPresentationBoundary() {
+        let cases: [(Double, String)] = [
+            (62.1, "1:02"), (62.49, "1:02"), (62.5, "1:03"), (62.9, "1:03"),
+            (59.5, "1:00"), (3_599.5, "1:00:00"), (0, "0:00"),
+            (286.9, "4:47"), (61.9, "1:02"), (68.9, "1:09"),
+            (737.9, "12:18"), (4.9, "0:05"),
+        ]
+        for (seconds, expected) in cases {
+            XCTAssertEqual(ZonePlanProgress.durationText(seconds: seconds), expected)
+        }
+        for seconds in [-1.0, .nan, .infinity] {
+            XCTAssertEqual(ZonePlanProgress.durationText(seconds: seconds), "—")
+        }
+        // Aggregate factual fractions before display rounding, not rounded workouts.
+        XCTAssertEqual(ZonePlanProgress.durationText(seconds: 1.49 + 0.49), "0:02")
+        XCTAssertEqual(ZonePlanProgress.durationText(seconds: 0.49 + 1.49), "0:02")
+        XCTAssertFalse(ZonePlanProgress.isAchieved(actualSeconds: 59.9, planSeconds: 60))
+    }
+
     func testStatisticsViewUsesFactualZoneSecondsWithoutMinuteRounding() throws {
         let packageDirectory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -128,6 +147,8 @@ final class ZonePlanProgressTests: XCTestCase {
         XCTAssertTrue(source.contains("ZonePlanProgress.isAchieved("))
         XCTAssertTrue(source.contains("ZonePlanProgress.displayedProgress(progress)"))
         XCTAssertTrue(source.contains("ZonePlanProgress.durationText(seconds: actualSeconds)"))
+        XCTAssertTrue(source.contains("zone.seconds.map { ZonePlanProgress.durationText(seconds: $0) }"))
+        XCTAssertFalse(source.contains("zone.seconds.map(formattedWorkoutResultDuration)"))
         XCTAssertFalse(source.contains("Int($0 / 60.0)"))
         XCTAssertFalse(source.contains("Int(round(Double(monthPlan) / 4.0))"))
     }
