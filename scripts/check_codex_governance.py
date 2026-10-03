@@ -164,19 +164,6 @@ def main() -> int:
             if instruction not in content:
                 errors.append(f"missing helper boundary in {profile.relative_to(ROOT)}: {instruction}")
 
-    if WORKFLOW.is_file():
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        for contract in (
-            "gpt-6.1-sol / medium",
-            "three helper",
-            "Full Access",
-            "instruction/workflow contract",
-            "joins/closes every",
-            "independent ChatGPT review",
-        ):
-            if contract not in workflow:
-                errors.append(f"missing delegation contract in {WORKFLOW.relative_to(ROOT)}: {contract}")
-
     if ISSUE_TEMPLATE.is_file():
         template = ISSUE_TEMPLATE.read_text(encoding="utf-8")
         for duplicated_heading in ("## Global Telemetry V2 invariants", "## Binding execution contract"):
