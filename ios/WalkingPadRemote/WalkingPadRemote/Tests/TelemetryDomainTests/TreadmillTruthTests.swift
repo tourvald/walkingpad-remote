@@ -117,11 +117,11 @@ final class TreadmillTruthTests: XCTestCase {
                         checksumValid: true, connectionEpoch: nextEpoch, receivedAt: later),
             unitsTruth: freshProof, observationID: ObservationID(), recordedAt: later
         ).factualSpeed)
-        // An old-epoch callback cannot resurrect the cleared session snapshot.
+        // Even a still-fresh A6 cannot resurrect the invalidated workout context.
         XCTAssertNil(normalizer.normalize(
             .walkingPad(speedRawTenths: 42, rawState: 1, deviceState: .moving,
                         checksumValid: true, connectionEpoch: epoch,
-                        receivedAt: later.addingTimeInterval(31)),
+                        receivedAt: later.addingTimeInterval(1)),
             unitsTruth: freshProof, observationID: ObservationID(), recordedAt: later
         ).factualSpeed)
         XCTAssertFalse(normalizer.commitWorkout(unitsTruth: freshProof, connectionEpoch: nextEpoch, at: later))
@@ -143,7 +143,7 @@ final class TreadmillTruthTests: XCTestCase {
             XCTAssertNil(normalizer.normalize(
                 .walkingPad(speedRawTenths: 42, rawState: 1, deviceState: .moving,
                             checksumValid: true, connectionEpoch: epoch,
-                            receivedAt: receivedAt.addingTimeInterval(60)),
+                            receivedAt: receivedAt.addingTimeInterval(1)),
                 unitsTruth: proof, observationID: ObservationID(), recordedAt: recordedAt
             ).factualSpeed)
         }

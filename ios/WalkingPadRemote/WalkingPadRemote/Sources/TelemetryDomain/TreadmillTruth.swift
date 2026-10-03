@@ -321,7 +321,7 @@ public struct TreadmillObservationNormalizer: Sendable {
     public static let defaultControllerUnitsFreshnessInterval: TimeInterval = 30
 
     private var nextArrivalOrder: UInt64 = 1
-    private var committedMetricUnitsTruth: TreadmillUnitsTruth?
+    private var committedWorkoutUnitsTruth: TreadmillUnitsTruth?
     private let controllerUnitsFreshnessInterval: TimeInterval
 
     public init(
@@ -343,12 +343,12 @@ public struct TreadmillObservationNormalizer: Sendable {
               epoch == connectionEpoch else { return false }
         let age = committedAt.timeIntervalSince(observedAt)
         guard age >= 0, age <= controllerUnitsFreshnessInterval else { return false }
-        committedMetricUnitsTruth = unitsTruth
+        committedWorkoutUnitsTruth = unitsTruth
         return true
     }
 
     public mutating func endWorkout() {
-        committedMetricUnitsTruth = nil
+        committedWorkoutUnitsTruth = nil
     }
 
     public mutating func normalize(
@@ -357,9 +357,11 @@ public struct TreadmillObservationNormalizer: Sendable {
         observationID: ObservationID,
         recordedAt: Date
     ) -> TreadmillObservationEvidence {
-        if let committedMetricUnitsTruth,
-           committedMetricUnitsTruth.connectionEpoch != observation.connectionEpoch {
-            endWorkout()
+        if case let .valid(_, epoch, _) = committedWorkoutUnitsTruth,
+           epoch != observation.connectionEpoch {
+            // Keep invalidated workout context: a still-fresh old A6 must not
+            // regain factual status through the uncommitted fallback.
+            committedWorkoutUnitsTruth = .notRead(connectionEpoch: observation.connectionEpoch)
         }
         var quality: TreadmillObservationQualityFlags = []
         if observation.measuredAt == nil {
@@ -433,8 +435,8 @@ public struct TreadmillObservationNormalizer: Sendable {
         case .walkingPad:
             // Proven units are immutable for this committed workout/epoch; A6 age
             // remains a Start gate, not a TTL on fresh decoded in-session reports.
-            let hasCommittedMetricUnits = committedMetricUnitsTruth != nil
-            guard let unitsTruth = committedMetricUnitsTruth ?? unitsTruth else {
+            let hasCommittedWorkoutUnitsTruth = committedWorkoutUnitsTruth != nil
+            guard let unitsTruth = committedWorkoutUnitsTruth ?? unitsTruth else {
                 quality.insert(.unitsUnknown)
                 return nil
             }
@@ -446,7 +448,7 @@ public struct TreadmillObservationNormalizer: Sendable {
             case let .valid(unit, _, observedAt):
                 let age = observation.receivedAt.timeIntervalSince(observedAt)
                 guard age >= 0,
-                      hasCommittedMetricUnits || age <= controllerUnitsFreshnessInterval else {
+                      hasCommittedWorkoutUnitsTruth || age <= controllerUnitsFreshnessInterval else {
                     quality.insert(.unitsStale)
                     return nil
                 }
