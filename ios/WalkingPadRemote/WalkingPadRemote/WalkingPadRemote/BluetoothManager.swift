@@ -5498,6 +5498,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ].merging(controllerUnitsTelemetryFields(action: "hr_control_start")) { current, _ in current })
         nativePreflightCommitTimestamps = nil
         beginTelemetryV2Session(legacySessionID: legacySessionID)
+        if treadmillProtocol == .walkingPad,
+           let connectionEpoch = treadmillTelemetryConnectionEpoch {
+            treadmillObservationNormalizer.commitWorkout(
+                unitsTruth: treadmillUnitsTruthEvidence(),
+                connectionEpoch: connectionEpoch,
+                at: controlledWorkoutStartedAt
+            )
+        }
         persistQualifyingNativeHeartRateBeforeMotion()
         if let motionTargetSpeedKmh = HRDomainService.initialMotionTargetSpeedKmh(
             deviceTargetSpeedKmh: deviceTargetSpeedKmh,
@@ -7098,6 +7106,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func resetProtocolState() {
+        treadmillObservationNormalizer.endWorkout()
         let cancelledTelemetry = resetCommandQueue(
             reason: "connection epoch reset",
             observeTelemetryImmediately: false
@@ -7295,6 +7304,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func beginControllerUnitsConnection() {
+        treadmillObservationNormalizer.endWorkout()
         let epoch = UUID()
         controllerUnitsConnectionEpoch = epoch
         controllerUnitsTruthTracker.beginConnection(epoch: epoch)
@@ -8059,6 +8069,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func endTelemetryV2Session(reason: String) {
+        treadmillObservationNormalizer.endWorkout()
         finishNativeHealthKitWorkoutIfNeeded()
         telemetryV2Coordinator.endSession(reason: reason)
     }

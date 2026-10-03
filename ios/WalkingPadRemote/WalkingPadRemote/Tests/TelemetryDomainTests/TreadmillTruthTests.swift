@@ -36,6 +36,150 @@ final class TreadmillTruthTests: XCTestCase {
         XCTAssertEqual(evidence.connectionEpoch, epoch)
     }
 
+    func testCommittedMetricTruthKeepsFreshDecodedSpeedForMainAndCooldownWithoutA6() throws {
+        let epoch = connectionEpoch(70)
+        let proof = TreadmillUnitsTruth.valid(
+            unit: .kilometresPerHour, connectionEpoch: epoch, observedAt: receivedAt
+        )
+        var normalizer = TreadmillObservationNormalizer()
+        XCTAssertTrue(normalizer.commitWorkout(
+            unitsTruth: proof, connectionEpoch: epoch, at: receivedAt
+        ))
+
+        // 31 minutes includes a full main stage and cooldown, with no A6 refresh.
+        for second in stride(from: 0, through: 1_860, by: 5) {
+            let now = receivedAt.addingTimeInterval(Double(second))
+            let rawSpeed = second < 1_560 ? 42 : 20
+            let evidence = normalizer.normalize(
+                .walkingPad(
+                    speedRawTenths: rawSpeed, rawState: 1, deviceState: .moving,
+                    checksumValid: true, connectionEpoch: epoch, receivedAt: now
+                ),
+                unitsTruth: proof, observationID: ObservationID(), recordedAt: now
+            )
+            XCTAssertEqual(try XCTUnwrap(evidence.factualSpeed).value,
+                           Double(rawSpeed) / 10, accuracy: 0.000_001)
+            XCTAssertFalse(evidence.quality.contains(.unitsStale))
+            XCTAssertEqual(evidence.provenance, .decodedDeviceReport)
+            XCTAssertEqual(evidence.freshness, .freshAtReceipt)
+        }
+    }
+
+    func testWorkoutCommitRejectsUnprovenStaleFutureAndOtherEpochUnits() {
+        let epoch = connectionEpoch(71)
+        let invalidProofs: [TreadmillUnitsTruth?] = [
+            nil, .notRead(connectionEpoch: epoch), .unknown(connectionEpoch: epoch),
+            .invalidChecksum(connectionEpoch: epoch), .malformed(connectionEpoch: epoch),
+            .valid(unit: .milesPerHour, connectionEpoch: epoch, observedAt: receivedAt),
+            .valid(unit: .kilometresPerHour, connectionEpoch: epoch,
+                   observedAt: receivedAt.addingTimeInterval(-31)),
+            .valid(unit: .kilometresPerHour, connectionEpoch: epoch,
+                   observedAt: receivedAt.addingTimeInterval(1)),
+            .valid(unit: .kilometresPerHour, connectionEpoch: connectionEpoch(72),
+                   observedAt: receivedAt),
+        ]
+        for proof in invalidProofs {
+            var normalizer = TreadmillObservationNormalizer()
+            XCTAssertFalse(normalizer.commitWorkout(
+                unitsTruth: proof, connectionEpoch: epoch, at: receivedAt
+            ))
+            XCTAssertNil(normalizer.normalize(
+                .walkingPad(speedRawTenths: 42, rawState: 1, deviceState: .moving,
+                            checksumValid: true, connectionEpoch: epoch,
+                            receivedAt: receivedAt.addingTimeInterval(60)),
+                unitsTruth: proof, observationID: ObservationID(), recordedAt: recordedAt
+            ).factualSpeed)
+        }
+    }
+
+    func testSessionTruthEndsAtWorkoutOrConnectionBoundaryAndNextCommitNeedsFreshProof() {
+        let epoch = connectionEpoch(73)
+        let proof = TreadmillUnitsTruth.valid(
+            unit: .kilometresPerHour, connectionEpoch: epoch, observedAt: receivedAt
+        )
+        let later = receivedAt.addingTimeInterval(1_800)
+        var normalizer = TreadmillObservationNormalizer()
+        XCTAssertTrue(normalizer.commitWorkout(unitsTruth: proof, connectionEpoch: epoch, at: receivedAt))
+        normalizer.endWorkout()
+        XCTAssertNil(normalizer.normalize(
+            .walkingPad(speedRawTenths: 42, rawState: 1, deviceState: .moving,
+                        checksumValid: true, connectionEpoch: epoch, receivedAt: later),
+            unitsTruth: proof, observationID: ObservationID(), recordedAt: later
+        ).factualSpeed)
+        XCTAssertFalse(normalizer.commitWorkout(unitsTruth: proof, connectionEpoch: epoch, at: later))
+        let freshProof = TreadmillUnitsTruth.valid(
+            unit: .kilometresPerHour, connectionEpoch: epoch, observedAt: later
+        )
+        XCTAssertTrue(normalizer.commitWorkout(unitsTruth: freshProof, connectionEpoch: epoch, at: later))
+        let nextEpoch = connectionEpoch(74)
+        XCTAssertNil(normalizer.normalize(
+            .walkingPad(speedRawTenths: 42, rawState: 1, deviceState: .moving,
+                        checksumValid: true, connectionEpoch: nextEpoch, receivedAt: later),
+            unitsTruth: freshProof, observationID: ObservationID(), recordedAt: later
+        ).factualSpeed)
+        // Even a still-fresh A6 cannot resurrect the invalidated workout context.
+        XCTAssertNil(normalizer.normalize(
+            .walkingPad(speedRawTenths: 42, rawState: 1, deviceState: .moving,
+                        checksumValid: true, connectionEpoch: epoch,
+                        receivedAt: later.addingTimeInterval(1)),
+            unitsTruth: freshProof, observationID: ObservationID(), recordedAt: later
+        ).factualSpeed)
+        XCTAssertFalse(normalizer.commitWorkout(unitsTruth: freshProof, connectionEpoch: nextEpoch, at: later))
+    }
+
+    func testForeignEpochInvalidatesEvenWhenItsSpeedPacketIsCorruptOrMissing() {
+        let epoch = connectionEpoch(76)
+        let proof = TreadmillUnitsTruth.valid(
+            unit: .kilometresPerHour, connectionEpoch: epoch, observedAt: receivedAt
+        )
+        for speed in [nil, 42] {
+            var normalizer = TreadmillObservationNormalizer()
+            XCTAssertTrue(normalizer.commitWorkout(unitsTruth: proof, connectionEpoch: epoch, at: receivedAt))
+            _ = normalizer.normalize(
+                .walkingPad(speedRawTenths: speed, rawState: 1, deviceState: .moving,
+                            checksumValid: false, connectionEpoch: connectionEpoch(77), receivedAt: receivedAt),
+                unitsTruth: nil, observationID: ObservationID(), recordedAt: recordedAt
+            )
+            XCTAssertNil(normalizer.normalize(
+                .walkingPad(speedRawTenths: 42, rawState: 1, deviceState: .moving,
+                            checksumValid: true, connectionEpoch: epoch,
+                            receivedAt: receivedAt.addingTimeInterval(1)),
+                unitsTruth: proof, observationID: ObservationID(), recordedAt: recordedAt
+            ).factualSpeed)
+        }
+    }
+
+    func testCommittedTruthDoesNotFabricateMissingCorruptOrPreProofSpeed() {
+        let epoch = connectionEpoch(75)
+        var normalizer = TreadmillObservationNormalizer()
+        XCTAssertTrue(normalizer.commitWorkout(
+            unitsTruth: .valid(unit: .kilometresPerHour, connectionEpoch: epoch, observedAt: receivedAt),
+            connectionEpoch: epoch, at: receivedAt
+        ))
+        for (speed, checksum, offset) in [(nil as Int?, true, 60.0), (42, false, 60), (-1, true, 60), (42, true, -1)] {
+            XCTAssertNil(normalizer.normalize(
+                .walkingPad(speedRawTenths: speed, rawState: 1, deviceState: .moving,
+                            checksumValid: checksum, connectionEpoch: epoch,
+                            receivedAt: receivedAt.addingTimeInterval(offset)),
+                unitsTruth: nil, observationID: ObservationID(), recordedAt: recordedAt
+            ).factualSpeed)
+        }
+        // Delayed, absent, or malformed monitoring A6 cannot erase committed proof.
+        let monitoringResponses: [TreadmillUnitsTruth?] = [
+            nil, .notRead(connectionEpoch: epoch), .unknown(connectionEpoch: epoch),
+            .malformed(connectionEpoch: epoch), .invalidChecksum(connectionEpoch: epoch),
+            .valid(unit: .milesPerHour, connectionEpoch: epoch, observedAt: receivedAt),
+        ]
+        for monitoring in monitoringResponses {
+            XCTAssertEqual(normalizer.normalize(
+                .walkingPad(speedRawTenths: 37, rawState: 1, deviceState: .moving,
+                            checksumValid: true, connectionEpoch: epoch,
+                            receivedAt: receivedAt.addingTimeInterval(60)),
+                unitsTruth: monitoring, observationID: ObservationID(), recordedAt: recordedAt
+            ).factualSpeed?.value, 3.7)
+        }
+    }
+
     func testWalkingPadImperialTruthRemainsNativeAndNeverBecomesMetricFactualTruth() {
         let epoch = connectionEpoch(2)
         var normalizer = TreadmillObservationNormalizer()

@@ -155,12 +155,26 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
     func testThirtyOneMinuteStableSpeedResponsesProvideFactualAverage() throws {
         let sessionSeconds = 31 * 60
         let fixture = AnalysisFixture(sessionSeconds: Double(sessionSeconds))
+        let epoch = TreadmillConnectionEpoch(rawValue: fixture.uuid(90))
+        let proof = TreadmillUnitsTruth.valid(
+            unit: .kilometresPerHour, connectionEpoch: epoch, observedAt: fixture.baseDate
+        )
+        var normalizer = TreadmillObservationNormalizer()
+        XCTAssertTrue(normalizer.commitWorkout(
+            unitsTruth: proof, connectionEpoch: epoch, at: fixture.baseDate
+        ))
         let treadmill = stride(from: 0, to: sessionSeconds, by: 5).enumerated().map {
-            fixture.treadmill(
+            let receivedAt = fixture.baseDate.addingTimeInterval(Double($0.element))
+            let evidence = normalizer.normalize(
+                .walkingPad(speedRawTenths: 42, rawState: 1, deviceState: .moving,
+                            checksumValid: true, connectionEpoch: epoch, receivedAt: receivedAt),
+                unitsTruth: proof, observationID: ObservationID(), recordedAt: receivedAt
+            )
+            return fixture.treadmill(
                 ordinal: $0.offset + 1,
                 seconds: Double($0.element),
-                speed: 4.2,
-                factual: true
+                speed: evidence.nativeSpeed!.scaledValue,
+                factual: evidence.factualSpeed != nil
             )
         }
         let frames = (0..<sessionSeconds).map { second -> CanonicalFrame in

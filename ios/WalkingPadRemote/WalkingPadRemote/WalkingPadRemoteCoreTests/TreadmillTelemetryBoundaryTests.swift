@@ -161,6 +161,32 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
         XCTAssertFalse(commit.contains("treadmillTelemetrySink"))
     }
 
+    func testCommittedUnitTruthIsTelemetryOnlyAndClearedAtSessionAndConnectionBoundaries() throws {
+        let commit = try functionBody(
+            "private func commitExistingHrControl(preflightLatencySeconds: TimeInterval)",
+            in: managerSource
+        )
+        let gate = try XCTUnwrap(commit.range(of: "guard nativeHeartRateSafetyFacts().permitsCommit"))
+        let snapshot = try XCTUnwrap(commit.range(of: "treadmillObservationNormalizer.commitWorkout("))
+        let motion = try XCTUnwrap(commit.range(of: "startWithSpeed(motionTargetSpeedKmh)"))
+        XCTAssertLessThan(gate.lowerBound, snapshot.lowerBound)
+        XCTAssertLessThan(snapshot.lowerBound, motion.lowerBound)
+        XCTAssertTrue(commit.contains("unitsDecision.allowed"))
+        XCTAssertTrue(commit.contains("if treadmillProtocol == .walkingPad"))
+        XCTAssertTrue(commit.contains("unitsTruth: treadmillUnitsTruthEvidence()"))
+        for signature in [
+            "private func endTelemetryV2Session(reason: String)",
+            "private func resetProtocolState()",
+            "private func beginControllerUnitsConnection()",
+        ] {
+            XCTAssertTrue(try functionBody(signature, in: managerSource)
+                .contains("treadmillObservationNormalizer.endWorkout()"))
+        }
+        let gateBody = try functionBody("private func controllerUnitsGateDecision(", in: managerSource)
+        XCTAssertFalse(gateBody.contains("treadmillObservationNormalizer"))
+        XCTAssertTrue(gateBody.contains("ControllerUnitsSafetyPolicy.evaluate("))
+    }
+
     func testFactualAndStopEvidenceOnlyUseDecodedObservationAndExistingPredicate() throws {
         let normalization = try functionBody(
             "private func observeTreadmillProviderObservation(",
