@@ -9,15 +9,13 @@ import re
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
 TEST_PATH_PARTS = ("/Tests/", "/tests/", "Tests/", "tests/")
 DOC_GOV_PREFIXES = ("docs/", ".agents/", ".github/ISSUE_TEMPLATE/")
 TOOLING_PREFIXES = ("scripts/", "tools/", ".github/workflows/")
-CONFIG_NAMES = {
+CONFIG_BASENAMES = {
     "Package.swift",
     "Package.resolved",
     "Podfile",
@@ -26,8 +24,8 @@ CONFIG_NAMES = {
     "Cartfile.resolved",
     "pyproject.toml",
     "requirements.txt",
-    ".codex/config.toml",
 }
+CONFIG_PATHS = {".codex/config.toml"}
 DEPENDENCY_NAMES = {
     "Package.swift",
     "Package.resolved",
@@ -103,19 +101,13 @@ def classify_path(path: str) -> str:
         return "docs_governance"
     if (
         normalized.startswith(TOOLING_PREFIXES)
-        or name in CONFIG_NAMES
+        or name in CONFIG_BASENAMES
+        or normalized in CONFIG_PATHS
         or normalized.endswith(".xcodeproj/project.pbxproj")
     ):
         return "tooling_config"
     return "production"
 
-
-def _sum(stats: Iterable[LineStats]) -> LineStats:
-    values = list(stats)
-    return LineStats(
-        added=sum(item.added for item in values),
-        removed=sum(item.removed for item in values),
-    )
 
 
 def _numstat(base: str, head: str, cwd: Path) -> dict[str, LineStats]:
@@ -192,7 +184,8 @@ def build_report(
         path
         for path in changed_paths
         if classify_path(path) == "tooling_config"
-        or Path(path).name in CONFIG_NAMES
+        or Path(path).name in CONFIG_BASENAMES
+        or path in CONFIG_PATHS
         or path.endswith(".xcodeproj/project.pbxproj")
     )
     dependency_paths = sorted(
