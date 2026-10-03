@@ -86,10 +86,11 @@ active during a write phase. Unexpected mutation is a hard stop.
 Prefer ChatGPT/GitHub for preparation, caller mapping, bug investigation,
 public documentation, scope/privacy/safety analysis, and fresh independent PR
 review when tools suffice. Codex still reads affected current code/contracts,
-reproduces failures when practical, implements, and verifies. An internal
-`scope_challenger` or `reviewer` is only a critique, never the independent
-safety challenge, independent ChatGPT review, PM acceptance, or physical
-evidence. Independent review requirements belong to
+reproduces failures when practical, implements, and verifies. Outside an explicitly owner-activated autonomous Goal, an internal
+`scope_challenger` or `reviewer` is only a critique. Under the autonomous exception below,
+a frozen-diff reviewer may satisfy only the non-safety code-review gate. It never replaces
+a safety challenge, physical evidence, or other external approval required by the Issue.
+Independent review requirements belong to
 [walkingpad-pr-review](../../.agents/skills/walkingpad-pr-review/SKILL.md).
 
 ## Implementation Issue shape
