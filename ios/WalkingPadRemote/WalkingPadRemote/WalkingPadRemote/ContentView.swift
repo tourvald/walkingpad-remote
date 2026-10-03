@@ -3787,7 +3787,7 @@ private struct WorkoutStatsView: View {
         let stats = manager.telemetryV2Statistics[key]
         let state = manager.telemetryV2StatisticsState[key] ?? .idle
         let totalTime = formatTotalTime(stats?.totalDurationSeconds)
-        let beatsValue = stats?.averageBeatsPerMetre.map { String(format: "%.2f", $0) } ?? "—"
+        let workoutCount = stats.map { String($0.includedWorkoutCount) } ?? "—"
 
         Card {
             VStack(alignment: .leading, spacing: 12) {
@@ -3797,7 +3797,7 @@ private struct WorkoutStatsView: View {
 
                 HStack(spacing: 16) {
                     StatTile(title: "Время", value: totalTime, unit: "")
-                    StatTile(title: "Удары/м", value: beatsValue, unit: "")
+                    StatTile(title: "Тренировки", value: workoutCount, unit: "")
                 }
 
                 if case .loading = state, stats == nil {
@@ -4124,12 +4124,7 @@ private struct WorkoutHistoryCard: View {
     let onLoadMore: () -> Void
     let onExportAnalysis: (WorkoutHistoryProjection) -> Void
 
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter
-    }()
+    @State private var selectedWorkout: WorkoutHistoryProjection?
 
     var body: some View {
         Card {
@@ -4155,69 +4150,17 @@ private struct WorkoutHistoryCard: View {
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(entries) { entry in
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(entry.startedAt.map(Self.dateFormatter.string(from:)) ?? "Дата неизвестна")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundColor(.primary)
-                                Text("Время: \(formatDuration(entry.durationSeconds))")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text(provenanceText(for: entry))
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundColor(entry.origin == .nativeV2 ? .blue : .orange)
-                                if !entry.quality.warnings.isEmpty {
-                                    Text(entry.quality.warnings.joined(separator: "; "))
-                                        .font(.caption2)
-                                        .foregroundColor(.orange)
-                                }
-                                if let healthKitID = entry.healthKitWorkoutIdentifier {
-                                    Text(healthKitLinkageText(for: entry, identifier: healthKitID))
-                                        .font(.caption2.monospaced())
-                                        .foregroundColor(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 4) {
-                                Text("Удары/м: \(entry.beatsPerMetre.map { String(format: "%.2f", $0) } ?? "—")")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text("Цель: \(entry.targetHeartRate.map(String.init) ?? "—")")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text("Ср. скорость: \(averageSpeedText(for: entry))")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                Text("Ср. пульс: \(averageBpmText(for: entry))")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundColor(entry.averageHeartRate == nil ? .secondary : .red)
-                            }
+                        Button {
+                            selectedWorkout = entry
+                        } label: {
+                            WorkoutHistoryRow(
+                                entry: entry,
+                                comparison: WorkoutHistoryPresentation.comparison(for: entry, loaded: entries)
+                            )
                         }
-                        if entry.origin == .nativeV2 {
-                            Button {
-                                onExportAnalysis(entry)
-                            } label: {
-                                HStack(spacing: 6) {
-                                    if exportingWorkoutID == entry.id {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                    } else {
-                                        Image(systemName: "square.and.arrow.up")
-                                    }
-                                    Text("Экспорт данных тренировки")
-                                }
-                                .font(.caption.weight(.semibold))
-                                .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.large)
-                            .disabled(exportingWorkoutID != nil)
-                            .accessibilityLabel("Экспорт данных тренировки")
-                        }
-                        if entry.id != entries.last?.id {
-                            Divider()
-                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 4)
+                        if entry.id != entries.last?.id { Divider() }
                     }
 
                     if hasMore {
@@ -4234,42 +4177,13 @@ private struct WorkoutHistoryCard: View {
                 }
             }
         }
-    }
-
-    private func formatDuration(_ seconds: Double?) -> String {
-        guard let seconds else { return "—" }
-        let value = max(0, Int(seconds))
-        let minutes = value / 60
-        let secs = value % 60
-        return String(format: "%d:%02d", minutes, secs)
-    }
-
-    private func averageBpmText(for entry: WorkoutHistoryProjection) -> String {
-        guard let average = entry.averageHeartRate else { return "—" }
-        return "\(Int(average.rounded())) bpm"
-    }
-
-    private func averageSpeedText(for entry: WorkoutHistoryProjection) -> String {
-        guard let speed = entry.averageSpeed else { return "—" }
-        let prefix = speed.evidenceKind == .legacyEstimated ? "≈" : ""
-        return prefix + String(format: "%.1f км/ч", speed.kilometresPerHour)
-    }
-
-    private func provenanceText(for entry: WorkoutHistoryProjection) -> String {
-        let origin = entry.origin == .nativeV2 ? "V2 native" : "Legacy import"
-        let lifecycle = entry.quality.lifecycleState
-        let grade = entry.quality.analysisGrade.map { " · \($0)" } ?? ""
-        return "\(origin) · \(lifecycle)\(grade)"
-    }
-
-    private func healthKitLinkageText(
-        for entry: WorkoutHistoryProjection,
-        identifier: UUID
-    ) -> String {
-        let provenance = entry.quality.provenance.contains(
-            "telemetry-v2-imported-exact-healthkit-linkage"
-        ) ? " · exact import linkage" : " · native linkage"
-        return "HealthKit: \(identifier.uuidString.lowercased())\(provenance)"
+        .sheet(item: $selectedWorkout) { entry in
+            WorkoutHistoryDetail(
+                entry: entry,
+                exportingWorkoutID: exportingWorkoutID,
+                onExportAnalysis: onExportAnalysis
+            )
+        }
     }
 }
 

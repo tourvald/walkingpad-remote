@@ -135,3 +135,21 @@ DEBUG fixture safety is covered by `HeartRateLegacyBehaviorContractTests`: fixtu
 Goal #56 DEBUG fixture safety remains covered by `HeartRateLegacyBehaviorContractTests`: preview-only modes report `canStart == false`, the fixture source contains no production control or telemetry entry points, and fixture launches skip root manager startup/scene lifecycle actions.
 
 Normal visual QA is limited to two correction passes. If a P0–P2 finding remains, or a correction would cross the approved presentation-only write set, return to PM.
+
+## Issue #142 — Glanceable history v1
+
+Frozen direction: [PM decision](https://github.com/tourvald/walkingpad-remote/issues/142#issuecomment-5964083109).
+Base: `1361fa13ee55ef5364f451bfaffe9053157f2ce0`. QA uses synthetic projections and the actual `WorkoutHistoryRow.swift` through SwiftUI `ImageRenderer` in the iOS 27 Simulator at 390 pt width. No app install, production manager, store query, BLE or hardware entry point is present in the [fixture](issue-142-preview.swift).
+
+| State / check | Severity | Finding / result | Evidence | Owner | Status |
+| --- | --- | --- | --- | --- | --- |
+| Three comparable native completed sessions / light | P1 | Fixed duration/HR/speed columns; neutral signed deltas refer only to loaded same-target workouts. | [Preview](issue-142/history-light.png), deterministic assertions | `WorkoutHistoryRow.swift` | Pass |
+| Missing-speed native / imported estimated / mixed target | P1 | Missing speed stays `—`; import has one badge and `≈`; target 130 has no comparison to target 145. | [Preview](issue-142/history-light.png) | `WorkoutHistoryRow.swift` | Pass |
+| Dark / accessibility3 | P2 | Date initially truncated. Vertical metrics and two-column zones preserve source order; date now wraps without truncation. Delta wraps and communicates signs without color. | [Corrected preview](issue-142/history-dark-accessibility.png) | `WorkoutHistoryRow.swift` | Fixed / Pass |
+| Details / export / diagnostics | P1 | Row opens a sheet; technical fields are in disclosure; only native projections retain the existing secondary export action, with busy/disabled state. Detail header has no misleading open-details affordance. | UI source-contract tests, unsigned build, source review | `ContentView.swift`, `WorkoutHistoryRow.swift` | Pass (static/compile evidence) |
+| Pagination / errors / zone-plan / summary | P1 | Existing load-more, retry, ordering, failed-state text and generation task remain intact. Top summary uses existing included-workout count and factual duration. | Focused contract tests and full Swift suite | `ContentView.swift` | Pass |
+| VoiceOver / motion | P1 | Combined row follows date, badge, metrics, target, zones, delta; zones have explicit label/value; native Button exposes details hint. No animation or color verdict added. | Source-contract tests / source review | `WorkoutHistoryRow.swift` | Pass (semantics; no live VoiceOver session) |
+
+Preview assertions cover comparable/mixed/imported/duplicate/incomplete sessions, missing pairs, factual-only speed deltas, load-more comparison availability and badge priority. The same harness renders light and accessibility dark variants; secondary diagnostics are checked separately. Previews show components, not a live production Statistics screen or an actual export operation.
+
+Reproduction from repository root (temporary build artifacts only): compile `Sources/TelemetryDomain/*.swift` with Simulator `swiftc -package-name WalkingPadRemoteCoreLogic -module-name TelemetryDomain -emit-module -emit-object -whole-module-optimization`; compile `WorkoutHistoryRow.swift` and `docs/design/issue-142-preview.swift` against that module/object; run the resulting executable with `simctl spawn <preview-simulator> <executable> <output-directory>`. Use the installed Simulator SDK target. The fixture uses Core Graphics `ImageRenderer.render` output; headless `cgImage` output was unavailable. The temporary UIApplication host attempt was stopped and removed from the fixture. Apple reference: [ImageRenderer](https://developer.apple.com/documentation/swiftui/imagerenderer).
