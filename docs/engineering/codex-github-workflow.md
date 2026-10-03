@@ -31,20 +31,9 @@ Start with the current Issue/task, active decisions, root/nested instructions, c
 
 Read predecessor Issues, PRs, commits, archived notes, broad docs, or long logs only when a named ambiguity cannot be resolved from current authoritative sources. Use targeted file/log reads; summarize successful logs instead of reproducing them. Spawn a helper only for a distinct question or risk the parent is not already investigating; required independent review remains a distinct responsibility.
 
-Use the linked PR evidence and complete base-to-head diff for review. Keep corrections in the existing Issue/chat/worktree/PR, starting from the exact finding and changed delta rather than replaying repository archaeology or implementation context.
+Keep corrections in the existing Issue/chat/worktree/PR; load the finding and changed delta rather than replaying history. The [review skill](../../.agents/skills/walkingpad-pr-review/SKILL.md) owns review inputs and gates.
 
-## Task-to-skill routing
-
-- code `implement`: `walkingpad-pr-lifecycle` + `walkingpad-minimal-code`;
-- docs/governance-only `implement`: `walkingpad-pr-lifecycle` only;
-- visual/interaction `implement`: add `walkingpad-ios-redesign`;
-- explicit/measured runtime optimization: add `walkingpad-performance`;
-- safety-critical implementation/review: add `walkingpad-safety-change`;
-- physical experiment: `walkingpad-hardware-experiment` under its own authorization;
-- evidence/capture investigation: `walkingpad-evidence-analysis`;
-- `review`: `walkingpad-pr-review`; code diffs also use `walkingpad-minimal-code`.
-
-Do not load all skills preemptively. A skill is conditional context, not a repository handbook.
+Skill triggers live in [root AGENTS.md](../../AGENTS.md#skill-routing). Load only the role/domain contracts needed for the current task.
 
 ## Model configuration and activation
 
@@ -100,22 +89,12 @@ review when tools suffice. Codex still reads affected current code/contracts,
 reproduces failures when practical, implements, and verifies. An internal
 `scope_challenger` or `reviewer` is only a critique, never the independent
 safety challenge, independent ChatGPT review, PM acceptance, or physical
-evidence. Independent review uses the live Issue and decisions, exact base/head,
-complete diff, and current exact-head CI; a new head needs a new review. Do not
-duplicate independent reviewers or continue pre-merge review after merge.
+evidence. Independent review requirements belong to
+[walkingpad-pr-review](../../.agents/skills/walkingpad-pr-review/SKILL.md).
 
 ## Implementation Issue shape
 
-Implementation Issues contain task-specific material plus:
-
-- goal and accepted behavior;
-- required changes/tests;
-- non-goals and definition of done;
-- `Applicable contracts` linking only directly relevant owners;
-- `Current binding decisions` linking later active decisions;
-- task-specific hard stops.
-
-Do not paste standard lifecycle, global safety/Telemetry invariants, or unrelated domain rules into each Issue. Use [`.github/ISSUE_TEMPLATE/codex-implementation.md`](../../.github/ISSUE_TEMPLATE/codex-implementation.md).
+Use the [implementation template](../../.github/ISSUE_TEMPLATE/codex-implementation.md) for task behavior, checks, non-goals, and active decisions. Link canonical contracts instead of copying lifecycle, safety, or review procedures.
 
 ## Thin launch prompts
 
@@ -144,10 +123,10 @@ Only add an unusual task-specific hard stop when omission would be risky. Do not
 
 ## Review, correction, and handoff
 
-The [review skill](../../.agents/skills/walkingpad-pr-review/SKILL.md) owns independent findings and simplicity review; the [lifecycle](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md#4-verify) owns verification and rerun conditions. Keep outcomes in the existing PR evidence packet. Keep one active executor assignment; only the root claims it and publishes a `## Codex result` linking the live assignment. Do not chain into the next Issue after handoff.
+The [lifecycle](../../.agents/skills/walkingpad-pr-lifecycle/SKILL.md) owns implementation, verification, publication, and handoff; the [review skill](../../.agents/skills/walkingpad-pr-review/SKILL.md) owns independent review and PM merge gates. Use the [PR template](../../.github/pull_request_template.md) as the evidence packet. Keep one active executor assignment; only the root claims it and publishes a `## Codex result` linking that assignment.
 
-Token usage is post-hoc evidence, not an arbitrary execution cutoff. Actual client limits are environment blockers to report, never permission to omit mandatory verification. Required full checks and exact-head CI remain mandatory regardless of context size or token use.
+Token usage is post-hoc evidence, not an arbitrary execution cutoff. Actual client limits are environment blockers to report, never permission to omit mandatory verification.
 
 ## GitHub metadata discipline
 
-For an authorized Issue-body update, read the complete current body and relevant active comments, update only the authorized Issue, preserve comment history, and read the result back. One task should normally map to one Issue, one `codex/...` branch, and one Draft PR.
+For an authorized Issue-body update, read the complete current body and relevant active comments, update only the authorized Issue, preserve comment history, and read the result back.
