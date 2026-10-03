@@ -153,6 +153,17 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
         XCTAssertTrue(contentSource.contains(".sheet(item: $selectedWorkout)"))
     }
 
+    func testHistoryBadgeReportsProvenanceAndEstimatedSpeedStaysExplicit() throws {
+        let history = source("WorkoutHistoryRow.swift")
+        let badge = try sourceSlice(from: "static func badge(", to: "static func comparison(", in: history)
+        XCTAssertTrue(badge.contains("if entry.origin == .importedLegacy { return \"Импортировано\" }"))
+        XCTAssertTrue(badge.contains("Неполные данные"))
+        XCTAssertTrue(badge.contains("value(entry.averageHeartRate) == nil"))
+        XCTAssertTrue(badge.contains("entry.zoneSeconds?.count != 5"))
+        XCTAssertTrue(history.contains("speed.evidenceKind == .legacyEstimated ? \"≈\" : \"\""))
+        XCTAssertTrue(history.contains("entry.quality.unavailableMetrics"))
+    }
+
     func testHistoryPreservesLoadedOrderingPaginationAndFailure() {
         XCTAssertTrue(contentSource.contains("ForEach(entries)"))
         XCTAssertTrue(contentSource.contains("comparison(for: entry, loaded: entries)"))

@@ -891,8 +891,16 @@ private extension TelemetryStore {
                 provenance: $0.provenance
             )
         }
-        let zoneSeconds = summary.zoneMicroseconds.selected.map { sourced in
-            sourced.value.map { value in value.map { Double($0) / 1_000_000 } }
+        let averageHeartRate = summary.averageHeartRateBeatsPerMinute.selected.flatMap { sourced in
+            sourced.value.isFinite && sourced.value > 0 ? sourced.value : nil
+        }
+        let zoneSeconds = summary.zoneMicroseconds.selected.flatMap { sourced -> [Double?]? in
+            // The JSONL importer initializes these counters to zero even without zone evidence.
+            if sourced.provenance == "legacy-jsonl-timestamp-derived",
+               !sourced.value.contains(where: { ($0 ?? 0) > 0 }) {
+                return nil
+            }
+            return sourced.value.map { value in value.map { Double($0) / 1_000_000 } }
         }
         let isIncomplete = candidateSummaries.contains {
             $0.legacySessionEvidenceComplete == false || $0.malformedRecordCount > 0
@@ -903,7 +911,7 @@ private extension TelemetryStore {
         var unavailable: [String] = []
         if durationSeconds == nil { unavailable.append("duration") }
         if summary.targetBeatsPerMinute.selected == nil { unavailable.append("targetHeartRate") }
-        if summary.averageHeartRateBeatsPerMinute.selected == nil {
+        if averageHeartRate == nil {
             unavailable.append("averageHeartRate")
         }
         if averageSpeed == nil { unavailable.append("averageSpeed") }
@@ -924,7 +932,7 @@ private extension TelemetryStore {
             endedAt: model.endedAt,
             durationSeconds: durationSeconds,
             targetHeartRate: summary.targetBeatsPerMinute.selected?.value,
-            averageHeartRate: summary.averageHeartRateBeatsPerMinute.selected?.value,
+            averageHeartRate: averageHeartRate,
             averageSpeed: averageSpeed,
             beatsPerMetre: nil,
             zoneSeconds: zoneSeconds,
