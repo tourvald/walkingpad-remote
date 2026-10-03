@@ -103,6 +103,20 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
         XCTAssertFalse(legacyClear.contains("pruneTrainingLogs"))
     }
 
+    func testPostWorkoutProjectionChangeInvalidatesStatisticsAndRekeysQuery() throws {
+        XCTAssertTrue(contentSource.contains(
+            #".task(id: "\(manager.workoutStatisticsKey(for: interval))|\(manager.telemetryV2ProjectionGeneration)")"#
+        ))
+        let invalidation = try sourceSlice(
+            from: "private func telemetryV2ProjectionDidChange()",
+            to: "private func activeWorkoutReadFilter(", in: managerSource
+        )
+        XCTAssertTrue(invalidation.contains("telemetryV2ProjectionGeneration &+= 1"))
+        XCTAssertTrue(invalidation.contains("telemetryV2Statistics.removeAll()"))
+        XCTAssertTrue(invalidation.contains("telemetryV2StatisticsState.removeAll()"))
+        XCTAssertTrue(managerSource.contains("self?.telemetryV2ProjectionDidChange()"))
+    }
+
     func testStatisticsUIExposesExcludedWorkoutCompleteness() {
         XCTAssertTrue(contentSource.contains("stats.excludedWorkoutCount"))
         XCTAssertTrue(contentSource.contains("exclusionReasonCounts"))
