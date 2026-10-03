@@ -19,7 +19,7 @@ assignees: ""
 - No-code completion allowed: no
 - Human-stop conditions:
 
-Classification follows the [canonical workflow](../../docs/engineering/codex-github-workflow.md#goal-eligibility); it does not activate a Goal or grant merge authority.
+Classification follows the [canonical workflow](https://github.com/tourvald/walkingpad-remote/blob/main/docs/engineering/codex-github-workflow.md#goal-eligibility); it does not activate a Goal or grant merge authority.
 
 ## Goal
 
