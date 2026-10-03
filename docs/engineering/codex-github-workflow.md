@@ -97,6 +97,19 @@ Independent review requirements belong to
 
 Use the [implementation template](../../.github/ISSUE_TEMPLATE/codex-implementation.md) for task behavior, checks, non-goals, and active decisions. Link canonical contracts instead of copying lifecycle, safety, or review procedures.
 
+### Goal eligibility
+
+The Issue's `Goal eligibility` block is the single readiness source. Use the values below; the `goal:` names identify the classes, not a second label-based authority. Labels would duplicate the required metadata without adding an execution gate, so no label management is needed. Missing or unsettled classification stays in ordinary manual PM/specification work. Classification never activates a Goal or grants merge authority.
+
+| Class | Issue value | Eligibility |
+| --- | --- | --- |
+| `goal:needs-spec` | `needs-spec` | Resolve product, UX, architecture, safety, evidence interpretation, or schema decisions manually before unattended execution. |
+| `goal:ready` | `ready` | Explicit behavior, objective acceptance checks, known dependencies, programmatically available evidence, bounded allowed/forbidden scope, no unresolved product decision or physical/device/user interaction, and eligibility for self-merge under the autonomous contract below. |
+| `goal:human-gate` | `human-gate` | Deterministic authorized investigation/implementation and verification may proceed, but a mandatory human-stop category requires final PM review. Leave a verified Draft as `BLOCKED FOR PM REVIEW`. |
+| `goal:blocked` | `blocked` | A named unmet prerequisite prevents useful progress: predecessor, physical/field evidence, external source/permission, or owner decision. Exclude it from the active batch. |
+
+Use `needs-spec` for contract definition; use `blocked` when a concrete prerequisite prevents progress. A human-gated task with unavailable evidence is blocked until that evidence is available; classification cannot waive a gate. Keep dependencies in the same block, name the verification surface, explicitly allow or forbid no-code completion, and record task-specific human stops. Product semantics and acceptance evidence remain in the existing Issue sections.
+
 ## Thin launch prompts
 
 A launch prompt identifies repository, task, role, base policy, and terminal outcome. It points to the Issue and repository routing instead of copying them.
@@ -134,7 +147,7 @@ An authorized multi-Issue autonomous Goal records its Goal-start SHA and repeats
 
 The ordinary lifecycle still ends at a verified Draft PR. A Goal may continue through review, merge, Issue disposition, and the next Issue only when the repository owner explicitly launches it under this section.
 
-Activation must record the exact Goal-start `main` SHA, a fixed Issue completion-set, autonomous merge authority, and any human-gated Issues. One root owns writes, works one Issue at a time from fresh live `main`, and does not recursively add newly discovered follow-up Issues to the active completion-set. A new P0/P1 may block the affected task but does not silently broaden scope.
+Activation must record the exact Goal-start `main` SHA, a fixed Issue completion-set, autonomous merge authority, and any human-gated Issues. One root owns writes, works one Issue at a time from fresh live `main`, and does not recursively add newly discovered follow-up Issues to the active completion-set. A new P0/P1 may block the affected task but does not silently broaden scope. A P0/P1 that invalidates safety, data integrity, or the correctness of already merged Goal work stops the entire Goal for PM; it cannot be deferred as routine backlog.
 
 Before an autonomous merge, implementation and review are distinct phases. Freeze exact base/head and worktree state; stop writes during the review; review the complete diff and live Issue decisions rather than the implementation transcript; use a separate bounded read-only reviewer when available; verify exact-head CI and the code-growth report independently; and obtain a fresh `GO`. In this explicitly activated mode only, that frozen-diff reviewer may satisfy the ordinary independent **code-review** gate for non-safety, non-human-gated work. It never substitutes for a safety challenge, physical evidence, or an external approval required by the Issue.
 
@@ -147,6 +160,42 @@ Eligible no-code investigations may be dispositioned and closed when their live 
 Every autonomous code PR uses #170 evidence. Preserve the Goal-start SHA; after every three autonomous merges and at final completion, review Goal-start -> current-`main` growth for stranded intermediate code, duplicate owners, one-consumer abstractions, dormant state, and unjustified growth. This review records follow-ups; it does not authorize opportunistic cleanup.
 
 #170 and #171 are bootstrap changes and are never merged using this exception; both require the ordinary human-reviewed lifecycle first.
+
+## Nightly Goal Batch
+
+During the day, PM resolves `needs-spec` contracts and names blockers. Before an unattended run, read the fresh live backlog and binding decisions; select a small dependency-ordered set of explicitly classified `ready` / `human-gate` Issues, including bounded audit/disposition tasks with explicit completion evidence. Exclude blocked work and dependants whose prerequisites cannot be completed within the batch. Do not sweep the entire backlog.
+
+The owner's launch records:
+
+```text
+Repository: tourvald/walkingpad-remote
+Mode: Nightly Goal Batch under owner-activated autonomous Goal mode
+GOAL_START_SHA: <exact live main SHA>
+Completion-set: #<N>, #<M>  # fixed, dependency ordered
+Autonomous merge authority: only eligible ready Issues under #170/#171
+Human-gated Issues: #<M>  # or none
+Follow Issue eligibility + repository contracts. Report the cumulative result.
+```
+
+This is a standard launch format for the activation contract above, not a scheduler or an implicit activation. The owner must explicitly grant that authority. Recheck eligibility and prerequisites against the live Issue before each task; changed classifications do not expand the fixed completion-set or authority.
+
+Execute one Issue at a time from fresh `main`: investigate/implement -> focused and applicable full checks -> #170 growth evidence -> Draft PR -> frozen-diff review -> bounded corrections and fresh review/CI for the corrected head -> exact-head CI -> self-merge only through #171 -> verify resulting `main` -> linked Issue disposition -> next eligible Issue. The lifecycle and review skills own the detailed gates; no-code completion requires the Issue's explicit acceptance contract.
+
+For `human-gate`, stop at a verified Draft and frozen review with `BLOCKED FOR PM REVIEW`, then continue only to an independent eligible Issue. Do not treat that Draft as a merged prerequisite. Record blocked dependants rather than forcing progress. Leave unavailable-evidence and externally blocked Issues open. Audit findings may become focused follow-up Issues, but never enter this active completion-set recursively. Preserve the P0/P1 whole-Goal stop above and #170 per-PR/cumulative checks.
+
+## Morning PM Pass
+
+Review the overnight result as a system using one compact final handoff linked to the existing PR/Issue evidence:
+
+- Exact `GOAL_START_SHA` and verified final live `main` SHA.
+- Fixed completion-set outcomes: merged/closed/dispositioned Issues, no-code evidence, incomplete or blocked tasks and reasons.
+- Human-gated Draft PRs awaiting PM, with exact heads and review/CI evidence.
+- Follow-up Issues created by audits/findings, outside the batch.
+- Cumulative #170 report from Goal-start to final `main`, including stranded intermediate code, duplicate owners, one-consumer abstractions, dormant state, and unjustified growth.
+- P0/P1 findings, Goal stop conditions, and any missing evidence.
+- Whether remaining backlog eligibility/dependencies are still accurate.
+
+The owner/PM may accept a clean batch without replaying every successful PR review or full test suite while exact-head evidence remains valid. Apply the lifecycle verification rule when changes or findings invalidate that evidence. Waiting human-gated Drafts still require their own PM decision under the review skill; accepting the batch does not merge them. Cumulative findings authorize follow-up planning, not opportunistic cleanup or another Goal.
 
 ## Review, correction, and handoff
 

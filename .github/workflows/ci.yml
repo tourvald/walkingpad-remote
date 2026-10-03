@@ -44,8 +44,8 @@ jobs:
       - name: Validate Codex governance
         run: python scripts/check_codex_governance.py
 
-      - name: Test code-growth report
-        run: python -m unittest scripts/test_code_growth_report.py
+      - name: Test governance tooling
+        run: python -m unittest scripts/test_code_growth_report.py scripts/test_codex_governance.py
 
       - name: Compile Python entrypoints
         run: |
