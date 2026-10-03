@@ -468,11 +468,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(uiPublisher.contains("DispatchQueue"))
         XCTAssertFalse(uiPublisher.contains("Task"))
         XCTAssertFalse(uiPublisher.contains("debounce"))
-        XCTAssertTrue(
-            contentViewSource.contains(
-                "@ObservedObject var publisher: TreadmillFactualObservationPublisher"
-            )
-        )
     }
 
     func testTrainingHeartRateUIPublicationCannotBecomeFactualTruth() throws {
@@ -568,11 +563,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(uiPublisher.contains("DispatchQueue"))
         XCTAssertFalse(uiPublisher.contains("Task"))
         XCTAssertFalse(uiPublisher.contains("debounce"))
-        XCTAssertTrue(
-            contentViewSource.contains(
-                "@ObservedObject var state: HeartRateFactualState"
-            )
-        )
         XCTAssertEqual(
             contentViewSource.components(
                 separatedBy: "TrainingUIHeartRateReadinessPresentationPolicy.presentation("

@@ -78,31 +78,6 @@ final class BoundedDebugLogTests: XCTestCase {
         XCTAssertTrue(snapshot.text.hasSuffix("event=99999 payload=\(payload)"))
     }
 
-    func testPublicationStateSuppressesUnchangedSnapshots() {
-        var buffer = BoundedDebugLogBuffer(
-            policy: DebugLogRetentionPolicy(maxLines: 20, maxUTF8Bytes: 1_000)
-        )
-        var publication = DebugLogPublicationState()
-
-        for index in 0..<10_000 {
-            buffer.append("event-\(index)")
-        }
-        let firstSnapshot = buffer.snapshot()
-        XCTAssertNotNil(publication.consume(firstSnapshot))
-        XCTAssertNil(publication.consume(firstSnapshot))
-
-        for index in 10_000..<20_000 {
-            buffer.append("event-\(index)")
-        }
-        let secondSnapshot = buffer.snapshot()
-        XCTAssertNotNil(publication.consume(secondSnapshot))
-        XCTAssertNil(publication.consume(secondSnapshot))
-
-        XCTAssertEqual(buffer.diagnostics.appendCount, 20_000)
-        XCTAssertEqual(buffer.diagnostics.snapshotAssemblyCount, 2)
-        XCTAssertEqual(DebugLogPublicationPolicy.refreshInterval, 0.5)
-    }
-
     func testSnapshotAndClearAreDeterministic() {
         var buffer = BoundedDebugLogBuffer(
             policy: DebugLogRetentionPolicy(maxLines: 5, maxUTF8Bytes: 100)
@@ -143,4 +118,53 @@ final class BoundedDebugLogTests: XCTestCase {
 
         wait(for: [snapshotExpectation], timeout: 1)
     }
+    func testDebugSurfaceHasNoLegacySnapshotOrPublicationLifecycle() throws {
+        let view = try source("ContentView.swift")
+        let manager = try source("BluetoothManager.swift")
+        for removed in ["Runtime Snapshot", "Copy Logs", "Button(\"Clear\")", "Toggle(\"Logging\"",
+                        "Logging is OFF", "manager.debugLog", "copyLogs(",
+                        "DebugTreadmillFactualObservationRows", "DebugHeartRateFactualObservationRow"] {
+            XCTAssertFalse(view.contains(removed), removed)
+        }
+        for removed in ["startDebugLogPresentation", "stopDebugLogPresentation", "makeDebugLogSnapshot",
+                        "clearDebugLog", "refreshDebugLogSnapshot", "debugLogPresentationTimer",
+                        "debugLogPublicationState", "@Published private(set) var debugLog"] {
+            XCTAssertFalse(manager.contains(removed), removed)
+            XCTAssertFalse(view.contains(removed), removed)
+        }
+        XCTAssertFalse(manager.contains("@Published var loggingEnabled"))
+    }
+
+    func testDiagnosticShareAndTypedSupportRemainIndependentOfLegacyLogging() throws {
+        let view = try source("ContentView.swift")
+        let manager = try source("BluetoothManager.swift")
+        let card = try source("DebugTrainingLogsCard.swift")
+        for preserved in ["DebugTrainingLogsCard(", "DebugHrFailuresCard(", "manager.startTreadmillTestRun()",
+                          "manager.stopTreadmillTestRun()", "prepareAndPresentDiagnosticBundle(",
+                          "manager.refreshWorkoutHistoryFromV2(reset: true)", "diagnosticBundleTask?.cancel()"] {
+            XCTAssertTrue(view.contains(preserved), preserved)
+        }
+        XCTAssertTrue(card.contains("Поделиться диагностикой"))
+        let start = try XCTUnwrap(manager.range(of: "    func prepareDiagnosticBundle("))
+        let end = try XCTUnwrap(manager.range(of: "    private func diagnosticWorkoutExportFailureCategory", range: start.upperBound..<manager.endIndex))
+        let bundle = String(manager[start.lowerBound..<end.lowerBound])
+        for preserved in ["diagnosticSupportSnapshot()", "prepareTelemetryV2Export(scope: scope)",
+                          "DiagnosticBundlePackager.create(", "DiagnosticBundlePackager.createSupportOnly("] {
+            XCTAssertTrue(bundle.contains(preserved), preserved)
+        }
+        for forbidden in ["loggingEnabled", "debugLog", "DebugLogStore", "prepareTrainingCsv", "legacy"] {
+            XCTAssertFalse(bundle.contains(forbidden), forbidden)
+        }
+        for preserved in ["return DiagnosticSupportSnapshot(", "runtime: .init(",
+                          "nativeHeartRatePreflight: .init(", "controllerUnits: .init(",
+                          "treadmill: .init(", "writerHealth: .init(", "lostCriticalCount: writer.lostCriticalCount"] {
+            XCTAssertTrue(manager.contains(preserved), preserved)
+        }
+    }
+
+    private func source(_ name: String) throws -> String {
+        let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: directory.appendingPathComponent("WalkingPadRemote/\(name)"), encoding: .utf8)
+    }
+
 }

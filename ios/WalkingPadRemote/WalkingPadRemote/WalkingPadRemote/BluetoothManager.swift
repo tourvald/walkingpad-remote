@@ -1185,66 +1185,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     // Logs / failures
     struct HrFailureReport: Identifiable { let id = UUID(); let reason: String; let start: Date; let end: Date; let lines: [String] }
     @Published var hrFailureReports: [HrFailureReport] = []
-    @Published var loggingEnabled: Bool = false
-    @Published var lastCommandLine: String = ""
-    @Published private(set) var debugLog: String = ""
+    private let loggingEnabled = false
+    private var lastCommandLine: String = ""
     @Published var lastTrainingLogPath: String = ""
     @Published private(set) var trainingLogsInventory: TrainingTelemetryWriter.TrainingLogsInventory = .empty
     private let debugLogStore = DebugLogStore()
-    private var debugLogPublicationState = DebugLogPublicationState()
-    private var debugLogPresentationTimer: Timer?
 
     private func appendLog(_ line: String) {
         guard loggingEnabled else { return }
         let entry = "[\(Date().formatted(date: .omitted, time: .standard))] \(line)"
         debugLogStore.append(entry)
-    }
-
-    func startDebugLogPresentation() {
-        guard debugLogPresentationTimer == nil else { return }
-
-        refreshDebugLogSnapshot()
-        let timer = Timer(timeInterval: DebugLogPublicationPolicy.refreshInterval, repeats: true) {
-            [weak self] _ in
-            self?.refreshDebugLogSnapshot()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        debugLogPresentationTimer = timer
-    }
-
-    func stopDebugLogPresentation() {
-        debugLogPresentationTimer?.invalidate()
-        debugLogPresentationTimer = nil
-    }
-
-    func makeDebugLogSnapshot(completion: @escaping (String) -> Void) {
-        debugLogStore.snapshot(after: nil) { snapshot in
-            DispatchQueue.main.async {
-                completion(snapshot?.text ?? "")
-            }
-        }
-    }
-
-    func clearDebugLog() {
-        debugLogStore.clear { [weak self] revision in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.debugLogPublicationState.markPublished(revision: revision)
-                self.debugLog = ""
-            }
-        }
-    }
-
-    private func refreshDebugLogSnapshot() {
-        let publishedRevision = debugLogPublicationState.publishedRevision
-        debugLogStore.snapshot(after: publishedRevision) { [weak self] snapshot in
-            guard let snapshot else { return }
-            DispatchQueue.main.async {
-                guard let self,
-                      let text = self.debugLogPublicationState.consume(snapshot) else { return }
-                self.debugLog = text
-            }
-        }
     }
 
     func logUiAction(_ message: String) {
