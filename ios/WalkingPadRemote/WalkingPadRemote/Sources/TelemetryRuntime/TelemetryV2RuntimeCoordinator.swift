@@ -513,7 +513,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private var persistence: (any TelemetryRecorderPersistence)?
     private var pendingLegacyMigrationRequestFactory: LegacyMigrationRequestFactory?
     private var legacyMigrationStarted = false
-    private var terminalAnalysisResults: [SessionID: PostWorkoutAnalysisTriggerResult] = [:]
+    private var latestTerminalAnalysisResult:
+        (sessionID: SessionID, result: PostWorkoutAnalysisTriggerResult)?
     private var preparationStarted = false
     private var preparationFailed = false
     private var generation: UInt64 = 0
@@ -715,6 +716,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 setStatusLocked(.unavailable("store-unavailable"))
                 return (previous, false)
             }
+            latestTerminalAnalysisResult = nil
             pendingSession = PendingSession(
                 generation: generation,
                 descriptor: descriptor,
@@ -763,7 +765,10 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 analysisResult = .failed
             }
             self?.withLock {
-                self?.terminalAnalysisResults[session.sessionID] = analysisResult
+                // A superseded analysis may still refresh persisted projections,
+                // but must not restore the previous session's runtime outcome.
+                guard self?.generation == ending.1 else { return }
+                self?.latestTerminalAnalysisResult = (session.sessionID, analysisResult)
             }
             self?.projectionChangeHandler?()
         }
@@ -771,7 +776,10 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
 
     /// Read-only presentation evidence; never participates in runtime/control status.
     public func terminalAnalysisResult(for sessionID: SessionID) -> PostWorkoutAnalysisTriggerResult? {
-        withLock { terminalAnalysisResults[sessionID] }
+        withLock {
+            guard latestTerminalAnalysisResult?.sessionID == sessionID else { return nil }
+            return latestTerminalAnalysisResult?.result
+        }
     }
 
     @discardableResult

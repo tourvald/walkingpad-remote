@@ -424,6 +424,55 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         }
     }
 
+    func testNewAcceptedSessionClearsPreviousTerminalOutcomeAndKeepsCurrentResult() async throws {
+        for result in [PostWorkoutAnalysisTriggerResult.inserted, .failed, .ineligible] {
+            let persistence = RuntimePersistence(analysisResult: result)
+            let coordinator = TelemetryV2RuntimeCoordinator { persistence }
+            let sessionA = Self.descriptor(legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000091")!)
+            let sessionB = Self.descriptor(legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000092")!)
+            coordinator.beginSession(sessionA)
+            try await eventually { coordinator.activeSessionIDForTesting == sessionA.sessionID }
+            coordinator.endSession(reason: "session-a-completed")
+            try await eventually { coordinator.terminalAnalysisResult(for: sessionA.sessionID) == result }
+
+            coordinator.beginSession(sessionB)
+            try await eventually { coordinator.activeSessionIDForTesting == sessionB.sessionID }
+            XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionA.sessionID))
+            XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionB.sessionID))
+            coordinator.endSession(reason: "session-b-completed")
+            try await eventually { coordinator.terminalAnalysisResult(for: sessionB.sessionID) == result }
+            XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionA.sessionID))
+        }
+    }
+
+    func testSupersededAnalysisCompletionCannotRestorePreviousOutcome() async throws {
+        let persistence = RuntimePersistence(suspendAnalysis: true)
+        let invalidations = LockedCounter()
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: { persistence },
+            projectionChangeHandler: { invalidations.increment() }
+        )
+        let sessionA = Self.descriptor(legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000091")!)
+        let sessionB = Self.descriptor(legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000092")!)
+        coordinator.beginSession(sessionA)
+        try await eventually { coordinator.activeSessionIDForTesting == sessionA.sessionID }
+        try await eventually { invalidations.value == 1 }
+        coordinator.endSession(reason: "session-a-completed")
+        try await eventually { await persistence.analysisSessionIDs.count == 1 }
+        coordinator.beginSession(sessionB)
+        try await eventually { coordinator.activeSessionIDForTesting == sessionB.sessionID }
+        await persistence.resumeAnalysis()
+        try await eventually { invalidations.value == 2 }
+        XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionA.sessionID))
+        XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionB.sessionID))
+
+        coordinator.endSession(reason: "session-b-completed")
+        try await eventually { await persistence.analysisSessionIDs.count == 2 }
+        await persistence.resumeAnalysis()
+        try await eventually { coordinator.terminalAnalysisResult(for: sessionB.sessionID) == .inserted }
+        XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionA.sessionID))
+    }
+
     func testPostWorkoutAnalysisCannotDelayStopCompletionOrNextSession() async throws {
         let persistence = RuntimePersistence(suspendAnalysis: true)
         let coordinator = TelemetryV2RuntimeCoordinator {
