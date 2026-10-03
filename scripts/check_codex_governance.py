@@ -21,6 +21,8 @@ TELEMETRY_INDEX = ROOT / "docs/telemetry-v2/index.md"
 CODEX_CONFIG = ROOT / ".codex/config.toml"
 CODEX_ROLES = ("repo_explorer", "docs_researcher", "scope_challenger", "reviewer")
 WORKFLOW = ROOT / "docs/engineering/codex-github-workflow.md"
+CODE_GROWTH = ROOT / "scripts/code_growth_report.py"
+CODE_GROWTH_TEST = ROOT / "scripts/test_code_growth_report.py"
 
 DEFAULT_MAX_INSTRUCTION_BYTES = 32 * 1024
 INSTRUCTION_FILENAMES = ("AGENTS.override.md", "AGENTS.md")
@@ -113,6 +115,8 @@ def main() -> int:
         TELEMETRY_INDEX,
         CODEX_CONFIG,
         WORKFLOW,
+        CODE_GROWTH,
+        CODE_GROWTH_TEST,
         *(ROOT / f".codex/agents/{role}.toml" for role in CODEX_ROLES),
     )
     for required in required_files:
@@ -166,12 +170,19 @@ def main() -> int:
 
     if ISSUE_TEMPLATE.is_file():
         template = ISSUE_TEMPLATE.read_text(encoding="utf-8")
+        if "Code-growth report:" not in template:
+            errors.append("PR template is missing code-growth evidence")
         for duplicated_heading in ("## Global Telemetry V2 invariants", "## Binding execution contract"):
             if duplicated_heading in template:
                 errors.append(f"issue template repeats {duplicated_heading!r}")
         for required_heading in ("## Applicable contracts", "## Current binding decisions"):
             if required_heading not in template:
                 errors.append(f"issue template is missing {required_heading!r}")
+
+    if MINIMAL_CODE.is_file() and "scripts/code_growth_report.py" not in MINIMAL_CODE.read_text(encoding="utf-8"):
+        errors.append("minimal-code skill is missing code-growth evidence")
+    if PR_REVIEW.is_file() and "scripts/code_growth_report.py" not in PR_REVIEW.read_text(encoding="utf-8"):
+        errors.append("PR review skill is missing code-growth evidence")
 
     instruction_files = discover_instruction_files()
     target_directories = {ROOT, *(path.parent for path in instruction_files)}
