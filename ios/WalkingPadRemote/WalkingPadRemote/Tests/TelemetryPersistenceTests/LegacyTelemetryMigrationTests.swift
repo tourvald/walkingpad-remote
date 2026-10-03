@@ -1583,6 +1583,114 @@ final class LegacyTelemetryMigrationTests: XCTestCase {
         XCTAssertNil(try resumedHistoryReader.next())
     }
 
+    func testHistoricalImportedMissingMetricsStayUnavailableAfterReopen() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("read.sqlite")
+        var store: TelemetryStore? = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        // These synthetic fragments prove possible mechanisms, not the user's row identity.
+        let cases: [(String, Int, Int?, Int?)] = [
+            ("empty-eight", 8, nil, nil),
+            ("zero-thirty-two", 32, 0, nil),
+            ("hr-without-zone", 32, 140, nil),
+            ("attributed", 32, 140, 2),
+        ]
+        var sources: [LegacyJSONLSourceDescriptor] = []
+        for (id, seconds, bpm, zone) in cases {
+            let url = directory.appendingPathComponent("\(id).jsonl")
+            var records: [Data] = [object([
+                "event": "session_start", "ts": 1_800_000_000,
+                "session_id": id, "profile_id": profileID,
+            ])]
+            if let bpm {
+                var sample: [String: Any] = [
+                    "event": "hr_sample", "ts": 1_800_000_001,
+                    "session_id": id, "profile_id": profileID, "hr_bpm": bpm,
+                ]
+                if let zone { sample["zone_index"] = zone }
+                records.append(object(sample))
+            }
+            records.append(object([
+                "event": "session_end", "ts": 1_800_000_000 + seconds,
+                "session_id": id, "profile_id": profileID, "avg_bpm": bpm ?? 0,
+            ]))
+            try lines(records).write(to: url)
+            sources.append(.init(url: url, deterministicFallbackProfileLocalIdentifier: profileID))
+        }
+        let history = try JSONSerialization.data(withJSONObject: [
+            ["id": "summary-zero", "date": 1_800_000_100, "durationSeconds": 32,
+             "avgBpm": 0, "avgSpeedKmh": 3.5],
+            ["id": "summary-alternative", "session_id": "zero-thirty-two",
+             "date": 1_800_000_032, "durationSeconds": 32,
+             "avgBpm": 150, "zoneSeconds": [0, 10, 0, 0, 0]],
+            ["id": "summary-explicit-zones", "date": 1_800_000_200,
+             "durationSeconds": 32, "avgBpm": 140, "zoneSeconds": [0, 0, 0, 0, 0]],
+        ])
+        let migration = await LegacyTelemetryMigrator(store: store!).run(
+            LegacyTelemetryMigrationRequest(
+                jsonlSources: sources,
+                workoutHistorySources: [.init(
+                    storageKey: "workout_history_v1_profile_\(profileID)",
+                    representation: history, exactProfileLocalIdentifier: profileID
+                )], knownProfileLocalIdentifiers: [profileID]
+            )
+        )
+        XCTAssertEqual(migration.completion, .completed)
+        let persisted = try await store!.fetchLegacyImportedWorkouts()
+        let rejectedSelected = try XCTUnwrap(persisted.first {
+            $0.resolvedSummary.averageHeartRateBeatsPerMinute.selected?.value == 0
+                && $0.resolvedSummary.averageHeartRateBeatsPerMinute.alternatives.contains { $0.value == 150 }
+        })
+        XCTAssertEqual(rejectedSelected.resolvedSummary.zoneMicroseconds.selected?.value, [0, 0, 0, 0, 0])
+        XCTAssertTrue(rejectedSelected.resolvedSummary.zoneMicroseconds.alternatives.contains {
+            $0.value == [0, 10_000_000, 0, 0, 0]
+        })
+        let filter = WorkoutReadFilter(profileScope: .exact(profileID))
+        let first = try await store!.fetchWorkoutHistoryPage(filter: filter, after: nil, limit: 20)
+        XCTAssertEqual(first.items.count, 6)
+        for entry in first.items {
+            XCTAssertEqual(entry.origin, .importedLegacy)
+            XCTAssertFalse(entry.quality.adaptationEligible)
+            if entry.durationSeconds == 8 {
+                XCTAssertNil(entry.averageHeartRate)
+                XCTAssertNil(entry.zoneSeconds)
+            }
+            if entry.averageHeartRate == nil {
+                XCTAssertTrue(entry.quality.unavailableMetrics.contains("averageHeartRate"))
+            } else {
+                XCTAssertGreaterThan(entry.averageHeartRate!, 0)
+            }
+            if entry.zoneSeconds == nil {
+                XCTAssertTrue(entry.quality.unavailableMetrics.contains("zoneSeconds"))
+            }
+        }
+        XCTAssertEqual(first.items.filter { $0.averageHeartRate == nil }.count, 3)
+        XCTAssertEqual(first.items.filter { $0.zoneSeconds == nil }.count, 4)
+        let attributed = try XCTUnwrap(first.items.first { $0.zoneSeconds?.contains(7) == true })
+        XCTAssertEqual(attributed.zoneSeconds, [0, 7, 0, 0, 0])
+        XCTAssertTrue(first.items.contains { $0.zoneSeconds == [0, 0, 0, 0, 0] })
+        let estimated = try XCTUnwrap(first.items.first { $0.averageSpeed != nil })
+        XCTAssertEqual(estimated.averageSpeed?.evidenceKind, .legacyEstimated)
+        XCTAssertEqual(estimated.averageSpeed?.kilometresPerHour, 3.5)
+        XCTAssertNil(estimated.averageHeartRate)
+        let statistics = try await store!.fetchWorkoutStatistics(filter: filter, batchSize: 20)
+        XCTAssertEqual(statistics.queryableWorkoutCount, first.items.count)
+        XCTAssertEqual(statistics.includedWorkoutCount, first.items.filter { $0.quality.includedInStatistics }.count)
+        XCTAssertEqual(statistics.workoutsWithUnavailableZones, first.items.filter {
+            $0.quality.includedInStatistics && $0.zoneSeconds == nil
+        }.count)
+        XCTAssertEqual(statistics.zoneSeconds, [0, 7, 0, 0, 0])
+        XCTAssertTrue(statistics.isPartial)
+        let unchanged = try await store!.fetchLegacyImportedWorkouts()
+        XCTAssertEqual(unchanged, persisted)
+        store = nil
+        let reopened = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        let final = try await reopened.fetchWorkoutHistoryPage(filter: filter, after: nil, limit: 20)
+        XCTAssertEqual(final.items, first.items)
+        let persistedAfterReopen = try await reopened.fetchLegacyImportedWorkouts()
+        XCTAssertEqual(persistedAfterReopen, persisted)
+    }
+
     private func request(jsonlURL: URL, history: Data) -> LegacyTelemetryMigrationRequest {
         LegacyTelemetryMigrationRequest(
             jsonlSources: [
