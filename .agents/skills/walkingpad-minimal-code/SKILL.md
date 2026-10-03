@@ -30,3 +30,12 @@ Rules:
 Before handoff, inspect every added file, dependency, abstraction, state variable, branch, and meaningful block. Remove additions unnecessary for the contract, clarity, safety, and required tests.
 
 Fewer LOC alone is never evidence of better code or faster runtime.
+
+
+## Code-growth evidence
+
+For code diffs, run `python3 scripts/code_growth_report.py <base> <head>` before handoff. Add `--narrow-bugfix` for a narrow bug-fix Issue so the repository tripwires for production-file count and production churn are reported.
+
+Treat the report as review evidence, not a quality score. New durable-state/timer/abstraction candidates require an explicit ownership/lifecycle justification or removal. A narrow bug fix crossing the report's >5 production files or >500 production LOC churn tripwire stops for PM unless the live Issue explicitly authorizes the broad mechanical scope. New dependencies, persistence/schema/migration surfaces, production subsystems, or broad project/signing/configuration changes remain PM-stop categories even when raw LOC is small.
+
+For an authorized multi-Issue autonomous Goal, preserve the Goal-start SHA and run the same report cumulatively after every three merged software Issues and at final completion. Cumulative findings are review inputs; they do not authorize opportunistic cleanup.
