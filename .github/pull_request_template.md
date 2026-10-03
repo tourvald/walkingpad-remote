@@ -4,7 +4,9 @@
 - Exact base / head:
 - Changed behavior and scope; behavior/contracts preserved:
 - Reuse/deletion summary; justify new abstractions/dependencies, or state none:
-- Base-to-head LOC added/removed, separating production, tests, and docs/instructions when practical:
+- Code-growth report: production +/-/net, new production files, and report command/reference:
+- New durable state/timer/cache/dependency/abstraction candidates: list with lifecycle/ownership justification, or `none`:
+- Tests and docs/governance +/- separately when practical:
 
 ## Verification
 
