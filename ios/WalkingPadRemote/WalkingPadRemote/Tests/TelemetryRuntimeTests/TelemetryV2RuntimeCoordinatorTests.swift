@@ -385,6 +385,94 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.status, .incomplete("ended-before-recorder-ready"))
     }
 
+    func testTerminalAnalysisOutcomeInvalidatesReadProjectionAndReopenDoesNotReanalyze() async throws {
+        for result in [PostWorkoutAnalysisTriggerResult.inserted, .failed, .ineligible] {
+            let persistence = RuntimePersistence(suspendAnalysis: true, analysisResult: result)
+            let invalidations = LockedCounter()
+            let coordinator = TelemetryV2RuntimeCoordinator(
+                persistenceFactory: { persistence },
+                projectionChangeHandler: { invalidations.increment() }
+            )
+            let descriptor = Self.descriptor()
+            coordinator.beginSession(descriptor)
+            try await eventually { coordinator.activeSessionIDForTesting == descriptor.sessionID }
+            coordinator.endSession(reason: "completed")
+            try await eventually { await persistence.analysisSessionIDs.count == 1 }
+            XCTAssertEqual(coordinator.status, .idle)
+            XCTAssertNil(coordinator.terminalAnalysisResult(for: descriptor.sessionID))
+            let beforeCompletion = invalidations.value
+            await persistence.resumeAnalysis()
+            try await eventually { coordinator.terminalAnalysisResult(for: descriptor.sessionID) == result }
+            try await eventually { invalidations.value > beforeCompletion }
+            XCTAssertEqual(coordinator.status, .idle)
+            XCTAssertNil(coordinator.terminalAnalysisResult(for: SessionID()))
+            do {
+                _ = try await coordinator.fetchWorkoutHistoryPage(
+                    filter: WorkoutReadFilter(profileScope: .all), after: nil, limit: 10
+                )
+                XCTFail("Injected read failure must not become an empty successful projection")
+            } catch let error as TelemetryWorkoutReadError {
+                XCTAssertEqual(error, .unavailable("injected-read-failure"))
+            }
+            for _ in 0..<3 {
+                XCTAssertEqual(coordinator.terminalAnalysisResult(for: descriptor.sessionID), result)
+            }
+            let analysisCalls = await persistence.analysisSessionIDs.count
+            let readCalls = await persistence.historyReadCallCount
+            XCTAssertEqual(analysisCalls, 1)
+            XCTAssertEqual(readCalls, 1)
+        }
+    }
+
+    func testNewAcceptedSessionClearsPreviousTerminalOutcomeAndKeepsCurrentResult() async throws {
+        for result in [PostWorkoutAnalysisTriggerResult.inserted, .failed, .ineligible] {
+            let persistence = RuntimePersistence(analysisResult: result)
+            let coordinator = TelemetryV2RuntimeCoordinator { persistence }
+            let sessionA = Self.descriptor(legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000091")!)
+            let sessionB = Self.descriptor(legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000092")!)
+            coordinator.beginSession(sessionA)
+            try await eventually { coordinator.activeSessionIDForTesting == sessionA.sessionID }
+            coordinator.endSession(reason: "session-a-completed")
+            try await eventually { coordinator.terminalAnalysisResult(for: sessionA.sessionID) == result }
+
+            coordinator.beginSession(sessionB)
+            try await eventually { coordinator.activeSessionIDForTesting == sessionB.sessionID }
+            XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionA.sessionID))
+            XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionB.sessionID))
+            coordinator.endSession(reason: "session-b-completed")
+            try await eventually { coordinator.terminalAnalysisResult(for: sessionB.sessionID) == result }
+            XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionA.sessionID))
+        }
+    }
+
+    func testSupersededAnalysisCompletionCannotRestorePreviousOutcome() async throws {
+        let persistence = RuntimePersistence(suspendAnalysis: true)
+        let invalidations = LockedCounter()
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: { persistence },
+            projectionChangeHandler: { invalidations.increment() }
+        )
+        let sessionA = Self.descriptor(legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000091")!)
+        let sessionB = Self.descriptor(legacySessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000092")!)
+        coordinator.beginSession(sessionA)
+        try await eventually { coordinator.activeSessionIDForTesting == sessionA.sessionID }
+        try await eventually { invalidations.value == 1 }
+        coordinator.endSession(reason: "session-a-completed")
+        try await eventually { await persistence.analysisSessionIDs.count == 1 }
+        coordinator.beginSession(sessionB)
+        try await eventually { coordinator.activeSessionIDForTesting == sessionB.sessionID }
+        await persistence.resumeAnalysis()
+        try await eventually { invalidations.value == 2 }
+        XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionA.sessionID))
+        XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionB.sessionID))
+
+        coordinator.endSession(reason: "session-b-completed")
+        try await eventually { await persistence.analysisSessionIDs.count == 2 }
+        await persistence.resumeAnalysis()
+        try await eventually { coordinator.terminalAnalysisResult(for: sessionB.sessionID) == .inserted }
+        XCTAssertNil(coordinator.terminalAnalysisResult(for: sessionA.sessionID))
+    }
+
     func testPostWorkoutAnalysisCannotDelayStopCompletionOrNextSession() async throws {
         let persistence = RuntimePersistence(suspendAnalysis: true)
         let coordinator = TelemetryV2RuntimeCoordinator {
@@ -1456,6 +1544,7 @@ private actor RuntimePersistence:
     private let suspendBegin: Bool
     private let suspendFinalize: Bool
     private let suspendAnalysis: Bool
+    private let analysisResult: PostWorkoutAnalysisTriggerResult
     private let suspendMigration: Bool
     private let finalizeFailure: Bool
     private let finalizationDidPersist: @Sendable () -> Void
@@ -1465,6 +1554,7 @@ private actor RuntimePersistence:
     private var analysisContinuation: CheckedContinuation<Void, Never>?
     private var migrationContinuation: CheckedContinuation<Void, Never>?
     private(set) var analysisSessionIDs: [SessionID] = []
+    private(set) var historyReadCallCount = 0
     private(set) var pendingAnalysisResumeCallCount = 0
     private(set) var migrationRequests: [LegacyTelemetryMigrationRequest] = []
     private(set) var migrationCallCount = 0
@@ -1474,6 +1564,7 @@ private actor RuntimePersistence:
         suspendBegin: Bool = false,
         suspendFinalize: Bool = false,
         suspendAnalysis: Bool = false,
+        analysisResult: PostWorkoutAnalysisTriggerResult = .inserted,
         suspendMigration: Bool = false,
         finalizeFailure: Bool = false,
         finalizationDidPersist: @escaping @Sendable () -> Void = {},
@@ -1489,6 +1580,7 @@ private actor RuntimePersistence:
         self.suspendBegin = suspendBegin
         self.suspendFinalize = suspendFinalize
         self.suspendAnalysis = suspendAnalysis
+        self.analysisResult = analysisResult
         self.suspendMigration = suspendMigration
         self.finalizeFailure = finalizeFailure
         self.finalizationDidPersist = finalizationDidPersist
@@ -1525,6 +1617,7 @@ private actor RuntimePersistence:
         after cursor: WorkoutHistoryCursor?,
         limit: Int
     ) async throws -> WorkoutHistoryPage {
+        historyReadCallCount += 1
         throw TelemetryWorkoutReadError.unavailable("injected-read-failure")
     }
 
@@ -1557,7 +1650,7 @@ private actor RuntimePersistence:
         if suspendAnalysis {
             await withCheckedContinuation { analysisContinuation = $0 }
         }
-        return .inserted
+        return analysisResult
     }
 
     func resumePendingWorkoutAnalyses() async -> [PostWorkoutAnalysisTriggerResult] {

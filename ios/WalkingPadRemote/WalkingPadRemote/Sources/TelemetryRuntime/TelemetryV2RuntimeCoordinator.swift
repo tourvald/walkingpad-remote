@@ -513,6 +513,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private var persistence: (any TelemetryRecorderPersistence)?
     private var pendingLegacyMigrationRequestFactory: LegacyMigrationRequestFactory?
     private var legacyMigrationStarted = false
+    private var latestTerminalAnalysisResult:
+        (sessionID: SessionID, result: PostWorkoutAnalysisTriggerResult)?
     private var preparationStarted = false
     private var preparationFailed = false
     private var generation: UInt64 = 0
@@ -714,6 +716,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 setStatusLocked(.unavailable("store-unavailable"))
                 return (previous, false)
             }
+            latestTerminalAnalysisResult = nil
             pendingSession = PendingSession(
                 generation: generation,
                 descriptor: descriptor,
@@ -755,10 +758,27 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 operationalState: session.operationalState,
                 generation: ending.1
             )
+            let analysisResult: PostWorkoutAnalysisTriggerResult
             if let analyzer = self?.postWorkoutAnalysisCapability() {
-                _ = await analyzer.analyzeTerminalWorkout(sessionID: session.sessionID)
+                analysisResult = await analyzer.analyzeTerminalWorkout(sessionID: session.sessionID)
+            } else {
+                analysisResult = .failed
+            }
+            self?.withLock {
+                // A superseded analysis may still refresh persisted projections,
+                // but must not restore the previous session's runtime outcome.
+                guard self?.generation == ending.1 else { return }
+                self?.latestTerminalAnalysisResult = (session.sessionID, analysisResult)
             }
             self?.projectionChangeHandler?()
+        }
+    }
+
+    /// Read-only presentation evidence; never participates in runtime/control status.
+    public func terminalAnalysisResult(for sessionID: SessionID) -> PostWorkoutAnalysisTriggerResult? {
+        withLock {
+            guard latestTerminalAnalysisResult?.sessionID == sessionID else { return nil }
+            return latestTerminalAnalysisResult?.result
         }
     }
 
