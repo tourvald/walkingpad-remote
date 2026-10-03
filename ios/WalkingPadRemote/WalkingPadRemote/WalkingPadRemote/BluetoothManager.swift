@@ -2041,6 +2041,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var telemetryV2WorkoutReadRequestID: UUID? = nil
     private let telemetryV2WorkoutPageSize = 50
 
+    func summaryAnalysisState(for projection: WorkoutHistoryProjection) -> WorkoutSummaryAnalysisState {
+        guard projection.origin == .nativeV2,
+              projection.id.hasPrefix("native:"),
+              let sessionID = UUID(uuidString: String(projection.id.dropFirst("native:".count))) else {
+            return .failed
+        }
+        let result = telemetryV2Coordinator.terminalAnalysisResult(for: SessionID(rawValue: sessionID))
+        return projection.summaryAnalysisState(terminalResult: result)
+    }
+
     private func telemetryV2ProjectionDidChange() {
         telemetryV2ProjectionGeneration &+= 1
         telemetryV2Statistics.removeAll()

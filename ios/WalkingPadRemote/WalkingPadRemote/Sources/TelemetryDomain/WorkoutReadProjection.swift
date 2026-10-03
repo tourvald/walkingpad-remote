@@ -175,6 +175,24 @@ public struct WorkoutHistoryProjection: Codable, Hashable, Identifiable, Sendabl
     }
 }
 
+/// Derived presentation state, not a persistence or control lifecycle.
+public enum WorkoutSummaryAnalysisState: Equatable, Sendable {
+    case processing
+    case ready
+    case failed
+}
+
+public extension WorkoutHistoryProjection {
+    func summaryAnalysisState(
+        terminalResult: PostWorkoutAnalysisTriggerResult?
+    ) -> WorkoutSummaryAnalysisState {
+        guard origin == .nativeV2 else { return .failed }
+        if terminalResult == .failed || terminalResult == .ineligible { return .failed }
+        if analyzerVersion != nil { return .ready }
+        return .processing
+    }
+}
+
 public struct WorkoutReadDiagnostics: Codable, Hashable, Sendable {
     public let storeFetchCount: Int
     public let maximumStoreFetchLimit: Int

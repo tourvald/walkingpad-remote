@@ -513,6 +513,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private var persistence: (any TelemetryRecorderPersistence)?
     private var pendingLegacyMigrationRequestFactory: LegacyMigrationRequestFactory?
     private var legacyMigrationStarted = false
+    private var terminalAnalysisResults: [SessionID: PostWorkoutAnalysisTriggerResult] = [:]
     private var preparationStarted = false
     private var preparationFailed = false
     private var generation: UInt64 = 0
@@ -755,11 +756,22 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 operationalState: session.operationalState,
                 generation: ending.1
             )
+            let analysisResult: PostWorkoutAnalysisTriggerResult
             if let analyzer = self?.postWorkoutAnalysisCapability() {
-                _ = await analyzer.analyzeTerminalWorkout(sessionID: session.sessionID)
+                analysisResult = await analyzer.analyzeTerminalWorkout(sessionID: session.sessionID)
+            } else {
+                analysisResult = .failed
+            }
+            self?.withLock {
+                self?.terminalAnalysisResults[session.sessionID] = analysisResult
             }
             self?.projectionChangeHandler?()
         }
+    }
+
+    /// Read-only presentation evidence; never participates in runtime/control status.
+    public func terminalAnalysisResult(for sessionID: SessionID) -> PostWorkoutAnalysisTriggerResult? {
+        withLock { terminalAnalysisResults[sessionID] }
     }
 
     @discardableResult

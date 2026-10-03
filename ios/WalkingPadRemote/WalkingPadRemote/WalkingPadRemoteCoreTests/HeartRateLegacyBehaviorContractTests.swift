@@ -844,10 +844,12 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             in: contentViewSource
         )
 
-        XCTAssertTrue(ending.contains("Text(\"Завершаем тренировку…\")"))
+        XCTAssertTrue(ending.contains("\"Завершаем тренировку…\""))
         XCTAssertTrue(ending.contains("trainingEndingStatus(from: stopStatusText)"))
+        XCTAssertFalse(ending.contains("else if let status = trainingEndingStatus"))
+        XCTAssertTrue(ending.contains("if isProcessingResult"))
         for fabricatedEndingDetail in [
-            "Подготавливаем итог", "Сохраняем", "ProgressView", "Timer", "asyncAfter",
+            "Подготавливаем итог", "Сохраняем", "Timer", "asyncAfter",
         ] {
             XCTAssertFalse(ending.contains(fabricatedEndingDetail), fabricatedEndingDetail)
         }
@@ -903,9 +905,17 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(begin.contains(".map(\\.id)"))
         XCTAssertTrue(finish.contains("projectionGenerationAtEnd: manager.telemetryV2ProjectionGeneration"))
         XCTAssertTrue(resolve.contains("manager.telemetryV2ProjectionGeneration"))
-        XCTAssertTrue(resolve.contains("> pendingTrainingResult.projectionGenerationAtEnd"))
+        XCTAssertTrue(resolve.contains("<= pendingTrainingResult.projectionGenerationAtEnd"))
         XCTAssertTrue(resolve.contains("$0.origin == .nativeV2 && !baselineIDs.contains($0.id)"))
         XCTAssertTrue(resolve.contains("candidates.count == 1"))
+        XCTAssertTrue(resolve.contains("manager.summaryAnalysisState(for: projection)"))
+        XCTAssertTrue(resolve.contains("case .processing:\n            resolvedTrainingResult = nil\n            trainingResultError = nil"))
+        XCTAssertTrue(resolve.contains("case .failed:"))
+        XCTAssertTrue(resolve.contains("Ошибка чтения результата тренировки."))
+        XCTAssertFalse(resolve.contains("self.pendingTrainingResult = nil"))
+        XCTAssertTrue(controlView.contains("isProcessingResult: true"))
+        XCTAssertFalse(controlView.contains("analyzeTerminalWorkout"))
+        XCTAssertFalse(controlView.contains("refreshWorkoutHistoryFromV2"))
         XCTAssertFalse(resolve.contains("sorted"))
         XCTAssertFalse(resolve.contains("last"))
         XCTAssertFalse(resolve.contains("first(where"))

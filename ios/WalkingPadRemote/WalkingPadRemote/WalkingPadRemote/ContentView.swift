@@ -1827,6 +1827,7 @@ private struct ActiveWorkoutShell: View {
 
 private struct TrainingWorkoutEndingView: View {
     let stopStatusText: String
+    var isProcessingResult = false
 
     @AccessibilityFocusState private var headingFocused: Bool
 
@@ -1834,12 +1835,16 @@ private struct TrainingWorkoutEndingView: View {
         VStack {
             Spacer(minLength: 24)
             VStack(spacing: 16) {
-                Text("Завершаем тренировку…")
+                Text(isProcessingResult ? "Обрабатываем результат…" : "Завершаем тренировку…")
                     .font(.system(.title, design: .rounded, weight: .bold))
                     .multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityFocused($headingFocused)
 
+                if isProcessingResult {
+                    ProgressView()
+                        .accessibilityLabel("Обработка результата тренировки")
+                }
                 if let status = trainingEndingStatus(from: stopStatusText) {
                     Label(status.title, systemImage: status.systemImage)
                         .font(.subheadline.weight(.semibold))
@@ -2150,6 +2155,7 @@ private struct TrainingWorkoutSummaryView: View {
 }
 
 private struct TrainingWorkoutUnavailableView: View {
+    var failureMessage: String? = nil
     let onDone: () -> Void
     let onOpenStatistics: () -> Void
 
@@ -2159,12 +2165,12 @@ private struct TrainingWorkoutUnavailableView: View {
         VStack {
             Spacer(minLength: 24)
             VStack(spacing: 10) {
-                Text("Итог пока недоступен")
+                Text(failureMessage == nil ? "Итог пока недоступен" : "Не удалось загрузить итог")
                     .font(.system(.title, design: .rounded, weight: .bold))
                     .multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityFocused($headingFocused)
-                Text("Не удалось точно определить результат этой тренировки.")
+                Text(failureMessage ?? "Не удалось точно определить результат этой тренировки.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -2209,7 +2215,7 @@ private struct ControlSwipeView: View, Equatable {
     @State private var sessionPresentationAnchor: TrainingSessionPresentationAnchor?
     @State private var pendingTrainingResult: PendingTrainingResult?
     @State private var resolvedTrainingResult: ResolvedTrainingResult?
-    @State private var trainingResultUnavailable = false
+    @State private var trainingResultError: String?
     let onOpenStatistics: () -> Void
     private let heroAccent: Color = .orange
 
@@ -2286,7 +2292,7 @@ private struct ControlSwipeView: View, Equatable {
         }
         #endif
         if resolvedTrainingResult != nil { return "summary" }
-        if trainingResultUnavailable { return "summary-unavailable" }
+        if trainingResultError != nil { return "summary-unavailable" }
         if pendingTrainingResult != nil { return "ending" }
         if activeWorkoutPresentation != nil { return "active" }
         return "hub"
@@ -2328,13 +2334,17 @@ private struct ControlSwipeView: View, Equatable {
                 onDone: clearTrainingResultPresentation,
                 onOpenStatistics: openStatistics
             )
-        } else if trainingResultUnavailable {
+        } else if let trainingResultError {
             TrainingWorkoutUnavailableView(
+                failureMessage: trainingResultError,
                 onDone: clearTrainingResultPresentation,
                 onOpenStatistics: openStatistics
             )
         } else if pendingTrainingResult != nil {
-            TrainingWorkoutEndingView(stopStatusText: manager.stopTruthStatusText)
+            TrainingWorkoutEndingView(
+                stopStatusText: manager.stopTruthStatusText,
+                isProcessingResult: true
+            )
         } else if let activePresentation = activeWorkoutPresentation {
             ActiveWorkoutShell(
                 presentation: activePresentation,
@@ -2416,7 +2426,7 @@ private struct ControlSwipeView: View, Equatable {
         )
         pendingTrainingResult = nil
         resolvedTrainingResult = nil
-        trainingResultUnavailable = false
+        trainingResultError = nil
     }
 
     private func finishTrainingPresentationSession() {
@@ -2435,7 +2445,7 @@ private struct ControlSwipeView: View, Equatable {
         )
         sessionPresentationAnchor = nil
         resolvedTrainingResult = nil
-        trainingResultUnavailable = false
+        trainingResultError = nil
         resolveTrainingResultIfPossible()
     }
 
@@ -2446,27 +2456,40 @@ private struct ControlSwipeView: View, Equatable {
             return
         }
         if case .failed = manager.telemetryV2WorkoutHistoryState {
-            showUnavailableTrainingResult()
+            showUnavailableTrainingResult(message: "Ошибка чтения результата тренировки.")
             return
         }
-        guard manager.telemetryV2ProjectionGeneration
-                > pendingTrainingResult.projectionGenerationAtEnd,
-              manager.telemetryV2WorkoutHistoryState == .loaded else {
-            return
-        }
+        guard manager.telemetryV2WorkoutHistoryState == .loaded else { return }
         let candidates = manager.telemetryV2WorkoutHistory.filter {
             $0.origin == .nativeV2 && !baselineIDs.contains($0.id)
+        }
+        // Analysis can finish before SwiftUI observes the terminal transition.
+        // A final projection already loaded at that generation must also resolve.
+        if candidates.isEmpty,
+           manager.telemetryV2ProjectionGeneration <= pendingTrainingResult.projectionGenerationAtEnd {
+            return
         }
         guard candidates.count == 1, let projection = candidates.first else {
             showUnavailableTrainingResult()
             return
         }
+        switch manager.summaryAnalysisState(for: projection) {
+        case .processing:
+            resolvedTrainingResult = nil
+            trainingResultError = nil
+            return
+        case .failed:
+            showUnavailableTrainingResult(message: "Не удалось обработать результат тренировки.")
+            return
+        case .ready:
+            break
+        }
         resolvedTrainingResult = ResolvedTrainingResult(
             projection: projection,
             distanceKilometres: pendingTrainingResult.distanceKilometres
         )
-        self.pendingTrainingResult = nil
-        trainingResultUnavailable = false
+        // Keep the result identity while visible so later same-ID projections refresh it.
+        trainingResultError = nil
     }
 
     private func resolveTerminalTelemetryFailureIfNeeded(_ status: String) {
@@ -2479,17 +2502,18 @@ private struct ControlSwipeView: View, Equatable {
         }
     }
 
-    private func showUnavailableTrainingResult() {
-        pendingTrainingResult = nil
+    private func showUnavailableTrainingResult(
+        message: String = "Не удалось точно определить результат этой тренировки."
+    ) {
         resolvedTrainingResult = nil
-        trainingResultUnavailable = true
+        trainingResultError = message
     }
 
     private func clearTrainingResultPresentation() {
         sessionPresentationAnchor = nil
         pendingTrainingResult = nil
         resolvedTrainingResult = nil
-        trainingResultUnavailable = false
+        trainingResultError = nil
     }
 
     private func openStatistics() {

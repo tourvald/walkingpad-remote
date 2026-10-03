@@ -6,7 +6,7 @@ public enum PostWorkoutAnalysisTriggerResult: String, Codable, Hashable, Sendabl
 }
 
 /// Optional persistence capability discovered by the runtime after recorder
-/// finalization. Runtime callers must ignore the result: analysis is downstream
+/// finalization. Runtime/control status must ignore the result; presentation may observe it. Analysis is downstream
 /// derived data and never a control, safety, or session-completion dependency.
 public protocol TelemetryPostWorkoutAnalysisCapability: Sendable {
     func analyzeTerminalWorkout(
