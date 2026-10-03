@@ -125,9 +125,46 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
 
     func testHistoryUIExposesExactImportedHealthKitLinkageProvenance() {
         XCTAssertTrue(
-            contentSource.contains("telemetry-v2-imported-exact-healthkit-linkage")
+            source("WorkoutHistoryRow.swift").contains("telemetry-v2-imported-exact-healthkit-linkage")
         )
-        XCTAssertTrue(contentSource.contains("exact import linkage"))
+        XCTAssertTrue(source("WorkoutHistoryRow.swift").contains("exact import linkage"))
+    }
+
+    func testHistoryPrimaryCardIsGlanceableAndDetailsRetainDiagnostics() throws {
+        let history = source("WorkoutHistoryRow.swift")
+        let row = try sourceSlice(from: "struct WorkoutHistoryRow: View", to: "private struct WorkoutHistoryZones", in: history)
+        for field in ["quality.provenance", "quality.warnings", "healthKitWorkoutIdentifier", "onExportAnalysis", "lifecycleState", "analysisGrade"] {
+            XCTAssertFalse(row.contains(field), field)
+        }
+        XCTAssertTrue(row.contains("Ср. пульс"))
+        XCTAssertTrue(row.contains("Ср. скорость"))
+        XCTAssertTrue(row.contains("dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(row.contains(".accessibilityElement(children: .combine)"))
+        XCTAssertTrue(row.contains(".foregroundStyle(.secondary)"))
+        XCTAssertFalse(row.contains(".red"))
+        XCTAssertFalse(row.contains(".green"))
+        XCTAssertTrue(history.contains(".accessibilityLabel(\"Зона"))
+        XCTAssertTrue(history.contains(".accessibilityValue("))
+        XCTAssertTrue(history.contains("DisclosureGroup(\"Технические сведения\")"))
+        XCTAssertTrue(history.contains("entry.quality.warnings"))
+        XCTAssertTrue(history.contains("entry.analyzerVersion"))
+        XCTAssertTrue(history.contains("entry.healthKitWorkoutIdentifier"))
+        XCTAssertTrue(history.contains("entry.beatsPerMetre"))
+        XCTAssertTrue(contentSource.contains(".sheet(item: $selectedWorkout)"))
+    }
+
+    func testHistoryPreservesLoadedOrderingPaginationAndFailure() {
+        XCTAssertTrue(contentSource.contains("ForEach(entries)"))
+        XCTAssertTrue(contentSource.contains("comparison(for: entry, loaded: entries)"))
+        XCTAssertTrue(contentSource.contains("Button(\"Показать ещё\", action: onLoadMore)"))
+        XCTAssertTrue(contentSource.contains("Следующая страница недоступна"))
+        XCTAssertTrue(contentSource.contains("История Telemetry V2 недоступна"))
+        XCTAssertTrue(contentSource.contains("String($0.includedWorkoutCount)"))
+        XCTAssertTrue(contentSource.contains("zoneSeconds: stats?.zoneSeconds"))
+        let presentation = source("WorkoutHistoryRow.swift")
+        XCTAssertFalse(presentation.contains("fetchWorkout"))
+        XCTAssertFalse(presentation.contains("TelemetryStore"))
+        XCTAssertFalse(presentation.contains("BluetoothManager"))
     }
 
     private func source(_ fileName: String) -> String {

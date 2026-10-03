@@ -4,11 +4,12 @@ import XCTest
 final class WorkoutAnalysisExportIntegrationContractTests: XCTestCase {
     func testHistoryExposesOnlyNativeWorkoutAnalysisAction() throws {
         let content = try source("WalkingPadRemote/ContentView.swift")
-        XCTAssertTrue(content.contains("if entry.origin == .nativeV2"))
-        XCTAssertTrue(content.contains("Text(\"Экспорт данных тренировки\")"))
-        XCTAssertTrue(content.contains("onExportAnalysis(entry)"))
-        XCTAssertTrue(content.contains(".controlSize(.large)"))
-        XCTAssertTrue(content.contains(".disabled(exportingWorkoutID != nil)"))
+        let details = try source("WalkingPadRemote/WorkoutHistoryRow.swift")
+        XCTAssertTrue(details.contains("if entry.origin == .nativeV2"))
+        XCTAssertTrue(details.contains("Label(\"Экспорт данных тренировки\""))
+        XCTAssertTrue(details.contains("onExportAnalysis(entry)"))
+        XCTAssertTrue(details.contains(".controlSize(.large)"))
+        XCTAssertTrue(details.contains(".disabled(exportingWorkoutID != nil)"))
         XCTAssertTrue(content.contains("Исходные данные не будут изменены или удалены."))
     }
 
