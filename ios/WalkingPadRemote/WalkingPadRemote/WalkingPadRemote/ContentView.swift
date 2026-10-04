@@ -3634,6 +3634,7 @@ private struct WorkoutStatsView: View {
     @State private var monthOffset: Int = 0
     @State private var showPlanSheet: Bool = false
     @State private var pageHeights: [StatsScope: CGFloat] = [:]
+    @State private var statisticsRetryGeneration: [StatsScope: UInt] = [:]
     @State private var workoutAnalysisExportTask: Task<Void, Never>?
     @State private var exportingWorkoutID: String?
 
@@ -3771,8 +3772,11 @@ private struct WorkoutStatsView: View {
                 )
             }
         )
-        .task(id: "\(manager.workoutStatisticsKey(for: interval))|\(manager.telemetryV2ProjectionGeneration)") {
-            manager.refreshWorkoutStatisticsFromV2(for: interval)
+        .task(id: "\(manager.workoutStatisticsKey(for: interval))|\(manager.telemetryV2ProjectionGeneration)|\(statisticsRetryGeneration[scope, default: 0])") {
+            await manager.refreshWorkoutStatisticsFromV2(
+                for: interval,
+                retaining: StatsScope.allCases.map { currentInterval(for: $0) }
+            )
         }
     }
 
@@ -3839,7 +3843,7 @@ private struct WorkoutStatsView: View {
                                 .foregroundColor(.secondary)
                         }
                         Button("Повторить") {
-                            manager.refreshWorkoutStatisticsFromV2(for: interval)
+                            statisticsRetryGeneration[scope, default: 0] &+= 1
                         }
                         .buttonStyle(.bordered)
                     }
