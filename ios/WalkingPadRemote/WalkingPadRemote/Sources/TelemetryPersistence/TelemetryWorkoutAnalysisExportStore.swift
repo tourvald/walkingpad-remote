@@ -138,6 +138,13 @@ public extension TelemetryStore {
     func exportWorkoutAnalysis(
         _ request: WorkoutAnalysisExportRequest
     ) async throws -> WorkoutAnalysisExportArtifact {
+        try await exportWorkoutAnalysis(request, temporaryFileCreatedForTesting: nil)
+    }
+
+    internal func exportWorkoutAnalysis(
+        _ request: WorkoutAnalysisExportRequest,
+        temporaryFileCreatedForTesting: (@Sendable () async -> Void)?
+    ) async throws -> WorkoutAnalysisExportArtifact {
         let batchSize = min(256, max(1, request.batchSize))
         let sessionKey = request.sessionID.description
         let profileKey = request.exactProfileLocalIdentifier
@@ -169,6 +176,10 @@ public extension TelemetryStore {
             )
             let stream = try WorkoutAnalysisCSVStream(fileURL: fileURL)
             defer { stream.close() }
+            // The normal export path has no suspension at this test-only acknowledgement.
+            if let temporaryFileCreatedForTesting {
+                await temporaryFileCreatedForTesting()
+            }
 
             let configuration = try Self.decode(
                 PrivacySafeConfigurationExportRecord.self,
