@@ -5,7 +5,6 @@ enum CooldownRuntimeEngine {
         let targetBpm: Int
         let minSpeedKmh: Double
         let maxMinutes: Int
-        let holdSeconds: Int
         let baseStepKmh: Double
         let stepIntervalSeconds: Int
     }
@@ -63,7 +62,6 @@ enum CooldownRuntimeEngine {
         var lastSentSpeedKmh: Double
         let baseStepKmh: Double
         let stepIntervalSeconds: Int
-        let holdSeconds: Int
         var startBpm: Int
         var endBpm: Int
         var peakBpm: Int
@@ -272,7 +270,6 @@ enum CooldownRuntimeEngine {
             lastSentSpeedKmh: startSpeedKmh,
             baseStepKmh: max(0.1, min(2.0, config.baseStepKmh)),
             stepIntervalSeconds: max(1, config.stepIntervalSeconds),
-            holdSeconds: max(1, config.holdSeconds),
             startBpm: startBpm,
             endBpm: startBpm,
             peakBpm: startBpm,
@@ -347,13 +344,16 @@ enum CooldownRuntimeEngine {
 
         let elapsed = nextState.elapsedSeconds
         let observedSpeed = input.speedSnapshot.observedSpeedKmh
-        let hrOk = input.hrAvailable && input.hrBpm <= config.targetBpm
-        let minSpeedOk = observedSpeed <= config.minSpeedKmh + 0.05
+        let hrOk = input.hrAvailable && input.hrBpm > 0 && input.hrBpm <= config.targetBpm
+        let minSpeedOk = input.speedSnapshot.factualSpeedKmh.map {
+            $0.isFinite && $0 >= 0 && $0 <= config.minSpeedKmh + 0.05
+        } ?? false
         let stableOk = hrOk && minSpeedOk
         let blocker = stabilityBlocker(
             hrAvailable: input.hrAvailable,
             hrOk: hrOk,
-            minSpeedOk: minSpeedOk
+            minSpeedOk: minSpeedOk,
+            hasFactualSpeed: input.speedSnapshot.factualSpeedKmh.map { $0.isFinite && $0 >= 0 } ?? false
         )
 
         if hrOk && nextState.targetHitElapsedSeconds == nil {
@@ -390,7 +390,7 @@ enum CooldownRuntimeEngine {
             controllerSpeedKmh: input.speedSnapshot.controllerSpeedKmh,
             elapsedSeconds: elapsed,
             stableSeconds: nextState.stableSeconds,
-            stableRequiredSeconds: nextState.holdSeconds,
+            stableRequiredSeconds: 0,
             remainingSeconds: nextState.remainingSeconds,
             targetHitElapsedSeconds: nextState.targetHitElapsedSeconds,
             hrOk: hrOk,
@@ -432,8 +432,8 @@ enum CooldownRuntimeEngine {
         }
 
         let completionReason: String?
-        if nextState.stableSeconds >= nextState.holdSeconds {
-            completionReason = "stable_reached"
+        if stableOk {
+            completionReason = "target_and_min_speed_reached"
         } else if nextState.remainingSeconds == 0 {
             completionReason = "timeout"
         } else {
@@ -443,7 +443,7 @@ enum CooldownRuntimeEngine {
         let presentation: Presentation
         if let completionReason {
             let timeoutBlocker = completionReason == "timeout"
-                ? (blocker == "ready" ? "hold_not_satisfied" : blocker)
+                ? blocker
                 : ""
             nextState.finishReason = completionReason
             nextState.timeoutBlocker = timeoutBlocker
@@ -466,7 +466,7 @@ enum CooldownRuntimeEngine {
                 targetAndMinSpeedSeconds: nextState.targetAndMinSpeedSeconds,
                 maxStableStreakSeconds: nextState.maxStableStreakSeconds,
                 stableSeconds: nextState.stableSeconds,
-                stableRequiredSeconds: nextState.holdSeconds,
+                stableRequiredSeconds: 0,
                 elapsedSeconds: nextState.elapsedSeconds,
                 plannedSeconds: nextState.totalSeconds,
                 remainingSeconds: nextState.remainingSeconds,
@@ -510,8 +510,7 @@ enum CooldownRuntimeEngine {
                     hrBpm: input.hrBpm,
                     targetBpm: config.targetBpm,
                     observedSpeedKmh: observedSpeed,
-                    stableSeconds: nextState.stableSeconds,
-                    holdSeconds: nextState.holdSeconds
+                    stableOk: stableOk
                 ),
                 remainingSeconds: nextState.remainingSeconds,
                 progress: nextState.progress
@@ -533,8 +532,7 @@ enum CooldownRuntimeEngine {
                     hrBpm: input.hrBpm,
                     targetBpm: config.targetBpm,
                     observedSpeedKmh: observedSpeed,
-                    stableSeconds: nextState.stableSeconds,
-                    holdSeconds: nextState.holdSeconds
+                    stableOk: stableOk
                 ),
                 remainingSeconds: nextState.remainingSeconds,
                 progress: nextState.progress
@@ -562,18 +560,19 @@ enum CooldownRuntimeEngine {
         hrBpm: Int,
         targetBpm: Int,
         observedSpeedKmh: Double,
-        stableSeconds: Int,
-        holdSeconds: Int
+        stableOk: Bool
     ) -> String {
-        "Заминка: HR \(hrBpm) / цель \(targetBpm) · скорость \(String(format: "%.1f", observedSpeedKmh)) · стаб \(stableSeconds)/\(holdSeconds)с"
+        "Заминка: HR \(hrBpm) / цель \(targetBpm) · скорость \(String(format: "%.1f", observedSpeedKmh)) · HR и мин. скорость: \(stableOk ? "достигнуты" : "ожидание")"
     }
 
     private static func stabilityBlocker(
         hrAvailable: Bool,
         hrOk: Bool,
-        minSpeedOk: Bool
+        minSpeedOk: Bool,
+        hasFactualSpeed: Bool
     ) -> String {
         if !hrAvailable { return "no_hr" }
+        if !hasFactualSpeed { return "no_factual_speed" }
         if !hrOk && !minSpeedOk { return "hr_above_target_and_speed_above_min" }
         if !hrOk { return "hr_above_target" }
         if !minSpeedOk { return "speed_above_min" }

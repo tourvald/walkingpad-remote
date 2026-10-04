@@ -14,7 +14,6 @@ final class CooldownRuntimeEngineTests: XCTestCase {
         targetBpm: Int = 110,
         minSpeedKmh: Double = 3.5,
         maxMinutes: Int = 1,
-        holdSeconds: Int = 3,
         baseStepKmh: Double = 0.5,
         stepIntervalSeconds: Int = 10
     ) -> CooldownRuntimeEngine.Config {
@@ -22,7 +21,6 @@ final class CooldownRuntimeEngineTests: XCTestCase {
             targetBpm: targetBpm,
             minSpeedKmh: minSpeedKmh,
             maxMinutes: maxMinutes,
-            holdSeconds: holdSeconds,
             baseStepKmh: baseStepKmh,
             stepIntervalSeconds: stepIntervalSeconds
         )
@@ -45,7 +43,6 @@ final class CooldownRuntimeEngineTests: XCTestCase {
             targetBpm: 110,
             minSpeedKmh: 3.5,
             maxMinutes: 1,
-            holdSeconds: 3,
             baseStepKmh: 0.5,
             stepIntervalSeconds: 10
         ),
@@ -122,7 +119,7 @@ final class CooldownRuntimeEngineTests: XCTestCase {
     }
 
     func testTickPrefersFactualSpeedOverStaleControllerTargetForMinSpeedCheck() {
-        let config = makeConfig(holdSeconds: 1)
+        let config = makeConfig()
         let started = startOutput(config: config)
 
         let output = tickOutput(
@@ -150,7 +147,7 @@ final class CooldownRuntimeEngineTests: XCTestCase {
     }
 
     func testTickUpdatesCooldownCounters() {
-        let config = makeConfig(holdSeconds: 5)
+        let config = makeConfig()
         let started = startOutput(config: config, currentBpm: 118, deviceTargetSpeedKmh: 4.0, actualSpeedKmh: 4.0)
 
         let output = tickOutput(
@@ -172,39 +169,88 @@ final class CooldownRuntimeEngineTests: XCTestCase {
         XCTAssertEqual(output.state.stableSeconds, 1)
     }
 
-    func testStableReachedAfterHoldSeconds() {
-        let config = makeConfig(holdSeconds: 3)
-        var state = startOutput(config: config, currentBpm: 118, deviceTargetSpeedKmh: 4.0, actualSpeedKmh: 4.0).state
-        var output = startOutput(config: config, currentBpm: 118, deviceTargetSpeedKmh: 4.0, actualSpeedKmh: 4.0)
+    func testFirstSimultaneousFactualTargetHitCompletesWithoutHold() {
+        let config = makeConfig()
+        let start = startOutput(config: config)
+        let output = tickOutput(state: start.state, config: config, hrBpm: 110,
+                                observedSpeedKmh: 3.55, controllerSpeedKmh: 4.7,
+                                factualSpeedKmh: 3.55)
+        guard case let .complete(effect)? = output.effects.first(where: {
+            if case .complete = $0 { return true }; return false
+        }) else { return XCTFail("Expected completion on first qualifying evaluation") }
+        XCTAssertEqual(effect.reason, "target_and_min_speed_reached")
+        XCTAssertTrue(effect.shouldStopBelt)
+        XCTAssertTrue(effect.shouldStopWatch)
+        XCTAssertTrue(effect.shouldStopSession)
+        XCTAssertTrue(effect.shouldRecordWorkout)
+        XCTAssertEqual(output.state.elapsedSeconds, 1)
+        XCTAssertEqual(output.state.finishReason, "target_and_min_speed_reached")
+    }
 
-        for _ in 0..<3 {
-            output = tickOutput(
-                state: state,
-                config: config,
-                hrBpm: 108,
-                observedSpeedKmh: 3.5,
-                controllerSpeedKmh: 3.5,
-                factualSpeedKmh: 3.5
-            )
-            state = output.state
+    func testIncompleteOrNonFactualInputsNeverCompleteRecovery() {
+        let config = makeConfig()
+        let start = startOutput(config: config)
+        let cases: [(Int, Bool, Double?)] = [
+            (110, true, 3.56), (111, true, 3.5), (110, false, 3.5),
+            (0, true, 3.5), (110, true, nil), (110, true, .nan),
+            (110, true, .infinity), (110, true, -1)
+        ]
+        for (hr, available, factual) in cases {
+            let output = tickOutput(state: start.state, config: config, hrBpm: hr,
+                                    hrAvailable: available, observedSpeedKmh: 3.5,
+                                    controllerSpeedKmh: 3.5, factualSpeedKmh: factual)
+            XCTAssertFalse(output.effects.contains { if case .complete = $0 { return true }; return false })
+            XCTAssertEqual(output.state.finishReason, "")
         }
+    }
 
-        let completion = output.effects.first {
-            if case .complete = $0 { return true }
-            return false
-        }
+    func testEarlierTargetHitDoesNotLatchAcrossAboveTargetHeartRate() {
+        let config = makeConfig()
+        let start = startOutput(config: config)
+        let hit = tickOutput(state: start.state, config: config, hrBpm: 110,
+                             observedSpeedKmh: 4, controllerSpeedKmh: 4, factualSpeedKmh: 4)
+        let rebound = tickOutput(state: hit.state, config: config, hrBpm: 111,
+                                 observedSpeedKmh: 3.5, controllerSpeedKmh: 3.5, factualSpeedKmh: 3.5)
+        XCTAssertEqual(rebound.state.targetHitElapsedSeconds, 1)
+        XCTAssertEqual(rebound.state.firstStableElapsedSeconds, nil)
+        XCTAssertFalse(rebound.effects.contains { if case .complete = $0 { return true }; return false })
+        let recovered = tickOutput(state: rebound.state, config: config, hrBpm: 110,
+                                   observedSpeedKmh: 3.5, controllerSpeedKmh: 3.5, factualSpeedKmh: 3.5)
+        XCTAssertEqual(recovered.state.finishReason, "target_and_min_speed_reached")
+        guard case let .telemetry(.complete(telemetry))? = recovered.effects.first(where: {
+            if case .telemetry(.complete) = $0 { return true }; return false
+        }) else { return XCTFail("Expected factual completion telemetry") }
+        XCTAssertEqual(telemetry.stableRequiredSeconds, 0)
+        XCTAssertTrue(telemetry.hrOk && telemetry.minSpeedOk)
+        XCTAssertEqual(telemetry.elapsedSeconds, 3)
+        XCTAssertFalse(recovered.presentation.decisionDetails.contains("20"))
+        XCTAssertFalse(recovered.effects.contains { if case .setSpeed = $0 { return true }; return false })
+    }
 
-        guard case let .complete(effect)? = completion else {
-            return XCTFail("Expected cooldown completion")
-        }
+    func testFreshFactualZeroSpeedCanCompleteAndMissingSpeedIsExplicit() {
+        let config = makeConfig()
+        let state = startOutput(config: config).state
+        let zero = tickOutput(state: state, config: config, hrBpm: 110,
+                              observedSpeedKmh: 0, controllerSpeedKmh: 3.5, factualSpeedKmh: 0)
+        XCTAssertEqual(zero.state.finishReason, "target_and_min_speed_reached")
+        let missing = tickOutput(state: state, config: config, hrBpm: 110,
+                                 observedSpeedKmh: 3.5, controllerSpeedKmh: 3.5)
+        XCTAssertEqual(missing.state.timeoutBlocker, "no_factual_speed")
+    }
 
-        XCTAssertEqual(effect.reason, "stable_reached")
-        XCTAssertEqual(effect.timeoutBlocker, "")
-        XCTAssertEqual(output.state.finishReason, "stable_reached")
+    func testTimeoutWithMissingFactsDoesNotReportSuccessfulRecovery() {
+        let config = makeConfig()
+        var state = startOutput(config: config).state
+        state.remainingSeconds = 1
+        let output = tickOutput(state: state, config: config, hrBpm: 110, hrAvailable: false,
+                                observedSpeedKmh: 3.5, controllerSpeedKmh: 3.5)
+        XCTAssertEqual(output.state.finishReason, "timeout")
+        XCTAssertEqual(output.state.timeoutBlocker, "no_hr")
+        XCTAssertTrue(output.effects.contains { if case .complete = $0 { return true }; return false })
     }
 
     func testTimeoutEmitsCorrectBlocker() {
-        let config = makeConfig(holdSeconds: 3)
+        let config = makeConfig()
         var state = startOutput(config: config, currentBpm: 140, deviceTargetSpeedKmh: 4.5, actualSpeedKmh: 4.5).state
         var output: CooldownRuntimeEngine.Output?
 
@@ -240,7 +286,7 @@ final class CooldownRuntimeEngineTests: XCTestCase {
     }
 
     func testCooldownInsufficientEmitsOnlyOnTimeoutAboveTarget() {
-        let config = makeConfig(holdSeconds: 3)
+        let config = makeConfig()
         var state = startOutput(config: config, currentBpm: 140, deviceTargetSpeedKmh: 4.5, actualSpeedKmh: 4.5).state
         var output: CooldownRuntimeEngine.Output?
 
@@ -266,7 +312,7 @@ final class CooldownRuntimeEngineTests: XCTestCase {
             return false
         })
 
-        let stableConfig = makeConfig(holdSeconds: 1)
+        let stableConfig = makeConfig()
         let stableStart = startOutput(config: stableConfig, currentBpm: 118, deviceTargetSpeedKmh: 4.0, actualSpeedKmh: 4.0)
         let stableOutput = tickOutput(
             state: stableStart.state,
@@ -284,7 +330,7 @@ final class CooldownRuntimeEngineTests: XCTestCase {
     }
 
     func testImmediateAndIntervalSpeedStepsUseSameReductionRule() {
-        let config = makeConfig(holdSeconds: 20, stepIntervalSeconds: 10)
+        let config = makeConfig(stepIntervalSeconds: 10)
         let start = startOutput(config: config, currentBpm: 130, deviceTargetSpeedKmh: 6.0, actualSpeedKmh: 6.0)
 
         guard let startEffect = start.effects.first(where: {
