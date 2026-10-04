@@ -945,6 +945,7 @@ private extension TelemetryStore {
         let allowed = [
             "authorized-start", "manual_stop", "ble_disconnected",
             "hr_control_not_ready", "hr_no_signal", "cooldown_stable_reached",
+            "cooldown_target_and_min_speed_reached",
             "cooldown_timeout", "pre-recorder-staging-overflow",
             "recorder-cancelled", "recorder-terminated", "forced-process-interruption",
         ]
