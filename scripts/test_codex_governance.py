@@ -30,6 +30,7 @@ class GoalGovernanceTests(unittest.TestCase):
 
     def test_missing_goal_section_fails_closed(self) -> None:
         for owner, marker in (
+            ("WORKFLOW", "## Decision authority and autonomy modes"),
             ("WORKFLOW", "### Goal eligibility"),
             ("WORKFLOW", "## Nightly Goal Batch"),
             ("WORKFLOW", "## Morning PM Pass"),
