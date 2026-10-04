@@ -33,6 +33,7 @@ class GoalGovernanceTests(unittest.TestCase):
             ("WORKFLOW", "## Decision authority and autonomy modes"),
             ("WORKFLOW", "### Goal eligibility"),
             ("WORKFLOW", "## Nightly Goal Batch"),
+            ("WORKFLOW", "### Reconciliation pass"),
             ("WORKFLOW", "## Morning PM Pass"),
             ("ISSUE_TEMPLATE", "## Goal eligibility"),
         ):

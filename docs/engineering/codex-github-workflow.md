@@ -252,6 +252,16 @@ Execute one Issue at a time from fresh `main`: investigate/implement -> focused 
 
 For `human-gate`, stop at a verified Draft and frozen review with `BLOCKED FOR PM REVIEW`, then continue only to an independent eligible Issue. Do not treat that Draft as a merged prerequisite. Record blocked dependants rather than forcing progress. Leave unavailable-evidence and externally blocked Issues open. Audit findings may become focused follow-up Issues, but never enter this active completion-set recursively. Preserve the P0/P1 whole-Goal stop above and #170 per-PR/cumulative checks.
 
+### Reconciliation pass
+
+Keep an incomplete/blocked ledger containing only Issues from the fixed completion-set. After each Issue reaches its current terminal outcome, and once again before the final Morning PM handoff, re-read fresh live state for ledger entries whose blocker or prerequisite could have changed during the run.
+
+Resume an Issue automatically when its blocker is now removed and every required dependency is satisfied by fresh live state. A human-gated Draft does not satisfy a merged prerequisite; if PM merges or otherwise resolves that gate during the run, re-read fresh `main` and the live Issue before resuming dependants.
+
+Use the Issue's current explicit classification and binding PM decisions when resuming. If it remains A2/`human-gate`, perform the authorized engineering/review/correction loop and leave the verified Draft at its human gate. If a later explicit binding PM decision reclassifies it to A1/`ready`, and the original Goal launch grants autonomous merge authority for eligible ready Issues, the normal A1 review/CI/self-merge gates apply. Root may not infer or self-grant that upgrade.
+
+Reconciliation never expands the fixed completion-set, never recursively executes follow-up Issues, never treats silence as PM approval, and never bypasses A3 hard stops, unavailable mandatory evidence, or the P0/P1 whole-Goal stop.
+
 ## Morning PM Pass
 
 Review the overnight result as a system using one compact final handoff linked to the existing PR/Issue evidence:
