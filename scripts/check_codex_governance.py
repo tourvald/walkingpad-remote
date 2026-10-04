@@ -188,6 +188,7 @@ def main() -> int:
         errors.append("PR review skill is missing code-growth evidence")
 
     goal_markers = (
+        (WORKFLOW, "## Decision authority and autonomy modes"),
         (WORKFLOW, "## Owner-activated autonomous Goal mode"),
         (WORKFLOW, "### Goal eligibility"),
         (WORKFLOW, "## Nightly Goal Batch"),
