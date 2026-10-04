@@ -67,7 +67,7 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
             in: managerSource
         )
         XCTAssertTrue(shadowWrite.contains("legacyShadowWriterStatusText"))
-        XCTAssertTrue(shadowWrite.contains("appendLog("))
+        XCTAssertFalse(shadowWrite.contains("appendLog("))
         XCTAssertFalse(shadowWrite.contains("throw"))
         XCTAssertFalse(shadowWrite.contains("telemetryV2Coordinator"))
 
@@ -89,7 +89,7 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
             to: "private func hex(",
             in: managerSource
         )
-        XCTAssertTrue(legacyFinalize.contains("source evidence preserved"))
+        XCTAssertTrue(legacyFinalize.contains("removeItem(at: export.csvURL)"))
         XCTAssertFalse(legacyFinalize.contains("cleanupExportedJsonlFiles"))
         XCTAssertFalse(legacyFinalize.contains("pruneTrainingLogs"))
 
@@ -98,7 +98,7 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
             to: "private func availableTrainingJsonlFiles(",
             in: managerSource
         )
-        XCTAssertTrue(legacyClear.contains("source evidence preserved"))
+        XCTAssertTrue(legacyClear.contains("Legacy source evidence is preserved"))
         XCTAssertFalse(legacyClear.contains("cleanupExportedJsonlFiles"))
         XCTAssertFalse(legacyClear.contains("pruneTrainingLogs"))
     }

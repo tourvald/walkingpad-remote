@@ -282,8 +282,7 @@ enum TrainingTelemetryWriter {
     ]
 
     nonisolated static func makeDirectoryURL(
-        directoryName: String,
-        onError: (String) -> Void
+        directoryName: String
     ) -> URL? {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
@@ -294,7 +293,6 @@ enum TrainingTelemetryWriter {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             return dir
         } catch {
-            onError("Training log dir error: \(error.localizedDescription)")
             return nil
         }
     }

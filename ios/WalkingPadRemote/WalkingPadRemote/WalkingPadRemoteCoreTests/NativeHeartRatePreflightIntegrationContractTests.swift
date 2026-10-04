@@ -200,8 +200,11 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
             "nativeHeartRatePreflightEngine.receive(",
         ], in: nativeDelivery)
         XCTAssertTrue(watchPayload.contains("guard !self.nativeHeartRateFlowOwnsController"))
-        XCTAssertTrue(watchPayload.contains("Ignored legacy Watch HR"))
-        XCTAssertTrue(watchPayload.contains("Ignored legacy Watch workout UUID"))
+        let ownershipGuard = "guard !self.nativeHeartRateFlowOwnsController else {\n                    return\n                }"
+        XCTAssertEqual(watchPayload.components(separatedBy: ownershipGuard).count - 1, 2)
+        assertOrdered([ownershipGuard, "HeartRateObservationalTee.deliver("], in: watchPayload)
+        let workoutPayload = try XCTUnwrap(watchPayload.range(of: "if let uuid = payload[\"workout_uuid\"]"))
+        assertOrdered([ownershipGuard, "self.attachHealthkitWorkoutUUID("], in: String(watchPayload[workoutPayload.lowerBound...]))
     }
 
     func testLifecycleAndCancellationStayPrecommitOnly() throws {

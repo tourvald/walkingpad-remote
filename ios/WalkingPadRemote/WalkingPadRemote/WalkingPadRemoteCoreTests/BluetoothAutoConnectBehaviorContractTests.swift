@@ -368,9 +368,11 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
             in: didConnect
         )
         XCTAssertFalse(didConnect.contains("knownPeripherals.append"))
-        XCTAssertTrue(managerSource.contains("Connect known skipped: cancellation pending"))
-        XCTAssertTrue(managerSource.contains("Connect discovered skipped: cancellation pending"))
-        XCTAssertTrue(managerSource.contains("AutoConnect skipped: cancellation pending"))
+        for signature in ["func connectToKnownPeripheral(id: UUID)",
+                          "func connectToDiscovered(", "private func attemptAutoConnectIfNeeded()"] {
+            let body = try functionBody(signature, in: managerSource)
+            XCTAssertTrue(body.contains("if let cancellingConnectionPeripheralId {\n            return\n        }"))
+        }
         XCTAssertEqual(didConnect.components(separatedBy: "central.stopScan()").count - 1, 1)
     }
 
@@ -492,7 +494,7 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertTrue(notification.contains("recomputeTreadmillControlReadiness()"))
         XCTAssertTrue(valueUpdate.contains("peripheral === connectedPeripheral"))
         XCTAssertTrue(valueUpdate.contains("isCurrentCharacteristicCallback(characteristic)"))
-        XCTAssertTrue(valueUpdate.contains("Ignoring value update from stale peripheral"))
+        XCTAssertTrue(valueUpdate.contains("isCurrentCharacteristicCallback(characteristic) else {\n            return\n        }"))
         XCTAssertTrue(valueUpdate.contains("ftmsControlRequestConnection == currentTreadmillControlConnection"))
         XCTAssertTrue(writeUpdate.contains("characteristic === commandCharacteristic"))
         XCTAssertTrue(writeUpdate.contains("isCurrentCharacteristicCallback(characteristic)"))
