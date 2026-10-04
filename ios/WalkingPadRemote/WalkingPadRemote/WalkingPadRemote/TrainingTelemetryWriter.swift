@@ -161,6 +161,8 @@ enum TrainingTelemetryWriter {
         "cooldown_stable_required_s",
         "cooldown_observed_speed_kmh",
         "cooldown_controller_speed_kmh",
+        "cooldown_speed_source",
+        "cooldown_factual_speed_kmh",
         "cooldown_hr_ok",
         "cooldown_min_speed_ok",
         "cooldown_stable_ok",
@@ -505,6 +507,16 @@ enum TrainingTelemetryWriter {
             return fileProfileID == profileID
         }
         return legacyFallbackProfileID == profileID
+    }
+
+    nonisolated static func cooldownSpeedProvenanceFields(factualSpeedKmh: Double?) -> [String: Any] {
+        var fields: [String: Any] = [
+            "cooldown_speed_source": factualSpeedKmh == nil ? "controller_fallback" : "factual"
+        ]
+        if let factualSpeedKmh {
+            fields["cooldown_factual_speed_kmh"] = factualSpeedKmh
+        }
+        return fields
     }
 
     nonisolated static func csvString(_ value: Any?) -> String {
@@ -948,6 +960,8 @@ enum TrainingTelemetryWriter {
             csvString(payload["stable_required_s"]),
             csvString(payload["cooldown_observed_speed_kmh"]),
             csvString(payload["cooldown_controller_speed_kmh"]),
+            csvString(payload["cooldown_speed_source"]),
+            csvString(payload["cooldown_factual_speed_kmh"]),
             csvString(payload["cooldown_hr_ok"]),
             csvString(payload["cooldown_min_speed_ok"]),
             csvString(payload["cooldown_stable_ok"]),
