@@ -304,6 +304,13 @@ final class TelemetryRecorderBehaviorTests: XCTestCase {
         await persistence.waitForBatches(1)
         await persistence.waitForFinalizations(1)
 
+        // Persistence acknowledgement precedes publication of the terminal recorder state.
+        let result = await recorder.finish(
+            endedAt: session.startedAt,
+            endedElapsed: ElapsedDuration(microseconds: 0)
+        )
+        XCTAssertEqual(result.completeness, .failed)
+
         let snapshot = await persistence.snapshot()
         XCTAssertEqual(snapshot.batchCalls, 1)
         XCTAssertEqual(recorder.operationalState.retryCount, 0)

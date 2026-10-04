@@ -1003,12 +1003,13 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(unavailableOutput, expectedOutput)
 
         enum FactoryFailure: Error { case unavailable }
-        let failing = TelemetryV2RuntimeCoordinator { throw FactoryFailure.unavailable }
+        let unavailablePublished = expectation(description: "Unavailable status published")
+        let failing = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: { throw FactoryFailure.unavailable },
+            statusHandler: { if case .unavailable = $0 { unavailablePublished.fulfill() } }
+        )
         failing.beginSession(Self.descriptor(startedAt: fixture.startedAt))
-        try await eventually {
-            if case .unavailable = failing.status { return true }
-            return false
-        }
+        await fulfillment(of: [unavailablePublished], timeout: 5)
         var failingDisposition: TelemetryYieldDisposition?
         let failingOutput = Self.alreadySelectedControlOutput(expectedOutput) {
             failingDisposition = failing.observeHeartRateControlDecision(
@@ -1025,12 +1026,22 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(failingOutput, expectedOutput)
 
         let enabledPersistence = RuntimePersistence()
-        let enabled = TelemetryV2RuntimeCoordinator { enabledPersistence }
+        let activePublished = expectation(description: "Active status published")
+        let activePublicationCount = LockedCounter()
+        let idlePublished = expectation(description: "Completed session status published")
+        let enabled = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: { enabledPersistence },
+            statusHandler: {
+                // Status callbacks are serial on main; active may recur during finishing.
+                if case .active = $0, activePublicationCount.value == 0 {
+                    activePublicationCount.increment()
+                    activePublished.fulfill()
+                }
+                if $0 == .idle { idlePublished.fulfill() }
+            }
+        )
         enabled.beginSession(Self.descriptor(startedAt: fixture.startedAt))
-        try await eventually {
-            if case .active = enabled.status { return true }
-            return false
-        }
+        await fulfillment(of: [activePublished], timeout: 5)
         var enabledDisposition: TelemetryYieldDisposition?
         let enabledOutput = Self.alreadySelectedControlOutput(expectedOutput) {
             enabledDisposition = enabled.observeHeartRateControlDecision(
@@ -1046,17 +1057,29 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(enabledDisposition, .enqueued)
         XCTAssertEqual(enabledOutput, expectedOutput)
         enabled.endSession(reason: "enabled-complete")
-        try await eventually { await enabledPersistence.finalizations.count == 1 }
+        await fulfillment(of: [idlePublished], timeout: 5)
+        let enabledFinalizationCount = await enabledPersistence.finalizations.count
+        XCTAssertEqual(enabledFinalizationCount, 1)
 
         let backpressuredFinalized = expectation(description: "Backpressured session finalized")
+        let incompletePublished = expectation(description: "Incomplete status published")
+        let incompletePublicationCount = LockedCounter()
         let backpressuredPersistence = RuntimePersistence {
             backpressuredFinalized.fulfill()
         }
         let factoryGate = DispatchSemaphore(value: 0)
-        let backpressured = TelemetryV2RuntimeCoordinator {
-            factoryGate.wait()
-            return backpressuredPersistence
-        }
+        let backpressured = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: {
+                factoryGate.wait()
+                return backpressuredPersistence
+            },
+            statusHandler: {
+                if case .incomplete = $0, incompletePublicationCount.value == 0 {
+                    incompletePublicationCount.increment()
+                    incompletePublished.fulfill()
+                }
+            }
+        )
         backpressured.beginSession(Self.descriptor(startedAt: fixture.startedAt))
         for offset in 0..<256 {
             XCTAssertEqual(
@@ -1094,7 +1117,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         XCTAssertEqual(backpressuredOutput, expectedOutput)
 
         factoryGate.signal()
-        await fulfillment(of: [backpressuredFinalized], timeout: 5)
+        await fulfillment(of: [backpressuredFinalized, incompletePublished], timeout: 5)
         let backpressuredFinalizationCount = await backpressuredPersistence.finalizations.count
         XCTAssertEqual(backpressuredFinalizationCount, 1)
         if case .incomplete = backpressured.status {

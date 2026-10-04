@@ -829,27 +829,31 @@ final class WorkoutAnalysisExportTests: XCTestCase {
         }
         let beforeDirectories = try analysisExportDirectories()
         let beforeCounts = try await store.counts()
+        let created = expectation(description: "Temporary export file created")
+        let resumeExport = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        defer { resumeExport.continuation.finish() }
         let task = Task {
             try await store.exportWorkoutAnalysis(
                 WorkoutAnalysisExportRequest(
                     sessionID: session.sessionID,
                     exactProfileLocalIdentifier: session.profileLocalIdentifier,
                     batchSize: 1
-                )
+                ),
+                temporaryFileCreatedForTesting: {
+                    created.fulfill()
+                    for await _ in resumeExport.stream { break }
+                }
             )
         }
-        let startedDeadline = ContinuousClock.now.advanced(by: .seconds(5))
-        var activeDirectories = beforeDirectories
-        while activeDirectories == beforeDirectories, ContinuousClock.now < startedDeadline {
-            await Task.yield()
-            activeDirectories = try analysisExportDirectories()
-        }
+        await fulfillment(of: [created], timeout: 5)
+        let activeDirectories = try analysisExportDirectories()
         XCTAssertNotEqual(
             activeDirectories,
             beforeDirectories,
             "Cancellation must occur after the export creates its temporary directory"
         )
         task.cancel()
+        resumeExport.continuation.yield(())
         do {
             _ = try await task.value
             XCTFail("Cancelled analysis export unexpectedly completed")
