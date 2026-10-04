@@ -1,7 +1,27 @@
 import XCTest
+import TelemetryDomain
 @testable import WalkingPadCoreLogic
 
 final class HRDomainServiceTests: XCTestCase {
+    func testCooldownEvidenceRequiresFreshCurrentSessionTimestamp() {
+        let start = Date(timeIntervalSince1970: 100)
+        let now = start.addingTimeInterval(30)
+        for limit in [2.0, 7.0] {
+            for age in [0.0, limit] {
+                XCTAssertTrue(HRDomainService.cooldownEvidenceIsCurrent(
+                    observedAt: now.addingTimeInterval(-age), sessionStartedAt: start,
+                    now: now, freshnessLimit: limit))
+            }
+            for observed in [nil, start.addingTimeInterval(-1), now.addingTimeInterval(1),
+                             now.addingTimeInterval(-limit - 0.001)] as [Date?] {
+                XCTAssertFalse(HRDomainService.cooldownEvidenceIsCurrent(
+                    observedAt: observed, sessionStartedAt: start, now: now, freshnessLimit: limit))
+            }
+            XCTAssertFalse(HRDomainService.cooldownEvidenceIsCurrent(
+                observedAt: now, sessionStartedAt: nil, now: now, freshnessLimit: limit))
+        }
+    }
+
     private let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
     private let thresholds = HRDomainService.AdaptiveThresholdPercents(
         deadband: 3.0,
@@ -58,32 +78,37 @@ final class HRDomainServiceTests: XCTestCase {
         )
     }
 
-    func testCooldownSpeedSnapshotPrefersFactualSpeedOverStaleControllerTarget() {
-        let snapshot = HRDomainService.cooldownSpeedSnapshot(
-            desiredSpeedKmh: 3.5,
-            deviceTargetSpeedKmh: 4.7,
-            appReportedSpeedKmh: 3.5,
-            rawReportedSpeedKmh: 3.9,
-            currentActualSpeedKmh: 3.5
-        )
-
-        XCTAssertEqual(snapshot.observedSpeedKmh, 3.5, accuracy: 0.0001)
-        XCTAssertEqual(snapshot.controllerSpeedKmh, 4.7, accuracy: 0.0001)
-        XCTAssertEqual(snapshot.factualSpeedKmh ?? 0, 3.5, accuracy: 0.0001)
-    }
-
-    func testCooldownSpeedSnapshotFallsBackToControllerWhenNoFactualSpeedExists() {
-        let snapshot = HRDomainService.cooldownSpeedSnapshot(
-            desiredSpeedKmh: 4.7,
-            deviceTargetSpeedKmh: 4.5,
-            appReportedSpeedKmh: 0,
-            rawReportedSpeedKmh: 0,
-            currentActualSpeedKmh: 0
-        )
-
-        XCTAssertEqual(snapshot.observedSpeedKmh, 4.7, accuracy: 0.0001)
-        XCTAssertEqual(snapshot.controllerSpeedKmh, 4.7, accuracy: 0.0001)
-        XCTAssertNil(snapshot.factualSpeedKmh)
+    func testCooldownSpeedSnapshotRequiresFreshFactualCurrentConnectionEvidence() {
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let start = Date(timeIntervalSince1970: 100)
+        let now = start.addingTimeInterval(30)
+        func snapshot(rawSpeed: Int? = 350, age: Double = 0,
+                      sourceEpoch: TreadmillConnectionEpoch? = nil) -> HRDomainService.CooldownSpeedSnapshot {
+            var normalizer = TreadmillObservationNormalizer()
+            let observation = normalizer.normalize(
+                .ftms(speedRawHundredthsKmh: rawSpeed, rawState: nil, deviceState: .moving,
+                      connectionEpoch: sourceEpoch ?? epoch, receivedAt: now.addingTimeInterval(-age)),
+                unitsTruth: nil, observationID: ObservationID(), recordedAt: now)
+            return HRDomainService.cooldownSpeedSnapshot(
+                desiredSpeedKmh: 3.5, deviceTargetSpeedKmh: 4.7, observation: observation,
+                connectionEpoch: epoch, sessionStartedAt: start, now: now, freshnessLimit: 2)
+        }
+        for age in [0.0, 2.0] {
+            let current = snapshot(age: age)
+            XCTAssertEqual(current.factualSpeedKmh, 3.5)
+            XCTAssertEqual(current.observedSpeedKmh, 3.5)
+            XCTAssertEqual(current.controllerSpeedKmh, 4.7)
+        }
+        XCTAssertEqual(snapshot(rawSpeed: 0).factualSpeedKmh, 0)
+        for rejected in [snapshot(rawSpeed: nil), snapshot(age: 2.001), snapshot(age: -1),
+                         snapshot(age: 31), snapshot(sourceEpoch: TreadmillConnectionEpoch(rawValue: UUID()))] {
+            XCTAssertNil(rejected.factualSpeedKmh)
+            XCTAssertEqual(rejected.observedSpeedKmh, 4.7)
+        }
+        let missing = HRDomainService.cooldownSpeedSnapshot(
+            desiredSpeedKmh: 3.5, deviceTargetSpeedKmh: 4.7, observation: nil,
+            connectionEpoch: epoch, sessionStartedAt: start, now: now, freshnessLimit: 2)
+        XCTAssertNil(missing.factualSpeedKmh)
     }
 
     func testCooldownReductionStepIsFrontLoadedForHighIntensitySessions() {
