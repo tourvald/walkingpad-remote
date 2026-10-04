@@ -2084,38 +2084,45 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return "\(profile)|\(interval.start.timeIntervalSince1970)|\(interval.end.timeIntervalSince1970)"
     }
 
-    func refreshWorkoutStatisticsFromV2(for interval: DateInterval) {
-        guard let filter = activeWorkoutReadFilter(
-            startedAtOrAfter: interval.start,
-            startedBefore: interval.end
-        ), let requestedProfileID = activeUserProfileID else { return }
+    @MainActor
+    func refreshWorkoutStatisticsFromV2(
+        for interval: DateInterval,
+        retaining periods: [DateInterval]
+    ) async {
+        guard !Task.isCancelled,
+              let filter = activeWorkoutReadFilter(
+                startedAtOrAfter: interval.start,
+                startedBefore: interval.end
+              ), let requestedProfileID = activeUserProfileID else { return }
         let key = workoutStatisticsKey(for: interval)
+        let retainedKeys = Set(periods.prefix(2).map { workoutStatisticsKey(for: $0) })
+        guard retainedKeys.contains(key) else { return }
+        telemetryV2Statistics = telemetryV2Statistics.filter { retainedKeys.contains($0.key) }
+        telemetryV2StatisticsState = telemetryV2StatisticsState.filter { retainedKeys.contains($0.key) }
         let requestedProjectionGeneration = telemetryV2ProjectionGeneration
         telemetryV2StatisticsState[key] = .loading
 
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                let statistics = try await self.telemetryV2Coordinator.fetchWorkoutStatistics(
-                    filter: filter,
-                    batchSize: 100
-                )
-                await MainActor.run {
-                    guard self.activeUserProfileID == requestedProfileID,
-                          self.telemetryV2ProjectionGeneration
-                            == requestedProjectionGeneration else { return }
-                    self.telemetryV2Statistics[key] = statistics
-                    self.telemetryV2StatisticsState[key] = .loaded
-                }
-            } catch {
-                await MainActor.run {
-                    guard self.activeUserProfileID == requestedProfileID,
-                          self.telemetryV2ProjectionGeneration
-                            == requestedProjectionGeneration else { return }
-                    self.telemetryV2StatisticsState[key] = .failed(error.localizedDescription)
-                    self.appendLog("Telemetry V2 statistics read failed: \(error)")
-                }
-            }
+        do {
+            try Task.checkCancellation()
+            let statistics = try await telemetryV2Coordinator.fetchWorkoutStatistics(
+                filter: filter,
+                batchSize: 100
+            )
+            try Task.checkCancellation()
+            guard activeUserProfileID == requestedProfileID,
+                  telemetryV2ProjectionGeneration == requestedProjectionGeneration,
+                  telemetryV2StatisticsState[key] != nil else { return }
+            telemetryV2Statistics[key] = statistics
+            telemetryV2StatisticsState[key] = .loaded
+        } catch is CancellationError {
+            // SwiftUI owns the read lifetime; cancellation is not a read failure.
+        } catch {
+            guard !Task.isCancelled,
+                  activeUserProfileID == requestedProfileID,
+                  telemetryV2ProjectionGeneration == requestedProjectionGeneration,
+                  telemetryV2StatisticsState[key] != nil else { return }
+            telemetryV2StatisticsState[key] = .failed(error.localizedDescription)
+            appendLog("Telemetry V2 statistics read failed: \(error)")
         }
     }
 

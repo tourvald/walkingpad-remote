@@ -105,7 +105,7 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
 
     func testPostWorkoutProjectionChangeInvalidatesStatisticsAndRekeysQuery() throws {
         XCTAssertTrue(contentSource.contains(
-            #".task(id: "\(manager.workoutStatisticsKey(for: interval))|\(manager.telemetryV2ProjectionGeneration)")"#
+            #".task(id: "\(manager.workoutStatisticsKey(for: interval))|\(manager.telemetryV2ProjectionGeneration)|\(statisticsRetryGeneration[scope, default: 0])")"#
         ))
         let invalidation = try sourceSlice(
             from: "private func telemetryV2ProjectionDidChange()",
