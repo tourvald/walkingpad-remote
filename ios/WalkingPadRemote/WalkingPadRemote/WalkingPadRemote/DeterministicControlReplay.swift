@@ -176,7 +176,6 @@ public enum DeterministicControlReplay {
         targetBpm: 110,
         minSpeedKmh: 3.5,
         maxMinutes: 2,
-        holdSeconds: 8,
         baseStepKmh: 0.5,
         stepIntervalSeconds: 10
     )
@@ -401,7 +400,6 @@ public extension DeterministicControlReplay {
                 targetBpm: 110,
                 minSpeedKmh: 3.5,
                 maxMinutes: 2,
-                holdSeconds: 8,
                 baseStepKmh: 0.5,
                 stepIntervalSeconds: 10
             )
