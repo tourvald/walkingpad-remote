@@ -200,7 +200,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var hrCooldownMinSpeed: Double = 3.5 { didSet { saveHrSettingsIfNeeded() } }
     @Published var hrCooldownTargetBpm: Int = HRSettingsDefaults.defaultCooldownTargetBpm { didSet { saveHrSettingsIfNeeded() } }
     @Published var hrCooldownMaxMinutes: Int = 5 { didSet { saveHrSettingsIfNeeded() } }
-    private let hrCooldownHoldSeconds: Int = 20
     private var hrCooldownMaxSeconds: Int { hrCooldownMaxMinutes * 60 }
     private let hrMaxSessionMinutes: Int = 120
     private var hrControlStartedAt: Date? = nil
@@ -1269,7 +1268,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             targetBpm: hrCooldownTargetBpm,
             minSpeedKmh: hrCooldownMinSpeed,
             maxMinutes: hrCooldownMaxMinutes,
-            holdSeconds: hrCooldownHoldSeconds,
             baseStepKmh: max(0.1, min(2.0, hrSpeedStepKmh)),
             stepIntervalSeconds: max(1, hrDecisionIntervalSeconds)
         )
@@ -1289,9 +1287,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         HRDomainService.cooldownSpeedSnapshot(
             desiredSpeedKmh: desiredSpeedKmh,
             deviceTargetSpeedKmh: deviceTargetSpeedKmh,
-            appReportedSpeedKmh: deviceReportedAppSpeedKmh,
-            rawReportedSpeedKmh: deviceReportedSpeedKmh,
-            currentActualSpeedKmh: speedKmh
+            observation: latestTreadmillObservationEvidence,
+            connectionEpoch: treadmillTelemetryConnectionEpoch,
+            sessionStartedAt: hrControlStartedAt,
+            now: Date(),
+            freshnessLimit: StopObservationPolicy.freshnessInterval
         )
     }
 
@@ -6499,7 +6499,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         input: CooldownRuntimeEngine.TickInput(
                             hrBpm: heartRateBPM,
                             decisionBpm: heartRateBPM > 0 ? heartRateBPM : hrCooldownTargetBpm,
-                            hrAvailable: heartRateBPM > 0,
+                            hrAvailable: heartRateBPM > 0 && HRDomainService.cooldownEvidenceIsCurrent(
+                                observedAt: hrLastValueAt,
+                                sessionStartedAt: hrControlStartedAt,
+                                now: Date(),
+                                freshnessLimit: TimeInterval(hrStaleThresholdSeconds)
+                            ),
                             speedSnapshot: currentCooldownSpeedSnapshot(),
                             sessionAggregates: currentCooldownSessionAggregates()
                         )
