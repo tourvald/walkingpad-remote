@@ -192,6 +192,7 @@ def main() -> int:
         (WORKFLOW, "## Owner-activated autonomous Goal mode"),
         (WORKFLOW, "### Goal eligibility"),
         (WORKFLOW, "## Nightly Goal Batch"),
+        (WORKFLOW, "### Reconciliation pass"),
         (WORKFLOW, "## Morning PM Pass"),
         (ISSUE_TEMPLATE, "## Goal eligibility"),
         (LIFECYCLE, "owner-activated autonomous Goal"),
