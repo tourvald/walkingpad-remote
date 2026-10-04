@@ -43,17 +43,31 @@ final class WorkoutSummaryAnalysisStateTests: XCTestCase {
             .summaryAnalysisState(terminalResult: nil), .failed)
     }
 
+    func testMeaningfulWorkoutRequiresFiniteMinuteAndExistingSourceEligibility() {
+        for origin in [WorkoutProjectionOrigin.nativeV2, .importedLegacy] {
+            for duration: Double? in [nil, -1, 0, 8, 13, 32, 59.999, .nan, .infinity] {
+                XCTAssertFalse(makeProjection(analyzed: true, origin: origin, duration: duration).isMeaningfulWorkout)
+            }
+            for duration in [60.0, 61, 1383] {
+                XCTAssertTrue(makeProjection(analyzed: false, origin: origin, duration: duration).isMeaningfulWorkout)
+                XCTAssertFalse(makeProjection(analyzed: true, origin: origin, duration: duration, included: false).isMeaningfulWorkout)
+            }
+        }
+    }
+
     private func makeProjection(
         analyzed: Bool,
         zones: [Double?]? = nil,
-        origin: WorkoutProjectionOrigin = .nativeV2
+        origin: WorkoutProjectionOrigin = .nativeV2,
+        duration: Double? = 100,
+        included: Bool = true
     ) -> WorkoutHistoryProjection {
         WorkoutHistoryProjection(
             id: "native:00000000-0000-0000-0000-000000000001",
             origin: origin,
             startedAt: Date(timeIntervalSince1970: 100),
             endedAt: Date(timeIntervalSince1970: 200),
-            durationSeconds: 100,
+            durationSeconds: duration,
             targetHeartRate: 125,
             averageHeartRate: analyzed ? 125 : nil,
             averageSpeed: analyzed ? WorkoutSpeedProjection(
@@ -67,7 +81,7 @@ final class WorkoutSummaryAnalysisStateTests: XCTestCase {
             quality: WorkoutProjectionQuality(
                 lifecycleState: "completed", recorderComplete: true,
                 analysisGrade: analyzed ? "high" : nil, identityStatus: "exact",
-                possibleDuplicate: false, adaptationEligible: false, includedInStatistics: true,
+                possibleDuplicate: false, adaptationEligible: false, includedInStatistics: included,
                 provenance: ["telemetry-v2-native"],
                 unavailableMetrics: zones == nil ? ["zoneSeconds"] : [], warnings: []
             )

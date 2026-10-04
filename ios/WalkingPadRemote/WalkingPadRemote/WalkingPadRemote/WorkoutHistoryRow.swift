@@ -46,7 +46,8 @@ enum WorkoutHistoryPresentation {
         for entry: WorkoutHistoryProjection, loaded: [WorkoutHistoryProjection]
     ) -> String? {
         func eligible(_ candidate: WorkoutHistoryProjection) -> Bool {
-            candidate.origin == .nativeV2 && candidate.quality.lifecycleState == "completed"
+            candidate.isMeaningfulWorkout && candidate.origin == .nativeV2
+                && candidate.quality.lifecycleState == "completed"
                 && !candidate.quality.possibleDuplicate && candidate.targetHeartRate != nil
         }
         guard eligible(entry), let target = entry.targetHeartRate,
