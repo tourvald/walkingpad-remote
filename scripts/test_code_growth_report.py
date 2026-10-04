@@ -10,10 +10,62 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from code_growth_report import build_report
+from code_growth_report import build_report, classify_path
 
 
 class CodeGrowthReportTests(unittest.TestCase):
+    def test_core_test_directory_does_not_mask_production_or_configuration(self) -> None:
+        core = "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteCoreTests"
+        self.assertEqual(classify_path(f"{core}/Coverage.swift"), "tests")
+        self.assertEqual(classify_path(f"{core}/Coverage.swift".replace("/", "\\")), "tests")
+        self.assertEqual(classify_path(f"{core}Extra/Coverage.swift"), "production")
+        self.assertEqual(classify_path("ios/App/WalkingPadRemoteCoreTests.swift"), "production")
+        self.assertEqual(classify_path("ios/App/Package.swift"), "tooling_config")
+
+    def test_core_test_growth_preserves_production_tripwires(self) -> None:
+        root = self.make_repo()
+        core = "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteCoreTests"
+        self.write(root, f"{core}/Existing.swift", "// old coverage\n")
+        self.write(root, f"{core}/Deleted.swift", "// deleted coverage\n")
+        base = self.commit(root, "base")
+
+        (root / core / "Deleted.swift").unlink()
+        self.write(root, f"{core}/Existing.swift", "// replacement coverage\n")
+        for index in range(6):
+            self.write(
+                root, f"{core}/Fixture{index}.swift",
+                "final class FixtureCoordinator {\n"
+                "    private var timer: Timer?\n"
+                "    func poll() { _ = Timer(timeInterval: 1, repeats: true) { _ in } }\n"
+                "}\n" + "".join(f"// coverage {i}\n" for i in range(100)),
+            )
+        tests_head = self.commit(root, "test coverage")
+        report = build_report(base, tests_head, cwd=root, narrow_bugfix=True)
+        self.assertEqual(report["tests"]["added"], 625)
+        self.assertEqual(report["tests"]["removed"], 2)
+        self.assertEqual(report["production"]["churn"], 0)
+        self.assertEqual(report["production_files_changed"], [])
+        self.assertEqual(report["new_production_files"], [])
+        self.assertEqual(report["added_surface_candidates"], [])
+        self.assertEqual(report["hard_stop_candidates"], [])
+
+        for index in range(6):
+            self.write(
+                root, f"Sources/Feature{index}.swift",
+                "private var timer: Timer?\n" + "// production\n" * 100,
+            )
+        self.write(root, "Package.swift", "// dependency manifest\n")
+        head = self.commit(root, "production growth")
+        report = build_report(base, head, cwd=root, narrow_bugfix=True)
+        self.assertEqual(len(report["new_production_files"]), 6)
+        self.assertEqual(report["production"]["added"], 606)
+        self.assertEqual(set(report["hard_stop_candidates"]), {
+            "narrow-bugfix-production-files>5", "narrow-bugfix-production-churn>500",
+        })
+        self.assertEqual(len(report["added_surface_candidates"]), 6)
+        self.assertEqual(report["config_paths_changed"], ["Package.swift"])
+        self.assertEqual(report["dependency_paths_changed"], ["Package.swift"])
+
     def git(self, cwd: Path, *args: str) -> str:
         result = subprocess.run(
             ["git", *args],
