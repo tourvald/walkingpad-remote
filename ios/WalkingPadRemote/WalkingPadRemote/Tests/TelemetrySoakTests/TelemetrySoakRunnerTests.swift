@@ -100,7 +100,7 @@ final class TelemetrySoakRunnerTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(checksum, "ea1140aa71917a2a")
+        XCTAssertEqual(checksum, "8ccbdd055de34672")
     }
 
     func testSameWorkloadComparisonCapturesFullEvidenceSet() async throws {

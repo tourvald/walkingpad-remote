@@ -447,11 +447,15 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(activePresentation.contains("manager.deviceReportedAppSpeedKmh"))
         XCTAssertFalse(activePresentation.contains("manager.deviceReportedSpeedKmh"))
 
-        for factualConsumer in [cooldownSnapshot, telemetryPayload] {
-            XCTAssertTrue(factualConsumer.contains("deviceReportedAppSpeedKmh"))
-            XCTAssertTrue(factualConsumer.contains("deviceReportedSpeedKmh"))
-            XCTAssertFalse(factualConsumer.contains("trainingUITreadmillSpeedKmh"))
-        }
+        XCTAssertTrue(cooldownSnapshot.contains("observation: latestTreadmillObservationEvidence"))
+        XCTAssertTrue(cooldownSnapshot.contains("connectionEpoch: treadmillTelemetryConnectionEpoch"))
+        XCTAssertTrue(cooldownSnapshot.contains("sessionStartedAt: hrControlStartedAt"))
+        XCTAssertTrue(cooldownSnapshot.contains("freshnessLimit: StopObservationPolicy.freshnessInterval"))
+        XCTAssertFalse(cooldownSnapshot.contains("trainingUITreadmillSpeedKmh"))
+        XCTAssertFalse(cooldownSnapshot.contains("currentActualSpeedKmh: speedKmh"))
+        XCTAssertTrue(telemetryPayload.contains("deviceReportedAppSpeedKmh"))
+        XCTAssertTrue(telemetryPayload.contains("deviceReportedSpeedKmh"))
+        XCTAssertFalse(telemetryPayload.contains("trainingUITreadmillSpeedKmh"))
 
         XCTAssertTrue(managerSource.contains("let treadmillFactualObservationPublisher"))
         XCTAssertTrue(managerSource.contains("publishTrainingUITreadmillSpeedIfNeeded()"))

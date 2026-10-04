@@ -4,6 +4,25 @@ import TelemetryDomain
 import XCTest
 
 final class WorkoutAnalysisExportTests: XCTestCase {
+    func testCooldownCompletionReasonsRemainTruthfulInExport() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = session(profile: "cooldown-reasons", configuration: configuration(target: 110), seed: 123)
+        try await store.insertSession(session)
+        let reasons = ["cooldown_target_and_min_speed_reached", "cooldown_stable_reached", "cooldown_timeout"]
+        for (index, reason) in reasons.enumerated() {
+            try await store.insertEvent(event(
+                seed: 200 + index, session: session, elapsedMicroseconds: Int64(index) * 1_000,
+                payload: .sessionLifecycle(SessionLifecycleEvent(
+                    previous: .running, current: .completed, reason: reason))))
+        }
+        let artifact = try await store.exportWorkoutAnalysis(WorkoutAnalysisExportRequest(
+            sessionID: session.sessionID, exactProfileLocalIdentifier: session.profileLocalIdentifier))
+        defer { try? FileManager.default.removeItem(at: artifact.fileURL.deletingLastPathComponent()) }
+        let csv = try String(contentsOf: artifact.fileURL, encoding: .utf8)
+        for reason in reasons { XCTAssertTrue(csv.contains(reason)) }
+        XCTAssertFalse(csv.contains("opaque-reason"))
+    }
+
     func testRollbackCompatibleLifecycleEvidenceRemainsInAnalysisExport() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = session(

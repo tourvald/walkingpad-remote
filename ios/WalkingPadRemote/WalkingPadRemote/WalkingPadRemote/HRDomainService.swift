@@ -1,4 +1,5 @@
 import Foundation
+import TelemetryDomain
 
 enum HRDomainService {
     // Motion output after the existing native-HR preflight has committed, not admission.
@@ -180,26 +181,41 @@ enum HRDomainService {
         return CooldownPlan(totalSeconds: baseSeconds + extraSeconds)
     }
 
+    static func cooldownEvidenceIsCurrent(
+        observedAt: Date?,
+        sessionStartedAt: Date?,
+        now: Date,
+        freshnessLimit: TimeInterval
+    ) -> Bool {
+        guard let observedAt, let sessionStartedAt, observedAt >= sessionStartedAt else { return false }
+        let age = now.timeIntervalSince(observedAt)
+        return age >= 0 && age <= freshnessLimit
+    }
+
     static func cooldownSpeedSnapshot(
         desiredSpeedKmh: Double,
         deviceTargetSpeedKmh: Double,
-        appReportedSpeedKmh: Double,
-        rawReportedSpeedKmh: Double,
-        currentActualSpeedKmh: Double
+        observation: TreadmillObservationEvidence?,
+        connectionEpoch: TreadmillConnectionEpoch?,
+        sessionStartedAt: Date?,
+        now: Date,
+        freshnessLimit: TimeInterval
     ) -> CooldownSpeedSnapshot {
         let controllerSpeedKmh = max(0, max(desiredSpeedKmh, deviceTargetSpeedKmh))
-
         let factualSpeedKmh: Double?
-        if appReportedSpeedKmh > 0.05 {
-            factualSpeedKmh = appReportedSpeedKmh
-        } else if rawReportedSpeedKmh > 0.05 {
-            factualSpeedKmh = rawReportedSpeedKmh
-        } else if currentActualSpeedKmh > 0.05 {
-            factualSpeedKmh = currentActualSpeedKmh
+        if let observation,
+           observation.connectionEpoch == connectionEpoch,
+           observation.freshness == .freshAtReceipt,
+           cooldownEvidenceIsCurrent(
+                observedAt: observation.measuredAt ?? observation.receivedAt,
+                sessionStartedAt: sessionStartedAt,
+                now: now,
+                freshnessLimit: freshnessLimit
+           ) {
+            factualSpeedKmh = observation.factualSpeed?.value
         } else {
             factualSpeedKmh = nil
         }
-
         return CooldownSpeedSnapshot(
             observedSpeedKmh: factualSpeedKmh ?? controllerSpeedKmh,
             controllerSpeedKmh: controllerSpeedKmh,
