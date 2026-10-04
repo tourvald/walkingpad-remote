@@ -4155,6 +4155,7 @@ private struct WorkoutHistoryCard: View {
     @State private var selectedWorkout: WorkoutHistoryProjection?
 
     var body: some View {
+        let comparisons = WorkoutHistoryPresentation.comparisons(for: entries)
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 Text("История тренировок")
@@ -4183,7 +4184,7 @@ private struct WorkoutHistoryCard: View {
                         } label: {
                             WorkoutHistoryRow(
                                 entry: entry,
-                                comparison: WorkoutHistoryPresentation.comparison(for: entry, loaded: entries)
+                                comparison: comparisons[entry.id]
                             )
                         }
                         .buttonStyle(.plain)

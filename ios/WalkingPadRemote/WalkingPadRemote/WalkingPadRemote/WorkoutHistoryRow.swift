@@ -42,19 +42,26 @@ enum WorkoutHistoryPresentation {
         return nil
     }
 
-    static func comparison(
-        for entry: WorkoutHistoryProjection, loaded: [WorkoutHistoryProjection]
-    ) -> String? {
-        func eligible(_ candidate: WorkoutHistoryProjection) -> Bool {
-            candidate.isMeaningfulWorkout && candidate.origin == .nativeV2
-                && candidate.quality.lifecycleState == "completed"
-                && !candidate.quality.possibleDuplicate && candidate.targetHeartRate != nil
+    static func comparisons(for loaded: [WorkoutHistoryProjection]) -> [String: String] {
+        var previousByTarget: [Int: WorkoutHistoryProjection] = [:]
+        var results: [String: String] = [:]
+        // Walk oldest to newest: each target keeps its nearest eligible predecessor.
+        for entry in loaded.reversed() {
+            guard entry.isMeaningfulWorkout, entry.origin == .nativeV2,
+                  entry.quality.lifecycleState == "completed",
+                  !entry.quality.possibleDuplicate, let target = entry.targetHeartRate else { continue }
+            if let previous = previousByTarget[target] {
+                results[entry.id] = comparison(for: entry, previous: previous)
+            }
+            previousByTarget[target] = entry
         }
-        guard eligible(entry), let target = entry.targetHeartRate,
-              let index = loaded.firstIndex(where: { $0.id == entry.id }),
-              let previous = loaded.dropFirst(index + 1).first(where: {
-                  eligible($0) && $0.targetHeartRate == target
-              }) else { return nil }
+        return results
+    }
+
+    static func comparison(
+        for entry: WorkoutHistoryProjection, previous: WorkoutHistoryProjection
+    ) -> String? {
+        guard let target = entry.targetHeartRate else { return nil }
         var parts: [String] = []
         func sign(_ delta: Double) -> String { delta < 0 ? "−" : "+" }
         if let current = value(entry.durationSeconds), let older = value(previous.durationSeconds) {
