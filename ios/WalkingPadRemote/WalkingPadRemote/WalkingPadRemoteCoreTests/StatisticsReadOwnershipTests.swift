@@ -56,8 +56,6 @@ final class StatisticsReadOwnershipTests: XCTestCase {
             var telemetryV2Statistics: [String: WorkoutStatisticsProjection] = [:]
             var telemetryV2StatisticsState: [String: WorkoutReadState] = [:]
             let telemetryV2Coordinator = Reader()
-            var errors = 0
-            func appendLog(_ text: String) { errors += 1 }
             func activeWorkoutReadFilter(startedAtOrAfter: Date?, startedBefore: Date?) -> DateInterval? {
                 guard activeUserProfileID != nil, let start = startedAtOrAfter, let end = startedBefore else { return nil }
                 return DateInterval(start: start, end: end)
@@ -84,7 +82,7 @@ final class StatisticsReadOwnershipTests: XCTestCase {
                 first.cancel()
                 await first.value
                 precondition(reader.active == 0 && reader.cancelled == 1)
-                precondition(manager.telemetryV2Statistics.isEmpty && manager.errors == 0)
+                precondition(manager.telemetryV2Statistics.isEmpty)
 
                 // Supersede an old period while its underlying read is suspended.
                 let old = Task { @MainActor in
@@ -124,7 +122,7 @@ final class StatisticsReadOwnershipTests: XCTestCase {
                 reader.fail = true
                 await manager.refreshWorkoutStatisticsFromV2(for: current, retaining: [current, other])
                 guard case .failed? = manager.telemetryV2StatisticsState[key] else { fatalError("Missing genuine failure") }
-                precondition(manager.errors == 1 && manager.telemetryV2Statistics[key]?.isPartial == true)
+                precondition(manager.telemetryV2Statistics[key]?.isPartial == true)
                 reader.fail = false
 
                 // Even a non-cooperative result cannot publish across a profile/generation change.
@@ -138,7 +136,7 @@ final class StatisticsReadOwnershipTests: XCTestCase {
                 manager.activeUserProfileID = UUID()
                 reader.held = false
                 await stale.value
-                precondition(manager.telemetryV2Statistics.count == 1 && manager.errors == 1)
+                precondition(manager.telemetryV2Statistics.count == 1)
                 print("Ownership verified: 2 cancelled reads stop; 200 periods/40 profile changes retain at most 2 entries; active partial/failure unchanged")
             }
         }

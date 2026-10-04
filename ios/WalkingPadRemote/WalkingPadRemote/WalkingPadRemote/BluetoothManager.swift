@@ -657,7 +657,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let list = entries.prefix(50).map { workoutEntryDTO(from: $0) }
         guard let data = try? JSONEncoder().encode(list) else {
             legacyShadowWriterStatusText = "failed: encode"
-            appendLog("Legacy shadow writer failed: encode")
             return false
         }
         let key = profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID)
@@ -667,7 +666,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return true
         } else {
             legacyShadowWriterStatusText = "failed: persistence"
-            appendLog("Legacy shadow writer failed: persistence")
             return false
         }
     }
@@ -702,7 +700,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         loadActiveProfileScopedData()
         refreshWorkoutHistoryFromV2(reset: true)
         refreshTrainingLogsInventory()
-        appendLog("Active profile switched: \(activeUserProfileLabel)")
         infoToastMessage = "Активный профиль: \(activeUserProfileLabel)"
     }
 
@@ -732,7 +729,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         loadActiveProfileScopedData()
         refreshWorkoutHistoryFromV2(reset: true)
         refreshTrainingLogsInventory()
-        appendLog("Profile created: \(profile.label)")
         infoToastMessage = "Создан профиль: \(profile.label)"
     }
 
@@ -752,7 +748,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         userProfiles[index].label = label
         userProfiles = sortedProfiles(userProfiles)
         saveProfilesState()
-        appendLog("Profile renamed: \(label)")
         infoToastMessage = "Профиль переименован: \(label)"
     }
 
@@ -776,7 +771,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         loadActiveProfileScopedData()
         refreshWorkoutHistoryFromV2(reset: true)
         refreshTrainingLogsInventory()
-        appendLog("Profile deleted: \(deletedLabel)")
         infoToastMessage = "Профиль удалён: \(deletedLabel)"
     }
 
@@ -1184,21 +1178,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     // Logs / failures
     struct HrFailureReport: Identifiable { let id = UUID(); let reason: String; let start: Date; let end: Date; let lines: [String] }
     @Published var hrFailureReports: [HrFailureReport] = []
-    private let loggingEnabled = false
     private var lastCommandLine: String = ""
     @Published var lastTrainingLogPath: String = ""
     @Published private(set) var trainingLogsInventory: TrainingTelemetryWriter.TrainingLogsInventory = .empty
-    private let debugLogStore = DebugLogStore()
-
-    private func appendLog(_ line: String) {
-        guard loggingEnabled else { return }
-        let entry = "[\(Date().formatted(date: .omitted, time: .standard))] \(line)"
-        debugLogStore.append(entry)
-    }
-
-    func logUiAction(_ message: String) {
-        appendLog("UI \(message)")
-    }
 
     private func currentTrainingPhase() -> String {
         if isHrControlRunning && hrRemainingSeconds > 0 { return "hr_control" }
@@ -1343,7 +1325,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         case .setSpeed(let speedEffect):
             guard isTreadmillControlReady else {
-                appendLog("Cooldown speed skipped: treadmill control not ready")
                 return
             }
             let old = deviceTargetSpeedKmh
@@ -1362,11 +1343,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 speedEffect.targetKmh,
                 label: String(format: "SPEED %.1f km/h (cooldown)", speedEffect.targetKmh),
                 decision: telemetryDecision
-            )
-            appendLog(
-                "HR cooldown speed: \(String(format: "%.1f", speedEffect.targetKmh)) " +
-                "HR=\(speedEffect.hrBpm) step=\(String(format: "%.1f", speedEffect.stepKmh)) " +
-                "trigger=\(speedEffect.trigger)"
             )
 
         case .telemetry(let telemetryEffect):
@@ -1424,12 +1400,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         switch effect {
         case .start(let telemetry):
-            appendLog(
-                "HR cooldown start: from \(String(format: "%.1f", telemetry.fromSpeedKmh)) " +
-                "to \(String(format: "%.1f", telemetry.minSpeedKmh)) target=\(telemetry.targetBpm) bpm " +
-                "step=\(String(format: "%.1f", telemetry.stepKmh)) interval=\(telemetry.intervalSeconds)s " +
-                "max=\(telemetry.maxSeconds)s"
-            )
             logTrainingEvent("cooldown_start", fields: [
                 "from_speed_kmh": telemetry.fromSpeedKmh,
                 "target_bpm": telemetry.targetBpm,
@@ -1586,9 +1556,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func trainingLogsDirectoryURL() -> URL? {
-        TrainingTelemetryWriter.makeDirectoryURL(directoryName: trainingLogsDirectoryName) { [weak self] message in
-            self?.appendLog(message)
-        }
+        TrainingTelemetryWriter.makeDirectoryURL(directoryName: trainingLogsDirectoryName)
     }
 
     private func pruneTrainingLogs(in directory: URL) {
@@ -1711,7 +1679,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.lastTrainingLogPath = fileURL.path
                 self.refreshTrainingLogsInventory()
             }
-            appendLog("Training log started: \(fileName)")
             let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
             logTrainingEvent("session_start", fields: [
                 "trigger": trigger,
@@ -1728,7 +1695,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             scheduleTrainingLogsInventoryRefresh()
             return resolvedSessionID
         } catch {
-            appendLog("Training log file open error: \(error.localizedDescription)")
             return resolvedSessionID
         }
     }
@@ -1764,7 +1730,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             trainingLogFileURL = nil
             trainingLogSessionId = nil
         }
-        appendLog("Training log closed: \(reason)")
         DispatchQueue.main.async {
             self.refreshTrainingLogsInventory()
         }
@@ -1799,7 +1764,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("Training_History\(scope.fileNameSuffix)_\(ts).csv")
         do {
             try lines.joined(separator: "\n").write(to: outURL, atomically: true, encoding: .utf8)
-            appendLog("Training CSV exported: \(outURL.lastPathComponent) scope=\(scope.logDescription) rows=\(exportedRows) files=\(jsonlFiles.count)")
             return TrainingLogsCsvExport(
                 csvURL: outURL,
                 rowCount: exportedRows,
@@ -1807,7 +1771,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 sourceFiles: jsonlFiles
             )
         } catch {
-            appendLog("Training CSV export failed: \(error.localizedDescription)")
             return nil
         }
     }
@@ -1854,7 +1817,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         do {
             try lines.joined(separator: "\n").write(to: outURL, atomically: true, encoding: .utf8)
-            appendLog("Training session summary exported: \(outURL.lastPathComponent) scope=\(scope.logDescription) rows=\(exportedRows) files=\(jsonlFiles.count)")
             return TrainingLogsCsvExport(
                 csvURL: outURL,
                 rowCount: exportedRows,
@@ -1862,16 +1824,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 sourceFiles: jsonlFiles
             )
         } catch {
-            appendLog("Training session summary export failed: \(error.localizedDescription)")
             return nil
         }
     }
 
     func finalizeTrainingLogsCsvExport(_ export: TrainingLogsCsvExport, completed: Bool) {
         try? FileManager.default.removeItem(at: export.csvURL)
-        appendLog(
-            "Legacy CSV share \(completed ? "completed" : "cancelled"); source evidence preserved"
-        )
     }
 
     private func hex(_ data: Data) -> String {
@@ -1940,7 +1898,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func clearTrainingLogsForActiveProfile() {
-        appendLog("Legacy training log clear ignored; source evidence preserved through #37")
         infoToastMessage = "Legacy source evidence is preserved until the explicit retirement gate."
     }
 
@@ -2075,7 +2032,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     guard self.activeUserProfileID == requestedProfileID,
                           self.telemetryV2WorkoutReadRequestID == requestID else { return }
                     self.telemetryV2WorkoutHistoryState = .failed(error.localizedDescription)
-                    self.appendLog("Telemetry V2 workout read failed: \(error)")
                 }
             }
         }
@@ -2130,7 +2086,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                   telemetryV2ProjectionGeneration == requestedProjectionGeneration,
                   telemetryV2StatisticsState[key] != nil else { return }
             telemetryV2StatisticsState[key] = .failed(error.localizedDescription)
-            appendLog("Telemetry V2 statistics read failed: \(error)")
         }
     }
 
@@ -2317,7 +2272,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         do {
             try FileManager.default.removeItem(at: artifact.directoryURL)
         } catch {
-            appendLog("Diagnostic bundle temporary cleanup failed: \(error.localizedDescription)")
         }
         infoToastMessage = completed
             ? "Diagnostic bundle shared. Source evidence was preserved."
@@ -2740,9 +2694,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     // Discovery controls
     func startDiscoveryScan() {
         if let central {
-            appendLog("Scan start requested (state=\(central.state.rawValue))")
         } else {
-            appendLog("Scan start requested (central=nil)")
         }
         ensureCentral()
         shouldBeScanning = true
@@ -2753,13 +2705,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.recomputeHrStartAllowed()
         }
         if let central, central.state == .poweredOn {
-            appendLog("Scanning started")
             central.scanForPeripherals(withServices: supportedServiceUuids,
                                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
         }
     }
     func stopDiscoveryScan() {
-        appendLog("Scan stop requested")
         shouldBeScanning = false
         central?.stopScan()
         DispatchQueue.main.async {
@@ -2770,7 +2720,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
     func refreshDiscovery() {
-        appendLog("Discovery refresh requested")
         DispatchQueue.main.async {
             self.discoveredPeripherals = []
             self.discoveryUIPeripherals = []
@@ -2806,7 +2755,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         wcSession = session
         refreshWatchState(session)
         DispatchQueue.main.async {
-            self.appendLog("Watch session: reachable=\(session.isReachable) paired=\(session.isPaired) appInstalled=\(session.isWatchAppInstalled)")
         }
         sendHrTargetBpm()
     }
@@ -2845,7 +2793,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             now: now
         )
         guard didRearm else { return false }
-        appendLog("AutoConnect: re-armed known candidate after fresh discovery id=\(peripheralID.uuidString)")
         return true
     }
 
@@ -2886,30 +2833,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard let self else { return }
             self.knownDiscoveryGraceWorkItem = nil
             self.knownDiscoveryGraceCompleted = true
-            self.appendLog("AutoConnect: known discovery grace completed")
             self.attemptAutoConnectIfNeeded()
         }
         knownDiscoveryGraceWorkItem = work
-        appendLog("AutoConnect: waiting 1.0s for known-device discovery")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     private func attemptAutoConnectIfNeeded() {
         guard let central, central.state == .poweredOn else {
-            appendLog("AutoConnect skipped: Bluetooth not poweredOn or central nil")
             return
         }
-        appendLog("AutoConnect check: connected=\(isConnected) known=\(knownPeripherals.count) discovered=\(discoveredPeripherals.count) allowUnknown=\(allowAutoConnectUnknown)")
         if isConnected {
-            appendLog("AutoConnect skipped: already connected")
             return
         }
         if autoConnectSuppressed {
-            appendLog("AutoConnect skipped: suppressed by user action")
             return
         }
         if let cancellingConnectionPeripheralId {
-            appendLog("AutoConnect skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
             return
         }
 
@@ -2924,7 +2864,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     return
                 }
                 completeKnownDiscoveryGrace()
-                appendLog("AutoConnect: connecting preferred known discovered \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
                 connectToDiscovered(id: candidate.id, clearsAutoConnectSuppression: false)
                 return
             }
@@ -2935,7 +2874,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                let p = connectedList.first(where: { $0.identifier == lastSuccessfulPeripheralID }) {
                 completeKnownDiscoveryGrace()
                 discoveredMap[p.identifier] = p
-                appendLog("AutoConnect: connecting to system-connected last-successful id=\(p.identifier.uuidString) name=\(p.name ?? "")")
                 connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
                 return
             }
@@ -2944,7 +2882,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                let p = preferredKnownPeripheral(from: connectedList) {
                 completeKnownDiscoveryGrace()
                 discoveredMap[p.identifier] = p
-                appendLog("AutoConnect: connecting to system-connected known id=\(p.identifier.uuidString) name=\(p.name ?? "")")
                 connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
                 return
             }
@@ -2956,7 +2893,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
             if let p = preferredKnownPeripheral(from: connectedList) {
                 discoveredMap[p.identifier] = p
-                appendLog("AutoConnect: connecting to fallback system-connected known id=\(p.identifier.uuidString) name=\(p.name ?? "")")
                 connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
                 return
             }
@@ -2966,37 +2902,31 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 let list = central.retrievePeripherals(withIdentifiers: ids)
                 if let p = preferredKnownPeripheral(from: list) {
                     discoveredMap[p.identifier] = p
-                    appendLog("AutoConnect: retrieve and connect known id=\(p.identifier.uuidString) name=\(p.name ?? "")")
                     connectToDiscovered(id: p.identifier, clearsAutoConnectSuppression: false)
                     return
                 }
             }
-            appendLog("AutoConnect: waiting for discovery of known devices")
             return
         }
 
         // No known devices saved: allow auto-connect to the strongest unknown nearby
         if allowAutoConnectUnknown {
             if let candidate = discoveredPeripherals.max(by: { $0.rssi < $1.rssi }) {
-                appendLog("AutoConnect: connecting strongest unknown \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
                 connectToDiscovered(id: candidate.id, clearsAutoConnectSuppression: false)
                 return
             }
         }
         // Debounce: if nothing discovered yet, schedule a short delayed attempt
         if autoConnectPendingWorkItem == nil {
-            appendLog("AutoConnect: scheduling retry in 0.8s (no candidates yet)")
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 if !self.isConnected && self.knownPeripherals.isEmpty && self.allowAutoConnectUnknown && !self.autoConnectSuppressed {
                     if let candidate = self.discoveredPeripherals.max(by: { $0.rssi < $1.rssi }) {
-                        self.appendLog("AutoConnect (retry): connecting strongest unknown \(candidate.name) id=\(candidate.id.uuidString) rssi=\(candidate.rssi)")
                         self.connectToDiscovered(
                             id: candidate.id,
                             clearsAutoConnectSuppression: false
                         )
                     } else {
-                        self.appendLog("AutoConnect (retry): still no candidates")
                     }
                 }
                 self.autoConnectPendingWorkItem = nil
@@ -3012,9 +2942,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         DispatchQueue.main.async {
             switch central.state {
             case .poweredOn:
-                self.appendLog("Bluetooth poweredOn")
                 if self.shouldBeScanning {
-                    self.appendLog("Scanning started (state update)")
                     central.scanForPeripherals(withServices: self.supportedServiceUuids,
                                                options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
                     if !self.isConnected {
@@ -3023,7 +2951,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 }
                 self.attemptAutoConnectIfNeeded()
             case .poweredOff:
-                self.appendLog("Bluetooth poweredOff; stopping scan and clearing discoveries")
                 self.cancelTreadmillTestRunForConnectionInvalidation()
                 self.resetProtocolState()
                 self.recomputeHrStartAllowed()
@@ -3046,7 +2973,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
         let rssi = RSSI.intValue
         let isKnown = self.knownPeripherals.contains(where: { $0.id == id })
-        appendLog("Discovered: name=\(name.isEmpty ? "(no name)" : name) id=\(id.uuidString) rssi=\(rssi) isKnown=\(isKnown)")
         let item = DiscoveredPeripheral(id: id, name: name, rssi: rssi, isKnown: isKnown)
         DispatchQueue.main.async {
             self.recordDiscoveredPeripheral(item)
@@ -3080,7 +3006,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             }
                             self.autoConnectPendingWorkItem = nil
                         }
-                        self.appendLog("AutoConnect (discover): scheduling connect strongest unknown in 0.8s (knownEmpty=\(self.knownPeripherals.isEmpty), allowUnknown=\(self.allowAutoConnectUnknown))")
                         self.autoConnectPendingWorkItem = work
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
                     }
@@ -3122,7 +3047,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 return
             }
             guard self.connectingPeripheralId == peripheralID else {
-                self.appendLog("Ignoring unexpected connection callback for \(peripheralID.uuidString)")
                 central.cancelPeripheralConnection(peripheral)
                 return
             }
@@ -3132,11 +3056,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 }
                 self.connectTimeoutWorkItem?.cancel()
                 self.connectTimeoutWorkItem = nil
-                self.appendLog("Rejecting completed connection after cancellation for \(peripheralID.uuidString)")
                 central.cancelPeripheralConnection(peripheral)
                 return
             }
-            self.appendLog("Connected; discovering services…")
             self.logTrainingEvent("ble_connection_event", fields: [
                 "status": "connected",
                 "peripheral_id": peripheralID.uuidString,
@@ -3164,7 +3086,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.displayDeviceName = defaultName
                 self.deviceName = defaultName ?? "Device"
             }
-            self.appendLog("Connected to \(self.deviceName) id=\(peripheral.identifier.uuidString)")
             self.connectedPeripheral = peripheral
             peripheral.delegate = self
             self.resetProtocolState()
@@ -3179,7 +3100,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         DispatchQueue.main.async {
             guard self.connectingPeripheralId == peripheral.identifier else {
-                self.appendLog("Ignoring stale connect failure for \(peripheral.identifier.uuidString)")
                 return
             }
             let wasAutomatic = self.connectingAttemptIsAutomatic
@@ -3203,7 +3123,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             self.connectTimeoutWorkItem?.cancel()
             self.connectTimeoutWorkItem = nil
-            self.appendLog("Failed to connect to \(peripheral.identifier.uuidString): \(error?.localizedDescription ?? "unknown error")")
             self.resumeDiscoveryScanIfNeeded()
             if wasAutomatic && !self.autoConnectSuppressed {
                 self.attemptAutoConnectIfNeeded()
@@ -3220,7 +3139,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 || (self.cancellingConnectionPeripheralId == peripheralID
                     && self.connectingPeripheralId != peripheralID)
             guard endedConnectionAttempt || endedEstablishedConnection else {
-                self.appendLog("Ignoring stale disconnect for \(peripheralID.uuidString)")
                 return
             }
             self.logTrainingEvent("ble_connection_event", fields: [
@@ -3243,7 +3161,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.connectTimeoutWorkItem?.cancel()
                 self.connectTimeoutWorkItem = nil
                 self.connectionStateText = "Disconnected"
-                self.appendLog("Connection attempt ended for \(peripheralID.uuidString)")
                 self.resumeDiscoveryScanIfNeeded()
                 if shouldContinueAutoConnect {
                     self.attemptAutoConnectIfNeeded()
@@ -3263,7 +3180,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             self.resetProtocolState()
             self.connectedPeripheral = nil
-            self.appendLog("Disconnected (error: \(error?.localizedDescription ?? "none"))")
 
             self.isConnected = false
             self.connectedPeripheralId = nil
@@ -3372,13 +3288,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard let central else { return }
         autoConnectSuppressed = false
         // Prevent duplicate connection attempts
-        if isConnected { appendLog("Connect known skipped: already connected"); return }
+        if isConnected { return }
         if let cancellingConnectionPeripheralId {
-            appendLog("Connect known skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
             return
         }
         if let inProgress = connectingPeripheralId {
-            appendLog("Connect known skipped: connection in progress to \(inProgress.uuidString)")
             if inProgress == id { return }
             return
         }
@@ -3388,7 +3302,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             connectingPeripheral = p
             connectingAttemptIsAutomatic = false
             connectErrorMessage = nil
-            appendLog("Connecting to known discovered id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
             scheduleConnectTimeout(for: id)
@@ -3402,7 +3315,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             connectingPeripheral = p
             connectingAttemptIsAutomatic = false
             connectErrorMessage = nil
-            appendLog("Connecting to known retrieved id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
             scheduleConnectTimeout(for: id)
@@ -3412,7 +3324,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             central.scanForPeripherals(withServices: supportedServiceUuids,
                                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
             DispatchQueue.main.async { self.connectionStateText = "Scanning..." }
-            appendLog("Connecting to known id=\(id.uuidString): scanning to discover")
         }
     }
     func connectToDiscovered(
@@ -3426,14 +3337,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             connectErrorMessage = nil
         }
         // Prevent duplicate connection attempts
-        if isConnected { appendLog("Connect discovered skipped: already connected"); return }
+        if isConnected { return }
         if let cancellingConnectionPeripheralId {
-            appendLog("Connect discovered skipped: cancellation pending for \(cancellingConnectionPeripheralId.uuidString)")
             return
         }
         if let inProgress = connectingPeripheralId {
             // Ignore repeated taps while a connection is in progress (including same target)
-            appendLog("Connect discovered skipped: connection in progress to \(inProgress.uuidString)")
             if inProgress == id { return }
             return
         }
@@ -3442,7 +3351,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             connectingPeripheralId = id
             connectingPeripheral = p
             connectingAttemptIsAutomatic = !clearsAutoConnectSuppression
-            appendLog("Connecting to discovered id=\(id.uuidString) name=\(p.name ?? "")")
             central.stopScan()
             central.connect(p, options: nil)
             scheduleConnectTimeout(for: id)
@@ -3454,12 +3362,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 connectingPeripheralId = id
                 connectingPeripheral = p
                 connectingAttemptIsAutomatic = !clearsAutoConnectSuppression
-                appendLog("Connecting to retrieved id=\(id.uuidString) name=\(p.name ?? "")")
                 central.stopScan()
                 central.connect(p, options: nil)
                 scheduleConnectTimeout(for: id)
             } else {
-                appendLog("Connect discovered failed: peripheral \(id.uuidString) not found")
             }
         }
     }
@@ -3718,7 +3624,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse)
             ? .withoutResponse
             : .withResponse
-        appendLog("EXPERIMENT WRITE \(role.rawValue) id=\(writeID.uuidString)")
         peripheral.writeValue(packet, for: characteristic, type: writeType)
         nextCommandAllowedAt = Date().addingTimeInterval(commandMinIntervalWalkingPadSeconds)
         let receipt = StopTruthExperimentTransportReceipt(
@@ -4205,14 +4110,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func manualGo(targetSpeed: Double) {
-        logUiAction("GO pressed (target \(String(format: "%.1f", targetSpeed)) km/h, speed=\(String(format: "%.1f", speedKmh)), deviceTarget=\(String(format: "%.1f", deviceTargetSpeedKmh)), status=\(treadmillStatusText))")
         startWithSpeed(targetSpeed)
     }
 
     func manualStop() {
-        logUiAction("STOP pressed (speed=\(String(format: "%.1f", speedKmh)), deviceTarget=\(String(format: "%.1f", deviceTargetSpeedKmh)), status=\(treadmillStatusText))")
         if isHrControlRunning || isNativeWorkoutRecoveryActive {
-            appendLog("Manual stop while HR control active → ending training")
             stopHrControl()
             return
         }
@@ -4359,7 +4261,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         case .unknown:
             infoToastMessage = "Неподдерживаемая дорожка (протокол не определён)"
-            appendLog("Start skipped: unknown treadmill protocol")
         }
     }
     func stopBelt() {
@@ -4383,7 +4284,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
         }
         guard let packet = buildTreadmillStopPacket() else {
-            appendLog("STOP skipped: unknown treadmill protocol")
             return
         }
         let telemetryChain = telemetryDecision.map {
@@ -4428,7 +4328,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
         }
         guard let packet = buildTreadmillStopPacket() else {
-            appendLog("STOP skipped: unknown treadmill protocol")
             return false
         }
         writeCommand(
@@ -4453,7 +4352,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             kind: .stop,
             decision: telemetryDecision
         )
-        appendLog("STOP sequence (\(reason))")
         let stopCommandWasEnqueued = stopBeltOnce(
             telemetryDecision: telemetryDecision,
             telemetryRequest: telemetryRequest
@@ -5062,7 +4960,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrSessionTotalSeconds = newTotalSeconds
         hrRemainingSeconds += addedSeconds
         hrProgress = hrSessionTotalSeconds > 0 ? (1.0 - (Double(hrRemainingSeconds) / Double(hrSessionTotalSeconds))) : 0
-        appendLog("HR extend: +\(addedSeconds / 60)m total=\(hrSessionTotalSeconds / 60)m remaining=\(hrRemainingSeconds / 60)m")
     }
 
     func startHrControl() {
@@ -5092,7 +4989,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrLastValueAt = nil
         heartRateBPM = 0
         nativeHeartRateLogger.info("preflight_requested")
-        appendLog("Native HR preflight requested: intent=\(intent.id.uuidString)")
         applyNativeHeartRatePreflightEffects(effects)
     }
 
@@ -5377,10 +5273,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             legacyFields["hr_last_age_s"] = lastAgeSeconds
         }
         logTrainingEvent("app_lifecycle", fields: legacyFields)
-        appendLog(
-            "Lifecycle \(previousState.rawValue)->\(currentState.rawValue) "
-                + "stage=\(stage.rawValue) policy=\(decision.action.rawValue)"
-        )
 
         guard activeTelemetryV2SessionID != nil,
               let telemetryState = AppLifecycleState(rawValue: currentState.rawValue),
@@ -5413,7 +5305,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 occurredAt: occurredAt
             )
         } catch {
-            appendLog("Lifecycle V2 compatibility encoding failed")
         }
     }
 
@@ -5433,10 +5324,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
-        let adaptiveStepDescription = hrAdaptiveStepEnabled
-            ? "adaptive_levels=0.1/0.2/0.3/0.4"
-            : "step=\(String(format: "%.2f", hrSpeedStepKmh))"
-        appendLog("HR start: target=\(hrTargetBPM) duration=\(hrDurationMinutes)m interval=\(hrDecisionIntervalSeconds)s \(adaptiveStepDescription)")
         // Reset all per-session counters before writing session_start telemetry snapshot.
         resetSessionStats()
         let legacySessionID = startTrainingStructuredLog(trigger: "start_hr")
@@ -5632,7 +5519,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 guard nativeHeartRateProviderLifecycle.acceptsProviderCompletion(
                     generation: providerGeneration
                 ) else { return }
-                appendLog("Native HR session prepared")
                 nativeHeartRateLogger.info("session_prepared")
                 applyNativeHeartRatePreflightEffects(
                     nativeHeartRatePreflightEngine.providerPrepared(at: Date())
@@ -5684,7 +5570,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 guard nativeHeartRatePreflightEngine.hasStartIntent else { return }
                 nativeHealthKitAcquisitionStartedAt = acquisitionStartedAt
                 nativeHeartRateLogger.info("collection_started")
-                appendLog("Native HR collection started: intent=\(intent.id.uuidString)")
                 syncNativeHeartRatePreflightPresentation()
             } catch {
                 nativeHeartRateProviderFailed(
@@ -5725,7 +5610,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         isNativeHeartRateCurrent = hrStreamingActive
         let normalization = normalizeHeartRateDelivery(observation, recordedAt: now)
-        appendLog("Native HR value: \(observation.beatsPerMinute)")
         logTrainingEvent("hr_sample", fields: [
             "hr_bpm": observation.beatsPerMinute,
             "source": "healthkit_selected"
@@ -5815,14 +5699,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let latency = max(0, now.timeIntervalSince(acquisitionStartedAt))
         nativeHeartRateLogger.info("first_qualifying_hr_received")
         nativeHeartRateLogger.info("preflight_committed")
-        appendLog("Native HR preflight committed: latency=\(String(format: "%.3f", latency))s")
         commitExistingHrControl(preflightLatencySeconds: latency)
     }
 
     private func discardNativeHeartRatePreflight(
         reason: NativeHeartRatePreflightEngine.CancellationReason
     ) {
-        appendLog("Native HR preflight cancelled: \(reason.rawValue)")
         nativeHeartRateLogger.info("preflight_cancelled reason=\(reason.rawValue, privacy: .public)")
         nativeHeartRateFlowOwnsController = false
         isNativeHeartRateCurrent = false
@@ -5861,7 +5743,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         heartRateBPM = 0
         nativePreflightCommitTimestamps = nil
         pendingNativePreflightHeartRate = nil
-        appendLog("Native HR flow aborted before motion: \(reason.rawValue)")
         nativeHeartRateLogger.info("preflight_aborted reason=\(reason.rawValue, privacy: .public)")
         let cleanupGeneration = nativeHeartRateProviderLifecycle.beginCleanup()
         Task { @MainActor [weak self] in
@@ -5909,7 +5790,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-        appendLog("HR stop: elapsed=\(elapsed ?? 0)s")
         logTrainingEvent("hr_control_stop_requested", fields: [
             "reason": "manual_stop",
             "elapsed_s": elapsed ?? 0,
@@ -5939,7 +5819,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard canStopPresentedWorkout else { return }
         nativeWorkoutRecoveryStopRequested = true
         nativeWorkoutRecoveryStatusText = "Завершаем восстановленную тренировку…"
-        appendLog("Recovered native workout stop requested")
         stopBeltWithToggle(reason: "recovered_hr_manual_stop")
     }
 
@@ -6025,7 +5904,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             guard self.connectingPeripheralId == id else { return }
-            self.appendLog("Connection timeout for \(id.uuidString)")
             if let central,
                let p = self.connectingPeripheral,
                p.identifier == id {
@@ -6123,7 +6001,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.isNativeHeartRateCurrent = active
                 }
                 if active != wasActive {
-                    self.appendLog("HR stream \(active ? "ACTIVE" : "INACTIVE") (bpm=\(self.heartRateBPM), last=\(hasLast ? "\(secs)s ago" : "none"))")
                     self.logTrainingEvent("hr_stream_state", fields: [
                         "active": active,
                         "hr_bpm": self.heartRateBPM,
@@ -6245,7 +6122,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         stopTrainingStructuredLog(reason: "hr_control_not_ready")
                         hrControlFailed = true
                         infoToastMessage = "HR‑контроль остановлен — дорожка не готова к управлению. Остановка запрошена, но ещё не подтверждена."
-                        appendLog("HR control stopped: treadmill control not ready")
                         isHrControlRunning = false
                         hrStatusLine = "HR‑контроль остановлен — дорожка не готова"
                         hrNextDecisionSeconds = 0
@@ -6292,7 +6168,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         stopTrainingStructuredLog(reason: "hr_no_signal")
                         hrControlFailed = true
                         infoToastMessage = "HR‑контроль остановлен — нет данных пульса. Остановка дорожки запрошена, но ещё не подтверждена."
-                        appendLog("HR control stopped: no HR for \(missingSeconds)s")
                         isHrControlRunning = false
                         hrStatusLine = "HR‑контроль остановлен — нет данных пульса"
                         hrNextDecisionSeconds = 0
@@ -6363,7 +6238,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_hold")
                         hrStatusLine = "HR‑контроль: цель удерживается"
                         hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDirectionLabel)-\(holdModeLabel) \(String(format: "%.1f", step)) км/ч · deadband ±\(deadbandBpm)bpm (\(String(format: "%.1f", adaptiveThresholds.deadband))%) · скорость \(String(format: "%.1f", currentTarget)) → без изменений"
-                        appendLog("HR decision: hold target=\(String(format: "%.1f", currentTarget)) HR=\(heartRateBPM) diff=\(diff) diffPct=\(String(format: "%.1f", absDiffPercent))% deadband=\(deadbandBpm)bpm stepTag=\(stepDirectionLabel)-\(holdModeLabel) step=\(String(format: "%.1f", step))")
                         logTrainingEvent("hr_decision", fields: [
                             "decision": "hold",
                             "target_bpm": hrTargetBPM,
@@ -6393,7 +6267,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             hrStatusLine = "HR‑контроль: инерция"
                             let trendPerMin = trend * 60.0
                             hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · тренд \(String(format: "%+.1f", trendPerMin)) bpm/мин · прогноз \(Int(round(predictedValue))) → без повышения"
-                            appendLog("HR decision: inertia hold target=\(String(format: "%.1f", currentTarget)) HR=\(heartRateBPM) diff=\(diff) trend=\(String(format: "%.2f", trend)) pred=\(Int(round(predictedValue))) stepTag=\(stepDebugLabel) step=\(String(format: "%.1f", step))")
                             logTrainingEvent("hr_decision", fields: [
                                 "decision": "inertia_hold",
                                 "target_bpm": hrTargetBPM,
@@ -6438,7 +6311,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                         hrStatusLine = diff > 0 ? "HR‑контроль: уменьшаем скорость" : "HR‑контроль: увеличиваем скорость"
                         hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → \(String(format: "%+.1f", nextSpeed - currentTarget)) км/ч"
-                        appendLog("HR decision: set \(String(format: "%.1f", nextSpeed)) from \(String(format: "%.1f", currentTarget)) HR=\(heartRateBPM) diff=\(diff) stepTag=\(stepDebugLabel) step=\(String(format: "%.1f", step))")
                         logTrainingEvent("hr_decision", fields: [
                             "decision": "set",
                             "target_bpm": hrTargetBPM,
@@ -6462,7 +6334,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     } else {
                         hrStatusLine = "HR‑контроль: предел скорости"
                         hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → предел скорости"
-                        appendLog("HR decision: limit target=\(String(format: "%.1f", currentTarget)) HR=\(heartRateBPM) diff=\(diff) stepTag=\(stepDebugLabel) step=\(String(format: "%.1f", step))")
                         logTrainingEvent("hr_decision", fields: [
                             "decision": "limit",
                             "target_bpm": hrTargetBPM,
@@ -6565,7 +6436,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 lastCommandTimeouts += 1
                 lastCommandTimeoutsCount = lastCommandTimeouts
                 observedLegacyCommandTimeout = true
-                appendLog("CMD ack timeout: \(lastCommandLine)")
                 logTrainingEvent("command_ack_timeout", fields: [
                     "last_command": lastCommandLine,
                     "timeouts_count": lastCommandTimeouts
@@ -6607,7 +6477,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     ) {
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
         guard stopTruthExperimentController?.isActive != true else {
-            appendLog("Production command blocked while fixed Stop-truth experiment is active: \(label)")
             return
         }
 #endif
@@ -6633,7 +6502,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         commandQueueEpoch += 1
         isCommandQueueProcessing = false
         nextCommandAllowedAt = .distantPast
-        appendLog("CMD queue reset: \(reason)")
         logTrainingEvent("command_queue_reset", fields: [
             "reason": reason,
             "dropped_count": dropped
@@ -6767,7 +6635,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let now = Date()
         let delay = max(0, nextCommandAllowedAt.timeIntervalSince(now))
         if delay > 0 {
-            appendLog(String(format: "WRITE QUEUED (%.1fs): %@", delay, commandQueue.first?.label ?? ""))
             logTrainingEvent("command_queued", fields: [
                 "delay_s": delay,
                 "label": commandQueue.first?.label ?? "",
@@ -6857,7 +6724,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         telemetryEvidence: TreadmillCommandEnqueuedEvidence?
     ) -> [TreadmillTelemetryEvidence] {
         if requiresControlReadiness && !isTreadmillControlReady {
-            appendLog("WRITE SKIPPED (control not ready): \(label)")
             if label == "STOP" {
                 nativeWorkoutStopTransportInvocationFailedIfNeeded(
                     reason: "Управление дорожкой потеряло готовность"
@@ -6877,7 +6743,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ]
         }
         guard isConnected else {
-            appendLog("WRITE SKIPPED (not connected): \(label)")
             if label == "STOP" {
                 markInitialStopCommandNotSent(reason: "not_connected")
                 nativeWorkoutStopTransportInvocationFailedIfNeeded(
@@ -6898,7 +6763,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ]
         }
         guard let p = connectedPeripheral, let ch = commandCharacteristic else {
-            appendLog("WRITE SKIPPED (no characteristic): \(label)")
             if label == "STOP" {
                 markInitialStopCommandNotSent(reason: "characteristic_unavailable")
                 nativeWorkoutStopTransportInvocationFailedIfNeeded(
@@ -6925,7 +6789,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         lastCommandAwaitingAck = (type == .withResponse)
         lastCommandAckedAt = (type == .withResponse) ? nil : lastCommandSentAt
-        appendLog("WRITE \(label): \(hex(data)) via \(ch.uuid.uuidString) type=\(type == .withoutResponse ? "withoutResponse" : "withResponse")")
         logTrainingEvent("command_write", fields: [
             "label": label,
             "hex": hex(data),
@@ -7344,13 +7207,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func recordControllerUnitsGate(action: String, decision: ControllerUnitsGateDecision) {
         let fields = controllerUnitsTelemetryFields(action: action, decision: decision)
-        let ageValue = fields["controller_units_age_s"] ?? -1
-        let blockReason = decision.blockReason?.rawValue ?? "none"
-        appendLog(
-            "Controller units gate: action=\(action) units=\(controllerUnitsTruth.units.rawValue) " +
-            "status=\(controllerUnitsTruth.status.rawValue) age_s=\(ageValue) " +
-            "allowed=\(decision.allowed) block=\(blockReason)"
-        )
         logTrainingEvent("controller_units_gate", fields: fields)
     }
 
@@ -7374,7 +7230,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         lastControllerUnitsQueryAt = now
         lastControllerUnitsQueryTrigger = trigger
-        appendLog("Controller units query: trigger=\(trigger) command=A6 key=0 read_only=true")
         logTrainingEvent("controller_units_query_requested", fields: [
             "trigger": trigger,
             "command_family": "A6",
@@ -7463,7 +7318,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func requestWalkingPadStatusRefresh(now: Date) {
         guard controllerUnitsQueryTransportReady else { return }
         lastWalkingPadStatusQueryAt = now
-        appendLog("WalkingPad status query: command=A2 key=0 read_only=true")
         logTrainingEvent("walkingpad_status_query_requested", fields: [
             "command_family": "A2",
             "key": 0,
@@ -7518,7 +7372,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             extraNotifyCharacteristics.append(characteristic)
         }
         peripheral.setNotifyValue(true, for: characteristic)
-        appendLog("Subscribing \(label) on \(characteristic.uuid.uuidString)")
     }
 
     private func shouldTreatAsCommandAck(characteristic: CBCharacteristic, data: Data) -> Bool {
@@ -7542,12 +7395,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard !ftmsHasControl else { return }
         guard !ftmsControlRequestInFlight else { return }
         guard let ch = commandCharacteristic, ch.uuid == ftmsCharControlPoint else {
-            appendLog("FTMS request control skipped: control point not ready")
             return
         }
         guard let connection = currentTreadmillControlConnection,
               commandCharacteristicConnection == connection else {
-            appendLog("FTMS request control skipped: stale control point context")
             return
         }
         ftmsControlRequestInFlight = true
@@ -7589,11 +7440,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         decision: TreadmillControlDecisionEvidence? = nil
     ) {
         guard !blocksNonStopTreadmillMotion else {
-            appendLog("Set speed skipped: native workout recovery is fail-closed")
             return
         }
         guard isTreadmillControlReady else {
-            appendLog("Set speed skipped: treadmill control not ready")
             return
         }
         if kmh > 0.1 {
@@ -7654,7 +7503,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 )
             )
         case .unknown:
-            appendLog("Set speed skipped: unknown treadmill protocol (speed=\(String(format: "%.1f", kmh)))")
+            break
         }
     }
 
@@ -7737,8 +7586,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         characteristic: CBCharacteristic,
         receivedAt: Date
     ) {
-        let cmdHex = String(format: "0x%02X", frame.cmd)
-        let subHex = frame.subcmd.map { String(format: "0x%02X", $0) } ?? "-"
 
         // Update "ack" and keep raw for debugging.
         DispatchQueue.main.async {
@@ -7773,7 +7620,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                     }
                 }
-                appendLog("Notify FitShow speed: speed=\(String(format: "%.1f", speedKmh)) km/h incline=\(incline) checksum=\(frame.checksumOk ? "ok" : "bad")")
                 logActualSpeedChangeIfNeeded(speedKmh, source: "fitshow_notify")
                 logTrainingEvent("notify_fitshow_speed", fields: [
                     "speed_kmh": speedKmh,
@@ -7787,7 +7633,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if frame.cmd == 0x51 {
             // Status response.
             guard !frame.payload.isEmpty else {
-                appendLog("Notify FitShow status: empty payload checksum=\(frame.checksumOk ? "ok" : "bad")")
                 DispatchQueue.main.async {
                     guard peripheral.identifier == self.connectedPeripheralId,
                           characteristic.uuid == self.fitShowCharRx,
@@ -7837,7 +7682,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     )
                 }
             }
-            appendLog("Notify FitShow status: state=\(state) speed=\(speedKmh.map { String(format: "%.1f", $0) } ?? "-") km/h checksum=\(frame.checksumOk ? "ok" : "bad")")
             logTrainingEvent("notify_fitshow_status", fields: [
                 "state": state,
                 "speed_kmh": speedKmh ?? -1,
@@ -7846,7 +7690,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
-        appendLog("Notify FitShow frame: cmd=\(cmdHex) sub=\(subHex) len=\(frame.payload.count) checksum=\(frame.checksumOk ? "ok" : "bad")")
         logTrainingEvent("notify_fitshow_frame", fields: [
             "cmd": Int(frame.cmd),
             "subcmd": frame.subcmd.map(Int.init) ?? -1,
@@ -8160,7 +8003,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     }
                     terminalSaveProven = true
                     resolveDeferredNativeHealthKitLinkageIfPossible()
-                    appendLog("Native HealthKit workout saved: \(workout.uuid.uuidString)")
                     nativeHeartRateLogger.info("workout_finished_direct_proof")
                 case .savedWorkoutUnavailable:
                     guard let completedRecord = activeNativeWorkoutRecoveryRecord,
@@ -8168,7 +8010,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                           let healthKitStoppedAt = completedRecord.healthKitStopActivityAt else {
                         throw IPhoneHealthKitHeartRateProviderError.operationCancelled
                     }
-                    appendLog("Native HealthKit finish returned no workout; exact saved proof pending")
                     guard retainDeferredNativeHealthKitLinkage(
                         record: completedRecord,
                         finishRequestedAt: terminalRequestedAt,
@@ -8182,7 +8023,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     terminalProofPending = true
                 }
             } catch {
-                appendLog("Native HealthKit workout finish failed: \(error.localizedDescription)")
                 nativeHeartRateLogger.error("workout_finish_failed")
             }
         }
@@ -8316,7 +8156,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     )
                     return
                 }
-                appendLog("Deferred native HealthKit workout linked: \(workoutID.uuidString)")
                 nativeHeartRateLogger.info("deferred_exact_link_resolved")
                 clearDeferredNativeHealthKitLinkage(linkage)
                 resolveDeferredNativeHealthKitLinkageIfPossible(
@@ -8833,7 +8672,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return elapsed > 0 ? elapsed : timeSec
         }()
         if failed ?? hrControlFailed {
-            appendLog("Workout not saved: failed (duration \(actualDuration)s)")
             logTrainingEvent("workout_not_saved", fields: [
                 "reason": "failed",
                 "duration_s": actualDuration
@@ -8842,7 +8680,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         let minDuration = max(0, workoutMinSaveMinutes * 60)
         guard actualDuration >= minDuration else {
-            appendLog("Workout not saved: duration \(actualDuration)s < \(minDuration)s")
             logTrainingEvent("workout_not_saved", fields: [
                 "reason": "min_duration",
                 "duration_s": actualDuration,
@@ -8870,7 +8707,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
            !persistNativeWorkoutRecoveryRecord(
                 recoveryRecord.linkingLegacyWorkout(id: entry.id)
            ) {
-            appendLog("Workout not saved: recovery linkage persistence failed")
             return
         }
         legacyShadowWorkoutHistory.insert(entry, at: 0)
@@ -8978,7 +8814,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             )
             return true
         } catch {
-            appendLog("Telemetry V2 HealthKit linkage failed: \(error)")
             telemetryV2WorkoutHistoryState = .failed(
                 "HealthKit linkage failed: \(error.localizedDescription)"
             )
@@ -9003,9 +8838,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let source = expectedSpeedSource ?? "SPEED"
         let matched = speedDiff <= 0.2 || appDiff <= 0.2
         if speedDiff <= 0.2 || appDiff <= 0.2 {
-            appendLog("SPEED OK (\(source)): expected \(String(format: "%.1f", expected)) | speed \(String(format: "%.1f", status.speedKmh)) appSpeed \(String(format: "%.1f", status.appSpeedKmh))")
         } else {
-            appendLog("SPEED MISMATCH (\(source)): expected \(String(format: "%.1f", expected)) | speed \(String(format: "%.1f", status.speedKmh)) appSpeed \(String(format: "%.1f", status.appSpeedKmh))")
         }
         logTrainingEvent("speed_validation", fields: [
             "source": source,
@@ -9075,16 +8908,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard peripheral === connectedPeripheral,
               peripheral.identifier == connectedPeripheralId else {
-            appendLog("Ignoring services from stale peripheral \(peripheral.identifier.uuidString)")
             return
         }
         if let error {
-            appendLog("Discover services error: \(error.localizedDescription)")
             invalidateTreadmillControlReadinessEvidence(includingProtocol: true)
             return
         }
         guard let services = peripheral.services, !services.isEmpty else {
-            appendLog("No services discovered")
             invalidateTreadmillControlReadinessEvidence(includingProtocol: true)
             return
         }
@@ -9101,7 +8931,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillProtocolConnection = currentTreadmillControlConnection
         if treadmillProtocol != selected {
             treadmillProtocol = selected
-            appendLog("Treadmill protocol selected: \(selected.rawValue)")
             logTrainingEvent("treadmill_protocol_selected", fields: [
                 "protocol": selected.rawValue,
                 "services": services.map { $0.uuid.uuidString }
@@ -9110,7 +8939,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         recomputeTreadmillControlReadiness()
         for s in services {
-            appendLog("Service discovered: \(s.uuid.uuidString)")
             if supportedServiceUuids.contains(s.uuid) {
                 peripheral.discoverCharacteristics(nil, for: s)
             }
@@ -9121,21 +8949,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard peripheral === connectedPeripheral,
               peripheral.identifier == connectedPeripheralId,
               service === treadmillProtocolService else {
-            appendLog("Ignoring characteristics outside current treadmill transport")
             return
         }
         if let error {
-            appendLog("Discover characteristics error: \(error.localizedDescription)")
             invalidateTreadmillControlReadinessEvidence()
             return
         }
         guard let chars = service.characteristics else {
-            appendLog("No characteristics for service \(service.uuid.uuidString)")
             invalidateTreadmillControlReadinessEvidence()
             return
         }
         for c in chars {
-            appendLog("Char: \(c.uuid.uuidString) props=\(c.properties)")
         }
         commandCharacteristic = nil
         commandCharacteristicConnection = nil
@@ -9159,16 +8983,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 stopObservationStreamID = UUID()
                 subscribe(peripheral, to: n, label: "FE01")
             } else {
-                appendLog("WalkingPad: FE01 notify not found on FE00")
             }
             if let w = write {
                 commandCharacteristic = w
                 registerCurrentCharacteristic(w)
                 commandCharacteristicConnection = currentTreadmillControlConnection
-                appendLog("WalkingPad: command characteristic set to \(w.uuid.uuidString)")
                 requestInitialControllerUnitsTruthIfReady()
             } else {
-                appendLog("WalkingPad: FE02 write not found on FE00")
             }
 
         case .ftms:
@@ -9178,7 +8999,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 registerCurrentCharacteristic(dataChar)
                 subscribe(peripheral, to: dataChar, label: "FTMS treadmill data")
             } else {
-                appendLog("FTMS: treadmill data characteristic not found")
             }
             if let statusChar = chars.first(where: { $0.uuid == ftmsCharMachineStatus && ($0.properties.contains(.notify) || $0.properties.contains(.indicate)) }) {
                 registerCurrentCharacteristic(statusChar)
@@ -9191,20 +9011,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }) {
                 commandCharacteristic = cpChar
                 registerCurrentCharacteristic(cpChar)
-                appendLog("FTMS: control point set to \(cpChar.uuid.uuidString)")
                 subscribe(peripheral, to: cpChar, label: "FTMS control point indications")
             } else {
-                appendLog("FTMS: control point characteristic not found")
             }
             if !ftmsDidReadSupportedSpeedRange {
                 if let rangeChar = chars.first(where: { $0.uuid == ftmsCharSupportedSpeedRange && $0.properties.contains(.read) }) {
                     ftmsDidReadSupportedSpeedRange = true
                     registerCurrentCharacteristic(rangeChar)
-                    appendLog("FTMS: reading supported speed range (2AD4)")
                     peripheral.readValue(for: rangeChar)
                 } else if chars.contains(where: { $0.uuid == ftmsCharSupportedSpeedRange }) {
                     ftmsDidReadSupportedSpeedRange = true
-                    appendLog("FTMS: supported speed range (2AD4) is not readable")
                 }
             }
 
@@ -9215,20 +9031,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 registerCurrentCharacteristic(rx)
                 subscribe(peripheral, to: rx, label: "FitShow RX")
             } else {
-                appendLog("FitShow: RX characteristic (FFF1) not found")
             }
             if let tx = chars.first(where: { $0.uuid == fitShowCharTx && ($0.properties.contains(.write) || $0.properties.contains(.writeWithoutResponse)) }) {
                 commandCharacteristic = tx
                 registerCurrentCharacteristic(tx)
                 commandCharacteristicConnection = currentTreadmillControlConnection
-                appendLog("FitShow: TX characteristic set to \(tx.uuid.uuidString)")
                 if !fitShowDidRequestInitialStatus {
                     fitShowDidRequestInitialStatus = true
                     let status = buildFitShowFrame(cmd: 0x51, subcmd: nil, payload: Data())
                     scheduleWrite(status, label: "FitShow STATUS", after: 0.6)
                 }
             } else {
-                appendLog("FitShow: TX characteristic (FFF2) not found")
             }
 
         case .unknown:
@@ -9252,7 +9065,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         if let error {
-            appendLog("Notify state error for \(characteristic.uuid.uuidString): \(error.localizedDescription)")
             if isRequiredTelemetry { notifyCharacteristicConnection = nil }
             if isFtmsControlPoint { commandCharacteristicConnection = nil }
             recomputeTreadmillControlReadiness()
@@ -9272,7 +9084,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if treadmillProtocol == .walkingPad,
            characteristic.uuid == charFE01,
            characteristic.isNotifying {
-            appendLog("WalkingPad: FE01 notifications active")
             requestInitialControllerUnitsTruthIfReady()
         }
     }
@@ -9281,11 +9092,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard peripheral === connectedPeripheral,
               peripheral.identifier == connectedPeripheralId,
               isCurrentCharacteristicCallback(characteristic) else {
-            appendLog("Ignoring value update from stale peripheral \(peripheral.identifier.uuidString)")
             return
         }
         if let error {
-            appendLog("Notify update error from \(characteristic.uuid.uuidString): \(error.localizedDescription)")
             logTrainingEvent("notify_update_error", fields: [
                 "char_uuid": characteristic.uuid.uuidString,
                 "error": error.localizedDescription
@@ -9303,7 +9112,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 peripheral: peripheral,
                 characteristic: characteristic
             ) else {
-                appendLog("Controller units response ignored: stale peripheral or connection context")
                 return
             }
             unitsResponseContext = context
@@ -9353,7 +9161,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         currentConnectionEpoch: self.controllerUnitsConnectionEpoch,
                         currentNotifyCharacteristicID: self.notifyCharacteristic.map(ObjectIdentifier.init)
                     ) else {
-                        self.appendLog("Controller units response ignored after connection context changed")
                         return
                     }
                     if let params {
@@ -9397,10 +9204,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         now: observedAt,
                         decision: decision
                     )["controller_units_fresh"] ?? false
-                    self.appendLog(
-                        "Controller units response: units=\(self.controllerUnitsTruth.units.rawValue) " +
-                        "status=\(self.controllerUnitsTruth.status.rawValue) fresh=\(freshness)"
-                    )
                     self.logTrainingEvent(
                         "controller_units_response",
                         fields: self.controllerUnitsTelemetryFields(action: "query_response", now: observedAt, decision: decision).merging([
@@ -9476,7 +9279,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         }
                     }
                 }
-                appendLog("Notify FE01 parsed: state=\(status.beltState) speed=\(String(format: "%.1f", status.speedKmh)) appSpeed=\(String(format: "%.1f", status.appSpeedKmh)) mode=\(status.manualMode) time=\(status.timeSeconds)s dist=\(status.distance10m*10)m steps=\(status.steps) button=\(status.lastButton) checksum=\(status.checksumOk ? "ok" : "bad")")
                 logActualSpeedChangeIfNeeded(status.speedKmh, source: "fe01_notify")
                 logTrainingEvent("notify_fe01", fields: [
                     "state": status.beltState,
@@ -9508,7 +9310,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     )
                 }
 #endif
-                appendLog("Notify \(characteristic.uuid.uuidString): \(hex(data))")
             }
 
         case .ftms:
@@ -9523,7 +9324,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     if self.desiredSpeedKmh > maxSpeed { self.desiredSpeedKmh = maxSpeed }
                     if self.deviceTargetSpeedKmh > maxSpeed { self.deviceTargetSpeedKmh = maxSpeed }
                 }
-                appendLog("FTMS supported speed range: min=\(String(format: "%.2f", range.minSpeedKmh)) max=\(String(format: "%.2f", range.maxSpeedKmh)) inc=\(String(format: "%.2f", range.minIncrementKmh)) km/h")
                 logTrainingEvent("ftms_supported_speed_range", fields: [
                     "min_kmh": range.minSpeedKmh,
                     "max_kmh": range.maxSpeedKmh,
@@ -9552,7 +9352,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                     }
                 }
-                appendLog("Notify FTMS treadmill data: speed=\(String(format: "%.2f", parsed.instantaneousSpeedKmh)) km/h moving=\(parsed.isMoving)")
                 logActualSpeedChangeIfNeeded(parsed.instantaneousSpeedKmh, source: "ftms_treadmill_data")
                 logTrainingEvent("notify_ftms_treadmill_data", fields: [
                     "speed_kmh": parsed.instantaneousSpeedKmh,
@@ -9563,7 +9362,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     guard ftmsControlRequestInFlight,
                           ftmsControlRequestConnection == currentTreadmillControlConnection,
                           characteristic === commandCharacteristic else {
-                        appendLog("Ignoring FTMS control response without a current pending request")
                         return
                     }
                     ftmsControlRequestInFlight = false
@@ -9572,7 +9370,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         ftmsHasControl = true
                     }
                 }
-                appendLog("Notify FTMS control point: requested=\(String(format: "0x%02X", resp.requestedOpcode)) result=\(String(format: "0x%02X", resp.resultCode))")
                 logTrainingEvent("notify_ftms_control_point", fields: [
                     "requested_opcode": resp.requestedOpcode,
                     "result_code": resp.resultCode
@@ -9580,13 +9377,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             } else if characteristic.uuid == ftmsCharMachineStatus {
                 let statusCode = data.first.map(Int.init) ?? -1
                 let raw = hex(data)
-                appendLog("Notify FTMS machine status: code=\(statusCode) raw=\(raw)")
                 logTrainingEvent("notify_ftms_machine_status", fields: [
                     "status_code": statusCode,
                     "raw_hex": raw
                 ])
             } else {
-                appendLog("Notify \(characteristic.uuid.uuidString): \(hex(data))")
             }
 
         case .fitShow:
@@ -9598,11 +9393,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     receivedAt: now
                 )
             } else {
-                appendLog("Notify \(characteristic.uuid.uuidString): \(hex(data))")
             }
 
         case .unknown:
-            appendLog("Notify \(characteristic.uuid.uuidString): \(hex(data))")
+            break
         }
     }
 
@@ -9611,18 +9405,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               peripheral.identifier == connectedPeripheralId,
               characteristic === commandCharacteristic,
               isCurrentCharacteristicCallback(characteristic) else {
-            appendLog("Ignoring write result from stale treadmill transport")
             return
         }
         if let error {
-            appendLog("Write to \(characteristic.uuid.uuidString) failed: \(error.localizedDescription)")
             logTrainingEvent("command_write_result", fields: [
                 "char_uuid": characteristic.uuid.uuidString,
                 "status": "error",
                 "error": error.localizedDescription
             ])
         } else {
-            appendLog("Write to \(characteristic.uuid.uuidString) OK")
             logTrainingEvent("command_write_result", fields: [
                 "char_uuid": characteristic.uuid.uuidString,
                 "status": "ok"
@@ -9650,7 +9441,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               invalidatedServices.contains(where: { $0 === selectedService }) else {
             return
         }
-        appendLog("Selected treadmill service invalidated")
         treadmillProtocolService = nil
         commandCharacteristic = nil
         notifyCharacteristic = nil
@@ -9665,7 +9455,6 @@ extension BluetoothManager: WCSessionDelegate {
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         refreshWatchState(session)
         DispatchQueue.main.async {
-            self.appendLog("Watch activation: state=\(activationState.rawValue) error=\(error?.localizedDescription ?? "none") reachable=\(session.isReachable) paired=\(session.isPaired) appInstalled=\(session.isWatchAppInstalled)")
         }
         if activationState == .activated {
             sendHrTargetBpm()
@@ -9678,13 +9467,11 @@ extension BluetoothManager: WCSessionDelegate {
     func sessionReachabilityDidChange(_ session: WCSession) {
         refreshWatchState(session)
         DispatchQueue.main.async {
-            self.appendLog("Watch reachability changed: reachable=\(session.isReachable) paired=\(session.isPaired) appInstalled=\(session.isWatchAppInstalled)")
         }
     }
     func sessionWatchStateDidChange(_ session: WCSession) {
         refreshWatchState(session)
         DispatchQueue.main.async {
-            self.appendLog("Watch state changed: reachable=\(session.isReachable) paired=\(session.isPaired) appInstalled=\(session.isWatchAppInstalled)")
         }
         if session.activationState == .activated {
             sendHrTargetBpm()
@@ -9716,7 +9503,6 @@ extension BluetoothManager: WCSessionDelegate {
         if let decoded = WatchHeartRatePayloadDecoder.decode(payload) {
             DispatchQueue.main.async {
                 guard !self.nativeHeartRateFlowOwnsController else {
-                    self.appendLog("Ignored legacy Watch HR while native HealthKit owns HR")
                     return
                 }
                 HeartRateObservationalTee.deliver(
@@ -9731,7 +9517,6 @@ extension BluetoothManager: WCSessionDelegate {
                             recordPredictorInput: { self.recordHrSample($0) }
                         )
                         // hrStreamingActive will be derived by the staleness timer
-                        self.appendLog("HR value: \(bpm)")
                         self.logTrainingEvent("hr_sample", fields: [
                             "hr_bpm": bpm,
                             "source": "watch_payload"
@@ -9755,11 +9540,9 @@ extension BluetoothManager: WCSessionDelegate {
             }()
             DispatchQueue.main.async {
                 guard !self.nativeHeartRateFlowOwnsController else {
-                    self.appendLog("Ignored legacy Watch workout UUID while native HealthKit owns workout")
                     return
                 }
                 self.attachHealthkitWorkoutUUID(uuid, endedAt: endDate)
-                self.appendLog("Workout UUID received: \(uuid)")
                 self.logTrainingEvent("workout_uuid_received", fields: [
                     "workout_uuid": uuid,
                     "ended_at": endDate?.timeIntervalSince1970 ?? -1
@@ -9773,19 +9556,16 @@ extension BluetoothManager: WCSessionDelegate {
                 switch status.lowercased() {
                 case "hr_started":
                     self.hrPermissionGranted = true
-                    self.appendLog("HR stream started; permission granted")
                     self.logTrainingEvent("watch_status", fields: ["status": "hr_started"])
                     lifecycleTransition = .started
                 case "hr_stopped":
                     // Keep permission as last-known; clear last timestamp to mark no data
                     self.hrLastValueAt = nil
                     self.heartRateBPM = 0
-                    self.appendLog("HR stream stopped")
                     self.logTrainingEvent("watch_status", fields: ["status": "hr_stopped"])
                     lifecycleTransition = .stopped
                 case "watch_ok":
                     self.watchReachable = true
-                    self.appendLog("Watch OK")
                     self.logTrainingEvent("watch_status", fields: ["status": "watch_ok"])
                 default:
                     break
