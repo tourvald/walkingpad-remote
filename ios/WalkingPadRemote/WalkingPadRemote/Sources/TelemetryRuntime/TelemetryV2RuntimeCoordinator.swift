@@ -502,6 +502,12 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         let session: TelemetryV2ActiveSession
     }
 
+    private struct StoreReadinessWaiter {
+        let isReady: @Sendable (any TelemetryRecorderPersistence) -> Bool
+        let continuation: CheckedContinuation<Void, Error>
+        var timeout: Task<Void, Never>?
+    }
+
     private static let pendingEvidenceCapacity = 256
     private let lock = NSLock()
     private let persistenceFactory: PersistenceFactory
@@ -515,6 +521,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private var legacyMigrationStarted = false
     private var latestTerminalAnalysisResult:
         (sessionID: SessionID, result: PostWorkoutAnalysisTriggerResult)?
+    private let storeReadinessTimeout: @Sendable () async throws -> Void
+    // Only suspended capability callers are retained; every terminal path removes them.
+    private var storeReadinessWaiters: [UUID: StoreReadinessWaiter] = [:]
     private var preparationStarted = false
     private var preparationFailed = false
     private var generation: UInt64 = 0
@@ -547,7 +556,10 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         statusHandler: StatusHandler? = nil,
         writerHealthHandler: WriterHealthHandler? = nil,
         projectionChangeHandler: ProjectionChangeHandler? = nil,
-        installationDidPublishForTesting: @escaping @Sendable (SessionID) -> Void
+        installationDidPublishForTesting: @escaping @Sendable (SessionID) -> Void,
+        storeReadinessTimeout: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .seconds(5))
+        }
     ) {
         self.persistenceFactory = persistenceFactory
         self.runtimeClock = runtimeClock
@@ -555,6 +567,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         self.writerHealthHandler = writerHealthHandler
         self.projectionChangeHandler = projectionChangeHandler
         self.installationDidPublishForTesting = installationDidPublishForTesting
+        self.storeReadinessTimeout = storeReadinessTimeout
     }
 
     private init(
@@ -563,7 +576,10 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         statusHandler: StatusHandler?,
         writerHealthHandler: WriterHealthHandler?,
         projectionChangeHandler: ProjectionChangeHandler?,
-        installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?
+        installationDidPublishForTesting: (@Sendable (SessionID) -> Void)?,
+        storeReadinessTimeout: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .seconds(5))
+        }
     ) {
         self.persistenceFactory = persistenceFactory
         self.runtimeClock = runtimeClock
@@ -571,6 +587,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         self.writerHealthHandler = writerHealthHandler
         self.projectionChangeHandler = projectionChangeHandler
         self.installationDidPublishForTesting = installationDidPublishForTesting
+        self.storeReadinessTimeout = storeReadinessTimeout
     }
 
     public var status: TelemetryV2RuntimeStatus {
@@ -636,31 +653,73 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private func requireWorkoutReadCapability() async throws
         -> any TelemetryWorkoutReadCapability
     {
-        prepareStoreAndRecover()
-        for _ in 0..<250 {
-            try Task.checkCancellation()
-            if let reader = workoutReadCapability() { return reader }
-            if case let .unavailable(reason) = status {
-                throw TelemetryWorkoutReadError.unavailable(reason)
-            }
-            try await Task.sleep(for: .milliseconds(20))
+        try await waitForStoreCapability { $0 is any TelemetryWorkoutReadCapability }
+        try Task.checkCancellation()
+        guard let reader = workoutReadCapability() else {
+            throw TelemetryWorkoutReadError.unavailable("telemetry-v2-store-prepare-timeout")
         }
-        throw TelemetryWorkoutReadError.unavailable("telemetry-v2-store-prepare-timeout")
+        return reader
     }
 
     private func requireHealthKitWorkoutLinkageCapability() async throws
         -> any TelemetryHealthKitWorkoutLinkageCapability
     {
-        prepareStoreAndRecover()
-        for _ in 0..<250 {
-            try Task.checkCancellation()
-            if let linkage = healthKitWorkoutLinkageCapability() { return linkage }
-            if case let .unavailable(reason) = status {
-                throw TelemetryWorkoutReadError.unavailable(reason)
-            }
-            try await Task.sleep(for: .milliseconds(20))
+        try await waitForStoreCapability { $0 is any TelemetryHealthKitWorkoutLinkageCapability }
+        try Task.checkCancellation()
+        guard let linkage = healthKitWorkoutLinkageCapability() else {
+            throw TelemetryWorkoutReadError.unavailable("telemetry-v2-store-prepare-timeout")
         }
-        throw TelemetryWorkoutReadError.unavailable("telemetry-v2-store-prepare-timeout")
+        return linkage
+    }
+
+    var storeReadinessWaiterCount: Int { withLock { storeReadinessWaiters.count } }
+
+    private func waitForStoreCapability(
+        _ isReady: @escaping @Sendable (any TelemetryRecorderPersistence) -> Bool
+    ) async throws {
+        prepareStoreAndRecover()
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let immediate: Result<Void, Error>? = withLock {
+                    if Task.isCancelled { return .failure(CancellationError()) }
+                    if let persistence, isReady(persistence) { return .success(()) }
+                    if case let .unavailable(reason) = storedStatus {
+                        return .failure(TelemetryWorkoutReadError.unavailable(reason))
+                    }
+                    storeReadinessWaiters[id] = StoreReadinessWaiter(
+                        isReady: isReady, continuation: continuation, timeout: nil
+                    )
+                    return nil
+                }
+                if let immediate {
+                    continuation.resume(with: immediate)
+                    return
+                }
+                let deadline = storeReadinessTimeout
+                let timeout = Task { [weak self] in
+                    do { try await deadline() } catch { return }
+                    self?.resolveStoreReadinessWaiter(id, result: .failure(
+                        TelemetryWorkoutReadError.unavailable("telemetry-v2-store-prepare-timeout")
+                    ))
+                }
+                let retained = withLock {
+                    guard storeReadinessWaiters[id] != nil else { return false }
+                    storeReadinessWaiters[id]?.timeout = timeout
+                    return true
+                }
+                if !retained { timeout.cancel() }
+            }
+        } onCancel: {
+            self.resolveStoreReadinessWaiter(id, result: .failure(CancellationError()))
+        }
+    }
+
+    private func resolveStoreReadinessWaiter(_ id: UUID, result: Result<Void, Error>) {
+        guard let waiter = withLock({ storeReadinessWaiters.removeValue(forKey: id) }) else { return }
+        // Cancellation handlers can run concurrently; never cancel/resume under the lock.
+        waiter.timeout?.cancel()
+        waiter.continuation.resume(with: result)
     }
 
     public func prepareStoreAndRecover() {
@@ -900,11 +959,17 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     }
 
     private func storePrepared(_ persistence: any TelemetryRecorderPersistence) {
-        withLock {
+        let ready: [StoreReadinessWaiter] = withLock {
             self.persistence = persistence
             if pendingSession == nil, activeSession == nil, storedStatus == .preparing {
                 setStatusLocked(.idle)
             }
+            let ids = storeReadinessWaiters.compactMap { $0.value.isReady(persistence) ? $0.key : nil }
+            return ids.compactMap { storeReadinessWaiters.removeValue(forKey: $0) }
+        }
+        ready.forEach {
+            $0.timeout?.cancel()
+            $0.continuation.resume()
         }
         launchPendingSessionIfPossible()
         launchLegacyMigrationIfPossible()
@@ -933,11 +998,19 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     }
 
     private func storePreparationFailed(_ error: Error) {
-        withLock {
+        let reason = "store-or-recovery-failed:\(Self.errorCode(error))"
+        let failed: [StoreReadinessWaiter] = withLock {
             preparationFailed = true
             pendingSession = nil
             storedOperationalState = nil
-            setStatusLocked(.unavailable("store-or-recovery-failed:\(Self.errorCode(error))"))
+            setStatusLocked(.unavailable(reason))
+            let failed = Array(storeReadinessWaiters.values)
+            storeReadinessWaiters.removeAll()
+            return failed
+        }
+        failed.forEach {
+            $0.timeout?.cancel()
+            $0.continuation.resume(throwing: TelemetryWorkoutReadError.unavailable(reason))
         }
     }
 
@@ -1011,11 +1084,19 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     }
 
     private func sessionStartFailed(_ error: Error, generation: UInt64) {
-        withLock {
-            guard self.generation == generation else { return }
+        let reason = "session-start-failed:\(Self.errorCode(error))"
+        let failed: [StoreReadinessWaiter] = withLock {
+            guard self.generation == generation else { return [] }
             pendingSession = nil
             storedOperationalState = nil
-            setStatusLocked(.unavailable("session-start-failed:\(Self.errorCode(error))"))
+            setStatusLocked(.unavailable(reason))
+            let failed = Array(storeReadinessWaiters.values)
+            storeReadinessWaiters.removeAll()
+            return failed
+        }
+        failed.forEach {
+            $0.timeout?.cancel()
+            $0.continuation.resume(throwing: TelemetryWorkoutReadError.unavailable(reason))
         }
     }
 
