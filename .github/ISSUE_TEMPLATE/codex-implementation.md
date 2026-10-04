@@ -9,8 +9,17 @@ assignees: ""
 ## Parent and dependency
 
 - Parent:
-- Depends on:
 - Safety/data classification:
+
+## Goal eligibility
+
+- Goal eligibility: needs-spec <!-- ready | human-gate | needs-spec | blocked -->
+- Depends on:
+- Verification surface:
+- No-code completion allowed: no
+- Human-stop conditions:
+
+Classification follows the [canonical workflow](https://github.com/tourvald/walkingpad-remote/blob/main/docs/engineering/codex-github-workflow.md#goal-eligibility); it does not activate a Goal or grant merge authority.
 
 ## Goal
 

@@ -187,15 +187,19 @@ def main() -> int:
     if PR_REVIEW.is_file() and "scripts/code_growth_report.py" not in PR_REVIEW.read_text(encoding="utf-8"):
         errors.append("PR review skill is missing code-growth evidence")
 
-    autonomous_markers = (
+    goal_markers = (
         (WORKFLOW, "## Owner-activated autonomous Goal mode"),
+        (WORKFLOW, "### Goal eligibility"),
+        (WORKFLOW, "## Nightly Goal Batch"),
+        (WORKFLOW, "## Morning PM Pass"),
+        (ISSUE_TEMPLATE, "## Goal eligibility"),
         (LIFECYCLE, "owner-activated autonomous Goal"),
         (PR_REVIEW, "## Autonomous Goal merge exception"),
     )
-    for policy_file, marker in autonomous_markers:
+    for policy_file, marker in goal_markers:
         if policy_file.is_file() and marker not in policy_file.read_text(encoding="utf-8"):
             errors.append(
-                f"missing autonomous Goal contract in {policy_file.relative_to(ROOT)}: {marker}"
+                f"missing Goal contract section in {policy_file.relative_to(ROOT)}: {marker}"
             )
 
     instruction_files = discover_instruction_files()
