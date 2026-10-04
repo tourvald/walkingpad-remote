@@ -5,6 +5,91 @@ import TelemetryDomain
 import XCTest
 
 final class TelemetryWorkoutReadAndExportTests: XCTestCase {
+    func testTrivialNativeWorkoutsRemainQueryableButDoNotDegradeStatistics() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let profile = "meaningful-native"
+        for (index, duration) in [8.0, 13, 32, 59.999].enumerated() {
+            try await store.insertSession(session(
+                index: 50_000 + index, profile: profile,
+                startedAt: Date(timeIntervalSince1970: 1_900_000_000 + Double(index)),
+                durationSeconds: duration
+            ))
+        }
+        let filter = WorkoutReadFilter(profileScope: .exact(profile))
+        let page = try await store.fetchWorkoutHistoryPage(filter: filter, after: nil, limit: 100)
+        XCTAssertEqual(page.items.count, 4)
+        let statistics = try await store.fetchWorkoutStatistics(filter: filter, batchSize: 1)
+        XCTAssertEqual(statistics.queryableWorkoutCount, 4)
+        XCTAssertEqual(statistics.includedWorkoutCount, 0)
+        XCTAssertEqual(statistics.excludedWorkoutCount, 0)
+        XCTAssertTrue(statistics.exclusionReasonCounts.isEmpty)
+        XCTAssertEqual(statistics.workoutsWithUnavailableDuration, 0)
+        XCTAssertEqual(statistics.workoutsWithUnavailableZones, 0)
+        XCTAssertNil(statistics.totalDurationSeconds)
+        XCTAssertFalse(statistics.isPartial)
+        let artifact = try await store.exportWorkouts(WorkoutExportRequest(filter: filter, selection: .all))
+        defer { try? FileManager.default.removeItem(at: artifact.directoryURL) }
+        XCTAssertEqual(artifact.exportedWorkoutCount, 4)
+        let counts = try await store.counts()
+        XCTAssertEqual(counts.sessions, 4)
+    }
+
+    func testMeaningfulImportedStatisticsPreserveOnlyGenuineExclusions() async throws {
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let durations: [Int?] = [nil, 8, 32, 60, 1383, 90]
+        let candidates = durations.enumerated().map { index, duration in
+            LegacyWorkoutCandidateDraft(
+                candidateID: "meaningful-import-\(index)", sourceItemIdentityKey: "meaningful-item-\(index)",
+                sourceID: "meaningful-imports", origin: .workoutHistory,
+                profileLocalIdentifier: "meaningful-imports",
+                workoutIdentifier: index == 5 ? nil : "meaningful-workout-\(index)",
+                healthKitWorkoutIdentifier: nil, stableLegacySessionIdentifier: nil,
+                startedAt: now.addingTimeInterval(Double(index)), endedAt: nil,
+                identityUncertain: index == 5, possibleDuplicate: false,
+                summary: LegacyWorkoutCandidateSummary(
+                    timestampDerivedDurationMicroseconds: nil, legacySummaryDurationSeconds: duration,
+                    targetBeatsPerMinute: nil, timestampDerivedAverageHeartRateBeatsPerMinute: nil,
+                    legacySummaryAverageHeartRateBeatsPerMinute: nil,
+                    legacyEstimatedAverageSpeedKilometresPerHour: nil,
+                    timestampDerivedZoneMicroseconds: nil,
+                    legacySummaryZoneSeconds: [0, duration, 0, 0, 0],
+                    heartRateCoveredMicroseconds: nil, heartRateUncoveredMicroseconds: nil,
+                    heartRateSampleCount: 0, missingTimestampCount: 0, malformedRecordCount: 0,
+                    ignoredStepFieldCount: 0, legacySessionEvidenceComplete: true,
+                    warnings: [], conflicts: []
+                )
+            )
+        }
+        try await importCandidates(Array(candidates.prefix(5)), sourceID: "meaningful-imports", store: store, now: now)
+        let filter = WorkoutReadFilter(profileScope: .exact("meaningful-imports"))
+        let page = try await store.fetchWorkoutHistoryPage(filter: filter, after: nil, limit: 100)
+        XCTAssertEqual(page.items.count, 5)
+        XCTAssertEqual(page.items.filter(\.isMeaningfulWorkout).count, 2)
+        for size in [1, 2, 3, 10, 100] {
+            let statistics = try await store.fetchWorkoutStatistics(filter: filter, batchSize: size)
+            XCTAssertEqual(statistics.queryableWorkoutCount, 5)
+            XCTAssertEqual(statistics.includedWorkoutCount, 2)
+            XCTAssertEqual(statistics.totalDurationSeconds, 1443)
+            XCTAssertEqual(statistics.zoneSeconds, [0, 1443, 0, 0, 0])
+            XCTAssertEqual(statistics.excludedWorkoutCount, 0)
+            XCTAssertFalse(statistics.isPartial)
+        }
+        // A meaningful identity-uncertain import retains the existing exclusion semantics.
+        _ = try await store.commitLegacyMigrationBatch(
+            sourceID: "meaningful-imports", records: [], candidates: [candidates[5]],
+            checkpointByteOffset: 200, checkpointRecordIndex: 6, parsedRecordCount: 6,
+            malformedRecordCount: 0, warningCount: 0, aggregateStatePayload: Data("{}".utf8),
+            completing: true, now: now
+        )
+        _ = try await store.reconcileLegacyWorkoutCandidates()
+        let excluded = try await store.fetchWorkoutStatistics(filter: filter, batchSize: 1)
+        XCTAssertEqual(excluded.includedWorkoutCount, 2)
+        XCTAssertEqual(excluded.excludedWorkoutCount, 1)
+        XCTAssertEqual(excluded.exclusionReasonCounts[.identity], 1)
+        XCTAssertTrue(excluded.isPartial)
+    }
+
     func testCurrentWeekFactualDurationSurvivesLowAnalysisAndMissingSpeedAfterReopen() async throws {
         var calendar = Calendar(identifier: .iso8601)
         calendar.timeZone = TimeZone(identifier: "Europe/Moscow")!
@@ -78,7 +163,7 @@ final class TelemetryWorkoutReadAndExportTests: XCTestCase {
                 let workout = session(
                     index: 41_000 + index, profile: "fractional-zones",
                     startedAt: Date(timeIntervalSince1970: 1_900_010_000 + Double(index)),
-                    configuration: config, durationSeconds: duration
+                    configuration: config, durationSeconds: 60
                 )
                 var elapsed = 0.0
                 let hr = seconds.enumerated().map { zone, value in

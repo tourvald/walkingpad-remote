@@ -230,6 +230,7 @@ public extension TelemetryStore {
                     exclusionReasonCounts[statisticsExclusionReason(for: item), default: 0] += 1
                     continue
                 }
+                guard item.isMeaningfulWorkout else { continue }
                 includedWorkoutCount += 1
                 if let duration = item.durationSeconds {
                     durationTotal += duration

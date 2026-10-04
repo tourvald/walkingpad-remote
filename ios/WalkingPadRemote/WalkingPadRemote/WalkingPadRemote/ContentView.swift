@@ -3669,7 +3669,7 @@ private struct WorkoutStatsView: View {
                     }
 
                     WorkoutHistoryCard(
-                        entries: manager.telemetryV2WorkoutHistory,
+                        entries: manager.telemetryV2WorkoutHistory.filter(\.isMeaningfulWorkout),
                         readState: manager.telemetryV2WorkoutHistoryState,
                         hasMore: manager.telemetryV2WorkoutHistoryHasMore,
                         exportingWorkoutID: exportingWorkoutID,
@@ -4187,17 +4187,16 @@ private struct WorkoutHistoryCard: View {
                         if entry.id != entries.last?.id { Divider() }
                     }
 
-                    if hasMore {
-                        Button("Показать ещё", action: onLoadMore)
-                            .buttonStyle(.bordered)
-                            .frame(maxWidth: .infinity)
-                    }
-
                     if case let .failed(message) = readState {
                         Text("Следующая страница недоступна: \(message)")
                             .font(.caption2)
                             .foregroundColor(.red)
                     }
+                }
+                if hasMore {
+                    Button("Показать ещё", action: onLoadMore)
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
                 }
             }
         }

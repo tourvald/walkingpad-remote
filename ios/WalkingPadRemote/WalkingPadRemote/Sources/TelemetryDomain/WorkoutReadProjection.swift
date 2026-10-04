@@ -183,6 +183,12 @@ public enum WorkoutSummaryAnalysisState: Equatable, Sendable {
 }
 
 public extension WorkoutHistoryProjection {
+    /// Product eligibility only; diagnostic projections and persisted evidence stay intact.
+    var isMeaningfulWorkout: Bool {
+        guard quality.includedInStatistics, let durationSeconds else { return false }
+        return durationSeconds.isFinite && durationSeconds >= 60
+    }
+
     func summaryAnalysisState(
         terminalResult: PostWorkoutAnalysisTriggerResult?
     ) -> WorkoutSummaryAnalysisState {

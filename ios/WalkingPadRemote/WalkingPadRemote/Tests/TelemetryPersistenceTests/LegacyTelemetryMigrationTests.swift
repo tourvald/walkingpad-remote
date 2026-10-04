@@ -1675,12 +1675,13 @@ final class LegacyTelemetryMigrationTests: XCTestCase {
         XCTAssertNil(estimated.averageHeartRate)
         let statistics = try await store!.fetchWorkoutStatistics(filter: filter, batchSize: 20)
         XCTAssertEqual(statistics.queryableWorkoutCount, first.items.count)
-        XCTAssertEqual(statistics.includedWorkoutCount, first.items.filter { $0.quality.includedInStatistics }.count)
-        XCTAssertEqual(statistics.workoutsWithUnavailableZones, first.items.filter {
-            $0.quality.includedInStatistics && $0.zoneSeconds == nil
-        }.count)
-        XCTAssertEqual(statistics.zoneSeconds, [0, 7, 0, 0, 0])
-        XCTAssertTrue(statistics.isPartial)
+        // Short historical fragments remain diagnostic evidence, outside product aggregates.
+        XCTAssertTrue(first.items.allSatisfy { !$0.isMeaningfulWorkout })
+        XCTAssertEqual(statistics.includedWorkoutCount, 0)
+        XCTAssertEqual(statistics.excludedWorkoutCount, 0)
+        XCTAssertEqual(statistics.workoutsWithUnavailableZones, 0)
+        XCTAssertEqual(statistics.zoneSeconds, [nil, nil, nil, nil, nil])
+        XCTAssertFalse(statistics.isPartial)
         let unchanged = try await store!.fetchLegacyImportedWorkouts()
         XCTAssertEqual(unchanged, persisted)
         store = nil
