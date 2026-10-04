@@ -93,6 +93,75 @@ a safety challenge, physical evidence, or other external approval required by th
 Independent review requirements belong to
 [walkingpad-pr-review](../../.agents/skills/walkingpad-pr-review/SKILL.md).
 
+## Decision authority and autonomy modes
+
+Autonomy is defined by **authority, reversibility, and risk**, not by whether a
+decision feels important. When the current Issue and repository contracts
+already determine the required behavior, the root should make ordinary
+engineering decisions itself. Human/PM involvement is required when continuing
+correctly needs **new authority**, not merely because several technically valid
+implementations exist.
+
+The modes below describe the maximum autonomy available after all more-specific
+repository/Issue rules are applied:
+
+| Mode | Meaning | Terminal behavior |
+| --- | --- | --- |
+| **A0 — autonomous discovery / non-behavioral completion** | Read-only discovery, evidence work, or no-code disposition explicitly authorized by the Issue. | May complete/disposition autonomously when the Issue defines sufficient evidence. |
+| **A1 — reviewed autonomous implementation** | `goal:ready` work inside an explicitly owner-activated autonomous Goal. | Implement, verify, obtain required frozen-diff review, correct in-contract findings, and self-merge only through every #170/#171 gate. |
+| **A2 — human merge gate** | `goal:human-gate` work or any task downgraded by a more-specific human-stop rule. | Perform the full engineering/review/correction loop, then leave one verified Draft as `BLOCKED FOR PM REVIEW`; do not Mark Ready or merge. |
+| **A3 — PM decision required** | Continuing would require authority that the current contract does not provide. | Stop at `BLOCKED FOR PM DECISION` with the smallest missing decision stated precisely. |
+
+Classification does **not** activate a Goal or grant merge authority by itself.
+A1 self-merge exists only under the explicit owner-activated Goal contract
+below. Repository instructions, subsystem safety rules, the live Issue, active
+PM decisions, #170 tripwires, or #171 human-stop categories may always downgrade
+autonomy. The root may never upgrade a human-gated task on its own.
+
+### Decisions Codex should make without PM relay
+
+When behavior is already authorized, the root should decide and proceed on:
+
+- implementation structure, naming, local abstractions, algorithms, and data structures;
+- ordinary refactors required to satisfy the Issue while preserving contracts;
+- deterministic tests, fixtures, and focused verification strategy;
+- bounded performance/cache/buffering choices that do not change product/data semantics;
+- reviewer-requested corrections whose required behavior is already determined;
+- whether a bounded read-only mapper/researcher/challenger is useful;
+- ordering of focused checks and documentation needed to describe the implemented contract.
+
+Do **not** ask PM to choose between implementation A and B merely because both
+are plausible. When evidence can decide, gather evidence and decide. When tests
+can freeze an already specified behavior, write the tests and decide.
+
+A reviewer `FIX` is normally another input to the same Goal: correct the
+finding inside scope, rerun the invalidated checks, and obtain fresh review for
+the corrected exact head when required. Escalate only when the finding itself
+requires new authority or triggers an existing #170/#171 human stop. Difficulty,
+unfamiliar code, multiple good designs, or an arbitrary number of correction
+loops are not PM-stop reasons by themselves.
+
+### Mandatory authority hard stops
+
+In addition to every existing #170/#171 stop category, request a binding PM
+decision when continuing requires any of the following:
+
+1. **New product semantics** — the contract does not determine materially different user-visible behavior.
+2. **Safety authority change** — expanding/weakening a safety envelope, changing fail-closed/fail-open behavior, motion/Stop authorization, device-truth requirements, or another safety invariant.
+3. **Destructive or unreconstructable user-data action** — deletion, destructive migration/backfill, or rewrite whose truth cannot be recovered safely.
+4. **Privacy/security/trust-boundary change** — new permissions, credential scope, secret handling, external data sharing, health/privacy semantics, authentication, or materially broader exposure.
+5. **Production, hardware, or external irreversible action** not already explicitly authorized.
+6. **Unauthorized scope expansion** into behavior owned by another Issue/subsystem or an adjacent problem not required for completion.
+7. **Contradictory authoritative requirements** that cannot all be satisfied.
+8. **Factual/causal ambiguity** that would require fabricated provenance, identity, measured truth, safety state, or certainty.
+9. **Unavailable mandatory evidence** required by the acceptance/safety contract.
+10. **Invalidating base drift** that changes task meaning and cannot be resolved mechanically inside the existing contract.
+
+Git-backed code changes are usually reversible and therefore good candidates
+for autonomous engineering judgment, but reversibility never grants authority
+to change safety, privacy/security, destructive-data, production, or product
+semantics.
+
 ## Implementation Issue shape
 
 Use the [implementation template](../../.github/ISSUE_TEMPLATE/codex-implementation.md) for task behavior, checks, non-goals, and active decisions. Link canonical contracts instead of copying lifecycle, safety, or review procedures.
@@ -103,10 +172,10 @@ The Issue's `Goal eligibility` block is the single readiness source. Use the val
 
 | Class | Issue value | Eligibility |
 | --- | --- | --- |
-| `goal:needs-spec` | `needs-spec` | Resolve product, UX, architecture, safety, evidence interpretation, or schema decisions manually before unattended execution. |
-| `goal:ready` | `ready` | Explicit behavior, objective acceptance checks, known dependencies, programmatically available evidence, bounded allowed/forbidden scope, no unresolved product decision or physical/device/user interaction, and eligibility for self-merge under the autonomous contract below. |
-| `goal:human-gate` | `human-gate` | Deterministic authorized investigation/implementation and verification may proceed, but a mandatory human-stop category requires final PM review. Leave a verified Draft as `BLOCKED FOR PM REVIEW`. |
-| `goal:blocked` | `blocked` | A named unmet prerequisite prevents useful progress: predecessor, physical/field evidence, external source/permission, or owner decision. Exclude it from the active batch. |
+| `goal:needs-spec` | `needs-spec` | **A3.** Resolve product, UX, architecture, safety, evidence interpretation, or schema decisions manually before unattended execution. |
+| `goal:ready` | `ready` | **A1 when an owner-activated Goal grants authority.** Explicit behavior, objective acceptance checks, known dependencies, programmatically available evidence, bounded allowed/forbidden scope, no unresolved product decision or physical/device/user interaction, and eligibility for self-merge under the autonomous contract below. |
+| `goal:human-gate` | `human-gate` | **A2.** Deterministic authorized investigation/implementation, review corrections, and verification may proceed, but a mandatory human-stop category requires final PM review. Leave a verified Draft as `BLOCKED FOR PM REVIEW`. |
+| `goal:blocked` | `blocked` | **A3 / externally blocked.** A named unmet prerequisite prevents useful progress: predecessor, physical/field evidence, external source/permission, or owner decision. Exclude it from the active batch. |
 
 Use `needs-spec` for contract definition; use `blocked` when a concrete prerequisite prevents progress. A human-gated task with unavailable evidence is blocked until that evidence is available; classification cannot waive a gate. Keep dependencies in the same block, name the verification surface, explicitly allow or forbid no-code completion, and record task-specific human stops. Product semantics and acceptance evidence remain in the existing Issue sections.
 
