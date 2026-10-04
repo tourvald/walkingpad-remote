@@ -7,6 +7,36 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
+    func testUnavailableSessionStartResolvesAlreadyWaitingLinkage() async throws {
+        let persistence = RuntimePersistence() // Read capability exists; linkage is unavailable.
+        let prepared = expectation(description: "Store prepared")
+        let registered = expectation(description: "Linkage waiter registered")
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: { persistence },
+            statusHandler: { if $0 == .idle { prepared.fulfill() } },
+            installationDidPublishForTesting: { _ in },
+            storeReadinessTimeout: { registered.fulfill(); try await Task.sleep(for: .seconds(5)) }
+        )
+        coordinator.prepareStoreAndRecover()
+        await fulfillment(of: [prepared], timeout: 5)
+        let linkage = Task {
+            try await coordinator.associateHealthKitWorkout(sessionID: SessionID(), workoutIdentifier: UUID())
+        }
+        await fulfillment(of: [registered], timeout: 5)
+        XCTAssertEqual(coordinator.storeReadinessWaiterCount, 1)
+        // Invalid configuration encoding exercises the existing session-start unavailable path.
+        coordinator.beginSession(Self.descriptor(maximumStepKilometresPerHour: .nan))
+        do { try await linkage.value; XCTFail("Unavailable session start must fail the pending caller") }
+        catch let error as TelemetryWorkoutReadError {
+            guard case let .unavailable(reason) = error else { return XCTFail("Wrong failure") }
+            XCTAssertTrue(reason.hasPrefix("session-start-failed:"), reason)
+            XCTAssertEqual(coordinator.status, .unavailable(reason))
+        }
+        XCTAssertEqual(coordinator.storeReadinessWaiterCount, 0)
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.beginCallCount, 0)
+    }
+
     func testQualifyingPreflightResultKeepsExactIDsAndPrecedesItsCausalUse() async throws {
         let persistence = RuntimePersistence()
         let factoryGate = DispatchSemaphore(value: 0)
@@ -1352,7 +1382,8 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         legacySessionID: UUID? = UUID(uuidString: "10000000-0000-0000-0000-000000000030"),
         startedAt: Date = Date(timeIntervalSince1970: 1_000),
         heartRateProviderKind: String = "legacyWatchWorkoutStream",
-        heartRateProviderStableLocalKey: String = "watch-session"
+        heartRateProviderStableLocalKey: String = "watch-session",
+        maximumStepKilometresPerHour: Double = 0.4
     ) -> TelemetryV2SessionDescriptor {
         TelemetryV2SessionDescriptor(
             sessionID: TelemetryV2SessionDescriptor.sessionID(
@@ -1373,7 +1404,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
                 durationMinutes: 30,
                 decisionIntervalSeconds: 10,
                 adaptiveStepEnabled: true,
-                maximumStepKilometresPerHour: 0.4,
+                maximumStepKilometresPerHour: maximumStepKilometresPerHour,
                 heartRateZones: [100, 120, 140, 160],
                 cooldownTargetHeartRate: 100,
                 cooldownMinimumSpeedKilometresPerHour: 1,

@@ -1084,11 +1084,19 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     }
 
     private func sessionStartFailed(_ error: Error, generation: UInt64) {
-        withLock {
-            guard self.generation == generation else { return }
+        let reason = "session-start-failed:\(Self.errorCode(error))"
+        let failed: [StoreReadinessWaiter] = withLock {
+            guard self.generation == generation else { return [] }
             pendingSession = nil
             storedOperationalState = nil
-            setStatusLocked(.unavailable("session-start-failed:\(Self.errorCode(error))"))
+            setStatusLocked(.unavailable(reason))
+            let failed = Array(storeReadinessWaiters.values)
+            storeReadinessWaiters.removeAll()
+            return failed
+        }
+        failed.forEach {
+            $0.timeout?.cancel()
+            $0.continuation.resume(throwing: TelemetryWorkoutReadError.unavailable(reason))
         }
     }
 
