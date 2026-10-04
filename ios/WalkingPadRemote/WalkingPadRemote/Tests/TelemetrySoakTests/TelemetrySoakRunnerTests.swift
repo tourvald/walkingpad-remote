@@ -100,7 +100,9 @@ final class TelemetrySoakRunnerTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(checksum, "8ccbdd055de34672")
+        // The harness reflects the full cooldown output, including diagnostic telemetry.
+        // The additive factual-speed properties change this vector without changing control effects.
+        XCTAssertEqual(checksum, "c04d272e8a312b32")
     }
 
     func testSameWorkloadComparisonCapturesFullEvidenceSet() async throws {

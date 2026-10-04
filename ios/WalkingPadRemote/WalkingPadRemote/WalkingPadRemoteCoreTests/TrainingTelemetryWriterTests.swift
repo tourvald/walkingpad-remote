@@ -227,6 +227,59 @@ final class TrainingTelemetryWriterTests: XCTestCase {
         XCTAssertTrue(row.last?.contains("\"cooldown_finish_reason\":\"timeout\"") == true)
     }
 
+    func testCooldownProvenanceSurvivesJsonlAndCsvWithoutUpgradingLegacyRecords() throws {
+        let headers = TrainingTelemetryWriter.trainingCsvHeaders
+        for event in ["cooldown_state", "cooldown_analysis", "cooldown_complete", "cooldown_insufficient"] {
+            for factual: Double? in [3.5, 0, nil] {
+                var payload: [String: Any] = [
+                    "event": event, "cooldown_observed_speed_kmh": factual ?? 4.7,
+                    "cooldown_controller_speed_kmh": 4.7
+                ]
+                payload.merge(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(factualSpeedKmh: factual)) {
+                    _, provenance in provenance
+                }
+                let json = TrainingTelemetryWriter.jsonString(payload)
+                let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+                XCTAssertEqual(parsed["cooldown_speed_source"] as? String,
+                               factual == nil ? "controller_fallback" : "factual")
+                XCTAssertEqual(parsed["cooldown_factual_speed_kmh"] as? Double, factual)
+                let row = TrainingTelemetryWriter.csvRow(sourceFile: "synthetic.jsonl", payload: parsed)
+                XCTAssertEqual(row.count, headers.count)
+                XCTAssertEqual(row[headers.firstIndex(of: "cooldown_speed_source")!],
+                               factual == nil ? "controller_fallback" : "factual")
+                XCTAssertEqual(row[headers.firstIndex(of: "cooldown_factual_speed_kmh")!],
+                               TrainingTelemetryWriter.csvString(factual))
+                XCTAssertEqual(row[headers.firstIndex(of: "cooldown_observed_speed_kmh")!],
+                               TrainingTelemetryWriter.csvString(factual ?? 4.7))
+                XCTAssertEqual(row[headers.firstIndex(of: "cooldown_controller_speed_kmh")!], "4.7")
+            }
+            let legacy = "{\"event\":\"\(event)\",\"cooldown_observed_speed_kmh\":3.5,\"cooldown_controller_speed_kmh\":4.7}"
+            let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(legacy.utf8)) as? [String: Any])
+            let row = TrainingTelemetryWriter.csvRow(sourceFile: "legacy.jsonl", payload: parsed)
+            XCTAssertEqual(row.count, headers.count)
+            XCTAssertEqual(row[headers.firstIndex(of: "cooldown_observed_speed_kmh")!], "3.5")
+            XCTAssertEqual(row[headers.firstIndex(of: "cooldown_controller_speed_kmh")!], "4.7")
+            XCTAssertEqual(row[headers.firstIndex(of: "cooldown_speed_source")!], "")
+            XCTAssertEqual(row[headers.firstIndex(of: "cooldown_factual_speed_kmh")!], "")
+            XCTAssertNil(parsed["cooldown_speed_source"])
+            XCTAssertNil(parsed["cooldown_factual_speed_kmh"])
+        }
+    }
+
+    func testCooldownLoggingUsesCarriedProvenanceWithoutReadingDeviceTruth() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let manager = try String(contentsOf: root.appendingPathComponent("WalkingPadRemote/BluetoothManager.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(manager.range(of: "private func logCooldownTelemetry("))
+        let end = try XCTUnwrap(manager.range(of: "private func trainingLogsDirectoryURL()", range: start.upperBound..<manager.endIndex))
+        let body = String(manager[start.lowerBound..<end.lowerBound])
+        XCTAssertEqual(body.components(separatedBy: "TrainingTelemetryWriter.cooldownSpeedProvenanceFields(").count - 1, 4)
+        XCTAssertEqual(body.components(separatedBy: "factualSpeedKmh: telemetry.factualSpeedKmh").count - 1, 4)
+        for forbidden in ["cooldownSpeedSnapshot(", "latestTreadmillObservation", "connectionEpoch", "sessionStartedAt"] {
+            XCTAssertFalse(body.contains(forbidden), forbidden)
+        }
+        XCTAssertTrue(body.contains("\"speed_kmh\": telemetry.observedSpeedKmh"))
+    }
+
     func testSelectJsonlFilesForExportKeepsOnlyLatestCompletedWorkouts() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)

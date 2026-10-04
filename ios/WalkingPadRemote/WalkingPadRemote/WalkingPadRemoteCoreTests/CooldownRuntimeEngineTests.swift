@@ -1,4 +1,5 @@
 import XCTest
+import TelemetryDomain
 @testable import WalkingPadCoreLogic
 
 final class CooldownRuntimeEngineTests: XCTestCase {
@@ -86,6 +87,87 @@ final class CooldownRuntimeEngineTests: XCTestCase {
                 sessionAggregates: aggregates
             )
         )
+    }
+
+    func testAcceptedSpeedProvenanceFlowsThroughEveryCooldownTelemetryEffect() {
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let start = Date(timeIntervalSince1970: 100)
+        let now = start.addingTimeInterval(30)
+        let cases: [(String, Int?, Double, TreadmillConnectionEpoch, TreadmillProtocolKind, Bool?)] = [
+            ("fresh", 350, 0, epoch, .ftms, nil),
+            ("zero", 0, 0, epoch, .ftms, nil),
+            ("missing", nil, 0, epoch, .ftms, nil),
+            ("stale", 350, 2.001, epoch, .ftms, nil),
+            ("pre_session", 350, 31, epoch, .ftms, nil),
+            ("wrong_epoch", 350, 0, TreadmillConnectionEpoch(rawValue: UUID()), .ftms, nil),
+            ("negative", -1, 0, epoch, .ftms, nil),
+            ("unknown_units", 35, 0, epoch, .walkingPad, true),
+            ("invalid_checksum", 350, 0, epoch, .ftms, false),
+            ("unknown_protocol", 350, 0, epoch, .unknown, nil)
+        ]
+        for (name, raw, age, sourceEpoch, protocolKind, checksum) in cases {
+            var normalizer = TreadmillObservationNormalizer()
+            let observation = normalizer.normalize(TreadmillProviderObservation(
+                protocolKind: protocolKind, connectionEpoch: sourceEpoch,
+                nativeSpeed: raw.map { ReportedTreadmillNativeSpeed(
+                    rawValue: $0, resolution: .hundredths, unit: .kilometresPerHour) },
+                rawDeviceState: nil, deviceState: .moving, checksumValid: checksum,
+                measuredAt: now.addingTimeInterval(-age), receivedAt: now.addingTimeInterval(-age)
+            ), unitsTruth: nil, observationID: ObservationID(), recordedAt: now)
+            let snapshot = HRDomainService.cooldownSpeedSnapshot(
+                desiredSpeedKmh: 3.5, deviceTargetSpeedKmh: 4.7, observation: observation,
+                connectionEpoch: epoch, sessionStartedAt: start, now: now, freshnessLimit: 2)
+            let factual: Double? = name == "fresh" ? 3.5 : (name == "zero" ? 0 : nil)
+            XCTAssertEqual(snapshot.factualSpeedKmh, factual, name)
+            let config = makeConfig()
+            var state = startOutput(config: config).state
+            state.remainingSeconds = 1
+            let output = tickOutput(state: state, config: config, hrBpm: 120,
+                observedSpeedKmh: snapshot.observedSpeedKmh,
+                controllerSpeedKmh: snapshot.controllerSpeedKmh, factualSpeedKmh: snapshot.factualSpeedKmh)
+            var events: [String] = []
+            for effect in output.effects {
+                let values: (String, Double, Double, Double?)
+                switch effect {
+                case let .telemetry(.state(t)):
+                    values = ("state", t.observedSpeedKmh, t.controllerSpeedKmh, t.factualSpeedKmh)
+                    XCTAssertEqual(t.minSpeedOk, factual != nil, name)
+                case let .telemetry(.analysis(t)):
+                    values = ("analysis", t.observedSpeedKmh, t.controllerSpeedKmh, t.factualSpeedKmh)
+                case let .telemetry(.complete(t)):
+                    values = ("complete", t.observedSpeedKmh, t.controllerSpeedKmh, t.factualSpeedKmh)
+                case let .telemetry(.insufficient(t)):
+                    values = ("insufficient", t.observedSpeedKmh, t.controllerSpeedKmh, t.factualSpeedKmh)
+                default: continue
+                }
+                events.append(values.0)
+                XCTAssertEqual(values.1, factual ?? 4.7, name)
+                XCTAssertEqual(values.2, 4.7, name)
+                XCTAssertEqual(values.3, factual, name)
+                let fields = TrainingTelemetryWriter.cooldownSpeedProvenanceFields(factualSpeedKmh: values.3)
+                XCTAssertEqual(fields["cooldown_speed_source"] as? String,
+                               factual == nil ? "controller_fallback" : "factual", name)
+                XCTAssertEqual(fields["cooldown_factual_speed_kmh"] as? Double, factual, name)
+            }
+            XCTAssertEqual(events, ["state", "analysis", "complete", "insufficient"], name)
+            XCTAssertEqual(output.state.finishReason, "timeout", name)
+            XCTAssertEqual(output.state.timeoutBlocker, factual == nil ? "no_factual_speed" : "hr_above_target", name)
+            guard case let .complete(completion)? = output.effects.first(where: {
+                if case .complete = $0 { return true }; return false
+            }) else { return XCTFail("Expected unchanged timeout Stop effect: \(name)") }
+            XCTAssertTrue(completion.shouldStopBelt, name)
+            XCTAssertTrue(completion.shouldStopWatch, name)
+            XCTAssertTrue(completion.shouldStopSession, name)
+        }
+        for invalid in [Double.nan, Double.infinity, -Double.infinity, -1] {
+            let factual = FactualSpeedKilometresPerHour.normalized(
+                from: NativeTreadmillSpeed(value: invalid, unit: .kilometresPerHour),
+                provenance: .decodedDeviceReport)
+            XCTAssertNil(factual)
+            let fields = TrainingTelemetryWriter.cooldownSpeedProvenanceFields(factualSpeedKmh: factual?.value)
+            XCTAssertEqual(fields["cooldown_speed_source"] as? String, "controller_fallback")
+            XCTAssertNil(fields["cooldown_factual_speed_kmh"])
+        }
     }
 
     func testStartEmitsImmediateSpeedReductionWhenAboveMinSpeed() {

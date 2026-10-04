@@ -1485,7 +1485,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
                 "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
                 "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm
-            ])
+            ].merging(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(
+                factualSpeedKmh: telemetry.factualSpeedKmh
+            )) { _, provenance in provenance })
 
         case .analysis(let telemetry):
             logTrainingEvent("cooldown_analysis", fields: [
@@ -1509,7 +1511,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "stable_required_s": telemetry.stableRequiredSeconds,
                 "elapsed_s": telemetry.elapsedSeconds,
                 "planned_s": telemetry.plannedSeconds
-            ])
+            ].merging(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(
+                factualSpeedKmh: telemetry.factualSpeedKmh
+            )) { _, provenance in provenance })
 
         case .complete(let telemetry):
             logTrainingEvent("cooldown_complete", fields: [
@@ -1546,7 +1550,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm,
                 "zone_seconds": telemetry.sessionAggregates.zoneSeconds,
                 "zone4plus_seconds": telemetry.sessionAggregates.zone4PlusSeconds
-            ])
+            ].merging(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(
+                factualSpeedKmh: telemetry.factualSpeedKmh
+            )) { _, provenance in provenance })
 
         case .insufficient(let telemetry):
             logTrainingEvent("cooldown_insufficient", fields: [
@@ -1573,7 +1579,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
                 "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm,
                 "zone4plus_seconds": telemetry.sessionAggregates.zone4PlusSeconds
-            ])
+            ].merging(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(
+                factualSpeedKmh: telemetry.factualSpeedKmh
+            )) { _, provenance in provenance })
         }
     }
 

@@ -133,6 +133,7 @@ enum CooldownRuntimeEngine {
         let targetBpm: Int
         let observedSpeedKmh: Double
         let controllerSpeedKmh: Double
+        let factualSpeedKmh: Double?
         let elapsedSeconds: Int
         let stableSeconds: Int
         let stableRequiredSeconds: Int
@@ -159,6 +160,7 @@ enum CooldownRuntimeEngine {
         let targetBpm: Int
         let observedSpeedKmh: Double
         let controllerSpeedKmh: Double
+        let factualSpeedKmh: Double?
         let hrOk: Bool
         let minSpeedOk: Bool
         let stableOk: Bool
@@ -191,6 +193,7 @@ enum CooldownRuntimeEngine {
         let timeoutBlocker: String
         let observedSpeedKmh: Double
         let controllerSpeedKmh: Double
+        let factualSpeedKmh: Double?
         let firstMinSpeedElapsedSeconds: Int?
         let firstStableElapsedSeconds: Int?
         let belowTargetSeconds: Int
@@ -388,6 +391,7 @@ enum CooldownRuntimeEngine {
             targetBpm: config.targetBpm,
             observedSpeedKmh: observedSpeed,
             controllerSpeedKmh: input.speedSnapshot.controllerSpeedKmh,
+            factualSpeedKmh: input.speedSnapshot.factualSpeedKmh,
             elapsedSeconds: elapsed,
             stableSeconds: nextState.stableSeconds,
             stableRequiredSeconds: 0,
@@ -455,6 +459,7 @@ enum CooldownRuntimeEngine {
                 targetBpm: config.targetBpm,
                 observedSpeedKmh: observedSpeed,
                 controllerSpeedKmh: input.speedSnapshot.controllerSpeedKmh,
+                factualSpeedKmh: input.speedSnapshot.factualSpeedKmh,
                 hrOk: hrOk,
                 minSpeedOk: minSpeedOk,
                 stableOk: stableOk,
@@ -489,6 +494,7 @@ enum CooldownRuntimeEngine {
                     timeoutBlocker: timeoutBlocker,
                     observedSpeedKmh: observedSpeed,
                     controllerSpeedKmh: input.speedSnapshot.controllerSpeedKmh,
+                    factualSpeedKmh: input.speedSnapshot.factualSpeedKmh,
                     firstMinSpeedElapsedSeconds: nextState.firstMinSpeedElapsedSeconds,
                     firstStableElapsedSeconds: nextState.firstStableElapsedSeconds,
                     belowTargetSeconds: nextState.belowTargetSeconds,
