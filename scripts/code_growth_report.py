@@ -50,6 +50,9 @@ def classify_path(path: str) -> str:
         "/Tests/" in normalized
         or "/tests/" in normalized
         or normalized.startswith(("Tests/", "tests/"))
+        or normalized.startswith(
+            "ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemoteCoreTests/"
+        )
         or name.startswith("test_")
     ):
         return "tests"
