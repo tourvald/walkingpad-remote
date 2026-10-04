@@ -166,7 +166,7 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
 
     func testHistoryPreservesLoadedOrderingPaginationAndFailure() {
         XCTAssertTrue(contentSource.contains("ForEach(entries)"))
-        XCTAssertTrue(contentSource.contains("comparison(for: entry, loaded: entries)"))
+        XCTAssertTrue(contentSource.contains("let comparisons = WorkoutHistoryPresentation.comparisons(for: entries)"))
         XCTAssertTrue(contentSource.contains("Button(\"Показать ещё\", action: onLoadMore)"))
         XCTAssertTrue(contentSource.contains("Следующая страница недоступна"))
         XCTAssertTrue(contentSource.contains("История Telemetry V2 недоступна"))
