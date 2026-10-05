@@ -3,7 +3,7 @@
 Status: implemented Analyzer V1 contract.
 
 This document owns the concrete metric definitions and lifecycle for
-`workout-analyzer-v1.1`. The canonical evidence, causal, and safety rules remain
+`workout-analyzer-v1.2`. The canonical evidence, causal, and safety rules remain
 owned by the [data contract](data-contract.md),
 [treadmill truth contract](treadmill-truth-and-command-lifecycle.md), and
 [safety boundary](safety-boundary.md).
@@ -32,6 +32,19 @@ safety policy.
 The session time coordinate is persisted monotonic elapsed time. A valid
 terminal `endedElapsed` is authoritative. Only a terminal record without that
 field falls back to the latest persisted/evidence elapsed coordinate.
+
+For schema 1.0.0 runtime-owned phase transitions and cooldown lifecycle events,
+v1.2 uses persisted monotonic `recordedElapsed`. Old producer `occurredElapsed`
+used wall-clock deltas and is retained unchanged as historical provenance.
+Phase predecessor, repeated-phase, and monotonic out-of-session validation stays
+strict; there is no tolerance, clipping, frame reconstruction, or session exception.
+Cooldown target/outcome selection uses typed cooldown events in that phase's
+monotonic interval, with the saved cooldown target as fallback. Command, ACK,
+response, and control-decision causal coordinates are unchanged.
+
+New runtime phase/lifecycle events use the recorder's monotonic coordinate. One
+terminal wall/elapsed capture supplies finished/lifecycle events and session end,
+so detached finalization cannot shift their boundary. Wall dates remain provenance.
 
 An observation starts at `measuredElapsed` when present. Otherwise it starts at
 `receivedElapsed`, and the fallback is counted. Analyzer V1 performs no
@@ -182,7 +195,7 @@ unavailable because V1 has no typed persisted blocker evidence.
 
 Analyzer metadata includes:
 
-- analyzer version `workout-analyzer-v1.1`;
+- analyzer version `workout-analyzer-v1.2`;
 - detail schema version `1`;
 - metric definition `timestamp-hold-metrics-v2`;
 - accepted telemetry schema range `1.0.0...1.0.0`;
@@ -199,8 +212,8 @@ overwriting evidence or the prior result.
 
 On store preparation, terminal sessions are scanned in deterministic session
 order and results missing the current analyzer identity are recomputed. The
-version bump prevents a stored `workout-analyzer-v1` partial-speed result from
-being reused as the current result. Completed, incomplete, and cancelled
+version bump adds a v1.2 result while preserving v1.1 analyses and all raw evidence;
+current read projections select v1.2. No destructive migration is performed. Completed, incomplete, and cancelled
 sessions are eligible; created, running, and paused sessions are not. Analyzer
 failure is contained as an analysis failure and cannot change recorder
 finalization or product session completion.

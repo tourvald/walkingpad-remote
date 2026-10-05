@@ -1401,6 +1401,58 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         return output
     }
 
+    func testPhaseAndTerminalCaptureIgnoreWallClockOffsetAndDrift() async throws {
+        for reason in ["cooldown_timeout", "manual_stop"] {
+            let persistence = RuntimePersistence()
+            let start = Date(timeIntervalSince1970: 30_000)
+            let clock = ManualRuntimeClock(date: start.addingTimeInterval(120))
+            let coordinator = TelemetryV2RuntimeCoordinator(
+                persistenceFactory: { persistence }, runtimeClock: clock
+            )
+            coordinator.beginSession(Self.descriptor(startedAt: start))
+            try await eventually {
+                if case .active = coordinator.status { return true }
+                return false
+            }
+            clock.advance(by: .seconds(40))
+            clock.shiftWall(by: -300)
+            XCTAssertEqual(coordinator.observeWorkoutPhase(.cooldown, occurredAt: clock.nowDate()),
+                           .enqueued)
+            clock.advance(by: .seconds(20))
+            clock.shiftWall(by: 600)
+            let terminalWall = clock.nowDate()
+            coordinator.endSession(reason: reason)
+            // Finalization scheduling must not move the captured terminal boundary.
+            clock.advance(by: .seconds(5))
+            clock.shiftWall(by: -900)
+            try await eventually { await persistence.finalizations.count == 1 }
+            let snapshot = await persistence.snapshot()
+            let terminal = try XCTUnwrap(snapshot.finalizations.first)
+            XCTAssertEqual(terminal.endedElapsed?.seconds, 60)
+            XCTAssertEqual(terminal.endedAt, terminalWall)
+            let events = snapshot.records.compactMap { record -> WorkoutEvent? in
+                guard case let .event(event) = record else { return nil }
+                return event
+            }
+            let phases = events.filter { $0.kind == .workoutPhase }
+            XCTAssertEqual(phases.map { $0.timestamp.occurredElapsed.seconds }, [0, 40, 60])
+            XCTAssertEqual(phases.map { $0.timestamp.recordedElapsed.seconds }, [0, 40, 60])
+            let terminalEvents = events.filter {
+                if case let .sessionLifecycle(value) = $0.payload.payload {
+                    return value.current == .completed
+                }
+                return $0.kind == .manualStop
+            }
+            XCTAssertEqual(terminalEvents.count, reason == "manual_stop" ? 2 : 1)
+            for event in terminalEvents + [try XCTUnwrap(phases.last)] {
+                XCTAssertEqual(event.timestamp.occurredElapsed, terminal.endedElapsed)
+                XCTAssertEqual(event.timestamp.recordedElapsed, terminal.endedElapsed)
+                XCTAssertEqual(event.timestamp.occurredAt, terminalWall)
+                XCTAssertEqual(event.timestamp.recordedAt, terminalWall)
+            }
+        }
+    }
+
     private static func descriptor(
         legacySessionID: UUID? = UUID(uuidString: "10000000-0000-0000-0000-000000000030"),
         startedAt: Date = Date(timeIntervalSince1970: 1_000),
@@ -1550,6 +1602,10 @@ private final class ManualRuntimeClock: TelemetryV2RuntimeClock, @unchecked Send
 
     func now() -> Duration {
         lock.withLock { elapsed }
+    }
+
+    func shiftWall(by seconds: Double) {
+        lock.withLock { date = date.addingTimeInterval(seconds) }
     }
 
     func advance(by duration: Duration) {

@@ -1295,7 +1295,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     private var lastObservedFrameSecond: Int64?
     private var firstMissingFrameSecond: Int64?
     private var currentWorkoutPhase: WorkoutPhase?
-    private var ending = false
+    private var terminalTimestamp: RecordTimestamp?
     private var stagingLossSummary = TelemetryV2RuntimeCoordinator.PendingLossSummary()
     private var installationState = InstallationState.installing
     private var installationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1452,25 +1452,31 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     }
 
     func emitSessionEnd(reason: String) {
-        let shouldEmit: Bool = withLock {
-            guard !ending else { return false }
-            ending = true
-            return true
+        let terminal: RecordTimestamp? = withLock {
+            guard terminalTimestamp == nil else { return nil }
+            let timestamp = captureTimestamp()
+            terminalTimestamp = timestamp
+            return timestamp
         }
-        guard shouldEmit else { return }
+        guard let terminal else { return }
         if reason == "manual_stop" {
-            _ = observeEvent(
+            _ = yieldEvent(
                 .manualStop(ManualStopEvent(reason: reason)),
-                occurredAt: runtimeClock.nowDate()
+                occurredAt: terminal.recordedAt,
+                sourceID: nil,
+                timestamp: terminal
             )
         }
-        _ = observeWorkoutPhase(.finished, occurredAt: runtimeClock.nowDate())
+        _ = observeWorkoutPhase(
+            .finished, occurredAt: terminal.recordedAt, timestamp: terminal
+        )
         _ = yieldEvent(
             .sessionLifecycle(
                 SessionLifecycleEvent(previous: .running, current: .completed, reason: reason)
             ),
-            occurredAt: runtimeClock.nowDate(),
-            sourceID: nil
+            occurredAt: terminal.recordedAt,
+            sourceID: nil,
+            timestamp: terminal
         )
     }
 
@@ -1478,9 +1484,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         // Product stop schedules this work detached. Only the recorder task waits so
         // staging loss/incomplete intent wins before persistence can finalize.
         await waitForInstallationResolution()
+        let terminal = withLock { terminalTimestamp } ?? captureTimestamp()
         return await recorder.finish(
-            endedAt: runtimeClock.nowDate(),
-            endedElapsed: elapsed()
+            endedAt: terminal.recordedAt,
+            endedElapsed: terminal.elapsed
         )
     }
 
@@ -1665,7 +1672,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
 
     func observeWorkoutPhase(
         _ phase: WorkoutPhase,
-        occurredAt: Date
+        occurredAt: Date,
+        timestamp: RecordTimestamp? = nil
     ) -> TelemetryYieldDisposition {
         let previous: WorkoutPhase? = withLock {
             let previous = currentWorkoutPhase
@@ -1678,7 +1686,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         return yieldEvent(
             .workoutPhase(WorkoutPhaseTransition(previous: previous, current: phase)),
             occurredAt: occurredAt,
-            sourceID: nil
+            sourceID: nil,
+            timestamp: timestamp
         )
     }
 
@@ -1687,7 +1696,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         let currentElapsed = elapsed()
         let currentSecond = max(0, currentElapsed.microseconds / 1_000_000)
         let frame: CanonicalFrame? = withLock {
-            guard !ending,
+            guard terminalTimestamp == nil,
                   lastObservedFrameSecond != currentSecond else { return nil }
             let gap: CanonicalGapBoundary?
             if let firstMissingFrameSecond {
@@ -1740,17 +1749,25 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     private func yieldEvent(
         _ payload: WorkoutEventPayload,
         occurredAt: Date,
-        sourceID: SourceID?
+        sourceID: SourceID?,
+        timestamp: RecordTimestamp? = nil
     ) -> TelemetryYieldDisposition {
-        let currentElapsed = elapsed()
+        let recorded = timestamp ?? captureTimestamp()
+        let occurredElapsed: ElapsedDuration
+        switch payload {
+        case .workoutPhase, .sessionLifecycle, .cooldown, .manualStop:
+            occurredElapsed = recorded.elapsed
+        default:
+            occurredElapsed = elapsed(at: occurredAt)
+        }
         let event = WorkoutEvent(
             recordID: RecordID(),
             sessionID: descriptor.sessionID,
             timestamp: EventTimestamp(
                 occurredAt: occurredAt,
-                recordedAt: runtimeClock.nowDate(),
-                occurredElapsed: elapsed(at: occurredAt),
-                recordedElapsed: currentElapsed
+                recordedAt: recorded.recordedAt,
+                occurredElapsed: occurredElapsed,
+                recordedElapsed: recorded.elapsed
             ),
             sourceID: sourceID,
             payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
@@ -1845,6 +1862,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             freshness: age.seconds <= descriptor.treadmillFreshnessLimitSeconds ? .fresh : .stale,
             provenance: observation.provenance
         )
+    }
+
+    private func captureTimestamp() -> RecordTimestamp {
+        RecordTimestamp(recordedAt: runtimeClock.nowDate(), elapsed: elapsed())
     }
 
     private func elapsed() -> ElapsedDuration {
