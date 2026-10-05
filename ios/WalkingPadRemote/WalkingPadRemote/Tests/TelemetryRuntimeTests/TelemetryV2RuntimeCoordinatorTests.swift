@@ -1401,6 +1401,50 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         return output
     }
 
+    func testStagedRuntimePhasesKeepIngressMonotonicTimeAcrossDelayedPreparation() async throws {
+        let persistence = RuntimePersistence()
+        let factoryGate = DispatchSemaphore(value: 0)
+        defer { factoryGate.signal() }
+        let start = Date(timeIntervalSince1970: 30_000)
+        let clock = ManualRuntimeClock(date: start.addingTimeInterval(120))
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: { factoryGate.wait(); return persistence }, runtimeClock: clock
+        )
+        coordinator.beginSession(Self.descriptor(startedAt: start))
+        clock.advance(by: .seconds(40))
+        clock.shiftWall(by: -300)
+        let cooldownWall = clock.nowDate()
+        XCTAssertEqual(coordinator.observeWorkoutPhase(.cooldown, occurredAt: cooldownWall), .enqueued)
+        XCTAssertEqual(coordinator.observeEvent(
+            .cooldown(.init(lifecycle: .started, targetHeartRate: 110)), occurredAt: cooldownWall
+        ), .enqueued)
+        clock.advance(by: .seconds(20))
+        clock.shiftWall(by: 600)
+        factoryGate.signal()
+        try await eventually {
+            if case .active = coordinator.status { return true }
+            return false
+        }
+        clock.advance(by: .seconds(40))
+        coordinator.endSession(reason: "manual_stop")
+        try await eventually { await persistence.finalizations.count == 1 }
+        let snapshot = await persistence.snapshot()
+        let events = snapshot.records.compactMap { record -> WorkoutEvent? in
+            guard case let .event(event) = record else { return nil }
+            return event
+        }
+        let phases = events.filter { $0.kind == .workoutPhase }
+        XCTAssertEqual(phases.map { $0.timestamp.occurredElapsed.seconds }, [0, 40, 100])
+        XCTAssertEqual(phases.map { $0.timestamp.recordedElapsed.seconds }, [0, 40, 100])
+        XCTAssertEqual(phases.first?.timestamp.occurredAt, start)
+        XCTAssertEqual(phases.first?.timestamp.recordedAt, start.addingTimeInterval(120))
+        let cooldown = try XCTUnwrap(events.first { $0.kind == .cooldown })
+        XCTAssertEqual(cooldown.timestamp.occurredElapsed.seconds, 40)
+        XCTAssertEqual(cooldown.timestamp.recordedElapsed.seconds, 40)
+        XCTAssertEqual(cooldown.timestamp.occurredAt, cooldownWall)
+        XCTAssertEqual(cooldown.timestamp.recordedAt, cooldownWall)
+    }
+
     func testPhaseAndTerminalCaptureIgnoreWallClockOffsetAndDrift() async throws {
         for reason in ["cooldown_timeout", "manual_stop"] {
             let persistence = RuntimePersistence()

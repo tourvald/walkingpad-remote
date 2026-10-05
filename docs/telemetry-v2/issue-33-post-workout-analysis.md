@@ -42,7 +42,9 @@ Cooldown target/outcome selection uses typed cooldown events in that phase's
 monotonic interval, with the saved cooldown target as fallback. Command, ACK,
 response, and control-decision causal coordinates are unchanged.
 
-New runtime phase/lifecycle events use the recorder's monotonic coordinate. One
+New runtime phase/lifecycle events use the recorder's monotonic coordinate.
+Start and staged phase/cooldown events retain their ingress capture across delayed
+recorder preparation; replay does not redefine their phase boundary. One
 terminal wall/elapsed capture supplies finished/lifecycle events and session end,
 so detached finalization cannot shift their boundary. Wall dates remain provenance.
 
