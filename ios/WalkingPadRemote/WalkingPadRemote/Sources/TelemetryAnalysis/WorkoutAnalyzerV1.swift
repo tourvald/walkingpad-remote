@@ -1572,6 +1572,7 @@ private extension WorkoutAnalyzerV1 {
         let cooldown = cooldownMetrics(
             configuration: configuration,
             phases: phases,
+            targets: targets,
             heartRate: heartRate,
             treadmill: treadmill,
             events: events
@@ -1814,6 +1815,7 @@ private extension WorkoutAnalyzerV1 {
     static func cooldownMetrics(
         configuration: AnalysisConfiguration?,
         phases: PhaseTimeline,
+        targets: TargetTimeline,
         heartRate: HeartRateTimeline,
         treadmill: TreadmillTimeline,
         events: [WorkoutEvent]
@@ -1842,17 +1844,6 @@ private extension WorkoutAnalyzerV1 {
                 recoveryFitRSquared: unavailableDouble
             )
         }
-        let cooldownEvents = events.compactMap {
-            event -> (time: Double, recordID: String, cooldown: CooldownEvent)? in
-            let time = seconds(event.timestamp.recordedElapsed)
-            guard case let .cooldown(cooldown) = event.payload.payload,
-                  time >= range.lowerBound,
-                  time <= range.upperBound else { return nil }
-            return (time, event.recordID.description, cooldown)
-        }.sorted {
-            if $0.time != $1.time { return $0.time < $1.time }
-            return $0.recordID < $1.recordID
-        }
         let duration = range.upperBound - range.lowerBound
         let hrSegments = heartRate.clippedSegments(in: range)
         let speedSegments = treadmill.clippedSegments(in: range)
@@ -1868,8 +1859,7 @@ private extension WorkoutAnalyzerV1 {
         let peakMetric: AnalysisMetric<Double> = hrSegments.map(\.beatsPerMinute).max().map {
             AnalysisMetric(value: $0, confidence: .high)
         } ?? .unavailable(["cooldown-heart-rate-uncovered"])
-        let targetValue = cooldownEvents.first(where: { $0.cooldown.targetHeartRate != nil })
-            .flatMap { $0.cooldown.targetHeartRate.map(Double.init) }
+        let targetValue = targets.target(at: range.lowerBound)
             ?? configuration?.cooldownTargetHeartRate
         let targetMetric: AnalysisMetric<Double> = targetValue.map {
             AnalysisMetric(value: $0, confidence: .high)
@@ -1941,7 +1931,21 @@ private extension WorkoutAnalyzerV1 {
                     ? "cooldown-target-or-minimum-speed-unavailable"
                     : "cooldown-joint-heart-rate-speed-coverage-unavailable",
             ])
-        let finishReason = cooldownEvents.last?.cooldown.lifecycle.rawValue
+        let finishReason = events.compactMap {
+            event -> (time: Double, recordID: String, lifecycle: String)? in
+            let time = seconds(event.timestamp.recordedElapsed)
+            guard case let .cooldown(cooldown) = event.payload.payload,
+                  time >= range.lowerBound,
+                  time <= range.upperBound else { return nil }
+            return (
+                time,
+                event.recordID.description,
+                cooldown.lifecycle.rawValue
+            )
+        }.sorted { lhs, rhs in
+            if lhs.time != rhs.time { return lhs.time < rhs.time }
+            return lhs.recordID < rhs.recordID
+        }.last?.lifecycle
         let finishMetric: AnalysisMetric<String> = finishReason.map {
             AnalysisMetric(value: $0, confidence: .high)
         } ?? .unavailable(["cooldown-finish-event-unavailable"])

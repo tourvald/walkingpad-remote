@@ -32,7 +32,8 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         })
         XCTAssertEqual(detail.control.zoneDurations.map(\.seconds), [0, 40, 0, 0, 0])
         XCTAssertEqual(detail.control.cooldown.durationSeconds, 20)
-        XCTAssertEqual(detail.control.cooldown.targetHeartRate.value, 110)
+        // Target selection remains the existing policy at the exact phase boundary.
+        XCTAssertEqual(detail.control.cooldown.targetHeartRate.value, 100)
         XCTAssertEqual(detail.control.cooldown.heartRateBelowTargetSeconds.value, 20)
         XCTAssertEqual(detail.control.cooldown.finishReason.value, "completed")
         XCTAssertEqual(input.events, events)

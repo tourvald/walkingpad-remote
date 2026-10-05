@@ -38,9 +38,9 @@ v1.2 uses persisted monotonic `recordedElapsed`. Old producer `occurredElapsed`
 used wall-clock deltas and is retained unchanged as historical provenance.
 Phase predecessor, repeated-phase, and monotonic out-of-session validation stays
 strict; there is no tolerance, clipping, frame reconstruction, or session exception.
-Cooldown target/outcome selection uses typed cooldown events in that phase's
-monotonic interval, with the saved cooldown target as fallback. Command, ACK,
-response, and control-decision causal coordinates are unchanged.
+Cooldown lifecycle outcomes use that phase's monotonic interval. Existing
+cooldown target-selection priority is unchanged. Command, ACK, response, and
+control-decision causal coordinates are unchanged.
 
 New runtime phase/lifecycle events use the recorder's monotonic coordinate.
 Start and staged phase/cooldown events retain their ingress capture across delayed
