@@ -1593,6 +1593,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
                 latestHeartRate = (observation, frameEvidenceElapsed(
                     observation.timestamp,
                     measurementComparable: scientific.sourceClockRelationship == .receiverComparable
+                        && !quality.contains(.clockRegression)
                 ))
             }
         }

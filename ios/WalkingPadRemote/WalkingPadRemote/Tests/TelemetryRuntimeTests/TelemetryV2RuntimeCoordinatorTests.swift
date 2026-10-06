@@ -809,6 +809,12 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             XCTAssertEqual(evidence.measuredAt, Date(timeIntervalSince1970: 10_020 - measuredAge))
             XCTAssertEqual(evidence.receivedAt, Date(timeIntervalSince1970: 10_020 - receivedAge))
         }
+        let regressedFrames = try await factualFrames(measuredAge: 11, receivedAge: 10,
+                                                       metadataQuality: [.clockRegression])
+        let regressed = try XCTUnwrap(regressedFrames.first?.heartRateEvidence)
+        XCTAssertEqual(regressed.evidenceElapsed.seconds, 10)
+        XCTAssertEqual(regressed.ageAtMaterialization.seconds, 10)
+        XCTAssertEqual(regressed.freshness, .unknown)
     }
 
     func testDelayedPreBoundaryEvidenceStaysUnusableAndPostBoundaryEvidenceRecovers() async throws {
@@ -936,7 +942,8 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         measuredAge: Double?, receivedAge: Double,
         checksum: Bool = true, knownUnits: Bool = true, boundaries: Bool = false,
         typedSourceTransition: Bool = false,
-        clockRelationship: HeartRateSourceClockRelationship = .receiverComparable
+        clockRelationship: HeartRateSourceClockRelationship = .receiverComparable,
+        metadataQuality: HeartRateNormalizationQualityFlags = []
     ) async throws -> [CanonicalFrame] {
         let persistence = RuntimePersistence()
         let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 10_000))
@@ -953,7 +960,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             providerNativeIdentity: nil,
             measuredAt: measuredAge.map { clock.nowDate().addingTimeInterval(-$0) },
             sourceCallbackObservedAt: nil, sourceClockRelationship: clockRelationship,
-            receivedAt: clock.nowDate().addingTimeInterval(-receivedAge), metadataQuality: []
+            receivedAt: clock.nowDate().addingTimeInterval(-receivedAge), metadataQuality: metadataQuality
         ), canonicalObservationID: HeartRateCanonicalObservationID(),
            deliveryID: HeartRateDeliveryID(), recordedAt: clock.nowDate())
         _ = coordinator.observeHeartRate(result)

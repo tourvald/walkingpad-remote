@@ -245,7 +245,8 @@ changes. Terminal-session reanalysis remains additive and idempotent.
 ## Canonical frame freshness (analyzer v1.4)
 
 New HR frames use measurement elapsed only when the existing provider clock is
-receiver-comparable and measurement does not follow receipt in persisted order;
+receiver-comparable, has no clock-regression quality, and measurement does not
+follow receipt in persisted order;
 otherwise they use `receivedElapsed`. Current treadmill decoders provide no
 comparable measurement-clock evidence, so new factual-speed frames use receipt
 elapsed. Selected evidence elapsed, age and freshness remain consistent, with
