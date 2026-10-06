@@ -1316,8 +1316,12 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     private let startedMonotonic: Duration
     private let lock = NSLock()
     private var emittedSourceIDs: Set<SourceID> = []
-    private var latestHeartRate: HeartRateObservation?
-    private var latestTreadmill: TreadmillObservation?
+    private var latestHeartRate: (observation: HeartRateObservation, effectiveElapsed: ElapsedDuration)?
+    private var latestTreadmill: (observation: TreadmillObservation, epoch: TreadmillConnectionEpoch)?
+    // Frame eligibility belongs to this active session, never to persisted or control state.
+    private var heartRateFrameBoundary: (elapsed: ElapsedDuration, sourceID: SourceID?) = (.zero, nil)
+    private var treadmillFrameBoundary: (elapsed: ElapsedDuration, sourceID: SourceID?) = (.zero, nil)
+    private var treadmillFrameEpoch: (current: TreadmillConnectionEpoch?, invalidated: TreadmillConnectionEpoch?) = (nil, nil)
     private var lastObservedFrameSecond: Int64?
     private var firstMissingFrameSecond: Int64?
     private var currentWorkoutPhase: WorkoutPhase?
@@ -1585,7 +1589,12 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         )
         let receipt = recorder.ingress.yield(.heartRate(observation))
         if receipt.disposition == .enqueued {
-            withLock { latestHeartRate = observation }
+            withLock {
+                latestHeartRate = (observation, frameEvidenceElapsed(
+                    observation.timestamp,
+                    measurementComparable: scientific.sourceClockRelationship == .receiverComparable
+                ))
+            }
         }
         return Self.moreSevere(exactEvent, receipt.disposition)
     }
@@ -1600,7 +1609,15 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             occurredAt = result.delivery.recordedAt
             source = result.delivery.source
         case let .sourceLifecycle(lifecycle):
-            withLock { latestHeartRate = nil }
+            withLock {
+                switch lifecycle.kind {
+                case .stopped, .unavailable, .stale, .restarted:
+                    heartRateFrameBoundary = (max(heartRateFrameBoundary.elapsed, elapsed(at: lifecycle.occurredAt)),
+                                              heartRateSource(lifecycle.source).id)
+                    latestHeartRate = nil
+                case .available, .started, .recovered: break
+                }
+            }
             occurredAt = lifecycle.occurredAt
             source = lifecycle.source
         case let .controlUse(controlUse):
@@ -1686,7 +1703,15 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         ) else { return eventDisposition }
         let receipt = recorder.ingress.yield(.treadmill(observation))
         if receipt.disposition == .enqueued {
-            withLock { latestTreadmill = observation }
+            withLock {
+                let effective = frameEvidenceElapsed(observation.timestamp, measurementComparable: false)
+                if effective >= treadmillFrameBoundary.elapsed,
+                   observed.connectionEpoch != treadmillFrameEpoch.invalidated,
+                   treadmillFrameEpoch.current == nil {
+                    treadmillFrameEpoch.current = observed.connectionEpoch
+                }
+                latestTreadmill = (observation, observed.connectionEpoch)
+            }
         }
         return Self.moreSevere(eventDisposition, receipt.disposition)
     }
@@ -1699,9 +1724,20 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         withLock {
             switch payload {
             case let .sourceTransition(transition):
-                if transition.previousSourceID == latestHeartRate?.source.id { latestHeartRate = nil }
-                if transition.previousSourceID == latestTreadmill?.source.id { latestTreadmill = nil }
-            case .connectionTransition: latestTreadmill = nil
+                guard let previousSourceID = transition.previousSourceID else { break }
+                if previousSourceID == latestHeartRate?.observation.source.id
+                    || previousSourceID == heartRateFrameBoundary.sourceID {
+                    heartRateFrameBoundary = (max(heartRateFrameBoundary.elapsed, elapsed(at: occurredAt)),
+                                              previousSourceID)
+                    latestHeartRate = nil
+                }
+                if previousSourceID == latestTreadmill?.observation.source.id
+                    || previousSourceID == treadmillFrameBoundary.sourceID {
+                    invalidateTreadmillFrame(at: occurredAt, invalidateEpoch: true)
+                }
+            case let .connectionTransition(transition):
+                invalidateTreadmillFrame(at: occurredAt,
+                                        invalidateEpoch: transition.current != .degraded)
             default: break
             }
         }
@@ -1764,10 +1800,11 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
                 canonicalElapsedSecond: currentSecond,
                 materializedAt: RecordTimestamp(recordedAt: now, elapsed: currentElapsed),
                 heartRateEvidence: latestHeartRate.map {
-                    heartRateFrame($0, materializedAt: now, elapsed: currentElapsed)
+                    heartRateFrame($0.observation, evidenceElapsed: $0.effectiveElapsed,
+                                   elapsed: currentElapsed)
                 },
                 treadmillEvidence: latestTreadmill.map {
-                    treadmillFrame($0, materializedAt: now, elapsed: currentElapsed)
+                    treadmillFrame($0.observation, epoch: $0.epoch, elapsed: currentElapsed)
                 },
                 precedingGap: gap
             )
@@ -1860,12 +1897,33 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         )
     }
 
+    private func frameEvidenceElapsed(
+        _ timestamp: ObservationTimestamp,
+        measurementComparable: Bool
+    ) -> ElapsedDuration {
+        guard measurementComparable, let measured = timestamp.measuredElapsed,
+              let measuredAt = timestamp.measuredAt, measuredAt <= timestamp.receivedAt,
+              measured <= timestamp.receivedElapsed else { return timestamp.receivedElapsed }
+        return measured
+    }
+
+    // Called under the session lock. Keep only current/last-invalidated context, not an epoch registry.
+    private func invalidateTreadmillFrame(at date: Date, invalidateEpoch: Bool) {
+        treadmillFrameBoundary = (max(treadmillFrameBoundary.elapsed, elapsed(at: date)),
+                                  latestTreadmill?.observation.source.id ?? treadmillFrameBoundary.sourceID)
+        if invalidateEpoch {
+            treadmillFrameEpoch.invalidated = treadmillFrameEpoch.current ?? treadmillFrameEpoch.invalidated
+            treadmillFrameEpoch.current = nil
+        }
+        latestTreadmill = nil
+    }
+
     private func heartRateFrame(
         _ observation: HeartRateObservation,
-        materializedAt: Date,
+        evidenceElapsed: ElapsedDuration,
         elapsed: ElapsedDuration
     ) -> HeartRateFrameEvidence {
-        let age = Self.nonnegativeAge(from: observation.timestamp.effectiveElapsed, to: elapsed)
+        let age = Self.nonnegativeAge(from: evidenceElapsed, to: elapsed)
         return HeartRateFrameEvidence(
             observationID: observation.observationID,
             recordID: observation.recordID,
@@ -1873,12 +1931,12 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             beatsPerMinute: observation.beatsPerMinute,
             measuredAt: observation.timestamp.measuredAt,
             receivedAt: observation.timestamp.receivedAt,
-            evidenceElapsed: observation.timestamp.effectiveElapsed,
+            evidenceElapsed: evidenceElapsed,
             ageAtMaterialization: age,
             freshness: frameFreshness(
                 observation.freshness.state, quality: observation.quality,
-                evidenceElapsed: observation.timestamp.effectiveElapsed, elapsed: elapsed,
-                limit: descriptor.heartRateFreshnessLimitSeconds
+                evidenceElapsed: evidenceElapsed, elapsed: elapsed,
+                limit: descriptor.heartRateFreshnessLimitSeconds, validFrom: heartRateFrameBoundary.elapsed
             ),
             provenance: observation.provenance
         )
@@ -1886,10 +1944,12 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
 
     private func treadmillFrame(
         _ observation: TreadmillObservation,
-        materializedAt: Date,
+        epoch: TreadmillConnectionEpoch,
         elapsed: ElapsedDuration
     ) -> TreadmillFrameEvidence {
-        let age = Self.nonnegativeAge(from: observation.timestamp.effectiveElapsed, to: elapsed)
+        // Current treadmill decoders expose receipt time, not a comparable measurement clock.
+        let evidenceElapsed = frameEvidenceElapsed(observation.timestamp, measurementComparable: false)
+        let age = Self.nonnegativeAge(from: evidenceElapsed, to: elapsed)
         return TreadmillFrameEvidence(
             observationID: observation.observationID,
             recordID: observation.recordID,
@@ -1899,12 +1959,13 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             deviceState: observation.deviceState,
             measuredAt: observation.timestamp.measuredAt,
             receivedAt: observation.timestamp.receivedAt,
-            evidenceElapsed: observation.timestamp.effectiveElapsed,
+            evidenceElapsed: evidenceElapsed,
             ageAtMaterialization: age,
             freshness: frameFreshness(
-                observation.freshness.state, quality: observation.quality,
-                evidenceElapsed: observation.timestamp.effectiveElapsed, elapsed: elapsed,
-                limit: descriptor.treadmillFreshnessLimitSeconds
+                epoch == treadmillFrameEpoch.current && epoch != treadmillFrameEpoch.invalidated
+                    ? observation.freshness.state : .unknown,
+                quality: observation.quality, evidenceElapsed: evidenceElapsed, elapsed: elapsed,
+                limit: descriptor.treadmillFreshnessLimitSeconds, validFrom: treadmillFrameBoundary.elapsed
             ),
             provenance: observation.provenance
         )
@@ -1915,7 +1976,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         quality: QualityFlags,
         evidenceElapsed: ElapsedDuration,
         elapsed: ElapsedDuration,
-        limit: Double
+        limit: Double,
+        validFrom: ElapsedDuration
     ) -> FreshnessState {
         guard nativeFreshness == .fresh else { return nativeFreshness }
         let unusable: Set<QualityFlag> = [
@@ -1923,7 +1985,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             .invalidNativeValue, .nativeValueOutOfDomain, .staleAtUse, .unknownFreshness,
             .clockRegression,
         ]
-        guard quality.values.isDisjoint(with: unusable), elapsed >= evidenceElapsed else {
+        guard quality.values.isDisjoint(with: unusable), elapsed >= evidenceElapsed,
+              evidenceElapsed >= validFrom else {
             return .unknown
         }
         return Self.nonnegativeAge(from: evidenceElapsed, to: elapsed).seconds < limit

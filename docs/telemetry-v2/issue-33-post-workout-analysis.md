@@ -244,10 +244,18 @@ changes. Terminal-session reanalysis remains additive and idempotent.
 
 ## Canonical frame freshness (analyzer v1.4)
 
-New HR and factual-speed frames use persisted effective observation elapsed time
-(`measuredElapsed ?? receivedElapsed`), with half-open 7 s and 5 s expiry. Native
+New HR frames use measurement elapsed only when the existing provider clock is
+receiver-comparable and measurement does not follow receipt in persisted order;
+otherwise they use `receivedElapsed`. Current treadmill decoders provide no
+comparable measurement-clock evidence, so new factual-speed frames use receipt
+elapsed. Selected evidence elapsed, age and freshness remain consistent, with
+half-open 7 s and 5 s expiry. Raw timestamp roles are preserved. Native
 stale/unknown freshness or unusable quality cannot be upgraded; source lifecycle
-and connection transitions invalidate carried references. Session ownership is
-local to the existing runtime session. The 30 s controller-unit policy remains
+and connection transitions invalidate carried references. Fixed-size active-session
+eligibility cutoffs also reject delayed pre-boundary observations; current and
+last-invalidated treadmill epochs prevent old-context evidence from becoming
+fresh even with a recent receipt. Valid post-boundary evidence remains eligible.
+This state is discarded with the runtime session; it is not persisted or used
+for control. The 30 s controller-unit policy remains
 independent and unchanged. Raw frames/observations and earlier analyses remain
 immutable; no freshness tolerance, interpolation or schema expansion is added.

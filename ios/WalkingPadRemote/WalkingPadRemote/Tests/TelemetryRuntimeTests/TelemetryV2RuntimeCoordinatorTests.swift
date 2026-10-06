@@ -764,7 +764,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         for (measuredAge, receivedAge, expectedHR, expectedSpeed) in [
             (7.0, 0.0, FreshnessState.stale, FreshnessState.fresh),
             (6.999, 4.999, .fresh, .fresh),
-            (0.0, 5.0, .fresh, .stale),
+            (5.0, 5.0, .fresh, .stale),
             (8.0, 6.0, .stale, .stale),
             (-1.0, -1.0, .unknown, .unknown),
         ] {
@@ -792,6 +792,131 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         }
     }
 
+    func testUntrustworthyMeasurementUsesReceiptWithoutRewritingRawTimestamps() async throws {
+        for (measuredAge, receivedAge, relationship, expectedAge, expectedFreshness) in [
+            (0.0, 10.0, HeartRateSourceClockRelationship.receiverComparable, 10.0, FreshnessState.stale),
+            (1.0, 10.0, .independent, 10.0, .stale),
+            (7.0, 0.0, .receiverComparable, 7.0, .stale),
+            (6.999, 0.0, .receiverComparable, 6.999, .fresh),
+            (1.0, 0.0, .independent, 0.0, .fresh),
+        ] {
+            let frames = try await factualFrames(measuredAge: measuredAge, receivedAge: receivedAge,
+                                                 clockRelationship: relationship)
+            let evidence = try XCTUnwrap(frames.first?.heartRateEvidence)
+            XCTAssertEqual(evidence.evidenceElapsed.seconds, 20 - expectedAge, accuracy: 0.000_001)
+            XCTAssertEqual(evidence.ageAtMaterialization.seconds, expectedAge, accuracy: 0.000_001)
+            XCTAssertEqual(evidence.freshness, expectedFreshness)
+            XCTAssertEqual(evidence.measuredAt, Date(timeIntervalSince1970: 10_020 - measuredAge))
+            XCTAssertEqual(evidence.receivedAt, Date(timeIntervalSince1970: 10_020 - receivedAge))
+        }
+    }
+
+    func testDelayedPreBoundaryEvidenceStaysUnusableAndPostBoundaryEvidenceRecovers() async throws {
+        for (typedTransitions, delayedTime) in [(false, 19.0), (true, 19.0), (true, 20.25)] {
+            let persistence = RuntimePersistence()
+            let origin = Date(timeIntervalSince1970: 10_000)
+            let clock = ManualRuntimeClock(date: origin)
+            let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence }, runtimeClock: clock)
+            coordinator.beginSession(Self.descriptor(startedAt: origin))
+            try await eventually { if case .active = coordinator.status { return true }; return false }
+            let source = HeartRateProviderIdentity(kind: .healthKitSelected, stableLocalKey: "fixture")
+            let oldEpoch = TreadmillConnectionEpoch(rawValue: UUID())
+            let newEpoch = TreadmillConnectionEpoch(rawValue: UUID())
+            var hr = HeartRateObservationNormalizer()
+            var treadmill = TreadmillObservationNormalizer()
+            func deliverHR(measured: Double, received: Double) {
+                let result = hr.normalize(HeartRateProviderObservation(
+                    source: source, beatsPerMinute: 120, providerSequence: nil, providerNativeIdentity: nil,
+                    measuredAt: origin.addingTimeInterval(measured), sourceCallbackObservedAt: nil,
+                    sourceClockRelationship: .receiverComparable,
+                    receivedAt: origin.addingTimeInterval(received), metadataQuality: []
+                ), canonicalObservationID: HeartRateCanonicalObservationID(), deliveryID: HeartRateDeliveryID(),
+                   recordedAt: clock.nowDate())
+                _ = coordinator.observeHeartRate(result)
+            }
+            func deliverTreadmill(received: Double, epoch: TreadmillConnectionEpoch) {
+                let observation = treadmill.normalize(.walkingPad(
+                    speedRawTenths: 37, rawState: 1, deviceState: .moving, checksumValid: true,
+                    connectionEpoch: epoch, receivedAt: origin.addingTimeInterval(received)
+                ), unitsTruth: .valid(unit: .kilometresPerHour, connectionEpoch: epoch,
+                                     observedAt: origin.addingTimeInterval(received)),
+                   observationID: ObservationID(), recordedAt: clock.nowDate())
+                _ = coordinator.observeTreadmillEvidence(.observation(observation))
+            }
+            clock.advance(by: .seconds(19))
+            deliverHR(measured: 19, received: 19)
+            deliverTreadmill(received: 19, epoch: oldEpoch)
+            _ = coordinator.observeCurrentElapsedSecond()
+            clock.advance(by: .seconds(1))
+            if typedTransitions {
+                _ = coordinator.observeEvent(.sourceTransition(SourceTransition(
+                    previousSourceID: SourceID(rawValue: UUID(uuidString: "270d498d-7a67-85e0-8572-e4139d54092a")!),
+                    currentSourceID: nil, reason: "fixture-stop"
+                )), occurredAt: clock.nowDate())
+                _ = coordinator.observeEvent(.sourceTransition(SourceTransition(
+                    previousSourceID: SourceID(rawValue: UUID(uuidString: "2cb14398-34ab-8198-a453-0fcf72c27806")!),
+                    currentSourceID: nil, reason: "fixture-context-invalidated"
+                )), occurredAt: clock.nowDate())
+            } else {
+                _ = coordinator.observeSourceLifecycle(HeartRateSourceLifecycleEvidence(
+                    source: source, kind: .stopped, occurredAt: clock.nowDate()
+                ))
+                _ = coordinator.observeEvent(.connectionTransition(ConnectionTransition(
+                    previous: .connected, current: .disconnected, reason: "fixture"
+                )), occurredAt: clock.nowDate())
+            }
+            if delayedTime > 20 {
+                clock.advance(by: .milliseconds(500))
+                _ = coordinator.observeEvent(.sourceTransition(SourceTransition(
+                    previousSourceID: SourceID(rawValue: UUID(uuidString: "270d498d-7a67-85e0-8572-e4139d54092a")!),
+                    currentSourceID: nil, reason: "fixture-repeated-stop"
+                )), occurredAt: clock.nowDate())
+                clock.advance(by: .milliseconds(500))
+            } else {
+                clock.advance(by: .seconds(1))
+            }
+            deliverHR(measured: delayedTime, received: 21)
+            deliverTreadmill(received: 19, epoch: oldEpoch)
+            _ = coordinator.observeCurrentElapsedSecond()
+            clock.advance(by: .seconds(1))
+            deliverHR(measured: 22, received: 22)
+            deliverTreadmill(received: 22, epoch: newEpoch)
+            _ = coordinator.observeCurrentElapsedSecond()
+            clock.advance(by: .seconds(1))
+            // Even a recent receipt cannot rehabilitate the invalidated connection epoch.
+            deliverTreadmill(received: 23, epoch: oldEpoch)
+            _ = coordinator.observeCurrentElapsedSecond()
+            coordinator.endSession(reason: "complete")
+            try await eventually { await persistence.finalizations.count == 1 }
+            let records = await persistence.snapshot().records
+            let frames = records.compactMap { record -> CanonicalFrame? in
+                guard case let .frame(frame) = record else { return nil }; return frame
+            }
+            XCTAssertEqual(frames.map(\.canonicalElapsedSecond), [19, 21, 22, 23])
+            XCTAssertEqual(frames[0].heartRateEvidence?.freshness, .fresh)
+            XCTAssertEqual(frames[0].treadmillEvidence?.freshness, .fresh)
+            XCTAssertNotEqual(frames[1].heartRateEvidence?.freshness, .fresh)
+            XCTAssertNotEqual(frames[1].treadmillEvidence?.freshness, .fresh)
+            XCTAssertEqual(frames[2].heartRateEvidence?.freshness, .fresh)
+            XCTAssertEqual(frames[2].treadmillEvidence?.freshness, .fresh)
+            XCTAssertNotEqual(frames[3].treadmillEvidence?.freshness, .fresh)
+            let rawHR = records.compactMap { record -> HeartRateObservation? in
+                guard case let .heartRate(value) = record else { return nil }; return value
+            }
+            let rawSpeed = records.compactMap { record -> TreadmillObservation? in
+                guard case let .treadmill(value) = record else { return nil }; return value
+            }
+            XCTAssertEqual(rawHR.count, 3)
+            XCTAssertEqual(rawSpeed.count, 4)
+            XCTAssertEqual(rawHR[1].timestamp.measuredElapsed?.seconds, delayedTime)
+            XCTAssertEqual(rawHR[1].timestamp.receivedElapsed.seconds, 21)
+            XCTAssertEqual(rawHR[1].timestamp.recordedElapsed.seconds, 21)
+            XCTAssertEqual(rawSpeed[1].timestamp.receivedElapsed.seconds, 19)
+            XCTAssertEqual(rawSpeed[1].timestamp.recordedElapsed.seconds, 21)
+            XCTAssertTrue(rawHR.allSatisfy { $0.controlUse == .acceptedNotUsed })
+        }
+    }
+
     func testSourceConnectionAndSessionBoundariesDoNotCarryFrameEvidence() async throws {
         for typedSourceTransition in [false, true] {
             let frames = try await factualFrames(measuredAge: 0, receivedAge: 0, boundaries: true,
@@ -810,7 +935,8 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
     private func factualFrames(
         measuredAge: Double?, receivedAge: Double,
         checksum: Bool = true, knownUnits: Bool = true, boundaries: Bool = false,
-        typedSourceTransition: Bool = false
+        typedSourceTransition: Bool = false,
+        clockRelationship: HeartRateSourceClockRelationship = .receiverComparable
     ) async throws -> [CanonicalFrame] {
         let persistence = RuntimePersistence()
         let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 10_000))
@@ -826,7 +952,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             source: source, beatsPerMinute: 120, providerSequence: nil,
             providerNativeIdentity: nil,
             measuredAt: measuredAge.map { clock.nowDate().addingTimeInterval(-$0) },
-            sourceCallbackObservedAt: nil, sourceClockRelationship: .receiverComparable,
+            sourceCallbackObservedAt: nil, sourceClockRelationship: clockRelationship,
             receivedAt: clock.nowDate().addingTimeInterval(-receivedAge), metadataQuality: []
         ), canonicalObservationID: HeartRateCanonicalObservationID(),
            deliveryID: HeartRateDeliveryID(), recordedAt: clock.nowDate())
@@ -868,7 +994,23 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             coordinator.endSession(reason: "complete")
             try await eventually { await persistence.finalizations.count == 2 }
         }
-        return await persistence.snapshot().records.compactMap {
+        let records = await persistence.snapshot().records
+        let nativeHR = try XCTUnwrap(records.compactMap { record -> HeartRateObservation? in
+            guard case let .heartRate(value) = record else { return nil }; return value
+        }.first)
+        XCTAssertEqual(nativeHR.timestamp.measuredAt, result.canonicalObservation?.measuredAt)
+        XCTAssertEqual(nativeHR.timestamp.receivedAt, result.canonicalObservation?.receivedAt)
+        XCTAssertEqual(nativeHR.timestamp.recordedAt, result.canonicalObservation?.recordedAt)
+        if let measuredAge {
+            XCTAssertEqual(try XCTUnwrap(nativeHR.timestamp.measuredElapsed?.seconds),
+                           max(0, 20 - measuredAge), accuracy: 0.000_001)
+        } else {
+            XCTAssertNil(nativeHR.timestamp.measuredElapsed)
+        }
+        XCTAssertEqual(nativeHR.timestamp.receivedElapsed.seconds, max(0, 20 - receivedAge), accuracy: 0.000_001)
+        XCTAssertEqual(nativeHR.timestamp.recordedElapsed.seconds, 20)
+        XCTAssertEqual(nativeHR.controlUse, .acceptedNotUsed)
+        return records.compactMap {
             guard case let .frame(frame) = $0 else { return nil }; return frame
         }
     }
