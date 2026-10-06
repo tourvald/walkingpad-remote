@@ -798,6 +798,8 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
                                                  typedSourceTransition: typedSourceTransition)
             XCTAssertNotNil(frames[0].heartRateEvidence)
             XCTAssertNotNil(frames[0].treadmillEvidence)
+            XCTAssertEqual(frames[0].treadmillEvidence?.sourceID.rawValue,
+                           UUID(uuidString: "2cb14398-34ab-8198-a453-0fcf72c27806"))
             XCTAssertNil(frames[1].heartRateEvidence)
             XCTAssertNil(frames[1].treadmillEvidence)
             XCTAssertNil(frames[2].heartRateEvidence)
@@ -845,15 +847,10 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
                 source: source, kind: .stopped, occurredAt: clock.nowDate()
             ))
             if typedSourceTransition {
-                try await eventually {
-                    await persistence.snapshot().records.contains { if case .treadmill = $0 { return true }; return false }
-                }
-                let snapshot = await persistence.snapshot()
-                let native = try XCTUnwrap(snapshot.records.compactMap {
-                    if case let .treadmill(observation) = $0 { return observation }; return nil
-                }.first)
+                // Fixed source identity for the existing treadmill-30/WalkingPad fixture.
+                let nativeSourceID = SourceID(rawValue: UUID(uuidString: "2cb14398-34ab-8198-a453-0fcf72c27806")!)
                 _ = coordinator.observeEvent(.sourceTransition(SourceTransition(
-                    previousSourceID: native.source.id, currentSourceID: SourceID(), reason: "fixture"
+                    previousSourceID: nativeSourceID, currentSourceID: SourceID(), reason: "fixture"
                 )), occurredAt: clock.nowDate())
             } else {
                 _ = coordinator.observeEvent(.connectionTransition(ConnectionTransition(
