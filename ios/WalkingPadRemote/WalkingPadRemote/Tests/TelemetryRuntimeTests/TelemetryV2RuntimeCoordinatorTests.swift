@@ -759,6 +759,106 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         try await eventually { coordinator.status == .idle }
     }
 
+    func testFramesUseMeasurementOrReceiptAgeWithHalfOpenFactualLimits() async throws {
+        // A recent recording is deliberately independent of the older effective time.
+        for (measuredAge, receivedAge, expectedHR, expectedSpeed) in [
+            (7.0, 0.0, FreshnessState.stale, FreshnessState.fresh),
+            (6.999, 4.999, .fresh, .fresh),
+            (0.0, 5.0, .fresh, .stale),
+            (8.0, 6.0, .stale, .stale),
+            (-1.0, -1.0, .unknown, .unknown),
+        ] {
+            let frames = try await factualFrames(measuredAge: measuredAge, receivedAge: receivedAge)
+            let frame = try XCTUnwrap(frames.first)
+            XCTAssertEqual(frame.heartRateEvidence?.freshness, expectedHR)
+            XCTAssertEqual(frame.treadmillEvidence?.freshness, expectedSpeed)
+            XCTAssertEqual(try XCTUnwrap(frame.heartRateEvidence?.ageAtMaterialization.seconds),
+                           max(0, measuredAge), accuracy: 0.000_001)
+            XCTAssertEqual(try XCTUnwrap(frame.treadmillEvidence?.ageAtMaterialization.seconds),
+                           max(0, receivedAge), accuracy: 0.000_001)
+        }
+        let fallbackFrames = try await factualFrames(
+            measuredAge: nil, receivedAge: 7
+        )
+        let fallback = try XCTUnwrap(fallbackFrames.first)
+        XCTAssertEqual(fallback.heartRateEvidence?.freshness, .stale)
+        XCTAssertEqual(fallback.heartRateEvidence?.evidenceElapsed.seconds, 13)
+        for (checksum, knownUnits) in [(false, true), (true, false)] {
+            let unusableFrames = try await factualFrames(
+                measuredAge: 0, receivedAge: 0, checksum: checksum, knownUnits: knownUnits
+            )
+            let frame = try XCTUnwrap(unusableFrames.first)
+            XCTAssertNotEqual(frame.treadmillEvidence?.freshness, .fresh)
+        }
+    }
+
+    func testSourceConnectionAndSessionBoundariesDoNotCarryFrameEvidence() async throws {
+        let frames = try await factualFrames(measuredAge: 0, receivedAge: 0, boundaries: true)
+        XCTAssertNotNil(frames[0].heartRateEvidence)
+        XCTAssertNotNil(frames[0].treadmillEvidence)
+        XCTAssertNil(frames[1].heartRateEvidence)
+        XCTAssertNil(frames[1].treadmillEvidence)
+        XCTAssertNil(frames[2].heartRateEvidence)
+        XCTAssertNil(frames[2].treadmillEvidence)
+    }
+
+    private func factualFrames(
+        measuredAge: Double?, receivedAge: Double,
+        checksum: Bool = true, knownUnits: Bool = true, boundaries: Bool = false
+    ) async throws -> [CanonicalFrame] {
+        let persistence = RuntimePersistence()
+        let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 10_000))
+        let coordinator = TelemetryV2RuntimeCoordinator(
+            persistenceFactory: { persistence }, runtimeClock: clock
+        )
+        coordinator.beginSession(Self.descriptor(startedAt: clock.nowDate()))
+        try await eventually { if case .active = coordinator.status { return true }; return false }
+        clock.advance(by: .seconds(20))
+        let source = HeartRateProviderIdentity(kind: .healthKitSelected, stableLocalKey: "fixture")
+        var hr = HeartRateObservationNormalizer()
+        let result = hr.normalize(HeartRateProviderObservation(
+            source: source, beatsPerMinute: 120, providerSequence: nil,
+            providerNativeIdentity: nil,
+            measuredAt: measuredAge.map { clock.nowDate().addingTimeInterval(-$0) },
+            sourceCallbackObservedAt: nil, sourceClockRelationship: .receiverComparable,
+            receivedAt: clock.nowDate().addingTimeInterval(-receivedAge), metadataQuality: []
+        ), canonicalObservationID: HeartRateCanonicalObservationID(),
+           deliveryID: HeartRateDeliveryID(), recordedAt: clock.nowDate())
+        _ = coordinator.observeHeartRate(result)
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        var treadmill = TreadmillObservationNormalizer()
+        let observation = treadmill.normalize(.walkingPad(
+            speedRawTenths: 37, rawState: 1, deviceState: .moving, checksumValid: checksum,
+            connectionEpoch: epoch, receivedAt: clock.nowDate().addingTimeInterval(-receivedAge)
+        ), unitsTruth: knownUnits ? .valid(unit: .kilometresPerHour,
+            connectionEpoch: epoch, observedAt: clock.nowDate().addingTimeInterval(-20)) : .notRead(connectionEpoch: epoch),
+           observationID: ObservationID(), recordedAt: clock.nowDate())
+        _ = coordinator.observeTreadmillEvidence(.observation(observation))
+        _ = coordinator.observeCurrentElapsedSecond()
+        if boundaries {
+            clock.advance(by: .seconds(1))
+            _ = coordinator.observeSourceLifecycle(HeartRateSourceLifecycleEvidence(
+                source: source, kind: .stopped, occurredAt: clock.nowDate()
+            ))
+            _ = coordinator.observeEvent(.connectionTransition(ConnectionTransition(
+                previous: .connected, current: .disconnected, reason: "fixture"
+            )), occurredAt: clock.nowDate())
+            _ = coordinator.observeCurrentElapsedSecond()
+        }
+        coordinator.endSession(reason: "complete")
+        try await eventually { await persistence.finalizations.count == 1 }
+        if boundaries {
+            coordinator.beginSession(Self.descriptor(startedAt: clock.nowDate()))
+            try await eventually { if case .active = coordinator.status { return true }; return false }
+            _ = coordinator.observeCurrentElapsedSecond()
+            coordinator.endSession(reason: "complete")
+            try await eventually { await persistence.finalizations.count == 2 }
+        }
+        return await persistence.snapshot().records.compactMap {
+            guard case let .frame(frame) = $0 else { return nil }; return frame
+        }
+    }
+
     func testObservedFramesAreUniqueAllowGapsAndNeverBackfill() async throws {
         let persistence = RuntimePersistence()
         let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 10_000))
@@ -1546,8 +1646,8 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
                 safetyPolicy: SafetyPolicyVersion(rawValue: "test"),
                 workoutProtocol: WorkoutProtocolVersion(rawValue: "test")
             ),
-            heartRateFreshnessLimitSeconds: 5,
-            treadmillFreshnessLimitSeconds: 30
+            heartRateFreshnessLimitSeconds: 7,
+            treadmillFreshnessLimitSeconds: 5
         )
     }
 }

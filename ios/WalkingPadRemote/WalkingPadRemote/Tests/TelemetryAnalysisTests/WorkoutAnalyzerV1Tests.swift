@@ -25,7 +25,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         )
         let result = try WorkoutAnalyzerV1.analyze(input, generatedAt: fixture.baseDate)
         let detail = try decodeDetail(result)
-        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.3")
+        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.4")
         XCTAssertEqual(detail.quality.phases.map(\.phase), ["main", "cooldown"])
         XCTAssertFalse(detail.quality.issues.contains {
             $0.code == "invalid-workout-phase-transition-evidence"
@@ -314,7 +314,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         })
     }
 
-    func testRealisticSparseSessionUsesFreshCanonicalCoverageAcrossCooldown() throws {
+    func testHistoricalThirtySecondFramesCannotInflateSparseNativeCoverage() throws {
         let sessionSeconds = 1_620
         let fixture = AnalysisFixture(sessionSeconds: Double(sessionSeconds))
         let spacing = Double(sessionSeconds) / 49.0
@@ -347,15 +347,86 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         let detail = try decodeDetail(result)
 
         XCTAssertEqual(treadmill.count, 49)
-        XCTAssertGreaterThanOrEqual(
-            try XCTUnwrap(detail.quality.treadmillFactualCoverage.coverageRatio),
-            WorkoutAnalyzerV1.minimumAverageFactualSpeedCoverageRatio
-        )
-        XCTAssertNotNil(result.keyMetrics.averageFactualSpeedKilometresPerHour)
-        XCTAssertTrue(detail.quality.phases.allSatisfy {
-            ($0.treadmillCoverage.coverageRatio ?? 0)
-                >= WorkoutAnalyzerV1.minimumAverageFactualSpeedCoverageRatio
+        XCTAssertEqual(detail.quality.treadmillFactualCoverage.coveredSeconds, 221, accuracy: 0.000_001)
+        XCTAssertNil(result.keyMetrics.averageFactualSpeedKilometresPerHour)
+        XCTAssertTrue(detail.quality.issues.contains {
+            $0.code == "average-factual-speed-insufficient-coverage"
         })
+    }
+
+    func testFrameCoverageRequiresUniqueMatchingUsableNativeIdentity() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 10)
+        let native = fixture.treadmill(ordinal: 1, seconds: 0, speed: 5, factual: true)
+        let other = fixture.treadmill(ordinal: 2, seconds: 0, speed: 5, factual: true)
+        let frame = fixture.treadmillFrame(observation: native, second: 1, freshness: .fresh)
+        let cases: [[TreadmillObservation]] = [
+            [], [other], [native, native],
+            [fixture.treadmill(ordinal: 1, seconds: 0, speed: 5, factual: true,
+                               source: fixture.primarySource)],
+            [fixture.treadmill(ordinal: 1, seconds: 0, speed: 6, factual: true)],
+            [fixture.treadmill(ordinal: 1, seconds: 0, speed: 5, factual: false)],
+            [fixture.treadmill(ordinal: 2, seconds: 0, speed: 5, factual: true,
+                               recordID: native.recordID)],
+            [fixture.treadmill(ordinal: 2, seconds: 0, speed: 5, factual: true,
+                               observationID: native.observationID)],
+            [native, fixture.treadmill(ordinal: 2, seconds: 0, speed: 5, factual: true,
+                                       observationID: native.observationID)],
+        ] + [FreshnessState.stale, .unknown].map {
+            [fixture.treadmill(ordinal: 1, seconds: 0, speed: 5, factual: true, freshnessState: $0)]
+        } + [QualityFlag.invalidNativeValue, .nativeValueOutOfDomain, .staleAtUse,
+             .unknownFreshness, .clockRegression, .duplicateProviderIdentity,
+             .measurementOutOfArrivalOrder].map {
+            [fixture.treadmill(ordinal: 1, seconds: 0, speed: 5, factual: true, quality: [$0])]
+        }
+        for observations in cases {
+            let result = try WorkoutAnalyzerV1.analyze(fixture.input(
+                treadmill: observations, events: fixture.phaseEvents(mainAt: 0, finishedAt: 10),
+                frames: [frame]
+            ), generatedAt: fixture.baseDate)
+            XCTAssertEqual(try decodeDetail(result).quality.treadmillFactualCoverage.coveredSeconds, 0)
+            XCTAssertNil(result.keyMetrics.averageFactualSpeedKilometresPerHour)
+        }
+        let valid = try WorkoutAnalyzerV1.analyze(fixture.input(
+            treadmill: [native], events: fixture.phaseEvents(mainAt: 0, finishedAt: 10),
+            frames: [frame]
+        ), generatedAt: fixture.baseDate)
+        XCTAssertEqual(try decodeDetail(valid).quality.treadmillFactualCoverage.coveredSeconds, 1)
+    }
+
+    func testFrameLedgerUsesEffectiveTimeExpiryAndConnectionPhaseAndNextObservationBoundaries() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 10)
+        let native = fixture.treadmill(ordinal: 1, seconds: 0, speed: 5, factual: true,
+            timestamp: ObservationTimestamp(
+                measuredAt: fixture.baseDate, receivedAt: fixture.baseDate.addingTimeInterval(8),
+                recordedAt: fixture.baseDate.addingTimeInterval(9), measuredElapsed: .zero,
+                receivedElapsed: ElapsedDuration(microseconds: 8_000_000),
+                recordedElapsed: ElapsedDuration(microseconds: 9_000_000)
+            ))
+        let frames = (0..<10).map {
+            fixture.treadmillFrame(observation: native, second: Int64($0), freshness: .fresh)
+        }
+        let phases = fixture.phaseEvents(mainAt: 0, finishedAt: 10)
+        let connection = fixture.event(ordinal: 90, seconds: 2.5, payload: .connectionTransition(
+            ConnectionTransition(previous: .connected, current: .disconnected, reason: "fixture")
+        ))
+        for (events, observations, covered) in [
+            (phases, [native], 5.0),
+            (phases + [connection], [native], 2.5),
+            (fixture.cooldownEvents(start: 3, end: 10, target: 115), [native], 3.0),
+            (phases, [native, fixture.treadmill(ordinal: 2, seconds: 2, speed: 6, factual: true,
+                                               source: fixture.primarySource)], 2.0),
+        ] {
+            let result = try WorkoutAnalyzerV1.analyze(fixture.input(
+                treadmill: observations, events: events, frames: frames
+            ), generatedAt: fixture.baseDate)
+            XCTAssertEqual(try decodeDetail(result).quality.treadmillFactualCoverage.coveredSeconds,
+                           covered, accuracy: 0.000_001)
+        }
+        // No frames retains the existing native five-second fallback.
+        let fallback = try WorkoutAnalyzerV1.analyze(fixture.input(
+            treadmill: [native], events: phases
+        ), generatedAt: fixture.baseDate)
+        XCTAssertEqual(try decodeDetail(fallback).quality.treadmillFactualCoverage.coveredSeconds, 5)
     }
 
     func testThirtyOneMinuteStableSpeedResponsesProvideFactualAverage() throws {
@@ -1927,22 +1998,30 @@ private struct AnalysisFixture {
         seconds: Double,
         speed: Double,
         factual: Bool,
-        quality: QualityFlags = []
+        quality: QualityFlags = [],
+        timestamp: ObservationTimestamp? = nil,
+        freshnessState: FreshnessState = .fresh,
+        source: SignalSourceIdentity? = nil,
+        recordID: RecordID? = nil,
+        observationID: ObservationID? = nil
     ) -> TreadmillObservation {
         TreadmillObservation(
-            recordID: RecordID(rawValue: uuid(3_000 + ordinal)),
-            observationID: ObservationID(rawValue: uuid(4_000 + ordinal)),
+            recordID: recordID ?? RecordID(rawValue: uuid(3_000 + ordinal)),
+            observationID: observationID ?? ObservationID(rawValue: uuid(4_000 + ordinal)),
             sessionID: session.sessionID,
-            source: treadmillSource,
+            source: source ?? treadmillSource,
             nativeSpeed: NativeTreadmillSpeed(
                 value: speed,
                 unit: factual ? .kilometresPerHour : .unknown
             ),
             deviceState: .moving,
             arrivalOrder: UInt64(ordinal),
-            timestamp: timestamp(seconds: seconds),
+            timestamp: timestamp ?? self.timestamp(seconds: seconds),
             provenance: .decodedDeviceReport,
-            freshness: freshness(seconds: seconds),
+            freshness: EvidenceFreshness(
+                state: freshnessState, evaluatedAt: freshness(seconds: seconds).evaluatedAt,
+                age: .zero, policyVersion: session.versions.safetyPolicy
+            ),
             quality: quality
         )
     }

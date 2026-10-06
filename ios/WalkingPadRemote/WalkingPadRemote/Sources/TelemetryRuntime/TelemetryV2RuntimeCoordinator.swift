@@ -1600,6 +1600,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             occurredAt = result.delivery.recordedAt
             source = result.delivery.source
         case let .sourceLifecycle(lifecycle):
+            withLock { latestHeartRate = nil }
             occurredAt = lifecycle.occurredAt
             source = lifecycle.source
         case let .controlUse(controlUse):
@@ -1695,7 +1696,14 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         occurredAt: Date,
         timestamp: RecordTimestamp? = nil
     ) -> TelemetryYieldDisposition {
-        yieldEvent(payload, occurredAt: occurredAt, sourceID: nil, timestamp: timestamp)
+        withLock {
+            switch payload {
+            case .sourceTransition: latestHeartRate = nil
+            case .connectionTransition: latestTreadmill = nil
+            default: break
+            }
+        }
+        return yieldEvent(payload, occurredAt: occurredAt, sourceID: nil, timestamp: timestamp)
     }
 
     func observeWorkoutPhase(
@@ -1855,7 +1863,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         materializedAt: Date,
         elapsed: ElapsedDuration
     ) -> HeartRateFrameEvidence {
-        let age = Self.nonnegativeAge(from: observation.timestamp.recordedElapsed, to: elapsed)
+        let age = Self.nonnegativeAge(from: observation.timestamp.effectiveElapsed, to: elapsed)
         return HeartRateFrameEvidence(
             observationID: observation.observationID,
             recordID: observation.recordID,
@@ -1863,9 +1871,13 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             beatsPerMinute: observation.beatsPerMinute,
             measuredAt: observation.timestamp.measuredAt,
             receivedAt: observation.timestamp.receivedAt,
-            evidenceElapsed: observation.timestamp.recordedElapsed,
+            evidenceElapsed: observation.timestamp.effectiveElapsed,
             ageAtMaterialization: age,
-            freshness: age.seconds <= descriptor.heartRateFreshnessLimitSeconds ? .fresh : .stale,
+            freshness: frameFreshness(
+                observation.freshness.state, quality: observation.quality,
+                evidenceElapsed: observation.timestamp.effectiveElapsed, elapsed: elapsed,
+                limit: descriptor.heartRateFreshnessLimitSeconds
+            ),
             provenance: observation.provenance
         )
     }
@@ -1875,7 +1887,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         materializedAt: Date,
         elapsed: ElapsedDuration
     ) -> TreadmillFrameEvidence {
-        let age = Self.nonnegativeAge(from: observation.timestamp.recordedElapsed, to: elapsed)
+        let age = Self.nonnegativeAge(from: observation.timestamp.effectiveElapsed, to: elapsed)
         return TreadmillFrameEvidence(
             observationID: observation.observationID,
             recordID: observation.recordID,
@@ -1885,11 +1897,35 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             deviceState: observation.deviceState,
             measuredAt: observation.timestamp.measuredAt,
             receivedAt: observation.timestamp.receivedAt,
-            evidenceElapsed: observation.timestamp.recordedElapsed,
+            evidenceElapsed: observation.timestamp.effectiveElapsed,
             ageAtMaterialization: age,
-            freshness: age.seconds <= descriptor.treadmillFreshnessLimitSeconds ? .fresh : .stale,
+            freshness: frameFreshness(
+                observation.freshness.state, quality: observation.quality,
+                evidenceElapsed: observation.timestamp.effectiveElapsed, elapsed: elapsed,
+                limit: descriptor.treadmillFreshnessLimitSeconds
+            ),
             provenance: observation.provenance
         )
+    }
+
+    private func frameFreshness(
+        _ nativeFreshness: FreshnessState,
+        quality: QualityFlags,
+        evidenceElapsed: ElapsedDuration,
+        elapsed: ElapsedDuration,
+        limit: Double
+    ) -> FreshnessState {
+        guard nativeFreshness == .fresh else { return nativeFreshness }
+        let unusable: Set<QualityFlag> = [
+            .duplicateProviderIdentity, .duplicateProviderSequence, .measurementOutOfArrivalOrder,
+            .invalidNativeValue, .nativeValueOutOfDomain, .staleAtUse, .unknownFreshness,
+            .clockRegression,
+        ]
+        guard quality.values.isDisjoint(with: unusable), elapsed >= evidenceElapsed else {
+            return .unknown
+        }
+        return Self.nonnegativeAge(from: evidenceElapsed, to: elapsed).seconds < limit
+            ? .fresh : .stale
     }
 
     private func captureTimestamp() -> RecordTimestamp {
@@ -1985,6 +2021,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     ) -> QualityFlags {
         var mapped: QualityFlags = []
         if quality.contains(.missingMeasurementTime) { mapped.insert(.missingMeasurementTime) }
+        if quality.contains(.clockRegression) { mapped.insert(.clockRegression) }
         if quality.contains(.duplicateProviderIdentity) { mapped.insert(.duplicateProviderIdentity) }
         if quality.contains(.duplicateProviderSequence) { mapped.insert(.duplicateProviderSequence) }
         if quality.contains(.providerSequenceOutOfOrder)
