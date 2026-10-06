@@ -1698,7 +1698,9 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     ) -> TelemetryYieldDisposition {
         withLock {
             switch payload {
-            case .sourceTransition: latestHeartRate = nil
+            case let .sourceTransition(transition):
+                if transition.previousSourceID == latestHeartRate?.source.id { latestHeartRate = nil }
+                if transition.previousSourceID == latestTreadmill?.source.id { latestTreadmill = nil }
             case .connectionTransition: latestTreadmill = nil
             default: break
             }

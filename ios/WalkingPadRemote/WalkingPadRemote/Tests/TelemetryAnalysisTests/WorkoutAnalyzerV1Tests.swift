@@ -409,9 +409,20 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         let connection = fixture.event(ordinal: 90, seconds: 2.5, payload: .connectionTransition(
             ConnectionTransition(previous: .connected, current: .disconnected, reason: "fixture")
         ))
+        let sourceSwitch = fixture.event(ordinal: 91, seconds: 2.5, payload: .sourceTransition(
+            SourceTransition(previousSourceID: native.source.id,
+                             currentSourceID: fixture.primarySource.id, reason: "fixture")
+        ))
+        let unrelatedHRSourceSwitch = fixture.event(ordinal: 92, seconds: 2.5, payload: .sourceTransition(
+            SourceTransition(previousSourceID: fixture.primarySource.id,
+                             currentSourceID: fixture.source(ordinal: 2, kind: .bluetooth).id,
+                             reason: "fixture-hr-only")
+        ))
         for (events, observations, covered) in [
             (phases, [native], 5.0),
             (phases + [connection], [native], 2.5),
+            (phases + [sourceSwitch], [native], 2.5),
+            (phases + [unrelatedHRSourceSwitch], [native], 5.0),
             (fixture.cooldownEvents(start: 3, end: 10, target: 115), [native], 3.0),
             (phases, [native, fixture.treadmill(ordinal: 2, seconds: 2, speed: 6, factual: true,
                                                source: fixture.primarySource)], 2.0),

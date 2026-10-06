@@ -76,7 +76,7 @@ contains factual normalized speed and explicitly marks its native reference fres
 and that reference resolves unambiguously by observation/record/source identity
 in the same session. Native freshness/quality and native/factual values must agree.
 Coverage is bounded by that native observation's effective-time five-second hold,
-next observation, connection/phase boundary, and session end. Materialization must
+next observation, applicable source/connection/phase boundary, and session end. Materialization must
 itself lie in the hold; missing, ambiguous or mismatched references are uncovered.
 Persisted frame freshness and recorder-ingress time cannot extend native coverage;
 a stale or missing frame remains uncovered. This is a

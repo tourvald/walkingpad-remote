@@ -85,6 +85,7 @@ public enum WorkoutAnalyzerV1 {
         )
         let factualSpeedMetric = FactualSpeedMetricTimeline(
             frames: input.frames,
+            sourceTransitions: input.events.filter { $0.kind == .sourceTransition }.sorted(by: eventEvidenceOrder),
             observations: input.treadmill,
             connectionBoundaries: connectionTransitionBoundaries(input.events),
             freshnessSeconds: policy.treadmillFreshnessSeconds,
@@ -580,6 +581,7 @@ private extension WorkoutAnalyzerV1 {
 
         init(
             frames: [CanonicalFrame],
+            sourceTransitions: [WorkoutEvent],
             observations: [TreadmillObservation],
             connectionBoundaries: [Double],
             freshnessSeconds: Double,
@@ -601,9 +603,14 @@ private extension WorkoutAnalyzerV1 {
                 let nextTime = index + 1 < ordered.count
                     ? seconds(ordered[index + 1].timestamp.effectiveElapsed) : sessionEnd
                 let boundary = connectionBoundaries.first { $0 > start } ?? sessionEnd
+                let sourceEnd = sourceTransitions.first {
+                    guard case let .sourceTransition(transition) = $0.payload.payload else { return false }
+                    return transition.previousSourceID == observation.source.id
+                        && seconds($0.timestamp.occurredElapsed) > start
+                }.map { seconds($0.timestamp.occurredElapsed) } ?? sessionEnd
                 let phaseEnd = phaseTimeline.boundaries(in: start..<max(start, sessionEnd)).first
                     ?? sessionEnd
-                let end = min(sessionEnd, nextTime, boundary, phaseEnd, start + freshnessSeconds)
+                let end = min(sessionEnd, nextTime, boundary, sourceEnd, phaseEnd, start + freshnessSeconds)
                 guard start >= 0, end > start, isUsableTreadmill(observation) else { continue }
                 holds[observation.recordID] = start..<end
             }

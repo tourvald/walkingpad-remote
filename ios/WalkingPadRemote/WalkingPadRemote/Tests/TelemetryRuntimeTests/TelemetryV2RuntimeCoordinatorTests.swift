@@ -793,18 +793,22 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
     }
 
     func testSourceConnectionAndSessionBoundariesDoNotCarryFrameEvidence() async throws {
-        let frames = try await factualFrames(measuredAge: 0, receivedAge: 0, boundaries: true)
-        XCTAssertNotNil(frames[0].heartRateEvidence)
-        XCTAssertNotNil(frames[0].treadmillEvidence)
-        XCTAssertNil(frames[1].heartRateEvidence)
-        XCTAssertNil(frames[1].treadmillEvidence)
-        XCTAssertNil(frames[2].heartRateEvidence)
-        XCTAssertNil(frames[2].treadmillEvidence)
+        for typedSourceTransition in [false, true] {
+            let frames = try await factualFrames(measuredAge: 0, receivedAge: 0, boundaries: true,
+                                                 typedSourceTransition: typedSourceTransition)
+            XCTAssertNotNil(frames[0].heartRateEvidence)
+            XCTAssertNotNil(frames[0].treadmillEvidence)
+            XCTAssertNil(frames[1].heartRateEvidence)
+            XCTAssertNil(frames[1].treadmillEvidence)
+            XCTAssertNil(frames[2].heartRateEvidence)
+            XCTAssertNil(frames[2].treadmillEvidence)
+        }
     }
 
     private func factualFrames(
         measuredAge: Double?, receivedAge: Double,
-        checksum: Bool = true, knownUnits: Bool = true, boundaries: Bool = false
+        checksum: Bool = true, knownUnits: Bool = true, boundaries: Bool = false,
+        typedSourceTransition: Bool = false
     ) async throws -> [CanonicalFrame] {
         let persistence = RuntimePersistence()
         let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 10_000))
@@ -840,9 +844,22 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             _ = coordinator.observeSourceLifecycle(HeartRateSourceLifecycleEvidence(
                 source: source, kind: .stopped, occurredAt: clock.nowDate()
             ))
-            _ = coordinator.observeEvent(.connectionTransition(ConnectionTransition(
-                previous: .connected, current: .disconnected, reason: "fixture"
-            )), occurredAt: clock.nowDate())
+            if typedSourceTransition {
+                try await eventually {
+                    await persistence.snapshot().records.contains { if case .treadmill = $0 { return true }; return false }
+                }
+                let snapshot = await persistence.snapshot()
+                let native = try XCTUnwrap(snapshot.records.compactMap {
+                    if case let .treadmill(observation) = $0 { return observation }; return nil
+                }.first)
+                _ = coordinator.observeEvent(.sourceTransition(SourceTransition(
+                    previousSourceID: native.source.id, currentSourceID: SourceID(), reason: "fixture"
+                )), occurredAt: clock.nowDate())
+            } else {
+                _ = coordinator.observeEvent(.connectionTransition(ConnectionTransition(
+                    previous: .connected, current: .disconnected, reason: "fixture"
+                )), occurredAt: clock.nowDate())
+            }
             _ = coordinator.observeCurrentElapsedSecond()
         }
         coordinator.endSession(reason: "complete")
