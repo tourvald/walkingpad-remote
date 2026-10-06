@@ -8341,7 +8341,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func observeTreadmillTelemetry(_ evidence: TreadmillTelemetryEvidence) {
-        _ = treadmillTelemetrySink?.observeTreadmillEvidence(evidence)
+        _ = treadmillTelemetrySink?.observeTreadmillEvidence(
+            evidence, currentConnectionEpoch: treadmillTelemetryConnectionEpoch
+        )
     }
 
     private func makeTreadmillDecision(

@@ -1064,6 +1064,21 @@ public protocol TreadmillTelemetrySink: AnyObject {
     func observeTreadmillEvidence(
         _ evidence: TreadmillTelemetryEvidence
     ) -> TreadmillTelemetrySinkDisposition
+
+    /// The existing connection owner supplies its current context separately from observation evidence.
+    func observeTreadmillEvidence(
+        _ evidence: TreadmillTelemetryEvidence,
+        currentConnectionEpoch: TreadmillConnectionEpoch?
+    ) -> TreadmillTelemetrySinkDisposition
+}
+
+public extension TreadmillTelemetrySink {
+    func observeTreadmillEvidence(
+        _ evidence: TreadmillTelemetryEvidence,
+        currentConnectionEpoch: TreadmillConnectionEpoch?
+    ) -> TreadmillTelemetrySinkDisposition {
+        observeTreadmillEvidence(evidence)
+    }
 }
 
 public enum TreadmillObservationalTee {

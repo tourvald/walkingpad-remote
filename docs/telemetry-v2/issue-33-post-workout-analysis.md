@@ -253,9 +253,12 @@ elapsed. Selected evidence elapsed, age and freshness remain consistent, with
 half-open 7 s and 5 s expiry. Raw timestamp roles are preserved. Native
 stale/unknown freshness or unusable quality cannot be upgraded; source lifecycle
 and connection transitions invalidate carried references. Fixed-size active-session
-eligibility cutoffs also reject delayed pre-boundary observations; current and
-last-invalidated treadmill epochs prevent old-context evidence from becoming
-fresh even with a recent receipt. Valid post-boundary evidence remains eligible.
+eligibility cutoffs also reject delayed pre-boundary observations. Treadmill frame
+eligibility additionally requires an independent snapshot of the existing
+connection owner's current epoch, captured at ingress and retained through staged
+replay. An observation cannot declare its own epoch current; absent or mismatched
+context remains unknown even with a recent receipt. No invalidated-epoch registry
+is needed. Confirmed post-boundary current-context evidence remains eligible.
 This state is discarded with the runtime session; it is not persisted or used
 for control. The 30 s controller-unit policy remains
 independent and unchanged. Raw frames/observations and earlier analyses remain

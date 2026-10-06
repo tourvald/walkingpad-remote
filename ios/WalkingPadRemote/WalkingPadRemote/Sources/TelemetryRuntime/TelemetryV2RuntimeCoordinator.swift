@@ -387,7 +387,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         case sourceLifecycle(HeartRateSourceLifecycleEvidence)
         case controlUse(HeartRateControlUseEvidence)
         case heartRateControlDecision(PendingHeartRateControlDecision)
-        case treadmill(TreadmillTelemetryEvidence)
+        case treadmill(TreadmillTelemetryEvidence, currentConnectionEpoch: TreadmillConnectionEpoch?)
         case event(WorkoutEventPayload, Date, RecordTimestamp? = nil)
         case workoutPhase(WorkoutPhase, Date, RecordTimestamp? = nil)
 
@@ -395,7 +395,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             switch self {
             case let .heartRate(result):
                 (1, result.canonicalObservation == nil ? 0 : 1)
-            case let .treadmill(evidence):
+            case let .treadmill(evidence, _):
                 if case let .observation(observation) = evidence,
                    observation.nativeSpeed != nil
                 {
@@ -418,7 +418,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 stableKey = "hr:\(evidence.source.stableLocalKey)"
             case .controlUse, .heartRateControlDecision:
                 stableKey = "hr:\(descriptor.configuration.heartRateProviderStableLocalKey)"
-            case let .treadmill(evidence):
+            case let .treadmill(evidence, _):
                 guard let stableDevice = descriptor.configuration.treadmill.stableLocalIdentifier,
                       !stableDevice.isEmpty else { return nil }
                 stableKey = "treadmill:\(stableDevice):\(evidence.protocolKind.rawValue)"
@@ -925,13 +925,20 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     public func observeTreadmillEvidence(
         _ evidence: TreadmillTelemetryEvidence
     ) -> TreadmillTelemetrySinkDisposition {
+        observeTreadmillEvidence(evidence, currentConnectionEpoch: nil)
+    }
+
+    public func observeTreadmillEvidence(
+        _ evidence: TreadmillTelemetryEvidence,
+        currentConnectionEpoch: TreadmillConnectionEpoch?
+    ) -> TreadmillTelemetrySinkDisposition {
         guard let session = currentActiveSession() else {
-            guard let disposition = bufferDisposition(.treadmill(evidence)) else {
+            guard let disposition = bufferDisposition(.treadmill(evidence, currentConnectionEpoch: currentConnectionEpoch)) else {
                 return .unavailable
             }
             return Self.treadmillDisposition(disposition)
         }
-        let disposition = session.observeTreadmill(evidence)
+        let disposition = session.observeTreadmill(evidence, currentConnectionEpoch: currentConnectionEpoch)
         refreshStatus(from: session)
         return Self.treadmillDisposition(disposition)
     }
@@ -1317,11 +1324,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     private let lock = NSLock()
     private var emittedSourceIDs: Set<SourceID> = []
     private var latestHeartRate: (observation: HeartRateObservation, effectiveElapsed: ElapsedDuration)?
-    private var latestTreadmill: (observation: TreadmillObservation, epoch: TreadmillConnectionEpoch)?
+    private var latestTreadmill: (observation: TreadmillObservation, isCurrentContext: Bool)?
     // Frame eligibility belongs to this active session, never to persisted or control state.
     private var heartRateFrameBoundary: (elapsed: ElapsedDuration, sourceID: SourceID?) = (.zero, nil)
     private var treadmillFrameBoundary: (elapsed: ElapsedDuration, sourceID: SourceID?) = (.zero, nil)
-    private var treadmillFrameEpoch: (current: TreadmillConnectionEpoch?, invalidated: TreadmillConnectionEpoch?) = (nil, nil)
     private var lastObservedFrameSecond: Int64?
     private var firstMissingFrameSecond: Int64?
     private var currentWorkoutPhase: WorkoutPhase?
@@ -1378,8 +1384,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             _ = observeHeartRateRuntime(.controlUse(controlUse))
         case let .heartRateControlDecision(decision):
             _ = observeHeartRateControlDecision(decision)
-        case let .treadmill(treadmill):
-            _ = observeTreadmill(treadmill)
+        case let .treadmill(treadmill, currentConnectionEpoch):
+            _ = observeTreadmill(treadmill, currentConnectionEpoch: currentConnectionEpoch)
         case let .event(payload, occurredAt, timestamp):
             _ = observeEvent(payload, occurredAt: occurredAt, timestamp: timestamp)
         case let .workoutPhase(phase, occurredAt, timestamp):
@@ -1658,7 +1664,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     }
 
     func observeTreadmill(
-        _ evidence: TreadmillTelemetryEvidence
+        _ evidence: TreadmillTelemetryEvidence,
+        currentConnectionEpoch: TreadmillConnectionEpoch?
     ) -> TelemetryYieldDisposition {
         let source = treadmillSource(for: evidence)
         if let source {
@@ -1705,13 +1712,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         let receipt = recorder.ingress.yield(.treadmill(observation))
         if receipt.disposition == .enqueued {
             withLock {
-                let effective = frameEvidenceElapsed(observation.timestamp, measurementComparable: false)
-                if effective >= treadmillFrameBoundary.elapsed,
-                   observed.connectionEpoch != treadmillFrameEpoch.invalidated,
-                   treadmillFrameEpoch.current == nil {
-                    treadmillFrameEpoch.current = observed.connectionEpoch
-                }
-                latestTreadmill = (observation, observed.connectionEpoch)
+                latestTreadmill = (observation, observed.connectionEpoch == currentConnectionEpoch)
             }
         }
         return Self.moreSevere(eventDisposition, receipt.disposition)
@@ -1734,11 +1735,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
                 }
                 if previousSourceID == latestTreadmill?.observation.source.id
                     || previousSourceID == treadmillFrameBoundary.sourceID {
-                    invalidateTreadmillFrame(at: occurredAt, invalidateEpoch: true)
+                    invalidateTreadmillFrame(at: occurredAt)
                 }
-            case let .connectionTransition(transition):
-                invalidateTreadmillFrame(at: occurredAt,
-                                        invalidateEpoch: transition.current != .degraded)
+            case .connectionTransition:
+                invalidateTreadmillFrame(at: occurredAt)
             default: break
             }
         }
@@ -1805,7 +1805,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
                                    elapsed: currentElapsed)
                 },
                 treadmillEvidence: latestTreadmill.map {
-                    treadmillFrame($0.observation, epoch: $0.epoch, elapsed: currentElapsed)
+                    treadmillFrame($0.observation, isCurrentContext: $0.isCurrentContext, elapsed: currentElapsed)
                 },
                 precedingGap: gap
             )
@@ -1908,14 +1908,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         return measured
     }
 
-    // Called under the session lock. Keep only current/last-invalidated context, not an epoch registry.
-    private func invalidateTreadmillFrame(at date: Date, invalidateEpoch: Bool) {
+    // Called under the session lock; context proof arrives from the existing connection owner.
+    private func invalidateTreadmillFrame(at date: Date) {
         treadmillFrameBoundary = (max(treadmillFrameBoundary.elapsed, elapsed(at: date)),
                                   latestTreadmill?.observation.source.id ?? treadmillFrameBoundary.sourceID)
-        if invalidateEpoch {
-            treadmillFrameEpoch.invalidated = treadmillFrameEpoch.current ?? treadmillFrameEpoch.invalidated
-            treadmillFrameEpoch.current = nil
-        }
         latestTreadmill = nil
     }
 
@@ -1945,7 +1941,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
 
     private func treadmillFrame(
         _ observation: TreadmillObservation,
-        epoch: TreadmillConnectionEpoch,
+        isCurrentContext: Bool,
         elapsed: ElapsedDuration
     ) -> TreadmillFrameEvidence {
         // Current treadmill decoders expose receipt time, not a comparable measurement clock.
@@ -1963,8 +1959,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             evidenceElapsed: evidenceElapsed,
             ageAtMaterialization: age,
             freshness: frameFreshness(
-                epoch == treadmillFrameEpoch.current && epoch != treadmillFrameEpoch.invalidated
-                    ? observation.freshness.state : .unknown,
+                isCurrentContext ? observation.freshness.state : .unknown,
                 quality: observation.quality, evidenceElapsed: evidenceElapsed, elapsed: elapsed,
                 limit: descriptor.treadmillFreshnessLimitSeconds, validFrom: treadmillFrameBoundary.elapsed
             ),

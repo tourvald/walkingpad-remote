@@ -840,18 +840,19 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
                    recordedAt: clock.nowDate())
                 _ = coordinator.observeHeartRate(result)
             }
-            func deliverTreadmill(received: Double, epoch: TreadmillConnectionEpoch) {
+            func deliverTreadmill(received: Double, epoch: TreadmillConnectionEpoch,
+                                  currentEpoch: TreadmillConnectionEpoch?) {
                 let observation = treadmill.normalize(.walkingPad(
                     speedRawTenths: 37, rawState: 1, deviceState: .moving, checksumValid: true,
                     connectionEpoch: epoch, receivedAt: origin.addingTimeInterval(received)
                 ), unitsTruth: .valid(unit: .kilometresPerHour, connectionEpoch: epoch,
                                      observedAt: origin.addingTimeInterval(received)),
                    observationID: ObservationID(), recordedAt: clock.nowDate())
-                _ = coordinator.observeTreadmillEvidence(.observation(observation))
+                _ = coordinator.observeTreadmillEvidence(.observation(observation), currentConnectionEpoch: currentEpoch)
             }
             clock.advance(by: .seconds(19))
             deliverHR(measured: 19, received: 19)
-            deliverTreadmill(received: 19, epoch: oldEpoch)
+            deliverTreadmill(received: 19, epoch: oldEpoch, currentEpoch: oldEpoch)
             _ = coordinator.observeCurrentElapsedSecond()
             clock.advance(by: .seconds(1))
             if typedTransitions {
@@ -882,15 +883,15 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
                 clock.advance(by: .seconds(1))
             }
             deliverHR(measured: delayedTime, received: 21)
-            deliverTreadmill(received: 19, epoch: oldEpoch)
+            deliverTreadmill(received: 19, epoch: oldEpoch, currentEpoch: nil)
             _ = coordinator.observeCurrentElapsedSecond()
             clock.advance(by: .seconds(1))
             deliverHR(measured: 22, received: 22)
-            deliverTreadmill(received: 22, epoch: newEpoch)
+            deliverTreadmill(received: 22, epoch: newEpoch, currentEpoch: newEpoch)
             _ = coordinator.observeCurrentElapsedSecond()
             clock.advance(by: .seconds(1))
             // Even a recent receipt cannot rehabilitate the invalidated connection epoch.
-            deliverTreadmill(received: 23, epoch: oldEpoch)
+            deliverTreadmill(received: 23, epoch: oldEpoch, currentEpoch: newEpoch)
             _ = coordinator.observeCurrentElapsedSecond()
             coordinator.endSession(reason: "complete")
             try await eventually { await persistence.finalizations.count == 1 }
@@ -920,6 +921,118 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             XCTAssertEqual(rawSpeed[1].timestamp.receivedElapsed.seconds, 19)
             XCTAssertEqual(rawSpeed[1].timestamp.recordedElapsed.seconds, 21)
             XCTAssertTrue(rawHR.allSatisfy { $0.controlUse == .acceptedNotUsed })
+        }
+    }
+
+    func testFramesRequireAuthoritativeContextAcrossRepeatedEpochInvalidation() async throws {
+        let persistence = RuntimePersistence()
+        let origin = Date(timeIntervalSince1970: 10_000)
+        let clock = ManualRuntimeClock(date: origin)
+        let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence }, runtimeClock: clock)
+        coordinator.beginSession(Self.descriptor(startedAt: origin))
+        try await eventually { if case .active = coordinator.status { return true }; return false }
+        var normalizer = TreadmillObservationNormalizer()
+        var epochs: [TreadmillConnectionEpoch] = []
+        var expected: [FreshnessState] = []
+        var receivedDates: [Date] = []
+        func deliver(_ epoch: TreadmillConnectionEpoch, current: TreadmillConnectionEpoch?) {
+            clock.advance(by: .seconds(1))
+            let date = clock.nowDate()
+            let observation = normalizer.normalize(.walkingPad(
+                speedRawTenths: 37, rawState: 1, deviceState: .moving, checksumValid: true,
+                connectionEpoch: epoch, receivedAt: date
+            ), unitsTruth: .valid(unit: .kilometresPerHour, connectionEpoch: epoch, observedAt: date),
+               observationID: ObservationID(), recordedAt: date)
+            let sink: any TreadmillTelemetrySink = coordinator
+            XCTAssertEqual(sink.observeTreadmillEvidence(
+                .observation(observation), currentConnectionEpoch: current
+            ), .accepted)
+            _ = coordinator.observeCurrentElapsedSecond()
+            receivedDates.append(date)
+            expected.append(epoch == current ? .fresh : .unknown)
+        }
+        for _ in 0..<5 {
+            let current = TreadmillConnectionEpoch(rawValue: UUID())
+            // Only the existing connection owner may confirm a new epoch (A, B, C, ...).
+            deliver(current, current: current)
+            for old in epochs { deliver(old, current: current) }
+            epochs.append(current)
+            clock.advance(by: .seconds(1))
+            _ = coordinator.observeEvent(.connectionTransition(ConnectionTransition(
+                previous: .connected, current: .disconnected, reason: "fixture"
+            )), occurredAt: clock.nowDate())
+            for old in epochs { deliver(old, current: nil) }
+        }
+        coordinator.endSession(reason: "complete")
+        try await eventually { await persistence.finalizations.count == 1 }
+        let records = await persistence.snapshot().records
+        let frames = records.compactMap { record -> CanonicalFrame? in
+            guard case let .frame(frame) = record else { return nil }; return frame
+        }
+        XCTAssertEqual(frames.map { $0.treadmillEvidence?.freshness }, expected.map(Optional.some))
+        let raw = records.compactMap { record -> TreadmillObservation? in
+            guard case let .treadmill(value) = record else { return nil }; return value
+        }
+        XCTAssertEqual(raw.count, expected.count)
+        XCTAssertEqual(raw.map { $0.timestamp.receivedAt }, receivedDates)
+        XCTAssertEqual(raw.map { $0.timestamp.recordedAt }, receivedDates)
+        XCTAssertTrue(raw.allSatisfy { $0.timestamp.measuredAt == nil && $0.factualSpeed != nil })
+        XCTAssertEqual(raw.map { $0.timestamp.receivedElapsed.seconds }, receivedDates.map { $0.timeIntervalSince(origin) })
+
+        // A new telemetry session reuses the owner's still-current context, with no old cutoff.
+        let restartedAt = clock.nowDate()
+        coordinator.beginSession(Self.descriptor(startedAt: restartedAt))
+        try await eventually { if case .active = coordinator.status { return true }; return false }
+        let current = try XCTUnwrap(epochs.last)
+        deliver(current, current: current)
+        deliver(current, current: nil)
+        coordinator.endSession(reason: "complete")
+        try await eventually { await persistence.finalizations.count == 2 }
+        let restartedFrames = await persistence.snapshot().records.compactMap { record -> CanonicalFrame? in
+            guard case let .frame(frame) = record else { return nil }; return frame
+        }.suffix(2)
+        XCTAssertEqual(restartedFrames.map { $0.treadmillEvidence?.freshness }, [.fresh, .unknown])
+        XCTAssertEqual(restartedFrames.first?.treadmillEvidence?.evidenceElapsed.seconds, 1)
+    }
+
+    func testPendingTreadmillContextProofIsCapturedAndMissingContextFailsClosed() async throws {
+        for confirmed in [false, true] {
+            let persistence = RuntimePersistence()
+            let factoryGate = DispatchSemaphore(value: 0)
+            let origin = Date(timeIntervalSince1970: 10_000)
+            let clock = ManualRuntimeClock(date: origin)
+            let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: {
+                factoryGate.wait()
+                return persistence
+            }, runtimeClock: clock)
+            coordinator.beginSession(Self.descriptor(startedAt: origin))
+            clock.advance(by: .seconds(1))
+            let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+            var normalizer = TreadmillObservationNormalizer()
+            let observation = normalizer.normalize(.walkingPad(
+                speedRawTenths: 37, rawState: 1, deviceState: .moving, checksumValid: true,
+                connectionEpoch: epoch, receivedAt: clock.nowDate()
+            ), unitsTruth: .valid(unit: .kilometresPerHour, connectionEpoch: epoch, observedAt: clock.nowDate()),
+               observationID: ObservationID(), recordedAt: clock.nowDate())
+            // Legacy sink entry has no independent owner signal; it must retain raw evidence only.
+            if confirmed {
+                XCTAssertEqual(coordinator.observeTreadmillEvidence(
+                    .observation(observation), currentConnectionEpoch: epoch
+                ), .accepted)
+            } else {
+                XCTAssertEqual(coordinator.observeTreadmillEvidence(.observation(observation)), .accepted)
+            }
+            factoryGate.signal()
+            try await eventually { if case .active = coordinator.status { return true }; return false }
+            _ = coordinator.observeCurrentElapsedSecond()
+            coordinator.endSession(reason: "complete")
+            try await eventually { await persistence.finalizations.count == 1 }
+            let records = await persistence.snapshot().records
+            let frame = try XCTUnwrap(records.compactMap { record -> CanonicalFrame? in
+                guard case let .frame(frame) = record else { return nil }; return frame
+            }.first)
+            XCTAssertEqual(frame.treadmillEvidence?.freshness, confirmed ? .fresh : .unknown)
+            XCTAssertEqual(records.filter { if case .treadmill = $0 { return true }; return false }.count, 1)
         }
     }
 
@@ -972,7 +1085,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         ), unitsTruth: knownUnits ? .valid(unit: .kilometresPerHour,
             connectionEpoch: epoch, observedAt: clock.nowDate().addingTimeInterval(-20)) : .notRead(connectionEpoch: epoch),
            observationID: ObservationID(), recordedAt: clock.nowDate())
-        _ = coordinator.observeTreadmillEvidence(.observation(observation))
+        _ = coordinator.observeTreadmillEvidence(.observation(observation), currentConnectionEpoch: epoch)
         _ = coordinator.observeCurrentElapsedSecond()
         if boundaries {
             clock.advance(by: .seconds(1))
