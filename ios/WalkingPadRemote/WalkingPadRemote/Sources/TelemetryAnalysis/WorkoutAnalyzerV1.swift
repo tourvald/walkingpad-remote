@@ -10,7 +10,7 @@ public enum WorkoutAnalyzerError: Error, Equatable, Sendable {
 }
 
 public enum WorkoutAnalyzerV1 {
-    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.2")
+    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.3")
     public static let metricDefinitionVersion = "timestamp-hold-metrics-v2"
     public static let minimumAverageFactualSpeedCoverageRatio = 0.9
 
@@ -740,6 +740,7 @@ private extension WorkoutAnalyzerV1 {
             var invalidCommandDecisionScopes: Set<ScopedCommandIdentity> = []
             var duplicateCommandRecordCount = 0
             var missingCommandDecisionLinkCount = 0
+            var readOnlyQueryScopes: Set<ScopedCommandIdentity> = []
 
             func recordSend(_ send: SendAttempt) {
                 if let existing = sends[send.attemptID] {
@@ -798,6 +799,10 @@ private extension WorkoutAnalyzerV1 {
                             connectionEpoch: command.connectionEpoch
                         )
                         commands.insert(identity)
+                        let isReadOnlyQuery = command.kind.isReadOnlyQuery(
+                            protocolKind: command.protocolKind, decisionID: command.decisionID
+                        )
+                        if isReadOnlyQuery { readOnlyQueryScopes.insert(identity) }
                         if let firstScope = commandScopesByID[command.commandID] {
                             invalidCommandDecisionScopes.insert(firstScope)
                             invalidCommandDecisionScopes.insert(identity)
@@ -811,7 +816,7 @@ private extension WorkoutAnalyzerV1 {
                             recordedTime: recordedTime,
                             kind: command.kind
                         )
-                        if command.decisionID == nil {
+                        if command.decisionID == nil && !isReadOnlyQuery {
                             invalidCommandDecisionScopes.insert(identity)
                             missingCommandDecisionLinkCount += 1
                         }
@@ -1047,8 +1052,14 @@ private extension WorkoutAnalyzerV1 {
             let finalCommandDecisionIDs = validCommandDecisionIDs.filter {
                 !invalidCommandDecisionScopes.contains($0.key)
             }
-            commandIDs = commands.subtracting(invalidCommandDecisionScopes)
-            sendsByAttempt = sends.filter { !invalidAttemptIDs.contains($0.key) }
+            commandIDs = commands.subtracting(invalidCommandDecisionScopes).subtracting(readOnlyQueryScopes)
+            sendsByAttempt = sends.filter {
+                !invalidAttemptIDs.contains($0.key) && !readOnlyQueryScopes.contains(ScopedCommandIdentity(
+                    commandID: $0.value.commandID,
+                    protocolKind: $0.value.protocolKind,
+                    connectionEpoch: $0.value.connectionEpoch
+                ))
+            }
             // The accepted persisted schema contains no independently verifiable
             // proof token for a specific ACK/response-to-attempt association.
             // Persisted specific claims are therefore unsupported, regardless of

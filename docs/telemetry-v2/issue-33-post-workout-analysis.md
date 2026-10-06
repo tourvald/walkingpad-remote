@@ -3,7 +3,7 @@
 Status: implemented Analyzer V1 contract.
 
 This document owns the concrete metric definitions and lifecycle for
-`workout-analyzer-v1.2`. The canonical evidence, causal, and safety rules remain
+`workout-analyzer-v1.3`. The canonical evidence, causal, and safety rules remain
 owned by the [data contract](data-contract.md),
 [treadmill truth contract](treadmill-truth-and-command-lifecycle.md), and
 [safety boundary](safety-boundary.md).
@@ -150,7 +150,8 @@ engine.
 
 ## Causal metrics
 
-The eligible causal denominator is persisted command-send attempts. Under the
+The eligible causal denominator is structurally valid persisted control-command
+send attempts, excluding read-only maintenance queries. Under the
 current accepted persisted schema, neither ACK nor factual-response evidence
 contains an independently verifiable proof representation for a specific
 command/attempt association. A persisted
@@ -197,7 +198,7 @@ unavailable because V1 has no typed persisted blocker evidence.
 
 Analyzer metadata includes:
 
-- analyzer version `workout-analyzer-v1.2`;
+- analyzer version `workout-analyzer-v1.3`;
 - detail schema version `1`;
 - metric definition `timestamp-hold-metrics-v2`;
 - accepted telemetry schema range `1.0.0...1.0.0`;
@@ -214,8 +215,23 @@ overwriting evidence or the prior result.
 
 On store preparation, terminal sessions are scanned in deterministic session
 order and results missing the current analyzer identity are recomputed. The
-version bump adds a v1.2 result while preserving v1.1 analyses and all raw evidence;
-current read projections select v1.2. No destructive migration is performed. Completed, incomplete, and cancelled
+version bump adds a v1.3 result while preserving v1.1/v1.2 analyses and all raw evidence;
+current read projections select v1.3. No destructive migration is performed. Completed, incomplete, and cancelled
 sessions are eligible; created, running, and paused sessions are not. Analyzer
 failure is contained as an analysis failure and cannot change recorder
 finalization or product session completion.
+
+## Read-only polling compatibility (analyzer v1.3)
+
+WalkingPad A2/A6 producers explicitly emit `.other("walkingpad.readonly.status.a2")`
+and `.other("walkingpad.readonly.controller-units.a6")`. These protocol-maintenance
+queries may omit a decision ID. Historical schema-1.0.0 WalkingPad evidence is
+recognized only for exact `.other("QUERY STATUS")` / `.other("QUERY PARAMS")`
+with nil decision ID. Other protocols and arbitrary kinds receive no exemption.
+
+Query chains retain command/attempt uniqueness, protocol/epoch, enqueue/send,
+retry-order and claimed decision-link validation. After validation, queries are
+excluded from control command counts and ACK/response denominators. Raw events
+and honest unknown associations remain unchanged; specific persisted association
+claims remain unsupported. No packet, queue, cadence, gate or control behavior
+changes. Terminal-session reanalysis remains additive and idempotent.

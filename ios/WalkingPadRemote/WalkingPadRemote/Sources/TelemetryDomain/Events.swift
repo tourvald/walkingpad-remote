@@ -88,6 +88,16 @@ public enum CommandKind: Codable, Hashable, Sendable {
     case setSpeed(CommandedSpeed)
     case stop
     case other(String)
+
+    public static let walkingPadStatusQuery = CommandKind.other("walkingpad.readonly.status.a2")
+    public static let walkingPadControllerUnitsQuery = CommandKind.other("walkingpad.readonly.controller-units.a6")
+
+    public func isReadOnlyQuery(protocolKind: TreadmillProtocolKind, decisionID: DecisionID?) -> Bool {
+        guard protocolKind == .walkingPad else { return false }
+        if self == .walkingPadStatusQuery || self == .walkingPadControllerUnitsQuery { return true }
+        // Exact schema-1.0.0 producer compatibility, never a general label heuristic.
+        return decisionID == nil && (self == .other("QUERY STATUS") || self == .other("QUERY PARAMS"))
+    }
 }
 
 public enum CommandCancellationReason: Codable, Hashable, Sendable {
