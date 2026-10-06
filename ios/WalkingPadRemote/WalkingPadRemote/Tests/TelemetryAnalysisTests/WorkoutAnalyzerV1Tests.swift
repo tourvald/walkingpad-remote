@@ -4,6 +4,100 @@ import XCTest
 @testable import TelemetryDomain
 
 final class WorkoutAnalyzerV1Tests: XCTestCase {
+    func testHistoricalMixedClockPhasesRecoverZonesAndCooldownWithoutChangingEvidence() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 60)
+        let events = [
+            fixture.event(ordinal: 1, seconds: 0, recordedSeconds: 0,
+                          payload: .workoutPhase(.init(previous: nil, current: .main))),
+            fixture.event(ordinal: 2, seconds: 40.02, recordedSeconds: 40,
+                          payload: .workoutPhase(.init(previous: .main, current: .cooldown))),
+            fixture.event(ordinal: 3, seconds: 40.021, recordedSeconds: 40.001,
+                          payload: .cooldown(.init(lifecycle: .started, targetHeartRate: 110))),
+            fixture.event(ordinal: 4, seconds: 60.019, recordedSeconds: 59.999,
+                          payload: .cooldown(.init(lifecycle: .completed))),
+            fixture.event(ordinal: 5, seconds: 60.02, recordedSeconds: 60,
+                          payload: .workoutPhase(.init(previous: .cooldown, current: .finished))),
+        ]
+        let input = fixture.input(
+            heartRate: stride(from: 0, to: 60, by: 5).enumerated().map {
+                fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element), bpm: 100)
+            }, events: events
+        )
+        let result = try WorkoutAnalyzerV1.analyze(input, generatedAt: fixture.baseDate)
+        let detail = try decodeDetail(result)
+        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.2")
+        XCTAssertEqual(detail.quality.phases.map(\.phase), ["main", "cooldown"])
+        XCTAssertFalse(detail.quality.issues.contains {
+            $0.code == "invalid-workout-phase-transition-evidence"
+        })
+        XCTAssertEqual(detail.control.zoneDurations.map(\.seconds), [0, 40, 0, 0, 0])
+        XCTAssertEqual(detail.control.cooldown.durationSeconds, 20)
+        // Target selection remains the existing policy at the exact phase boundary.
+        XCTAssertEqual(detail.control.cooldown.targetHeartRate.value, 100)
+        XCTAssertEqual(detail.control.cooldown.heartRateBelowTargetSeconds.value, 20)
+        XCTAssertEqual(detail.control.cooldown.finishReason.value, "completed")
+        XCTAssertEqual(input.events, events)
+        XCTAssertGreaterThan(events.last!.timestamp.occurredElapsed.seconds, 60)
+    }
+
+    func testReadOnlyQueryWarningsRemainUnchanged() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let commandID = CommandID(rawValue: fixture.uuid(6_000))
+        let epoch = TreadmillConnectionEpoch(rawValue: fixture.uuid(90))
+        let events = fixture.phaseEvents(mainAt: 0, finishedAt: 30) + [
+            fixture.event(ordinal: 70, seconds: 5, payload: .treadmillEvidence(.commandEnqueued(
+                TreadmillCommandEnqueuedEvidence(
+                    commandID: commandID, decisionID: nil, kind: .other("QUERY STATUS"),
+                    protocolKind: .walkingPad, connectionEpoch: epoch,
+                    enqueuedAt: fixture.baseDate.addingTimeInterval(5)
+                )
+            ))),
+            fixture.event(ordinal: 71, seconds: 6, payload: .treadmillEvidence(.sendAttempt(
+                TreadmillCommandSendAttemptEvidence(
+                    commandID: commandID, decisionID: nil,
+                    attemptID: CommandAttemptID(rawValue: fixture.uuid(6_001)),
+                    attemptNumber: 1, protocolKind: .walkingPad, connectionEpoch: epoch,
+                    sentAt: fixture.baseDate.addingTimeInterval(6), writeType: .withoutResponse
+                )
+            ))),
+        ]
+        let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(events: events), generatedAt: fixture.baseDate.addingTimeInterval(40)
+        ))
+        XCTAssertEqual(detail.control.commandCount, 0)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
+        XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
+        XCTAssertEqual(detail.quality.issues.filter {
+            $0.category == .malformedCorruptEvidence
+        }.reduce(0) { $0 + $1.count }, 2)
+    }
+
+    func testHistoricalMonotonicPhaseValidationRemainsStrict() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 20)
+        let main = fixture.event(ordinal: 1, seconds: 0, recordedSeconds: 0,
+                                 payload: .workoutPhase(.init(previous: nil, current: .main)))
+        let invalidTransitions: [(Double, WorkoutPhase?, WorkoutPhase)] = [
+            (20.001, .main, .finished),
+            (-0.001, .main, .finished),
+            (10, .cooldown, .finished),
+            (10, .main, .main),
+        ]
+        for (time, previous, current) in invalidTransitions {
+            let events = [main, fixture.event(
+                ordinal: 2, seconds: 10, recordedSeconds: time,
+                payload: .workoutPhase(.init(previous: previous, current: current))
+            )]
+            let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+                fixture.input(heartRate: [fixture.heartRate(ordinal: 1, seconds: 0, bpm: 100)],
+                              events: events), generatedAt: fixture.baseDate
+            ))
+            XCTAssertTrue(detail.control.zoneDurations.isEmpty)
+            XCTAssertTrue(detail.quality.issues.contains {
+                $0.code == "invalid-workout-phase-transition-evidence"
+            })
+        }
+    }
+
     func testIrregularCadenceUsesFreshTimestampDurationInsteadOfSampleWeighting() throws {
         let fixture = AnalysisFixture(sessionSeconds: 20)
         let input = fixture.input(
@@ -2082,7 +2176,13 @@ private struct AnalysisFixture {
         recordedSeconds: Double? = nil,
         payload: WorkoutEventPayload
     ) -> WorkoutEvent {
-        let persistedSeconds = recordedSeconds ?? (seconds + 0.001)
+        let persistedSeconds: Double
+        switch payload {
+        case .workoutPhase, .cooldown:
+            persistedSeconds = recordedSeconds ?? seconds
+        default:
+            persistedSeconds = recordedSeconds ?? (seconds + 0.001)
+        }
         return WorkoutEvent(
             recordID: RecordID(rawValue: uuid(6_000 + ordinal)),
             sessionID: session.sessionID,

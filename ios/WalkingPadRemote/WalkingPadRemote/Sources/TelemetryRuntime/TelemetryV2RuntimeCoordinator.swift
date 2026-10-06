@@ -388,8 +388,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         case controlUse(HeartRateControlUseEvidence)
         case heartRateControlDecision(PendingHeartRateControlDecision)
         case treadmill(TreadmillTelemetryEvidence)
-        case event(WorkoutEventPayload, Date)
-        case workoutPhase(WorkoutPhase, Date)
+        case event(WorkoutEventPayload, Date, RecordTimestamp? = nil)
+        case workoutPhase(WorkoutPhase, Date, RecordTimestamp? = nil)
 
         var lostRecordCounts: (critical: UInt64, native: UInt64) {
             switch self {
@@ -490,6 +490,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         let generation: UInt64
         let descriptor: TelemetryV2SessionDescriptor
         let startedMonotonic: Duration
+        let startedTimestamp: RecordTimestamp
         var isStarting: Bool
         var evidence: [PendingEvidence]
         var lossSummary: PendingLossSummary
@@ -780,6 +781,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 generation: generation,
                 descriptor: descriptor,
                 startedMonotonic: runtimeClock.now(),
+                startedTimestamp: RecordTimestamp(
+                    recordedAt: runtimeClock.nowDate(), elapsed: ElapsedDuration(microseconds: 0)
+                ),
                 isStarting: false,
                 evidence: [],
                 lossSummary: PendingLossSummary(),
@@ -1038,15 +1042,19 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                     runtimeClock: self?.runtimeClock ?? ContinuousTelemetryV2RuntimeClock(),
                     startedMonotonic: work.0.startedMonotonic
                 )
-                self?.install(session, generation: work.0.generation)
+                self?.install(
+                    session, generation: work.0.generation, startedTimestamp: work.0.startedTimestamp
+                )
             } catch {
                 self?.sessionStartFailed(error, generation: work.0.generation)
             }
         }
     }
 
-    private func install(_ session: TelemetryV2ActiveSession, generation: UInt64) {
-        session.activate()
+    private func install(
+        _ session: TelemetryV2ActiveSession, generation: UInt64, startedTimestamp: RecordTimestamp
+    ) {
+        session.activate(timestamp: startedTimestamp)
         while true {
             let next: ([PendingEvidence], PendingLossSummary)? = withLock {
                 guard self.generation == generation,
@@ -1168,7 +1176,25 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 setStatusLocked(.incomplete("pre-recorder-staging-overflow"))
                 return evidence.lostRecordCounts.critical > 0 ? .lostCritical : .lostNative
             }
-            pending.evidence.append(evidence)
+            let timestamp = RecordTimestamp(
+                recordedAt: runtimeClock.nowDate(),
+                elapsed: Self.elapsedDuration(runtimeClock.now() - pending.startedMonotonic)
+            )
+            let buffered: PendingEvidence
+            switch evidence {
+            case let .event(payload, occurredAt, _):
+                switch payload {
+                case .workoutPhase, .sessionLifecycle, .cooldown, .manualStop:
+                    buffered = .event(payload, occurredAt, timestamp)
+                default:
+                    buffered = evidence
+                }
+            case let .workoutPhase(phase, occurredAt, _):
+                buffered = .workoutPhase(phase, occurredAt, timestamp)
+            default:
+                buffered = evidence
+            }
+            pending.evidence.append(buffered)
             if let sourceID = evidence.sourceID(for: pending.descriptor) {
                 pending.seenSourceIDs.insert(sourceID)
             }
@@ -1295,7 +1321,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     private var lastObservedFrameSecond: Int64?
     private var firstMissingFrameSecond: Int64?
     private var currentWorkoutPhase: WorkoutPhase?
-    private var ending = false
+    private var terminalTimestamp: RecordTimestamp?
     private var stagingLossSummary = TelemetryV2RuntimeCoordinator.PendingLossSummary()
     private var installationState = InstallationState.installing
     private var installationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1326,15 +1352,16 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         withLock { stagingLossSummary.hasLoss }
     }
 
-    func activate() {
+    func activate(timestamp start: RecordTimestamp) {
         _ = yieldEvent(
             .sessionLifecycle(
                 SessionLifecycleEvent(previous: nil, current: .running, reason: "authorized-start")
             ),
             occurredAt: descriptor.startedAt,
-            sourceID: nil
+            sourceID: nil,
+            timestamp: start
         )
-        _ = observeWorkoutPhase(.main, occurredAt: descriptor.startedAt)
+        _ = observeWorkoutPhase(.main, occurredAt: descriptor.startedAt, timestamp: start)
     }
 
     func replay(_ evidence: TelemetryV2RuntimeCoordinator.PendingEvidence) {
@@ -1349,10 +1376,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             _ = observeHeartRateControlDecision(decision)
         case let .treadmill(treadmill):
             _ = observeTreadmill(treadmill)
-        case let .event(payload, occurredAt):
-            _ = observeEvent(payload, occurredAt: occurredAt)
-        case let .workoutPhase(phase, occurredAt):
-            _ = observeWorkoutPhase(phase, occurredAt: occurredAt)
+        case let .event(payload, occurredAt, timestamp):
+            _ = observeEvent(payload, occurredAt: occurredAt, timestamp: timestamp)
+        case let .workoutPhase(phase, occurredAt, timestamp):
+            _ = observeWorkoutPhase(phase, occurredAt: occurredAt, timestamp: timestamp)
         }
     }
 
@@ -1452,25 +1479,31 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     }
 
     func emitSessionEnd(reason: String) {
-        let shouldEmit: Bool = withLock {
-            guard !ending else { return false }
-            ending = true
-            return true
+        let terminal: RecordTimestamp? = withLock {
+            guard terminalTimestamp == nil else { return nil }
+            let timestamp = captureTimestamp()
+            terminalTimestamp = timestamp
+            return timestamp
         }
-        guard shouldEmit else { return }
+        guard let terminal else { return }
         if reason == "manual_stop" {
-            _ = observeEvent(
+            _ = yieldEvent(
                 .manualStop(ManualStopEvent(reason: reason)),
-                occurredAt: runtimeClock.nowDate()
+                occurredAt: terminal.recordedAt,
+                sourceID: nil,
+                timestamp: terminal
             )
         }
-        _ = observeWorkoutPhase(.finished, occurredAt: runtimeClock.nowDate())
+        _ = observeWorkoutPhase(
+            .finished, occurredAt: terminal.recordedAt, timestamp: terminal
+        )
         _ = yieldEvent(
             .sessionLifecycle(
                 SessionLifecycleEvent(previous: .running, current: .completed, reason: reason)
             ),
-            occurredAt: runtimeClock.nowDate(),
-            sourceID: nil
+            occurredAt: terminal.recordedAt,
+            sourceID: nil,
+            timestamp: terminal
         )
     }
 
@@ -1478,9 +1511,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         // Product stop schedules this work detached. Only the recorder task waits so
         // staging loss/incomplete intent wins before persistence can finalize.
         await waitForInstallationResolution()
+        let terminal = withLock { terminalTimestamp } ?? captureTimestamp()
         return await recorder.finish(
-            endedAt: runtimeClock.nowDate(),
-            endedElapsed: elapsed()
+            endedAt: terminal.recordedAt,
+            endedElapsed: terminal.elapsed
         )
     }
 
@@ -1658,14 +1692,16 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
 
     func observeEvent(
         _ payload: WorkoutEventPayload,
-        occurredAt: Date
+        occurredAt: Date,
+        timestamp: RecordTimestamp? = nil
     ) -> TelemetryYieldDisposition {
-        yieldEvent(payload, occurredAt: occurredAt, sourceID: nil)
+        yieldEvent(payload, occurredAt: occurredAt, sourceID: nil, timestamp: timestamp)
     }
 
     func observeWorkoutPhase(
         _ phase: WorkoutPhase,
-        occurredAt: Date
+        occurredAt: Date,
+        timestamp: RecordTimestamp? = nil
     ) -> TelemetryYieldDisposition {
         let previous: WorkoutPhase? = withLock {
             let previous = currentWorkoutPhase
@@ -1678,7 +1714,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         return yieldEvent(
             .workoutPhase(WorkoutPhaseTransition(previous: previous, current: phase)),
             occurredAt: occurredAt,
-            sourceID: nil
+            sourceID: nil,
+            timestamp: timestamp
         )
     }
 
@@ -1687,7 +1724,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         let currentElapsed = elapsed()
         let currentSecond = max(0, currentElapsed.microseconds / 1_000_000)
         let frame: CanonicalFrame? = withLock {
-            guard !ending,
+            guard terminalTimestamp == nil,
                   lastObservedFrameSecond != currentSecond else { return nil }
             let gap: CanonicalGapBoundary?
             if let firstMissingFrameSecond {
@@ -1740,17 +1777,25 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     private func yieldEvent(
         _ payload: WorkoutEventPayload,
         occurredAt: Date,
-        sourceID: SourceID?
+        sourceID: SourceID?,
+        timestamp: RecordTimestamp? = nil
     ) -> TelemetryYieldDisposition {
-        let currentElapsed = elapsed()
+        let recorded = timestamp ?? captureTimestamp()
+        let occurredElapsed: ElapsedDuration
+        switch payload {
+        case .workoutPhase, .sessionLifecycle, .cooldown, .manualStop:
+            occurredElapsed = recorded.elapsed
+        default:
+            occurredElapsed = elapsed(at: occurredAt)
+        }
         let event = WorkoutEvent(
             recordID: RecordID(),
             sessionID: descriptor.sessionID,
             timestamp: EventTimestamp(
                 occurredAt: occurredAt,
-                recordedAt: runtimeClock.nowDate(),
-                occurredElapsed: elapsed(at: occurredAt),
-                recordedElapsed: currentElapsed
+                recordedAt: recorded.recordedAt,
+                occurredElapsed: occurredElapsed,
+                recordedElapsed: recorded.elapsed
             ),
             sourceID: sourceID,
             payload: EventPayloadEnvelope(schemaVersion: 1, payload: payload)
@@ -1845,6 +1890,10 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             freshness: age.seconds <= descriptor.treadmillFreshnessLimitSeconds ? .fresh : .stale,
             provenance: observation.provenance
         )
+    }
+
+    private func captureTimestamp() -> RecordTimestamp {
+        RecordTimestamp(recordedAt: runtimeClock.nowDate(), elapsed: elapsed())
     }
 
     private func elapsed() -> ElapsedDuration {

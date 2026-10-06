@@ -70,6 +70,65 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
         XCTAssertEqual(nextWeek.zoneSeconds, [nil, nil, nil, nil, nil])
     }
 
+    func testVersion12ResumePreservesVersion11AndRawRecordsAndRestoresZones() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = fixtureSession(seed: 80, lifecycle: .completed)
+        let source = TelemetryPersistenceFixtures.source(seed: 80, kind: .watchMediated)
+        try await store.insertSession(session)
+        try await store.insertSource(source, firstSeen: session.startedAt, lastSeen: session.endedAt!)
+        for index in 0..<12 {
+            try await store.insertHeartRate(TelemetryPersistenceFixtures.heartRate(
+                seed: UInt8(81 + index), session: session, source: source,
+                arrivalOrder: UInt64(index + 1), bpm: 100,
+                timestamp: TelemetryPersistenceFixtures.timestamp(
+                    elapsedMicroseconds: Int64(index) * 5_000_000
+                )
+            ))
+        }
+        let main = phaseEvent(seed: 100, session: session, elapsedSeconds: 0,
+                              previous: nil, current: .main)
+        let finished = phaseEvent(seed: 101, session: session, elapsedSeconds: 60,
+                                  previous: .main, current: .finished)
+        let historicalFinished = WorkoutEvent(
+            recordID: finished.recordID, sessionID: session.sessionID,
+            timestamp: EventTimestamp(
+                occurredAt: session.endedAt!.addingTimeInterval(0.02),
+                recordedAt: session.endedAt!,
+                occurredElapsed: ElapsedDuration(microseconds: 60_020_000),
+                recordedElapsed: ElapsedDuration(microseconds: 60_000_000)
+            ), payload: finished.payload
+        )
+        try await store.insertEvent(main)
+        try await store.insertEvent(historicalFinished)
+        let old = TelemetryPersistenceFixtures.analysis(seed: 80, session: session,
+                                                        version: "workout-analyzer-v1.1")
+        try await store.insertAnalysis(old)
+        let rawBefore = try await store.fetchEvents(sessionID: session.sessionID)
+        let hrBefore = try await store.fetchHeartRate(sessionID: session.sessionID)
+        let first = await store.resumePendingWorkoutAnalyses()
+        let second = await store.resumePendingWorkoutAnalyses()
+        XCTAssertEqual(first, [.inserted])
+        XCTAssertEqual(second, [.existing])
+        let oldAfter = try await store.fetchAnalyses(
+            sessionID: session.sessionID, analyzerVersion: old.analyzerVersion
+        )
+        XCTAssertEqual(oldAfter, [old])
+        let rawAfter = try await store.fetchEvents(sessionID: session.sessionID)
+        let hrAfter = try await store.fetchHeartRate(sessionID: session.sessionID)
+        let sessionsAfter = try await store.fetchSessions()
+        XCTAssertEqual(rawAfter, rawBefore)
+        XCTAssertEqual(hrAfter, hrBefore)
+        XCTAssertEqual(sessionsAfter, [session])
+        let page = try await store.fetchWorkoutHistoryPage(
+            filter: WorkoutReadFilter(profileScope: .exact(session.profileLocalIdentifier)),
+            after: nil, limit: 10
+        )
+        XCTAssertEqual(page.items.first?.analyzerVersion, "workout-analyzer-v1.2")
+        XCTAssertEqual(page.items.first?.zoneSeconds, [0, 55, 0, 0, 0])
+        let counts = try await store.counts()
+        XCTAssertEqual(counts.analyses, 2)
+    }
+
     func testOnlyTerminalSessionsAreEligible() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let running = fixtureSession(seed: 40, lifecycle: .running)
@@ -309,7 +368,7 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
                 occurredAt: session.startedAt.addingTimeInterval(Double(elapsedSeconds)),
                 recordedAt: session.startedAt.addingTimeInterval(Double(elapsedSeconds) + 0.01),
                 occurredElapsed: elapsed,
-                recordedElapsed: ElapsedDuration(microseconds: elapsed.microseconds + 10_000)
+                recordedElapsed: elapsed
             ),
             sourceID: nil,
             payload: EventPayloadEnvelope(

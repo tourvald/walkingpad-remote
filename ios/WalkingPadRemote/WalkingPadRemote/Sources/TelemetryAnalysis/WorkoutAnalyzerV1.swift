@@ -10,7 +10,7 @@ public enum WorkoutAnalyzerError: Error, Equatable, Sendable {
 }
 
 public enum WorkoutAnalyzerV1 {
-    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.1")
+    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.2")
     public static let metricDefinitionVersion = "timestamp-hold-metrics-v2"
     public static let minimumAverageFactualSpeedCoverageRatio = 0.9
 
@@ -224,8 +224,9 @@ private extension WorkoutAnalyzerV1 {
             var changes: [(Double, WorkoutPhaseTransition, String)] = []
             for event in events {
                 guard case let .workoutPhase(transition) = event.payload.payload else { continue }
+                // Schema 1.0.0 runtime phases use the recorder's monotonic coordinate.
                 changes.append((
-                    seconds(event.timestamp.occurredElapsed),
+                    seconds(event.timestamp.recordedElapsed),
                     transition,
                     event.recordID.description
                 ))
@@ -339,7 +340,7 @@ private extension WorkoutAnalyzerV1 {
                 case let .cooldown(cooldown):
                     guard let target = cooldown.targetHeartRate else { continue }
                     values.append(TargetChange(
-                        time: seconds(event.timestamp.occurredElapsed),
+                        time: seconds(event.timestamp.recordedElapsed),
                         beatsPerMinute: Double(target),
                         sourceRank: 2,
                         recordKey: event.recordID.description
@@ -1932,7 +1933,7 @@ private extension WorkoutAnalyzerV1 {
             ])
         let finishReason = events.compactMap {
             event -> (time: Double, recordID: String, lifecycle: String)? in
-            let time = seconds(event.timestamp.occurredElapsed)
+            let time = seconds(event.timestamp.recordedElapsed)
             guard case let .cooldown(cooldown) = event.payload.payload,
                   time >= range.lowerBound,
                   time <= range.upperBound else { return nil }
