@@ -25,7 +25,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         )
         let result = try WorkoutAnalyzerV1.analyze(input, generatedAt: fixture.baseDate)
         let detail = try decodeDetail(result)
-        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.2")
+        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.3")
         XCTAssertEqual(detail.quality.phases.map(\.phase), ["main", "cooldown"])
         XCTAssertFalse(detail.quality.issues.contains {
             $0.code == "invalid-workout-phase-transition-evidence"
@@ -40,7 +40,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertGreaterThan(events.last!.timestamp.occurredElapsed.seconds, 60)
     }
 
-    func testReadOnlyQueryWarningsRemainUnchanged() throws {
+    func testHistoricalReadOnlyQueryHasNoFalseMissingDecisionWarning() throws {
         let fixture = AnalysisFixture(sessionSeconds: 30)
         let commandID = CommandID(rawValue: fixture.uuid(6_000))
         let epoch = TreadmillConnectionEpoch(rawValue: fixture.uuid(90))
@@ -69,7 +69,119 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertEqual(detail.quality.commandFactualResponse.provenEdgeCount, 0)
         XCTAssertEqual(detail.quality.issues.filter {
             $0.category == .malformedCorruptEvidence
-        }.reduce(0) { $0 + $1.count }, 2)
+        }.reduce(0) { $0 + $1.count }, 0)
+    }
+
+    func testReadOnlyQueriesPreserveControlMetricsAndUnknownAssociations() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let baseline = fixture.phaseEvents(mainAt: 0, finishedAt: 30)
+            + fixture.causalEdgeEvents(specificClaim: false)
+        let expected = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(events: baseline), generatedAt: fixture.baseDate
+        ))
+        for kind: CommandKind in [.walkingPadStatusQuery, .walkingPadControllerUnitsQuery,
+                                  .other("QUERY STATUS"), .other("QUERY PARAMS")] {
+            let queries = queryEvents(fixture, kind: kind)
+            let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+                fixture.input(events: baseline + queries), generatedAt: fixture.baseDate
+            ))
+            XCTAssertEqual(detail.control, expected.control)
+            XCTAssertEqual(detail.quality.commandAcknowledgement, expected.quality.commandAcknowledgement)
+            XCTAssertEqual(detail.quality.commandFactualResponse, expected.quality.commandFactualResponse)
+            XCTAssertEqual(detail.quality.issues, expected.quality.issues)
+        }
+    }
+
+    func testReadOnlyQueryCompatibilityIsExactAndProtocolScoped() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let invalid: [(CommandKind, TreadmillProtocolKind)] = [
+            (.other("something else"), .walkingPad), (.other("query status"), .walkingPad),
+            (.other("QUERY STATUS extra"), .walkingPad), (.other("QUERY PARAMS "), .walkingPad),
+            (.walkingPadStatusQuery, .ftms), (.walkingPadControllerUnitsQuery, .fitShow),
+            (.other("QUERY STATUS"), .ftms), (.other("QUERY PARAMS"), .unknown),
+            (.stop, .walkingPad), (.other("START"), .walkingPad),
+            (.setSpeed(.init(nativeValue: 40, nativeUnit: .unknown)), .walkingPad),
+        ]
+        for (kind, protocolKind) in invalid {
+            let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+                fixture.input(events: queryEvents(fixture, kind: kind, protocolKind: protocolKind)),
+                generatedAt: fixture.baseDate
+            ))
+            XCTAssertEqual(malformedCount(detail), 2, "\(kind) / \(protocolKind)")
+            XCTAssertEqual(detail.control.commandCount, 0)
+            let wrongDecision = DecisionID(rawValue: fixture.uuid(6_002))
+            let claimed = try decodeDetail(WorkoutAnalyzerV1.analyze(
+                fixture.input(events: queryEvents(fixture, kind: kind, protocolKind: protocolKind,
+                                                  enqueueDecision: wrongDecision, sendDecision: wrongDecision)),
+                generatedAt: fixture.baseDate
+            ))
+            XCTAssertGreaterThan(malformedCount(claimed), 0)
+            XCTAssertEqual(claimed.control.commandCount, 0)
+        }
+    }
+
+    func testReadOnlyQueriesRetainStrictTransportAndDecisionValidation() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 30)
+        let wrongEpoch = TreadmillConnectionEpoch(rawValue: fixture.uuid(91))
+        let unexpectedDecision = DecisionID(rawValue: fixture.uuid(6_002))
+        for kind: CommandKind in [.walkingPadStatusQuery, .walkingPadControllerUnitsQuery,
+                                  .other("QUERY STATUS"), .other("QUERY PARAMS")] {
+            let valid = queryEvents(fixture, kind: kind)
+            let invalid = [
+                valid + [valid[0]], // duplicate command identity
+                valid + [valid[1]], // duplicate attempt identity
+                valid + queryEvents(fixture, kind: kind, attemptSeed: 6_003).suffix(1),
+                queryEvents(fixture, kind: kind, sendProtocol: .ftms),
+                queryEvents(fixture, kind: kind, sendEpoch: wrongEpoch),
+                queryEvents(fixture, kind: kind, sendSeconds: 4),
+                valid + queryEvents(fixture, kind: kind, attemptSeed: 6_003,
+                                    attemptNumber: 2, sendSeconds: 5.5).suffix(1),
+                queryEvents(fixture, kind: kind, enqueueDecision: unexpectedDecision,
+                            sendDecision: unexpectedDecision),
+                queryEvents(fixture, kind: kind, sendDecision: unexpectedDecision),
+            ]
+            for events in invalid {
+                let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(
+                    fixture.input(events: events), generatedAt: fixture.baseDate
+                ))
+                XCTAssertGreaterThan(malformedCount(detail), 0, "\(kind)")
+                XCTAssertEqual(detail.control.commandCount, 0)
+                XCTAssertEqual(detail.quality.commandAcknowledgement.eligibleEdgeCount, 0)
+                XCTAssertEqual(detail.quality.commandFactualResponse.eligibleEdgeCount, 0)
+            }
+        }
+    }
+
+    private func malformedCount(_ detail: WorkoutAnalysisDetailV1) -> UInt64 {
+        detail.quality.issues.filter { $0.category == .malformedCorruptEvidence }
+            .reduce(0) { $0 + $1.count }
+    }
+
+    private func queryEvents(
+        _ fixture: AnalysisFixture, kind: CommandKind,
+        protocolKind: TreadmillProtocolKind = .walkingPad,
+        sendProtocol: TreadmillProtocolKind? = nil,
+        sendEpoch: TreadmillConnectionEpoch? = nil,
+        enqueueDecision: DecisionID? = nil, sendDecision: DecisionID? = nil,
+        attemptSeed: Int = 6_001, attemptNumber: UInt16 = 1, sendSeconds: Double = 6
+    ) -> [WorkoutEvent] {
+        let commandID = CommandID(rawValue: fixture.uuid(6_000))
+        let epoch = TreadmillConnectionEpoch(rawValue: fixture.uuid(90))
+        return [
+            fixture.event(ordinal: 70, seconds: 5, payload: .treadmillEvidence(.commandEnqueued(
+                .init(commandID: commandID, decisionID: enqueueDecision, kind: kind,
+                      protocolKind: protocolKind, connectionEpoch: epoch,
+                      enqueuedAt: fixture.baseDate.addingTimeInterval(5))
+            ))),
+            fixture.event(ordinal: attemptSeed, seconds: sendSeconds,
+                          payload: .treadmillEvidence(.sendAttempt(
+                .init(commandID: commandID, decisionID: sendDecision,
+                      attemptID: CommandAttemptID(rawValue: fixture.uuid(attemptSeed)),
+                      attemptNumber: attemptNumber, protocolKind: sendProtocol ?? protocolKind,
+                      connectionEpoch: sendEpoch ?? epoch,
+                      sentAt: fixture.baseDate.addingTimeInterval(sendSeconds), writeType: .withoutResponse)
+            ))),
+        ]
     }
 
     func testHistoricalMonotonicPhaseValidationRemainsStrict() throws {

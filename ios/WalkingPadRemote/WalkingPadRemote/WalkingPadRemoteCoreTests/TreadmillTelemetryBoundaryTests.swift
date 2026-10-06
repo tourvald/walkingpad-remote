@@ -9,6 +9,19 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
     private lazy var sidecarSource = try! source("TreadmillCommandTelemetrySidecar.swift")
     private lazy var truthSource = try! telemetryDomainSource("TreadmillTruth.swift")
 
+    func testReadOnlyQueryProducersDeclareCanonicalTelemetryKinds() throws {
+        let status = try functionBody("func requestWalkingPadStatusRefresh", in: managerSource)
+        let units = try functionBody("func requestControllerUnitsTruth", in: managerSource)
+        XCTAssertTrue(status.contains("BLETransportCodec.buildWalkingPadQueryStatusPacket()"))
+        XCTAssertTrue(status.contains("label: \"QUERY STATUS\""))
+        XCTAssertTrue(status.contains("telemetryRequest: treadmillCommandRequest(kind: .walkingPadStatusQuery)"))
+        XCTAssertTrue(units.contains("BLETransportCodec.buildWalkingPadQueryParamsPacket()"))
+        XCTAssertTrue(units.contains("label: \"QUERY PARAMS\""))
+        XCTAssertTrue(units.contains("telemetryRequest: treadmillCommandRequest(kind: .walkingPadControllerUnitsQuery)"))
+        XCTAssertEqual(CommandKind.walkingPadStatusQuery, .other("walkingpad.readonly.status.a2"))
+        XCTAssertEqual(CommandKind.walkingPadControllerUnitsQuery, .other("walkingpad.readonly.controller-units.a6"))
+    }
+
     func testCommandIdentityRemainsOutsideLegacyEqualityAndQueueDecisions() throws {
         let command = try declarationBody("struct Command: Equatable", in: queueSource)
         XCTAssertTrue(command.contains("let data: Data"))

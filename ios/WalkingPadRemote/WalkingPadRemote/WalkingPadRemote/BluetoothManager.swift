@@ -7236,7 +7236,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "key": 0,
             "read_only": true
         ])
-        writeCommand(BLETransportCodec.buildWalkingPadQueryParamsPacket(), label: "QUERY PARAMS")
+        writeCommand(
+            BLETransportCodec.buildWalkingPadQueryParamsPacket(), label: "QUERY PARAMS",
+            telemetryRequest: treadmillCommandRequest(kind: .walkingPadControllerUnitsQuery)
+        )
     }
 
     private func retryControllerUnitsQueryAfterBlockedStart(now: Date = Date()) {
@@ -7326,7 +7329,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ])
         writeCommand(
             BLETransportCodec.buildWalkingPadQueryStatusPacket(),
-            label: "QUERY STATUS"
+            label: "QUERY STATUS",
+            telemetryRequest: treadmillCommandRequest(kind: .walkingPadStatusQuery)
         )
     }
 
