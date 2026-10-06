@@ -153,3 +153,44 @@ Base: `1361fa13ee55ef5364f451bfaffe9053157f2ce0`. QA uses synthetic projections 
 Preview assertions cover comparable/mixed/imported/duplicate/incomplete sessions, missing pairs, factual-only speed deltas, load-more comparison availability and badge priority. The same harness renders light and accessibility dark variants; secondary diagnostics are checked separately. Previews show components, not a live production Statistics screen or an actual export operation.
 
 Reproduction from repository root (temporary build artifacts only): compile `Sources/TelemetryDomain/*.swift` with Simulator `swiftc -package-name WalkingPadRemoteCoreLogic -module-name TelemetryDomain -emit-module -emit-object -whole-module-optimization`; compile `WorkoutHistoryRow.swift` and `docs/design/issue-142-preview.swift` against that module/object; run the resulting executable with `simctl spawn <preview-simulator> <executable> <output-directory>`. Use the installed Simulator SDK target. The fixture uses Core Graphics `ImageRenderer.render` output; headless `cgImage` output was unavailable. The temporary UIApplication host attempt was stopped and removed from the fixture. Apple reference: [ImageRenderer](https://developer.apple.com/documentation/swiftui/imagerenderer).
+
+## Issue #208 — Stable active zone-scale footprint
+
+Frozen direction: [PM decision](https://github.com/tourvald/walkingpad-remote/issues/208#issuecomment-6018058987). Base: `c720cd451dbf947fc2368d98346d4c6157c9daad`.
+The existing scale receives one non-observable presentation input from ActiveWorkoutShell. Its reserved height and segment padding remain 64/20 pt even without HR; marker rendering still requires actual optional BPM. Hub retains default 44/0 pt. No runtime, freshness/hold, polling, control, persistence, telemetry or animation changes.
+
+| State / check | Severity | Result | Evidence | Owner | Status |
+| --- | --- | --- | --- | --- | --- |
+| Main HR -> unavailable -> restored, isolated 320 pt scale | P2 | Actual SwiftUI height stays 64 pt; 16 pt sentinel below starts at y=64 throughout. Restored image equals available; unavailable differs only in marker area, with no marker in the reserved top strip. | [Available](issue-208/main-available.png), [Unavailable](issue-208/main-unavailable.png), [Restored](issue-208/main-restored.png); 6 footprint + 4 pixel assertions in [fixture](issue-208-preview.swift) | `TrainingZoneScale` | Pass |
+| Cooldown available/unavailable | P2 | Same 64 pt footprint; removing live HR preserves threshold and all pixels below the live marker area. | [Available](issue-208/cooldown-available.png), [Unavailable](issue-208/cooldown-unavailable.png); fixture assertions | `TrainingZoneScale` | Pass |
+| Hub | P2 | Default reservation remains off; compact height 44 pt and zero marker padding. Actual Hub call is unchanged. | [Isolated scale](issue-208/hub.png), [Hub shell](issue-208/compact-hub.png) | `TrainingHubView` / `TrainingZoneScale` | Pass |
+| Compact portrait main/no-HR/cooldown | P2 | Synthetic existing app fixtures render readable metrics and Stop; unavailable HR is a dash with no BPM or live marker. Cooldown threshold remains visible. | [Main](issue-208/compact-main-available.png), [No HR](issue-208/compact-main-unavailable.png), [Cooldown](issue-208/compact-cooldown.png) | `ActiveWorkoutShell` | Pass |
+| Largest Accessibility Dynamic Type / no HR | P2 | Existing accessibility inset keeps Stop and metrics visible above the scrollable hero; no Stop clipping/occlusion. Existing truncation of long phase/readiness labels is outside this correction. | [Accessibility](issue-208/compact-accessibility.png) | `ActiveWorkoutShell` | Pass for required Stop contract |
+| Reduce Motion / HR truth | P1 | No changes to animation modifiers, Reduce Motion guard, HR optional values, hold policy or provider/publication paths. Empty reserved space adds no accessibility BPM or marker. | Exact production diff; 48 focused Swift tests; unchanged conditional marker/accessibility source | `TrainingZoneScale` / HR policies | Pass (source contract; no dynamic motion timing claim) |
+
+Environment: Xcode 27.0 beta (27A5194q), iOS 27.0 simulator. Existing dedicated iPhone 17 simulator runs isolated ImageRenderer regression; app fixture screenshots use investigation-owned iPhone 13 mini simulator (1080×2340 pixel screenshots). App Debug simulator build and unsigned generic iOS/watchOS build succeeded. Existing fixture startup skips manager startup/scene recovery. No physical device, HealthKit or BLE access.
+
+The compact full-screen unavailable status chooses a vertical ViewThatFits arrangement whereas short in-zone status fits horizontally. Consequently, those full-screen endpoint images do not establish identical whole-card heights. The isolated actual-scale regression controls other inputs and proves the approved invariant: marker availability alone cannot move following content. No adjacent status-layout redesign or device hitch-rate claim is included.
+
+Deterministic regression reproduction from repository root (temporary outputs only):
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+source = Path('ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote/ContentView.swift').read_text()
+segment_start = source.index('    struct TargetSegment:')
+segment = source[segment_start:source.index('    let modeTitle:', segment_start)]
+scale = source[source.index('private struct TrainingZoneScale:'):source.index('private let trainingDurationPresets')]
+fixture = Path('docs/design/issue-208-preview.swift').read_text()
+Path('/tmp/issue208-scale-preview.swift').write_text('import SwiftUI\nprivate struct TrainingHubPresentation {\n' + segment + '}\n' + scale + fixture)
+PY
+xcrun --sdk iphonesimulator swiftc -parse-as-library \
+  -target arm64-apple-ios26.2-simulator \
+  -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  /tmp/issue208-scale-preview.swift -o /tmp/issue208-scale-preview
+xcrun simctl spawn "$SIM" /tmp/issue208-scale-preview /tmp/issue208-scale-images
+```
+
+The original base component, compiled with the same fixture but without the new constructor input, fails at main-unavailable: total height 60 rather than 80 pt (scale 44 rather than 64). The corrected production component passes all 10 invariants. App QA uses existing `--active-workout-preview=active-in-zone`, `active-no-hr`, `cooldown-above` and `--training-hub-preview=ready-unknown-source`; accessibility QA uses simulator content_size `accessibility-extra-extra-extra-large`, then restores `large`.
+
+Final local full Swift suite: 749 tests, one existing skip, zero failures. Initial suite and isolated telemetry overflow test attempts hit the existing `eventually` timeout; the unchanged full suite passed on rerun. No test assertion or runtime code was modified to mask it. These results do not establish physical-iPhone rendering performance.

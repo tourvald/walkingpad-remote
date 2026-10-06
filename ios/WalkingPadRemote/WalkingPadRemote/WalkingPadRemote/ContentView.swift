@@ -1156,12 +1156,13 @@ private struct TrainingZoneScale: View {
     let liveMarkerBPM: Int?
     let targetThresholdBPM: Int?
     let interactive: Bool
+    var reservesMarkerSpace = false
     let onSegmentTap: (Int) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var hasMarkerLayer: Bool {
-        liveMarkerBPM != nil || targetThresholdBPM != nil
+        reservesMarkerSpace || liveMarkerBPM != nil || targetThresholdBPM != nil
     }
 
     private var aggregateAccessibilityValue: String {
@@ -1705,6 +1706,7 @@ private struct ActiveWorkoutShell: View {
                     liveMarkerBPM: presentation.liveMarkerBPM,
                     targetThresholdBPM: presentation.targetThresholdBPM,
                     interactive: false,
+                    reservesMarkerSpace: true,
                     onSegmentTap: { _ in }
                 )
             }
