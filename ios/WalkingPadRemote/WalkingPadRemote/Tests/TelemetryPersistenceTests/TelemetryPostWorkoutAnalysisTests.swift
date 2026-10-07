@@ -70,7 +70,7 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
         XCTAssertEqual(nextWeek.zoneSeconds, [nil, nil, nil, nil, nil])
     }
 
-    func testVersion13ResumePreservesEarlierAnalysesAndRawRecordsAndRestoresZones() async throws {
+    func testVersion14ResumePreservesEarlierAnalysesAndRawRecordsAndRestoresZones() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = fixtureSession(seed: 80, lifecycle: .completed)
         let source = TelemetryPersistenceFixtures.source(seed: 80, kind: .watchMediated)
@@ -106,6 +106,32 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
         let version12 = TelemetryPersistenceFixtures.analysis(seed: 79, session: session,
                                                               version: "workout-analyzer-v1.2")
         try await store.insertAnalysis(version12)
+        let version13 = TelemetryPersistenceFixtures.analysis(seed: 78, session: session,
+                                                              version: "workout-analyzer-v1.3")
+        try await store.insertAnalysis(version13)
+        let treadmill = TelemetryPersistenceFixtures.treadmill(
+            seed: 110, session: session, source: source, arrivalOrder: 1, unit: .kilometresPerHour
+        )
+        try await store.insertTreadmill(treadmill)
+        let frame = CanonicalFrame(
+            frameID: FrameID(), recordID: RecordID(), sessionID: session.sessionID,
+            canonicalElapsedSecond: 30,
+            materializedAt: RecordTimestamp(recordedAt: session.startedAt.addingTimeInterval(30),
+                elapsed: ElapsedDuration(microseconds: 30_000_000)),
+            heartRateEvidence: nil,
+            treadmillEvidence: TreadmillFrameEvidence(
+                observationID: treadmill.observationID, recordID: treadmill.recordID,
+                sourceID: source.id, nativeSpeed: treadmill.nativeSpeed,
+                factualSpeed: treadmill.factualSpeed, deviceState: treadmill.deviceState,
+                measuredAt: treadmill.timestamp.measuredAt, receivedAt: treadmill.timestamp.receivedAt,
+                evidenceElapsed: treadmill.timestamp.recordedElapsed,
+                ageAtMaterialization: ElapsedDuration(microseconds: 29_000_000),
+                freshness: .fresh, provenance: treadmill.provenance
+            )
+        )
+        try await store.insertFrame(frame)
+        let treadmillBefore = try await store.fetchTreadmill(sessionID: session.sessionID)
+        let framesBefore = try await store.fetchFrames(sessionID: session.sessionID)
         let rawBefore = try await store.fetchEvents(sessionID: session.sessionID)
         let hrBefore = try await store.fetchHeartRate(sessionID: session.sessionID)
         let first = await store.resumePendingWorkoutAnalyses()
@@ -120,9 +146,17 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
             sessionID: session.sessionID, analyzerVersion: version12.analyzerVersion
         )
         XCTAssertEqual(version12After, [version12])
+        let version13After = try await store.fetchAnalyses(
+            sessionID: session.sessionID, analyzerVersion: version13.analyzerVersion
+        )
+        XCTAssertEqual(version13After, [version13])
         let rawAfter = try await store.fetchEvents(sessionID: session.sessionID)
         let hrAfter = try await store.fetchHeartRate(sessionID: session.sessionID)
         let sessionsAfter = try await store.fetchSessions()
+        let treadmillAfter = try await store.fetchTreadmill(sessionID: session.sessionID)
+        let framesAfter = try await store.fetchFrames(sessionID: session.sessionID)
+        XCTAssertEqual(treadmillAfter, treadmillBefore)
+        XCTAssertEqual(framesAfter, framesBefore)
         XCTAssertEqual(rawAfter, rawBefore)
         XCTAssertEqual(hrAfter, hrBefore)
         XCTAssertEqual(sessionsAfter, [session])
@@ -130,10 +164,10 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
             filter: WorkoutReadFilter(profileScope: .exact(session.profileLocalIdentifier)),
             after: nil, limit: 10
         )
-        XCTAssertEqual(page.items.first?.analyzerVersion, "workout-analyzer-v1.3")
+        XCTAssertEqual(page.items.first?.analyzerVersion, "workout-analyzer-v1.4")
         XCTAssertEqual(page.items.first?.zoneSeconds, [0, 55, 0, 0, 0])
         let counts = try await store.counts()
-        XCTAssertEqual(counts.analyses, 3)
+        XCTAssertEqual(counts.analyses, 4)
     }
 
     func testOnlyTerminalSessionsAreEligible() async throws {

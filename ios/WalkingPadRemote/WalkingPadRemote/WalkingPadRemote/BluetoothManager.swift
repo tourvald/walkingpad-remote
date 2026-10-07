@@ -7863,8 +7863,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 )
             ),
             versions: currentTelemetryV2RuntimeVersions,
-            heartRateFreshnessLimitSeconds: TimeInterval(hrStaleThresholdSeconds),
-            treadmillFreshnessLimitSeconds: ControllerUnitsSafetyPolicy.freshnessInterval
+            heartRateFreshnessLimitSeconds: 7,
+            treadmillFreshnessLimitSeconds: 5
         )
         telemetryV2Coordinator.beginSession(descriptor)
     }
@@ -8341,7 +8341,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func observeTreadmillTelemetry(_ evidence: TreadmillTelemetryEvidence) {
-        _ = treadmillTelemetrySink?.observeTreadmillEvidence(evidence)
+        _ = treadmillTelemetrySink?.observeTreadmillEvidence(
+            evidence, currentConnectionEpoch: treadmillTelemetryConnectionEpoch
+        )
     }
 
     private func makeTreadmillDecision(

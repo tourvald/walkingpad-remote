@@ -3,7 +3,7 @@
 Status: implemented Analyzer V1 contract.
 
 This document owns the concrete metric definitions and lifecycle for
-`workout-analyzer-v1.3`. The canonical evidence, causal, and safety rules remain
+`workout-analyzer-v1.4`. The canonical evidence, causal, and safety rules remain
 owned by the [data contract](data-contract.md),
 [treadmill truth contract](treadmill-truth-and-command-lifecycle.md), and
 [safety boundary](safety-boundary.md).
@@ -72,8 +72,14 @@ counts and distributions; it is never duration.
 
 The workout-level factual average speed uses the persisted one-second canonical
 frame ledger when frames are present. A second is covered only when that frame
-contains factual normalized speed and explicitly marks the referenced native
-observation fresh; a stale or missing frame remains uncovered. This is a
+contains factual normalized speed and explicitly marks its native reference fresh,
+and that reference resolves unambiguously by observation/record/source identity
+in the same session. Native freshness/quality and native/factual values must agree.
+Coverage is bounded by that native observation's effective-time five-second hold,
+next observation, applicable source/connection/phase boundary, and session end. Materialization must
+itself lie in the hold; missing, ambiguous or mismatched references are uncovered.
+Persisted frame freshness and recorder-ingress time cannot extend native coverage;
+a stale or missing frame remains uncovered. This is a
 materialized bounded hold of decoded factual evidence, not interpolation or a
 desired/commanded/estimated-speed fallback. Inputs without canonical frames use
 the existing native-observation five-second hold as a deterministic legacy
@@ -198,7 +204,7 @@ unavailable because V1 has no typed persisted blocker evidence.
 
 Analyzer metadata includes:
 
-- analyzer version `workout-analyzer-v1.3`;
+- analyzer version `workout-analyzer-v1.4`;
 - detail schema version `1`;
 - metric definition `timestamp-hold-metrics-v2`;
 - accepted telemetry schema range `1.0.0...1.0.0`;
@@ -215,8 +221,8 @@ overwriting evidence or the prior result.
 
 On store preparation, terminal sessions are scanned in deterministic session
 order and results missing the current analyzer identity are recomputed. The
-version bump adds a v1.3 result while preserving v1.1/v1.2 analyses and all raw evidence;
-current read projections select v1.3. No destructive migration is performed. Completed, incomplete, and cancelled
+version bump adds a v1.4 result while preserving v1.1/v1.2/v1.3 analyses and all raw evidence;
+current read projections select v1.4. No destructive migration is performed. Completed, incomplete, and cancelled
 sessions are eligible; created, running, and paused sessions are not. Analyzer
 failure is contained as an analysis failure and cannot change recorder
 finalization or product session completion.
@@ -235,3 +241,28 @@ excluded from control command counts and ACK/response denominators. Raw events
 and honest unknown associations remain unchanged; specific persisted association
 claims remain unsupported. No packet, queue, cadence, gate or control behavior
 changes. Terminal-session reanalysis remains additive and idempotent.
+
+## Canonical frame freshness (analyzer v1.4)
+
+New HR frames use measurement elapsed only when the existing provider clock is
+receiver-comparable, has no clock-regression quality, and measurement does not
+follow receipt in persisted order;
+otherwise they use `receivedElapsed`. Current treadmill decoders provide no
+comparable measurement-clock evidence, so new factual-speed frames use receipt
+elapsed. Selected evidence elapsed, age and freshness remain consistent, with
+half-open 7 s and 5 s expiry. Raw timestamp roles are preserved. Native
+stale/unknown freshness or unusable quality cannot be upgraded; source lifecycle
+and connection transitions invalidate carried references. Fixed-size active-session
+eligibility cutoffs also reject delayed pre-boundary observations.
+Typed HR transitions recognize the configured provider through the existing
+canonical source identity even before its first native observation; unrelated
+source transitions do not invalidate that configured HR stream. Treadmill frame
+eligibility additionally requires an independent snapshot of the existing
+connection owner's current epoch, captured at ingress and retained through staged
+replay. An observation cannot declare its own epoch current; absent or mismatched
+context remains unknown even with a recent receipt. No invalidated-epoch registry
+is needed. Confirmed post-boundary current-context evidence remains eligible.
+This state is discarded with the runtime session; it is not persisted or used
+for control. The 30 s controller-unit policy remains
+independent and unchanged. Raw frames/observations and earlier analyses remain
+immutable; no freshness tolerance, interpolation or schema expansion is added.

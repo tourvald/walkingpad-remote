@@ -10,7 +10,7 @@ public enum WorkoutAnalyzerError: Error, Equatable, Sendable {
 }
 
 public enum WorkoutAnalyzerV1 {
-    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.3")
+    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.4")
     public static let metricDefinitionVersion = "timestamp-hold-metrics-v2"
     public static let minimumAverageFactualSpeedCoverageRatio = 0.9
 
@@ -85,6 +85,10 @@ public enum WorkoutAnalyzerV1 {
         )
         let factualSpeedMetric = FactualSpeedMetricTimeline(
             frames: input.frames,
+            sourceTransitions: input.events.filter { $0.kind == .sourceTransition }.sorted(by: eventEvidenceOrder),
+            observations: input.treadmill,
+            connectionBoundaries: connectionTransitionBoundaries(input.events),
+            freshnessSeconds: policy.treadmillFreshnessSeconds,
             nativeFallback: treadmill,
             sessionEnd: sessionEnd,
             phaseTimeline: phaseTimeline
@@ -577,6 +581,10 @@ private extension WorkoutAnalyzerV1 {
 
         init(
             frames: [CanonicalFrame],
+            sourceTransitions: [WorkoutEvent],
+            observations: [TreadmillObservation],
+            connectionBoundaries: [Double],
+            freshnessSeconds: Double,
             nativeFallback: TreadmillTimeline,
             sessionEnd: Double,
             phaseTimeline: PhaseTimeline
@@ -585,6 +593,27 @@ private extension WorkoutAnalyzerV1 {
                 segments = nativeFallback.segments
                 return
             }
+            let byRecord = Dictionary(grouping: observations, by: \.recordID)
+            let byObservation = Dictionary(grouping: observations, by: \.observationID)
+            let ordered = observations.sorted(by: treadmillEvidenceOrder)
+            var holds: [RecordID: Range<Double>] = [:]
+            for index in ordered.indices {
+                let observation = ordered[index]
+                let start = seconds(observation.timestamp.effectiveElapsed)
+                let nextTime = index + 1 < ordered.count
+                    ? seconds(ordered[index + 1].timestamp.effectiveElapsed) : sessionEnd
+                let boundary = connectionBoundaries.first { $0 > start } ?? sessionEnd
+                let sourceEnd = sourceTransitions.first {
+                    guard case let .sourceTransition(transition) = $0.payload.payload else { return false }
+                    return transition.previousSourceID == observation.source.id
+                        && seconds($0.timestamp.occurredElapsed) > start
+                }.map { seconds($0.timestamp.occurredElapsed) } ?? sessionEnd
+                let phaseEnd = phaseTimeline.boundaries(in: start..<max(start, sessionEnd)).first
+                    ?? sessionEnd
+                let end = min(sessionEnd, nextTime, boundary, sourceEnd, phaseEnd, start + freshnessSeconds)
+                guard start >= 0, end > start, isUsableTreadmill(observation) else { continue }
+                holds[observation.recordID] = start..<end
+            }
             var seenSeconds: Set<Int64> = []
             var built: [SpeedSegment] = []
             for frame in frames.sorted(by: frameEvidenceOrder) {
@@ -592,22 +621,34 @@ private extension WorkoutAnalyzerV1 {
                       frame.canonicalElapsedSecond >= 0,
                       let evidence = frame.treadmillEvidence,
                       evidence.freshness == .fresh,
-                      let factual = evidence.factualSpeed else {
+                      let matches = byRecord[evidence.recordID], matches.count == 1,
+                      let observation = matches.first,
+                      byObservation[evidence.observationID]?.count == 1,
+                      observation.observationID == evidence.observationID,
+                      observation.source.id == evidence.sourceID,
+                      observation.nativeSpeed == evidence.nativeSpeed,
+                      observation.factualSpeed == evidence.factualSpeed,
+                      observation.deviceState == evidence.deviceState,
+                      observation.provenance == evidence.provenance,
+                      observation.timestamp.measuredAt == evidence.measuredAt,
+                      observation.timestamp.receivedAt == evidence.receivedAt,
+                      let factual = observation.factualSpeed,
+                      let hold = holds[observation.recordID],
+                      hold.contains(seconds(frame.materializedAt.elapsed)),
+                      frame.materializedAt.elapsed.microseconds / 1_000_000
+                        == frame.canonicalElapsedSecond else {
                     continue
                 }
-                let start = min(sessionEnd, Double(frame.canonicalElapsedSecond))
-                let end = min(sessionEnd, start + 1)
+                let second = Double(frame.canonicalElapsedSecond)
+                let start = max(second, hold.lowerBound)
+                let end = min(second + 1, hold.upperBound)
                 guard end > start else { continue }
-                let boundaries = phaseTimeline.boundaries(in: start..<end)
-                let points = [start] + boundaries + [end]
-                for pair in zip(points, points.dropFirst()) where pair.1 > pair.0 {
-                    built.append(SpeedSegment(
-                        start: pair.0,
-                        end: pair.1,
-                        speed: factual.value,
-                        phase: phaseTimeline.phase(at: pair.0)
-                    ))
-                }
+                built.append(SpeedSegment(
+                    start: start,
+                    end: end,
+                    speed: factual.value,
+                    phase: phaseTimeline.phase(at: start)
+                ))
             }
             segments = built
         }
