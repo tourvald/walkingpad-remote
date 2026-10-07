@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import SwiftData
+import TelemetryAnalysis
 import TelemetryDomain
 
 private struct WorkoutAnalysisEventProjection {
@@ -721,7 +722,7 @@ private extension TelemetryStore {
         sessionID: SessionID
     ) -> [(key: String, value: String)] {
         let treadmill = configuration.treadmill
-        return [
+        var metadata: [(key: String, value: String)] = [
             ("schema_version", WorkoutAnalysisExportArtifact.schemaVersion),
             ("workout_ref", reference("workout", sessionID.description, sessionID)),
             ("lifecycle_state", session.lifecycleStateKey),
@@ -769,6 +770,72 @@ private extension TelemetryStore {
             ("quality_warnings", warnings.sorted().joined(separator: ";")),
             ("omitted_identifier_kinds", "profile;device;source;healthkit;raw-record;raw-command"),
         ]
+        metadata.append(contentsOf: [
+            (key: "phase_semantics", value: "reported-producer-phase-transitions"),
+            (key: "frame_coverage_semantics", value: "populated-frame-row-ratio"),
+        ])
+        metadata.append(contentsOf: storedAnalysisMetadata(analysis))
+        return metadata
+    }
+
+    // Read the selected result once; never run analysis or infer validation from frames.
+    static func storedAnalysisMetadata(_ analysis: TelemetryWorkoutAnalysisV1?) -> [(key: String, value: String)] {
+        var values = [
+            "stored_analysis_detail_status": "unavailable-missing",
+            "stored_analysis_detail_schema_version": analysis.map { String($0.detailSchemaVersion) } ?? "",
+            "stored_analysis_metric_definition_version": "",
+            "stored_analysis_policy_json": "",
+            "stored_analysis_phase_summaries_json": "",
+            "stored_analysis_heart_rate_duration_coverage_json": "",
+            "stored_analysis_factual_speed_duration_coverage_json": "",
+            "stored_analysis_coverage_semantics": "",
+        ]
+        if let analysis {
+            if analysis.detailSchemaVersion != Int(WorkoutAnalysisDetailV1.schemaVersion) {
+                values["stored_analysis_detail_status"] = "unavailable-unsupported-schema"
+            } else {
+                do {
+                    let detail = try Self.decode(WorkoutAnalysisDetailV1.self, from: analysis.detailPayload)
+                    func coverage(_ value: DurationCoverage) -> [String: Any] {
+                        ["coveredSeconds": value.coveredSeconds, "uncoveredSeconds": value.uncoveredSeconds,
+                         "coverageRatio": value.coverageRatio.map { $0 as Any } ?? NSNull()]
+                    }
+                    func json(_ value: Any) throws -> String {
+                        String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self)
+                    }
+                    let knownPhases = ["warmup", "main", "cooldown", "finished", "unknown", "other"]
+                    let knownExclusions = ["heart-rate-uncovered-time", "factual-treadmill-uncovered-time",
+                        "recorder-loss", "configuration-payload-unavailable", "malformed-or-invalid-native-evidence",
+                        "invalid-workout-phase-transition-evidence"]
+                    let phases: [[String: Any]] = detail.quality.phases.map { phase in
+                        ["phase": knownPhases.contains(phase.phase) ? phase.phase : phase.phase.hasPrefix("other:") ? "other" : "unknown",
+                         "durationSeconds": phase.durationSeconds,
+                         "heartRateCoverage": coverage(phase.heartRateCoverage),
+                         "treadmillCoverage": coverage(phase.treadmillCoverage), "grade": phase.grade.rawValue,
+                         "exclusionCodes": phase.exclusionCodes.map { knownExclusions.contains($0) ? $0 : "opaque-analysis-exclusion" }]
+                    }
+                    // Assemble before publishing any projection: malformed detail remains wholly unavailable.
+                    let projections = try [
+                        ("stored_analysis_policy_json", String(decoding: Self.encode(detail.analyzerPolicy), as: UTF8.self)),
+                        ("stored_analysis_phase_summaries_json", json(phases)),
+                        ("stored_analysis_heart_rate_duration_coverage_json", json(coverage(detail.quality.heartRateCoverage))),
+                        ("stored_analysis_factual_speed_duration_coverage_json", json(coverage(detail.quality.treadmillFactualCoverage))),
+                    ]
+                    for (key, value) in projections { values[key] = value }
+                    values["stored_analysis_detail_status"] = "available"
+                    values["stored_analysis_metric_definition_version"] =
+                        ["timestamp-hold-metrics-v1", "timestamp-hold-metrics-v2"].contains(detail.metricDefinitionVersion)
+                        ? detail.metricDefinitionVersion : "opaque-metric-definition"
+                    values["stored_analysis_coverage_semantics"] =
+                        analysis.analyzerVersion == "workout-analyzer-v1.4" && detail.metricDefinitionVersion == "timestamp-hold-metrics-v2"
+                        ? "v1.4:hr-effective-time-holds;speed-bounded-frame-ledger-or-no-frame-native-holds;not-frame-population"
+                        : "stored-analyzer-and-metric-definition-version-dependent;not-frame-population"
+                } catch {
+                    values["stored_analysis_detail_status"] = "unavailable-malformed"
+                }
+            }
+        }
+        return values.sorted { $0.key < $1.key }.map { (key: $0.key, value: $0.value) }
     }
 
     static func analysisFileTimestamp(_ date: Date) -> String {
