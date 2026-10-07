@@ -1,9 +1,255 @@
 import Foundation
+import TelemetryAnalysis
 import TelemetryDomain
 @testable import TelemetryPersistence
 import XCTest
 
 final class WorkoutAnalysisExportTests: XCTestCase {
+
+    func testStoredAnalysisMetadataSeparatesReportedPhasesAndPopulatedFrames() async throws {
+        for scenario in ["ordinary", "invalid-phase", "stale-hr", "delayed-hr", "custom-policy"] {
+            let store = try TelemetryStoreFactory.make(.inMemory)
+            let session = semanticsSession()
+            let source = TelemetryPersistenceFixtures.source(seed: 51)
+            try await store.insertSession(session)
+            try await store.insertSource(source, firstSeen: session.startedAt, lastSeen: session.endedAt!)
+            var observations: [HeartRateObservation] = []
+            for index in 0..<(scenario == "stale-hr" || scenario == "delayed-hr" ? 1 : 12) {
+                let elapsed = Int64(index * 5) * 1_000_000
+                let timestamp = scenario == "delayed-hr" ? ObservationTimestamp(
+                    measuredAt: session.startedAt, receivedAt: session.startedAt.addingTimeInterval(20),
+                    recordedAt: session.startedAt.addingTimeInterval(21),
+                    measuredElapsed: .init(microseconds: 0), receivedElapsed: .init(microseconds: 20_000_000),
+                    recordedElapsed: .init(microseconds: 21_000_000)
+                ) : TelemetryPersistenceFixtures.timestamp(elapsedMicroseconds: elapsed)
+                let original = TelemetryPersistenceFixtures.heartRate(seed: UInt8(60 + index), session: session,
+                    source: source, arrivalOrder: UInt64(index), bpm: 120, timestamp: timestamp)
+                let hr = HeartRateObservation(recordID: original.recordID, observationID: original.observationID,
+                    sessionID: session.sessionID, source: source, beatsPerMinute: 120, arrivalOrder: UInt64(index),
+                    providerSequence: Int64(index), providerSampleIdentity: nil, timestamp: timestamp, provenance: original.provenance,
+                    freshness: .init(state: scenario == "delayed-hr" ? .stale : .fresh,
+                        evaluatedAt: .init(recordedAt: timestamp.recordedAt, elapsed: timestamp.recordedElapsed),
+                        age: .init(microseconds: timestamp.recordedElapsed.microseconds - timestamp.effectiveElapsed.microseconds),
+                        policyVersion: session.versions.safetyPolicy),
+                    quality: [], controlUse: original.controlUse)
+                observations.append(hr)
+                try await store.insertHeartRate(hr)
+            }
+            let treadmillSource = TelemetryPersistenceFixtures.source(seed: 52, kind: .bluetooth)
+            try await store.insertSource(treadmillSource, firstSeen: session.startedAt, lastSeen: session.endedAt!)
+            let treadmill = (0..<(scenario == "custom-policy" ? 1 : 12)).map {
+                TelemetryPersistenceFixtures.treadmill(seed: UInt8(80 + $0), session: session,
+                    source: treadmillSource, arrivalOrder: UInt64($0 * 5), unit: .kilometresPerHour)
+            }
+            for observation in treadmill { try await store.insertTreadmill(observation) }
+            for second in 0..<60 {
+                let observation = treadmill[min(second / 5, treadmill.count - 1)]
+                let materializedElapsed = Int64(second) * 1_000_000 + 50_000
+                let age = materializedElapsed - observation.timestamp.effectiveElapsed.microseconds
+                let speed = TreadmillFrameEvidence(observationID: observation.observationID,
+                    recordID: observation.recordID, sourceID: observation.source.id,
+                    nativeSpeed: observation.nativeSpeed, factualSpeed: observation.factualSpeed,
+                    deviceState: observation.deviceState, measuredAt: observation.timestamp.measuredAt,
+                    receivedAt: observation.timestamp.receivedAt, evidenceElapsed: observation.timestamp.effectiveElapsed,
+                    ageAtMaterialization: .init(microseconds: age), freshness: age < 5_000_000 ? .fresh : .stale,
+                    provenance: observation.provenance)
+                let hr = observations[min(second / 5, observations.count - 1)]
+                let original = frame(seed: 2000 + second, session: session, second: Int64(second), heartRate: nil, treadmill: nil)
+                let hrAge = materializedElapsed - hr.timestamp.effectiveElapsed.microseconds
+                let hrEvidence = HeartRateFrameEvidence(observationID: hr.observationID, recordID: hr.recordID,
+                    sourceID: hr.source.id, beatsPerMinute: hr.beatsPerMinute, measuredAt: hr.timestamp.measuredAt,
+                    receivedAt: hr.timestamp.receivedAt, evidenceElapsed: hr.timestamp.effectiveElapsed,
+                    ageAtMaterialization: .init(microseconds: hrAge), freshness: hrAge < 7_000_000 ? .fresh : .stale,
+                    provenance: hr.provenance)
+                try await store.insertFrame(CanonicalFrame(frameID: original.frameID, recordID: original.recordID,
+                    sessionID: session.sessionID, canonicalElapsedSecond: Int64(second),
+                    materializedAt: .init(recordedAt: session.startedAt.addingTimeInterval(Double(materializedElapsed) / 1_000_000),
+                        elapsed: .init(microseconds: materializedElapsed)),
+                    heartRateEvidence: scenario == "delayed-hr" && second < 20 ? nil : hrEvidence,
+                    treadmillEvidence: speed, precedingGap: nil))
+            }
+            try await store.insertEvent(semanticsEvent(seed: 130, session: session, elapsedMicroseconds: 0,
+                payload: .workoutPhase(.init(previous: nil, current: .main))))
+            try await store.insertEvent(semanticsEvent(seed: 131, session: session, elapsedMicroseconds: 30_000_000,
+                payload: .workoutPhase(.init(previous: .main, current: .cooldown))))
+            try await store.insertEvent(semanticsEvent(seed: 132, session: session,
+                elapsedMicroseconds: scenario == "invalid-phase" ? 62_000_000 : 60_000_000,
+                payload: .workoutPhase(.init(previous: .cooldown, current: .finished))))
+            let policy = scenario == "custom-policy" ? AnalyzerV1Policy(
+                heartRateFreshnessSeconds: 3, treadmillFreshnessSeconds: 2, settlingWindowSeconds: 30,
+                stableSpeedMinimumSeconds: 30, stableSpeedToleranceKilometresPerHour: 0.1,
+                informativeSpeedDeltaKilometresPerHour: 0.2, eventResponseWindowSeconds: 10,
+                minimumWindowCoverageRatio: 0.5) : .default
+            let outcome = try await store.analyzeTerminalWorkout(sessionID: session.sessionID,
+                generatedAt: session.endedAt!.addingTimeInterval(1), policy: policy)
+            let analysis = try XCTUnwrap(outcome.analysis)
+            let detail = try JSONDecoder().decode(WorkoutAnalysisDetailV1.self, from: analysis.versionedDetailPayload)
+            let before = try await store.counts()
+            let artifact = try await store.exportWorkoutAnalysis(.init(sessionID: session.sessionID,
+                exactProfileLocalIdentifier: session.profileLocalIdentifier, batchSize: 2))
+            defer { try? FileManager.default.removeItem(at: artifact.fileURL.deletingLastPathComponent()) }
+            let rows = try parseCSV(artifact.fileURL)
+            let metadata = metadataRows(rows)
+            XCTAssertEqual(metadata["phase_semantics"], "reported-producer-phase-transitions")
+            XCTAssertEqual(metadata["frame_coverage_semantics"], "populated-frame-row-ratio")
+            XCTAssertEqual(metadata["stored_analysis_detail_status"], "available")
+            XCTAssertEqual(metadata["stored_analysis_metric_definition_version"], detail.metricDefinitionVersion)
+            let populatedRatio = scenario == "delayed-hr" ? "0.666667" : "1.000000"
+            XCTAssertEqual(metadata["heart_rate_frame_coverage_ratio"], populatedRatio)
+            let coverage = try jsonObject(metadata["stored_analysis_heart_rate_duration_coverage_json"])
+            XCTAssertEqual(coverage["coveredSeconds"] as? Double, detail.quality.heartRateCoverage.coveredSeconds)
+            XCTAssertEqual(coverage["coverageRatio"] as? Double, detail.quality.heartRateCoverage.coverageRatio)
+            let speed = try jsonObject(metadata["stored_analysis_factual_speed_duration_coverage_json"])
+            XCTAssertEqual(speed["coveredSeconds"] as? Double, detail.quality.treadmillFactualCoverage.coveredSeconds)
+            XCTAssertEqual(metadata["factual_speed_frame_coverage_ratio"], "1.000000")
+            if scenario == "custom-policy" { XCTAssertEqual(speed["coveredSeconds"] as? Double, 2) }
+            if scenario == "ordinary" { XCTAssertEqual(speed["coveredSeconds"] as? Double, 60) }
+            let storedPolicy = try jsonObject(metadata["stored_analysis_policy_json"])
+            XCTAssertEqual(storedPolicy["heartRateFreshnessSeconds"] as? Double, policy.heartRateFreshnessSeconds)
+            XCTAssertEqual(storedPolicy["treadmillFreshnessSeconds"] as? Double, policy.treadmillFreshnessSeconds)
+            let expectedPolicy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(policy)) as? [String: Any])
+            XCTAssertTrue((storedPolicy as NSDictionary).isEqual(to: expectedPolicy))
+            let phasesData = try XCTUnwrap(metadata["stored_analysis_phase_summaries_json"]?.data(using: .utf8))
+            let phases = try XCTUnwrap(JSONSerialization.jsonObject(with: phasesData) as? [[String: Any]])
+            XCTAssertEqual(phases.compactMap { $0["phase"] as? String }, detail.quality.phases.map(\.phase))
+            let expectedPhases = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(detail.quality.phases)) as? [[String: Any]])
+            XCTAssertTrue((phases as NSArray).isEqual(to: expectedPhases))
+            if scenario == "ordinary" {
+                XCTAssertEqual(detail.quality.phases.map(\.phase), ["main", "cooldown"])
+                XCTAssertEqual(detail.quality.phases.map(\.durationSeconds), [30, 30])
+                XCTAssertEqual(detail.quality.heartRateCoverage.coverageRatio, 1)
+                XCTAssertEqual(detail.quality.treadmillFactualCoverage.coverageRatio, 1)
+                XCTAssertEqual(detail.quality.sessionGrade, .high)
+                XCTAssertTrue(detail.quality.phases.allSatisfy { $0.exclusionCodes.isEmpty })
+            }
+            if scenario == "invalid-phase" {
+                XCTAssertEqual(phases.compactMap { $0["phase"] as? String }, ["unknown"])
+                XCTAssertTrue(rows.contains { $0.count > 5 && $0[1] == "frame" && $0[5] == "cooldown" })
+            }
+            if scenario == "stale-hr" || scenario == "delayed-hr" {
+                XCTAssertLessThan(try XCTUnwrap(coverage["coverageRatio"] as? Double), 1)
+            }
+            let after = try await store.counts()
+            XCTAssertEqual(before, after)
+            XCTAssertEqual(rows[0].count, 39)
+            XCTAssertLessThanOrEqual(artifact.diagnostics.maximumStoreFetchLimit, 2)
+            XCTAssertLessThanOrEqual(artifact.diagnostics.maximumBufferedTimelineRows, 4)
+            // A legacy consumer sees the same rows without the additive metadata.
+            let keyIndex = try XCTUnwrap(rows[0].firstIndex(of: "metadata_key"))
+            let additive = Set(metadata.keys.filter { $0.hasPrefix("stored_analysis_") || $0 == "phase_semantics" || $0 == "frame_coverage_semantics" })
+            let legacyRows = rows.filter { $0.count <= keyIndex || !additive.contains($0[keyIndex]) }
+            XCTAssertFalse(metadataRows(legacyRows).keys.contains("stored_analysis_detail_status"))
+            XCTAssertEqual(metadataRows(legacyRows)["heart_rate_frame_coverage_ratio"], populatedRatio)
+        }
+    }
+
+    func testUnavailableStoredDetailDoesNotFabricateZeroCoverage() async throws {
+        for (schema, payload, expected) in [(UInt16(1), Optional<Data>.none, "unavailable-missing"),
+            (UInt16(2), Data("{}".utf8), "unavailable-unsupported-schema"),
+            (UInt16(1), Data("not-json".utf8), "unavailable-malformed")] {
+            let store = try TelemetryStoreFactory.make(.inMemory)
+            let session = semanticsSession()
+            try await store.insertSession(session)
+            if let payload {
+                let base = TelemetryPersistenceFixtures.analysis(seed: 10, session: session, version: "workout-analyzer-v1.2")
+                try await store.insertAnalysis(copyAnalysis(base, schema: schema, payload: payload))
+            }
+            let artifact = try await store.exportWorkoutAnalysis(.init(sessionID: session.sessionID,
+                exactProfileLocalIdentifier: session.profileLocalIdentifier))
+            defer { try? FileManager.default.removeItem(at: artifact.fileURL.deletingLastPathComponent()) }
+            let metadata = metadataRows(try parseCSV(artifact.fileURL))
+            XCTAssertEqual(metadata["stored_analysis_detail_status"], expected)
+            XCTAssertEqual(metadata["stored_analysis_heart_rate_duration_coverage_json"], "")
+            XCTAssertEqual(metadata["stored_analysis_phase_summaries_json"], "")
+            XCTAssertEqual(metadata["stored_analysis_detail_schema_version"], payload == nil ? "" : String(schema))
+        }
+    }
+
+    func testStoredDetailProjectionPreservesNullAndSanitizesPrivateStrings() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = semanticsSession()
+        try await store.insertSession(session)
+        let input = WorkoutAnalysisInput(session: session, heartRate: [], treadmill: [], events: [], frames: [])
+        let base = try WorkoutAnalyzerV1.analyze(input, generatedAt: session.startedAt)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: base.versionedDetailPayload) as? [String: Any])
+        json["metricDefinitionVersion"] = "private-profile-sentinel"
+        var quality = try XCTUnwrap(json["quality"] as? [String: Any])
+        quality["sessionDurationSeconds"] = 0
+        quality["heartRateCoverage"] = ["coveredSeconds": 0, "uncoveredSeconds": 0, "coverageRatio": NSNull()]
+        quality["treadmillFactualCoverage"] = ["coveredSeconds": 0, "uncoveredSeconds": 0, "coverageRatio": NSNull()]
+        quality["phases"] = [["phase": "private-device-sentinel", "durationSeconds": 0,
+            "heartRateCoverage": ["coveredSeconds": 0, "uncoveredSeconds": 0, "coverageRatio": NSNull()],
+            "treadmillCoverage": ["coveredSeconds": 0, "uncoveredSeconds": 0, "coverageRatio": NSNull()],
+            "grade": "unusable", "exclusionCodes": ["private-source-sentinel"]]]
+        json["quality"] = quality
+        let payload = try JSONSerialization.data(withJSONObject: json)
+        // A historical selected result must not be relabeled with today's analyzer semantics.
+        try await store.insertAnalysis(copyAnalysis(base, version: "workout-analyzer-v1.2", payload: payload))
+        let artifact = try await store.exportWorkoutAnalysis(.init(sessionID: session.sessionID,
+            exactProfileLocalIdentifier: session.profileLocalIdentifier))
+        defer { try? FileManager.default.removeItem(at: artifact.fileURL.deletingLastPathComponent()) }
+        let metadata = metadataRows(try parseCSV(artifact.fileURL))
+        XCTAssertEqual(metadata["stored_analysis_detail_status"], "available")
+        XCTAssertEqual(metadata["analyzer_version"], "workout-analyzer-v1.2")
+        XCTAssertFalse(try XCTUnwrap(metadata["stored_analysis_coverage_semantics"]).contains("v1.4"))
+        let coverage = try jsonObject(metadata["stored_analysis_heart_rate_duration_coverage_json"])
+        XCTAssertEqual(coverage["coveredSeconds"] as? Double, 0)
+        XCTAssertTrue(coverage["coverageRatio"] is NSNull)
+        let csv = try String(contentsOf: artifact.fileURL, encoding: .utf8)
+        for sentinel in ["private-profile-sentinel", "private-device-sentinel", "private-source-sentinel"] {
+            XCTAssertFalse(csv.contains(sentinel))
+        }
+        XCTAssertTrue(csv.contains("opaque-metric-definition"))
+        XCTAssertTrue(csv.contains("opaque-analysis-exclusion"))
+    }
+
+    private func metadataRows(_ rows: [[String]]) -> [String: String] {
+        guard let header = rows.first, let key = header.firstIndex(of: "metadata_key"),
+              let value = header.firstIndex(of: "metadata_value") else { return [:] }
+        return Dictionary(uniqueKeysWithValues: rows.dropFirst().filter { $0[1] == "metadata" }.map { ($0[key], $0[value]) })
+    }
+
+    private func jsonObject(_ value: String?) throws -> [String: Any] {
+        let data = try XCTUnwrap(value?.data(using: .utf8))
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func copyAnalysis(_ base: WorkoutAnalysisResult, version: String? = nil,
+                              schema: UInt16 = 1, payload: Data) -> WorkoutAnalysisResult {
+        WorkoutAnalysisResult(analysisID: base.analysisID, recordID: base.recordID, sessionID: base.sessionID,
+            analyzerVersion: version.map(AnalyzerVersion.init(rawValue:)) ?? base.analyzerVersion,
+            evidenceHash: base.evidenceHash, generatedAt: base.generatedAt, qualityGrade: base.qualityGrade,
+            exclusions: base.exclusions, keyMetrics: base.keyMetrics, detailSchemaVersion: schema,
+            versionedDetailPayload: payload)
+    }
+
+    private func semanticsEvent(seed: Int, session: WorkoutSessionRecord, elapsedMicroseconds: Int64,
+                                payload: WorkoutEventPayload) -> WorkoutEvent {
+        let original = event(seed: seed, session: session, elapsedMicroseconds: elapsedMicroseconds, payload: payload)
+        return WorkoutEvent(recordID: original.recordID, sessionID: original.sessionID,
+            timestamp: .init(occurredAt: original.timestamp.occurredAt, recordedAt: original.timestamp.occurredAt,
+                occurredElapsed: original.timestamp.occurredElapsed, recordedElapsed: original.timestamp.occurredElapsed),
+            payload: original.payload)
+    }
+
+    private func semanticsSession(duration: Int64 = 60) -> WorkoutSessionRecord {
+        let base = session(profile: "semantics-profile", configuration: configuration(target: 120), seed: 145)
+        let configuration = ImmutableConfigurationSnapshot(id: base.configuration.id, formatVersion: 1,
+            format: .canonicalJSON, canonicalPayload: Data(
+                #"{"targetHeartRate":120,"heartRateZones":[90,110,130,150],"cooldownTargetHeartRate":115,"cooldownMinimumSpeedKilometresPerHour":2.0}"#.utf8),
+            contentHash: base.configuration.contentHash)
+        return WorkoutSessionRecord(recordID: base.recordID, sessionID: base.sessionID,
+            profileLocalIdentifier: base.profileLocalIdentifier, lifecycleState: .completed,
+            workoutMode: base.workoutMode, startedAt: base.startedAt,
+            endedAt: base.startedAt.addingTimeInterval(Double(duration)), endedElapsed: .init(microseconds: duration * 1_000_000),
+            incompleteReason: nil, appContext: base.appContext,
+            versions: .init(telemetrySchema: .init(rawValue: "1.0.0"), algorithm: base.versions.algorithm,
+                safetyPolicy: base.versions.safetyPolicy, workoutProtocol: base.versions.workoutProtocol),
+            configuration: configuration, healthKitWorkoutIdentifier: base.healthKitWorkoutIdentifier,
+            treadmill: base.treadmill, recorderHealth: .init(isComplete: true, lostCriticalRecordCount: 0,
+                lostNativeRecordCount: 0, lastPersistedElapsed: .init(microseconds: duration * 1_000_000)))
+    }
+
     func testCooldownCompletionReasonsRemainTruthfulInExport() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = session(profile: "cooldown-reasons", configuration: configuration(target: 110), seed: 123)

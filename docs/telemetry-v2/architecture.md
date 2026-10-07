@@ -186,6 +186,39 @@ History, charts, statistics, and export consume bounded V2 queries and explicit
 projections. CSV and summaries become export formats, not independent stores.
 Export MUST be non-destructive.
 
+The compact `workout-analysis-timeline-v1` CSV keeps its 39 columns and reported
+producer phase labels. Its frame coverage ratios count populated rows, not
+validated fresh time coverage. Additive metadata makes the distinction explicit:
+
+| Metadata key | Meaning |
+| --- | --- |
+| `phase_semantics` | `reported-producer-phase-transitions` |
+| `frame_coverage_semantics` | `populated-frame-row-ratio` |
+| `stored_analysis_detail_status` | `available`, `unavailable-missing`, `unavailable-unsupported-schema`, or `unavailable-malformed` |
+| `stored_analysis_detail_schema_version` | Actual selected stored detail version; blank without a result |
+| `stored_analysis_metric_definition_version` | Known stored metric definition; unknown strings become `opaque-metric-definition` |
+| `stored_analysis_policy_json` | Numeric policy from the same selected stored analysis |
+| `stored_analysis_phase_summaries_json` | Stored phase/duration/coverage/grade summaries with sanitized exclusion codes; not reconstructed intervals |
+| `stored_analysis_heart_rate_duration_coverage_json` | Stored HR duration coverage |
+| `stored_analysis_factual_speed_duration_coverage_json` | Stored factual-speed duration coverage |
+| `stored_analysis_coverage_semantics` | Interpretation tied to the stored analyzer and metric definition versions |
+
+`available` describes the projection's readability, not phase validity or good
+coverage. Known unknown phases remain unknown. Coverage uses `coveredSeconds`,
+`uncoveredSeconds`, and `coverageRatio`; a missing ratio is JSON `null`, not zero.
+Unavailable detail leaves projection values blank. The selected result remains
+the existing latest generatedAt/analysisID result used by `analyzer_version`.
+For v1.4/timestamp-hold-metrics-v2, HR uses effective-time holds and factual speed
+uses the bounded frame ledger, with native holds only when frames are absent.
+Other stored versions retain version-dependent interpretation.
+
+New metadata follows all existing rows, preserving old values and row order.
+Legacy readers may ignore unknown metadata keys; missing new keys in historical
+files do not imply validated truth. The exporter decodes stored detail once on
+demand, without running the analyzer, fetching raw evidence again, or writing
+to the store. Only allowlisted projections leave the app; raw detail, arbitrary
+issue strings, identifiers, control metrics and evidence hashes are excluded.
+
 Performance instrumentation is a separate privacy-safe diagnostic channel. On
 the iOS 26 baseline it SHOULD use `OSSignposter`, Instruments, and
 availability-correct MetricKit APIs. The newer `MetricManager` async API is an
