@@ -246,7 +246,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var nextCommandAllowedAt: Date = .distantPast
     private var pendingHealthkitWorkoutUUID: String? = nil
     private var pendingHealthkitWorkoutProfileID: UUID? = nil
-    private var activeTelemetryV2SessionID: SessionID? = nil
+    private(set) var activeTelemetryV2SessionID: SessionID? = nil
+    private(set) var activeTelemetryV2ProfileID: UUID?
     private var pendingHealthkitTelemetryV2SessionID: SessionID? = nil
     private let deferredNativeHealthKitLinkageStoreKey = "deferred_native_healthkit_linkage_v1"
     private var deferredNativeHealthKitLinkages: [DeferredNativeHealthKitLinkage] = []
@@ -312,11 +313,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var treadmillCommandTelemetrySidecar = TreadmillCommandTelemetrySidecar()
     private var treadmillCommandAttemptNumbers: [CommandID: UInt16] = [:]
     private struct TreadmillCommandTelemetryRequest {
+        let sessionID: SessionID?
         let commandID: CommandID
         let decisionID: DecisionID?
         let kind: CommandKind
     }
     private struct TreadmillStopTelemetryChain {
+        let sessionID: SessionID?
         let decisionID: DecisionID
         let commandID: CommandID?
     }
@@ -1955,6 +1958,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var telemetryV2WorkoutHistoryCursor: WorkoutHistoryCursor? = nil
     private var telemetryV2WorkoutReadRequestID: UUID? = nil
     private let telemetryV2WorkoutPageSize = 50
+
+    func terminalAnalysisFailed(sessionID: SessionID) -> Bool {
+        let result = telemetryV2Coordinator.terminalAnalysisResult(for: sessionID)
+        return result == .failed || result == .ineligible
+    }
 
     func summaryAnalysisState(for projection: WorkoutHistoryProjection) -> WorkoutSummaryAnalysisState {
         guard projection.origin == .nativeV2,
@@ -4288,6 +4296,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         let telemetryChain = telemetryDecision.map {
             TreadmillStopTelemetryChain(
+                sessionID: telemetryRequest.sessionID,
                 decisionID: $0.decisionID,
                 commandID: telemetryRequest.commandID
             )
@@ -4363,6 +4372,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         let telemetryChain = telemetryDecision.map {
             TreadmillStopTelemetryChain(
+                sessionID: telemetryRequest.sessionID,
                 decisionID: $0.decisionID,
                 commandID: stopCommandWasEnqueued ? telemetryRequest.commandID : nil
             )
@@ -4440,15 +4450,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         telemetryChain: TreadmillStopTelemetryChain? = nil,
         now: Date = Date()
     ) {
+        let attemptedMonotonic = telemetryV2Coordinator.stopAttemptMonotonicTime
         stopObservationFreshnessWorkItem?.cancel()
         stopObservationFreshnessWorkItem = nil
         finishActiveStopObservationUnconfirmed(reason: "superseded_by_new_attempt", now: now)
         if let pendingAttemptID = unavailableStopAttempt?.id {
             finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
         }
+        telemetryV2Coordinator.invalidateStopTail()
         activeTreadmillStopTelemetryChain = telemetryChain
         guard let context = currentStopObservationContext() else {
-            recordUnavailableStopAttempt(source: source, attemptedAt: now)
+            recordUnavailableStopAttempt(source: source, attemptedAt: now, attemptedMonotonic: attemptedMonotonic)
             return
         }
 
@@ -4465,6 +4477,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             context: context
         )
         stopObservationLifecycle = lifecycle
+        captureStopTelemetryAttempt(lifecycle.attemptID, attemptedMonotonic: attemptedMonotonic)
         stopTruthStatusText = "stop requested • confirming"
         logTrainingEvent(
             "stop_attempt_started",
@@ -4477,8 +4490,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         scheduleStopObservationCheckpoints(attemptID: lifecycle.attemptID)
     }
 
-    private func recordUnavailableStopAttempt(source: String, attemptedAt: Date) {
+    private func recordUnavailableStopAttempt(source: String, attemptedAt: Date, attemptedMonotonic: Duration) {
         let attemptID = UUID()
+        captureStopTelemetryAttempt(attemptID, attemptedMonotonic: attemptedMonotonic)
         let needsOwnLog = trainingLogQueue.sync { trainingLogFileHandle == nil }
         if needsOwnLog {
             startTrainingStructuredLog(trigger: "stop_observation_unavailable")
@@ -4827,6 +4841,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             evaluation: evaluation,
             evaluatedAt: now
         )
+        if lifecycle.finalReason?.hasPrefix("stop_command_not_sent") != true {
+            telemetryV2Coordinator.stopAttemptFinalized(attemptID: lifecycle.attemptID)
+        }
     }
 
     private func finishActiveStopObservationUnconfirmed(reason: String, now: Date = Date()) {
@@ -4852,6 +4869,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopObservationLifecycle = nil
         stopTruthStatusText = ""
         activeTreadmillStopTelemetryChain = nil
+        telemetryV2Coordinator.invalidateStopTail()
     }
     func setTargetSpeedFromSlider(_ kmh: Double) {
         guard !blocksNonStopTreadmillMotion else { return }
@@ -6497,7 +6515,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func resetCommandQueue(
         reason: String,
         observeTelemetryImmediately: Bool = true
-    ) -> [TreadmillCommandEnqueuedEvidence] {
+    ) -> [TreadmillCommandTelemetrySidecar.Entry] {
         let dropped = CommandQueueService.clear(queue: &commandQueue)
         commandQueueEpoch += 1
         isCommandQueueProcessing = false
@@ -6545,11 +6563,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 observeTelemetryImmediately: false
             )
             CommandQueueService.replaceWithHighPriority(queue: &commandQueue, command: command)
-            var superseded: [TreadmillCommandEnqueuedEvidence] = []
+            var superseded: [TreadmillCommandTelemetrySidecar.Entry] = []
             if let telemetryEvidence {
                 superseded = treadmillCommandTelemetrySidecar.replaceWithHighPriority(
                     label: label,
-                    evidence: telemetryEvidence
+                    evidence: telemetryEvidence,
+                    sessionID: request.sessionID
                 )
             }
             processCommandQueue()
@@ -6559,7 +6578,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             )
             observeSupersededTreadmillCommands(superseded)
             if let telemetryEvidence {
-                observeTreadmillTelemetry(.commandEnqueued(telemetryEvidence))
+                observeTreadmillTelemetry(.commandEnqueued(telemetryEvidence), sessionID: request.sessionID)
             }
             return
         }
@@ -6569,11 +6588,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             command: command,
             isSpeedLabel: isSpeedCommandLabel
         )
-        var superseded: [TreadmillCommandEnqueuedEvidence] = []
+        var superseded: [TreadmillCommandTelemetrySidecar.Entry] = []
         if let telemetryEvidence {
             superseded = treadmillCommandTelemetrySidecar.enqueueRegular(
                 label: label,
                 evidence: telemetryEvidence,
+                sessionID: request.sessionID,
                 isSpeedLabel: isSpeedCommandLabel
             )
         }
@@ -6587,15 +6607,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         processCommandQueue()
         observeSupersededTreadmillCommands(superseded)
         if let telemetryEvidence {
-            observeTreadmillTelemetry(.commandEnqueued(telemetryEvidence))
+            observeTreadmillTelemetry(.commandEnqueued(telemetryEvidence), sessionID: request.sessionID)
         }
     }
 
     private func observeCancelledTreadmillCommands(
-        _ commands: [TreadmillCommandEnqueuedEvidence],
+        _ commands: [TreadmillCommandTelemetrySidecar.Entry],
         reason: CommandCancellationReason
     ) {
-        for command in commands {
+        for entry in commands {
+            let command = entry.evidence
             observeTreadmillTelemetry(
                 .commandCancelled(
                     TreadmillCommandCancellationObservation(
@@ -6605,15 +6626,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         occurredAt: Date(),
                         reason: reason
                     )
-                )
+                ), sessionID: entry.sessionID
             )
         }
     }
 
     private func observeSupersededTreadmillCommands(
-        _ commands: [TreadmillCommandEnqueuedEvidence]
+        _ commands: [TreadmillCommandTelemetrySidecar.Entry]
     ) {
-        for command in commands {
+        for entry in commands {
+            let command = entry.evidence
             observeTreadmillTelemetry(
                 .commandCancelled(
                     TreadmillCommandCancellationObservation(
@@ -6623,7 +6645,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         occurredAt: Date(),
                         reason: .superseded
                     )
-                )
+                ), sessionID: entry.sessionID
             )
         }
     }
@@ -6660,14 +6682,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
             let next = self.commandQueue.removeFirst()
             let telemetryEvidence: TreadmillCommandEnqueuedEvidence?
+            var queuedSessionID = self.treadmillCommandTelemetrySidecar.queued.first?.entry.sessionID
             var postWriteTelemetry: [TreadmillTelemetryEvidence] = []
+            var lostEntries: [TreadmillCommandTelemetrySidecar.Entry] = []
             switch self.treadmillCommandTelemetrySidecar.dequeue(
                 expectedLabel: next.label,
                 currentEpoch: self.treadmillTelemetryConnectionEpoch
             ) {
-            case .matched(let evidence):
-                telemetryEvidence = evidence
-            case .staleEpoch(let evidence):
+            case .matched(let entry):
+                telemetryEvidence = entry.evidence
+            case .staleEpoch(let entry):
+                let evidence = entry.evidence
                 telemetryEvidence = nil
                 postWriteTelemetry.append(
                     .commandCancelled(
@@ -6680,23 +6705,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                     )
                 )
-            case .correlationLost(let evidence):
+            case .correlationLost(let entries):
                 telemetryEvidence = nil
-                postWriteTelemetry.append(
-                    contentsOf: evidence.map {
-                        .commandCancelled(
-                            TreadmillCommandCancellationObservation(
-                                commandID: $0.commandID,
-                                decisionID: $0.decisionID,
-                                connectionEpoch: $0.connectionEpoch,
-                                occurredAt: Date(),
-                                reason: .other("telemetry_sidecar_order_mismatch")
-                            )
-                        )
-                    }
-                )
+                queuedSessionID = self.activeTelemetryV2SessionID
+                lostEntries = entries
             case .missing:
                 telemetryEvidence = nil
+                queuedSessionID = self.activeTelemetryV2SessionID
             }
             postWriteTelemetry.append(
                 contentsOf: self.performWrite(
@@ -6712,7 +6727,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.processCommandQueue()
             }
             for evidence in postWriteTelemetry {
-                self.observeTreadmillTelemetry(evidence)
+                self.observeTreadmillTelemetry(evidence, sessionID: queuedSessionID)
+            }
+            self.observeCancelledTreadmillCommands(
+                lostEntries, reason: .other("telemetry_sidecar_order_mismatch")
+            )
+            if let lifecycle = self.stopObservationLifecycle, lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true {
+                self.telemetryV2Coordinator.stopAttemptFinalized(attemptID: lifecycle.attemptID)
             }
         }
     }
@@ -6976,6 +6997,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillMinSpeedKmh = 0.5
         treadmillMaxSpeedKmh = 12.0
         treadmillSpeedIncrementKmh = 0.1
+        telemetryV2Coordinator.invalidateStopTail()
         controllerUnitsConnectionEpoch = nil
         stopObservationStreamID = nil
         stopObservationCheckpointWorkItems.forEach { $0.cancel() }
@@ -7828,6 +7850,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             deterministicallyLinkedTo: legacySessionID
         )
         activeTelemetryV2SessionID = sessionID
+        activeTelemetryV2ProfileID = activeUserProfileID
 #if canImport(UIKit)
         let deviceModel: String? = UIDevice.current.model
 #else
@@ -8341,8 +8364,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func observeTreadmillTelemetry(_ evidence: TreadmillTelemetryEvidence) {
+        observeTreadmillTelemetry(evidence, sessionID: activeTelemetryV2SessionID)
+    }
+
+    private func observeTreadmillTelemetry(_ evidence: TreadmillTelemetryEvidence, sessionID: SessionID?) {
+        guard let sessionID else { return }
         _ = treadmillTelemetrySink?.observeTreadmillEvidence(
-            evidence, currentConnectionEpoch: treadmillTelemetryConnectionEpoch
+            evidence, currentConnectionEpoch: treadmillTelemetryConnectionEpoch, sessionID: sessionID
+        )
+    }
+
+    private func captureStopTelemetryAttempt(_ attemptID: UUID, attemptedMonotonic: Duration) {
+        guard let chain = activeTreadmillStopTelemetryChain, chain.commandID != nil, let sessionID = chain.sessionID,
+              let epoch = treadmillTelemetryConnectionEpoch else { return }
+        telemetryV2Coordinator.captureStopAttempt(
+            sessionID: sessionID, attemptID: attemptID, decisionID: chain.decisionID,
+            connectionEpoch: epoch, observationWindow: .seconds(StopObservationPolicy.observationWindow),
+            attemptedMonotonic: attemptedMonotonic
         )
     }
 
@@ -8376,6 +8414,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         commandID: CommandID = CommandID()
     ) -> TreadmillCommandTelemetryRequest {
         TreadmillCommandTelemetryRequest(
+            sessionID: activeTelemetryV2SessionID,
             commandID: commandID,
             decisionID: decision?.decisionID,
             kind: kind
@@ -8504,7 +8543,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     observationReceivedAt: latest?.observedAt,
                     evaluatedAt: evaluatedAt
                 )
-            )
+            ), sessionID: activeTreadmillStopTelemetryChain?.sessionID
         )
     }
 
@@ -8957,6 +8996,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               service === treadmillProtocolService else {
             return
         }
+        telemetryV2Coordinator.invalidateStopTail()
         if let error {
             invalidateTreadmillControlReadinessEvidence()
             return
@@ -9069,6 +9109,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard (isRequiredTelemetry || isFtmsControlPoint),
               isCurrentCharacteristicCallback(characteristic) else {
             return
+        }
+        if error != nil || !characteristic.isNotifying {
+            telemetryV2Coordinator.invalidateStopTail()
         }
         if let error {
             if isRequiredTelemetry { notifyCharacteristicConnection = nil }
@@ -9447,6 +9490,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               invalidatedServices.contains(where: { $0 === selectedService }) else {
             return
         }
+        telemetryV2Coordinator.invalidateStopTail()
         treadmillProtocolService = nil
         commandCharacteristic = nil
         notifyCharacteristic = nil

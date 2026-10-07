@@ -123,6 +123,37 @@ SwiftData is provisional until its explicit benchmark, protection, and recovery
 gate passes. Details are in
 [persistence-and-retention.md](persistence-and-retention.md).
 
+### Product completion and post-Stop evidence admission
+
+Issue #203 preserves one product terminal timestamp while the existing coordinator
+may retain one evidence-only closing session. Its cap is the original Stop-attempt
+monotonic capture plus the existing 30-second observation window, including
+FTMS/FitShow's confirmation-unavailable path. Product end, retries, writes, ACKs
+and presentation dismissal never restart that deadline.
+
+Only the original Stop chain and connection-context treadmill/transport evidence
+may enter that closing recorder. Unresolved associations keep nil causal IDs;
+units normalization ends at product completion. HR/control-use, workout decisions,
+phases and canonical frames cannot continue into the tail. Session ownership is
+transient producer/sidecar metadata, not a new persisted field or matching heuristic.
+
+Admission closes on owner finalization (after its actual final evidence), context
+invalidation, superseding motion/Stop, next-session begin or deadline. Closure is
+serialized with admission and schedules one asynchronous recorder finish using
+the original terminal timestamp, followed by one immutable-input analysis.
+Same-epoch notification/service replacement and selected notification subscription
+loss/error also close the original context after the existing callback identity guards.
+A blocked first write retains its returning failure before telemetry closure,
+without deferring legacy Stop finalization.
+Existing typed `.drain` diagnostics explain capture closure without asserting
+physical Stop or recorder loss. Post-end timestamps remain raw evidence and do
+not extend v1.4 workout duration, phase intervals or factual freshness coverage.
+
+Processing presentation binds the exact native SessionID and original profile.
+«Готово» clears presentation only; late results may refresh history/statistics but
+cannot reopen a dismissed result or replace another workout. Missing paginated
+rows are not analysis failure, and Start retains its existing gates.
+
 ### Canonical frames
 
 A frame is an at-most-1-Hz materialized view of state actually available while

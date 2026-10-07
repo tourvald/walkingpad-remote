@@ -170,12 +170,12 @@ final class StopCommandBehaviorContractTests: XCTestCase {
             [
                 "if let pendingAttemptID = unavailableStopAttempt?.id",
                 "finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)",
-                "recordUnavailableStopAttempt(source: source, attemptedAt: now)"
+                "recordUnavailableStopAttempt(source: source, attemptedAt: now, attemptedMonotonic: attemptedMonotonic)"
             ],
             in: beginBody
         )
-        XCTAssertTrue(beginBody.contains("recordUnavailableStopAttempt(source: source, attemptedAt: now)"))
-        let unavailableBody = try functionBody("private func recordUnavailableStopAttempt(source: String, attemptedAt: Date)")
+        XCTAssertTrue(beginBody.contains("recordUnavailableStopAttempt(source: source, attemptedAt: now, attemptedMonotonic: attemptedMonotonic)"))
+        let unavailableBody = try functionBody("private func recordUnavailableStopAttempt(source: String, attemptedAt: Date, attemptedMonotonic: Duration)")
         XCTAssertTrue(unavailableBody.contains("unavailableStopAttempt = UnavailableStopAttempt"))
         XCTAssertTrue(unavailableBody.contains("\"stop_command_status\"") && unavailableBody.contains("\"queued\"") && unavailableBody.contains("\"not_sent\""))
         let finalizeBody = try functionBody("private func finalizeUnavailableStopAttempt(attemptID: UUID)")

@@ -35,6 +35,33 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
         XCTAssertFalse(sidecarSource.contains("CommandQueueService"))
     }
 
+    func testUnresolvedWriteKeepsObservationWithoutClaimingLostCommandOwnership() throws {
+        let queue = try functionBody("private func processCommandQueue", in: managerSource)
+        let lost = try XCTUnwrap(queue.range(of: "case .correlationLost(let entries):"))
+        let missing = try XCTUnwrap(queue.range(of: "case .missing:", range: lost.upperBound..<queue.endIndex))
+        let unresolved = String(queue[lost.upperBound..<missing.lowerBound])
+        XCTAssertTrue(unresolved.contains("telemetryEvidence = nil"))
+        XCTAssertTrue(unresolved.contains("queuedSessionID = self.activeTelemetryV2SessionID"))
+        XCTAssertTrue(unresolved.contains("lostEntries = entries"))
+        XCTAssertFalse(unresolved.contains("entries.first"))
+        let missingBranch = String(queue[missing.upperBound..<queue.endIndex])
+        XCTAssertTrue(missingBranch.contains("queuedSessionID = self.activeTelemetryV2SessionID"))
+    }
+
+    func testSelectedNotificationAndServiceReplacementCloseTheOriginalTailBeforeMutation() throws {
+        let discovery = try functionBody("func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor", in: managerSource)
+        let invalidation = try functionBody("func peripheral(_ peripheral: CBPeripheral, didModifyServices", in: managerSource)
+        for body in [discovery, invalidation] {
+            let close = try XCTUnwrap(body.range(of: "telemetryV2Coordinator.invalidateStopTail()")?.lowerBound)
+            let identity = try XCTUnwrap(body.range(of: "peripheral === connectedPeripheral")?.lowerBound)
+            let mutation = try XCTUnwrap(body.range(of: "commandCharacteristic = nil")?.lowerBound)
+            XCTAssertLessThan(identity, close)
+            XCTAssertLessThan(close, mutation)
+        }
+        XCTAssertTrue(discovery.contains("service === treadmillProtocolService"))
+        XCTAssertTrue(invalidation.contains("invalidatedServices.contains(where: { $0 === selectedService })"))
+    }
+
     func testTelemetryHotPathHasNoPersistenceAsyncOrRawPacketSurface() {
         let forbidden = [
             "TelemetryRecorder",
@@ -269,7 +296,7 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
             process.range(of: "self.nextCommandAllowedAt =")?.lowerBound
         )
         let sinkIndex = try XCTUnwrap(
-            process.range(of: "self.observeTreadmillTelemetry(evidence)")?.lowerBound
+            process.range(of: "self.observeTreadmillTelemetry(evidence, sessionID: queuedSessionID)")?.lowerBound
         )
         XCTAssertLessThan(writeIndex, nextAllowedIndex)
         XCTAssertLessThan(nextAllowedIndex, sinkIndex)

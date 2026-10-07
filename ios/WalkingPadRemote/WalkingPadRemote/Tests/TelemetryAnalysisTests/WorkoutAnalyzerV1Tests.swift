@@ -4,6 +4,32 @@ import XCTest
 @testable import TelemetryDomain
 
 final class WorkoutAnalyzerV1Tests: XCTestCase {
+    func testPostProductEndTreadmillTailDoesNotExtendV14MetricsOrCoverage() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 60)
+        let treadmill = (0..<12).map {
+            fixture.treadmill(ordinal: $0 + 1, seconds: Double($0 * 5), speed: 4, factual: true)
+        }
+        let events = [
+            fixture.event(ordinal: 1, seconds: 0, payload: .workoutPhase(.init(previous: nil, current: .main))),
+            fixture.event(ordinal: 2, seconds: 60, payload: .workoutPhase(.init(previous: .main, current: .finished)))
+        ]
+        let tail = (0..<6).map {
+            fixture.treadmill(ordinal: $0 + 20, seconds: Double(61 + $0 * 5), speed: 9, factual: true)
+        }
+        let closure = fixture.event(ordinal: 3, seconds: 90,
+            payload: .recorderHealth(.init(kind: .drain, detailCode: "post-stop-tail-deadline")))
+        let baseline = try WorkoutAnalyzerV1.analyze(fixture.input(treadmill: treadmill, events: events),
+            generatedAt: fixture.baseDate.addingTimeInterval(100))
+        let tailed = try WorkoutAnalyzerV1.analyze(fixture.input(treadmill: treadmill + tail, events: events + [closure]),
+            generatedAt: fixture.baseDate.addingTimeInterval(100))
+        XCTAssertEqual(tailed.keyMetrics, baseline.keyMetrics)
+        let before = try decodeDetail(baseline)
+        let after = try decodeDetail(tailed)
+        XCTAssertEqual(after.quality.treadmillFactualCoverage, before.quality.treadmillFactualCoverage)
+        XCTAssertEqual(after.quality.phases, before.quality.phases)
+        XCTAssertEqual(tail.last?.timestamp.recordedElapsed.seconds, 86.06)
+    }
+
     func testHistoricalMixedClockPhasesRecoverZonesAndCooldownWithoutChangingEvidence() throws {
         let fixture = AnalysisFixture(sessionSeconds: 60)
         let events = [

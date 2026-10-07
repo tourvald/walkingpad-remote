@@ -842,6 +842,9 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(ending.contains("trainingEndingStatus(from: stopStatusText)"))
         XCTAssertFalse(ending.contains("else if let status = trainingEndingStatus"))
         XCTAssertTrue(ending.contains("if isProcessingResult"))
+        XCTAssertTrue(ending.contains("Button(\"Готово\", action: onDone)"))
+        XCTAssertTrue(ending.contains("Результат появится в истории после обработки."))
+        XCTAssertFalse(ending.contains("manager."))
         for fabricatedEndingDetail in [
             "Подготавливаем итог", "Сохраняем", "Timer", "asyncAfter",
         ] {
@@ -894,14 +897,15 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(distanceDelta.contains("speed"))
         XCTAssertFalse(distanceDelta.contains("distKm"))
 
-        XCTAssertTrue(begin.contains("manager.telemetryV2WorkoutHistoryState == .loaded"))
-        XCTAssertTrue(begin.contains(".filter { $0.origin == .nativeV2 }"))
-        XCTAssertTrue(begin.contains(".map(\\.id)"))
-        XCTAssertTrue(finish.contains("projectionGenerationAtEnd: manager.telemetryV2ProjectionGeneration"))
-        XCTAssertTrue(resolve.contains("manager.telemetryV2ProjectionGeneration"))
-        XCTAssertTrue(resolve.contains("<= pendingTrainingResult.projectionGenerationAtEnd"))
-        XCTAssertTrue(resolve.contains("$0.origin == .nativeV2 && !baselineIDs.contains($0.id)"))
-        XCTAssertTrue(resolve.contains("candidates.count == 1"))
+        XCTAssertTrue(begin.contains("sessionID: manager.activeTelemetryV2SessionID"))
+        XCTAssertTrue(begin.contains("profileID: manager.activeTelemetryV2ProfileID"))
+        XCTAssertTrue(finish.contains("sessionID: sessionID"))
+        XCTAssertTrue(finish.contains("profileID: profileID"))
+        XCTAssertTrue(finish.contains("!manager.isNativeWorkoutRecoveryActive"))
+        XCTAssertTrue(resolve.contains("pendingTrainingResult.profileID == manager.activeUserProfileID"))
+        XCTAssertTrue(resolve.contains("pendingTrainingResult.sessionID"))
+        XCTAssertFalse(resolve.contains("baselineIDs"))
+        XCTAssertFalse(resolve.contains("candidates.count"))
         XCTAssertTrue(resolve.contains("manager.summaryAnalysisState(for: projection)"))
         XCTAssertTrue(resolve.contains("case .processing:\n            resolvedTrainingResult = nil\n            trainingResultError = nil"))
         XCTAssertTrue(resolve.contains("case .failed:"))
@@ -912,7 +916,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(controlView.contains("refreshWorkoutHistoryFromV2"))
         XCTAssertFalse(resolve.contains("sorted"))
         XCTAssertFalse(resolve.contains("last"))
-        XCTAssertFalse(resolve.contains("first(where"))
+        XCTAssertTrue(resolve.contains("first(where"))
 
         XCTAssertTrue(controlView.contains("onDone: clearTrainingResultPresentation"))
         XCTAssertTrue(controlView.contains("onOpenStatistics: openStatistics"))

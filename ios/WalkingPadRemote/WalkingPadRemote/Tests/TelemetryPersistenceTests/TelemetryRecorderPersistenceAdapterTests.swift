@@ -5,6 +5,35 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryRecorderPersistenceAdapterTests: XCTestCase {
+    func testPostProductEndRecordsRoundTripWithOriginalTerminalBoundary() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = runningSession(seed: 1)
+        let source = TelemetryPersistenceFixtures.source(seed: 2, kind: .treadmillProtocol)
+        let tail = TelemetryPersistenceFixtures.treadmill(seed: 3, session: session, source: source,
+            arrivalOrder: 24, unit: .unknown)
+        let event = TelemetryPersistenceFixtures.event(seed: 4, session: session, kind: .manualStop,
+            elapsed: 24_000_000)
+        try await store.beginSession(session)
+        try await store.persistBatch([
+            .init(recorderSequence: 1, record: .source(.init(identity: source,
+                firstSeen: session.startedAt, lastSeen: event.timestamp.recordedAt))),
+            .init(recorderSequence: 2, record: .treadmill(tail)),
+            .init(recorderSequence: 3, record: .event(event))
+        ])
+        let terminal = TelemetrySessionFinalization(sessionID: session.sessionID, lifecycleState: .completed,
+            endedAt: session.startedAt.addingTimeInterval(10), endedElapsed: .init(microseconds: 10_000_000),
+            incompleteReason: nil, recorderHealth: .init(isComplete: true, lostCriticalRecordCount: 0,
+                lostNativeRecordCount: 0, lastPersistedElapsed: .init(microseconds: 24_000_000)))
+        try await store.finalizeSession(terminal)
+        let records = try await store.fetchTreadmill(sessionID: session.sessionID)
+        let events = try await store.fetchEvents(sessionID: session.sessionID)
+        let stored = try await store.fetchSessions()
+        XCTAssertEqual(records, [tail])
+        XCTAssertEqual(events, [event])
+        XCTAssertEqual(stored.first?.endedElapsed?.seconds, 10)
+        XCTAssertEqual(stored.first?.endedAt, session.startedAt.addingTimeInterval(10))
+    }
+
     func testRecorderBatchUsesOneOrderedStoreBoundary() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = runningSession(seed: 1)

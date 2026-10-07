@@ -4,44 +4,51 @@ import TelemetryDomain
 /// Observational metadata that mirrors the legacy queue without participating in
 /// command equality, admission, ordering, coalescing, or transport decisions.
 struct TreadmillCommandTelemetrySidecar {
+    struct Entry: Equatable {
+        let evidence: TreadmillCommandEnqueuedEvidence
+        let sessionID: SessionID?
+    }
+
     enum DequeueResult: Equatable {
-        case matched(TreadmillCommandEnqueuedEvidence)
-        case staleEpoch(TreadmillCommandEnqueuedEvidence)
-        case correlationLost([TreadmillCommandEnqueuedEvidence])
+        case matched(Entry)
+        case staleEpoch(Entry)
+        case correlationLost([Entry])
         case missing
     }
 
-    private(set) var queued: [(label: String, evidence: TreadmillCommandEnqueuedEvidence)] = []
+    private(set) var queued: [(label: String, entry: Entry)] = []
 
     var count: Int { queued.count }
 
     mutating func enqueueRegular(
         label: String,
         evidence: TreadmillCommandEnqueuedEvidence,
+        sessionID: SessionID? = nil,
         isSpeedLabel: (String) -> Bool
-    ) -> [TreadmillCommandEnqueuedEvidence] {
-        var superseded: [TreadmillCommandEnqueuedEvidence] = []
+    ) -> [Entry] {
+        var superseded: [Entry] = []
         if isSpeedLabel(label) {
             superseded = queued.compactMap { entry in
-                isSpeedLabel(entry.label) ? entry.evidence : nil
+                isSpeedLabel(entry.label) ? entry.entry : nil
             }
             queued.removeAll { isSpeedLabel($0.label) }
         }
-        queued.append((label, evidence))
+        queued.append((label, Entry(evidence: evidence, sessionID: sessionID)))
         return superseded
     }
 
     mutating func replaceWithHighPriority(
         label: String,
-        evidence: TreadmillCommandEnqueuedEvidence
-    ) -> [TreadmillCommandEnqueuedEvidence] {
-        let superseded = queued.map(\.evidence)
-        queued = [(label, evidence)]
+        evidence: TreadmillCommandEnqueuedEvidence,
+        sessionID: SessionID? = nil
+    ) -> [Entry] {
+        let superseded = queued.map(\.entry)
+        queued = [(label, Entry(evidence: evidence, sessionID: sessionID))]
         return superseded
     }
 
-    mutating func clear() -> [TreadmillCommandEnqueuedEvidence] {
-        let cancelled = queued.map(\.evidence)
+    mutating func clear() -> [Entry] {
+        let cancelled = queued.map(\.entry)
         queued.removeAll()
         return cancelled
     }
@@ -56,10 +63,10 @@ struct TreadmillCommandTelemetrySidecar {
             return .correlationLost(lost)
         }
         queued.removeFirst()
-        guard first.evidence.connectionEpoch == currentEpoch else {
-            return .staleEpoch(first.evidence)
+        guard first.entry.evidence.connectionEpoch == currentEpoch else {
+            return .staleEpoch(first.entry)
         }
-        return .matched(first.evidence)
+        return .matched(first.entry)
     }
 }
 

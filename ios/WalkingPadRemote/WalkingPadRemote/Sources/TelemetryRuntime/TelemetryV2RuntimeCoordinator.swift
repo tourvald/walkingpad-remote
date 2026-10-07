@@ -509,6 +509,20 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         var timeout: Task<Void, Never>?
     }
 
+    private struct StopTail {
+        let attemptID: UUID
+        let decisionID: DecisionID
+        let connectionEpoch: TreadmillConnectionEpoch
+        let deadline: Duration
+    }
+
+    private struct ClosingSession {
+        let session: TelemetryV2ActiveSession
+        let generation: UInt64
+        let tail: StopTail
+        let deadlineTask: Task<Void, Never>
+    }
+
     private static let pendingEvidenceCapacity = 256
     private let lock = NSLock()
     private let persistenceFactory: PersistenceFactory
@@ -530,6 +544,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     private var generation: UInt64 = 0
     private var pendingSession: PendingSession?
     private var activeSession: ActiveSession?
+    private var stopTail: StopTail?
+    private var closingSession: ClosingSession?
     private var storedStatus: TelemetryV2RuntimeStatus = .idle
     private var storedOperationalState: TelemetryRecorderOperationalState?
     private var storedWriterHealthSnapshot: TelemetryV2WriterHealthSnapshot = .idle
@@ -767,6 +783,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
 
     public func beginSession(_ descriptor: TelemetryV2SessionDescriptor) {
         let state: (TelemetryV2ActiveSession?, Bool) = withLock {
+            closeTailLocked(detailCode: "post-stop-tail-next-session")
+            stopTail = nil
             generation &+= 1
             let previous = activeSession?.session
             activeSession = nil
@@ -799,27 +817,94 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         launchPendingSessionIfPossible()
     }
 
+    public var stopAttemptMonotonicTime: Duration { runtimeClock.now() }
+
+    /// Captures the existing owner's attempt, never a replacement window at product end.
+    public func captureStopAttempt(
+        sessionID: SessionID, attemptID: UUID, decisionID: DecisionID,
+        connectionEpoch: TreadmillConnectionEpoch, observationWindow: Duration,
+        attemptedMonotonic: Duration? = nil
+    ) {
+        withLock {
+            guard activeSession?.session.sessionID == sessionID else { return }
+            closeTailLocked(detailCode: "post-stop-tail-superseded")
+            stopTail = nil
+            stopTail = StopTail(
+                attemptID: attemptID, decisionID: decisionID,
+                connectionEpoch: connectionEpoch, deadline: (attemptedMonotonic ?? runtimeClock.now()) + observationWindow
+            )
+        }
+    }
+
+    /// Called only after the actual Stop owner has emitted its final evidence.
+    public func stopAttemptFinalized(attemptID: UUID) {
+        withLock {
+            guard stopTail?.attemptID == attemptID else { return }
+            closeTailLocked(detailCode: "post-stop-tail-owner-finalized")
+            stopTail = nil
+        }
+    }
+
+    public func invalidateStopTail() {
+        withLock {
+            closeTailLocked(detailCode: "post-stop-tail-context-invalidated")
+            stopTail = nil
+        }
+    }
+
     public func endSession(reason: String) {
-        let ending: (TelemetryV2ActiveSession?, UInt64, Bool) = withLock {
-            guard pendingSession != nil || activeSession != nil else {
-                return (nil, generation, false)
-            }
+        withLock {
+            guard pendingSession != nil || activeSession != nil else { return }
             generation &+= 1
             pendingSession = nil
             let session = activeSession?.session
             activeSession = nil
             setStatusLocked(session == nil ? .incomplete("ended-before-recorder-ready") : .finishing)
-            return (session, generation, true)
+            guard let session else { stopTail = nil; return }
+            // Admission and terminal capture share this lock; an escaped active reference
+            // cannot append HR, phases or frames across the product boundary.
+            session.emitSessionEnd(reason: reason)
+            guard let tail = stopTail,
+                  tail.deadline > runtimeClock.now() else {
+                if stopTail != nil {
+                    _ = session.observeEvent(.recorderHealth(.init(kind: .drain,
+                        detailCode: "post-stop-tail-deadline")), occurredAt: runtimeClock.nowDate())
+                }
+                stopTail = nil
+                finishSession(session, generation: generation)
+                return
+            }
+            let remaining = tail.deadline - runtimeClock.now()
+            let deadlineTask = Task { [weak self] in
+                do { try await Task.sleep(for: remaining) } catch { return }
+                self?.withLock {
+                    guard self?.closingSession?.tail.attemptID == tail.attemptID else { return }
+                    self?.closeTailLocked(detailCode: "post-stop-tail-deadline")
+                }
+            }
+            closingSession = ClosingSession(
+                session: session, generation: generation, tail: tail, deadlineTask: deadlineTask
+            )
         }
-        guard ending.2 else { return }
-        guard let session = ending.0 else { return }
-        session.emitSessionEnd(reason: reason)
+    }
+
+    private func closeTailLocked(detailCode: String) {
+        guard let closing = closingSession else { return }
+        closingSession = nil
+        stopTail = nil
+        closing.deadlineTask.cancel()
+        _ = closing.session.observeEvent(
+            .recorderHealth(.init(kind: .drain, detailCode: detailCode)),
+            occurredAt: runtimeClock.nowDate()
+        )
+        finishSession(closing.session, generation: closing.generation)
+    }
+
+    private func finishSession(_ session: TelemetryV2ActiveSession, generation: UInt64) {
         Task.detached(priority: .utility) { [weak self] in
             let result = await session.finish()
             self?.sessionFinished(
-                result,
-                operationalState: session.operationalState,
-                generation: ending.1
+                result, operationalState: session.operationalState, generation: generation
             )
             let analysisResult: PostWorkoutAnalysisTriggerResult
             if let analyzer = self?.postWorkoutAnalysisCapability() {
@@ -828,9 +913,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 analysisResult = .failed
             }
             self?.withLock {
-                // A superseded analysis may still refresh persisted projections,
-                // but must not restore the previous session's runtime outcome.
-                guard self?.generation == ending.1 else { return }
+                guard self?.generation == generation else { return }
                 self?.latestTerminalAnalysisResult = (session.sessionID, analysisResult)
             }
             self?.projectionChangeHandler?()
@@ -847,53 +930,45 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
 
     @discardableResult
     public func observeCurrentElapsedSecond() -> TelemetryYieldDisposition? {
-        guard let session = currentActiveSession() else {
+        guard let disposition = withActiveSession({ session in session.observeCurrentElapsedSecond() }) else {
             return recordPendingFrameDrop()
         }
-        let disposition = session.observeCurrentElapsedSecond()
-        refreshStatus(from: session)
         return disposition
     }
 
     public func observeHeartRate(
         _ result: HeartRateNormalizationResult
     ) -> HeartRateTelemetrySinkDisposition {
-        guard let session = currentActiveSession() else {
+        guard let disposition = withActiveSession({ session in session.observeHeartRate(result) }) else {
             guard let disposition = bufferDisposition(.heartRate(result)) else {
                 return .unavailable
             }
             return Self.heartRateDisposition(disposition)
         }
-        let disposition = session.observeHeartRate(result)
-        refreshStatus(from: session)
         return Self.heartRateDisposition(disposition)
     }
 
     public func observeSourceLifecycle(
         _ evidence: HeartRateSourceLifecycleEvidence
     ) -> HeartRateTelemetrySinkDisposition {
-        guard let session = currentActiveSession() else {
+        guard let disposition = withActiveSession({ session in session.observeHeartRateRuntime(.sourceLifecycle(evidence)) }) else {
             guard let disposition = bufferDisposition(.sourceLifecycle(evidence)) else {
                 return .unavailable
             }
             return Self.heartRateDisposition(disposition)
         }
-        let disposition = session.observeHeartRateRuntime(.sourceLifecycle(evidence))
-        refreshStatus(from: session)
         return Self.heartRateDisposition(disposition)
     }
 
     public func observeControlUse(
         _ evidence: HeartRateControlUseEvidence
     ) -> HeartRateTelemetrySinkDisposition {
-        guard let session = currentActiveSession() else {
+        guard let disposition = withActiveSession({ session in session.observeHeartRateRuntime(.controlUse(evidence)) }) else {
             guard let disposition = bufferDisposition(.controlUse(evidence)) else {
                 return .unavailable
             }
             return Self.heartRateDisposition(disposition)
         }
-        let disposition = session.observeHeartRateRuntime(.controlUse(evidence))
-        refreshStatus(from: session)
         return Self.heartRateDisposition(disposition)
     }
 
@@ -914,11 +989,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             heartRateInputs: heartRateInputs,
             occurredAt: occurredAt
         )
-        guard let session = currentActiveSession() else {
+        guard let disposition = withActiveSession({ session in session.observeHeartRateControlDecision(evidence) }) else {
             return bufferDisposition(.heartRateControlDecision(evidence))
         }
-        let disposition = session.observeHeartRateControlDecision(evidence)
-        refreshStatus(from: session)
         return disposition
     }
 
@@ -932,15 +1005,43 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         _ evidence: TreadmillTelemetryEvidence,
         currentConnectionEpoch: TreadmillConnectionEpoch?
     ) -> TreadmillTelemetrySinkDisposition {
-        guard let session = currentActiveSession() else {
-            guard let disposition = bufferDisposition(.treadmill(evidence, currentConnectionEpoch: currentConnectionEpoch)) else {
-                return .unavailable
+        observeTreadmillEvidence(
+            evidence, currentConnectionEpoch: currentConnectionEpoch, sessionID: nil
+        )
+    }
+
+    public func observeTreadmillEvidence(
+        _ evidence: TreadmillTelemetryEvidence,
+        currentConnectionEpoch: TreadmillConnectionEpoch?, sessionID: SessionID?
+    ) -> TreadmillTelemetrySinkDisposition {
+        var observedActive: TelemetryV2ActiveSession?
+        let disposition: TelemetryYieldDisposition? = withLock {
+            if let closing = closingSession {
+                if runtimeClock.now() >= closing.tail.deadline {
+                    closeTailLocked(detailCode: "post-stop-tail-deadline")
+                } else if currentConnectionEpoch != closing.tail.connectionEpoch {
+                    closeTailLocked(detailCode: "post-stop-tail-context-invalidated")
+                } else if sessionID == closing.session.sessionID,
+                          evidence.isEligible(for: closing.tail.decisionID,
+                                              attemptID: closing.tail.attemptID,
+                                              epoch: closing.tail.connectionEpoch) {
+                    return closing.session.observeTreadmill(
+                        evidence, currentConnectionEpoch: currentConnectionEpoch
+                    )
+                }
             }
-            return Self.treadmillDisposition(disposition)
+            guard let active = activeSession,
+                  sessionID == nil || sessionID == active.session.sessionID else { return nil }
+            observedActive = active.session
+            return active.session.observeTreadmill(evidence, currentConnectionEpoch: currentConnectionEpoch)
         }
-        let disposition = session.observeTreadmill(evidence, currentConnectionEpoch: currentConnectionEpoch)
-        refreshStatus(from: session)
-        return Self.treadmillDisposition(disposition)
+        if let observedActive { refreshStatus(from: observedActive) }
+        if let disposition { return Self.treadmillDisposition(disposition) }
+        // Identity-bearing old callbacks cannot fall through into a newer pending session.
+        guard let buffered = bufferDisposition(
+            .treadmill(evidence, currentConnectionEpoch: currentConnectionEpoch), sessionID: sessionID
+        ) else { return .unavailable }
+        return Self.treadmillDisposition(buffered)
     }
 
     @discardableResult
@@ -948,11 +1049,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         _ payload: WorkoutEventPayload,
         occurredAt: Date
     ) -> TelemetryYieldDisposition? {
-        guard let session = currentActiveSession() else {
+        guard let disposition = withActiveSession({ session in session.observeEvent(payload, occurredAt: occurredAt) }) else {
             return bufferDisposition(.event(payload, occurredAt))
         }
-        let disposition = session.observeEvent(payload, occurredAt: occurredAt)
-        refreshStatus(from: session)
         return disposition
     }
 
@@ -961,11 +1060,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         _ phase: WorkoutPhase,
         occurredAt: Date
     ) -> TelemetryYieldDisposition? {
-        guard let session = currentActiveSession() else {
+        guard let disposition = withActiveSession({ session in session.observeWorkoutPhase(phase, occurredAt: occurredAt) }) else {
             return bufferDisposition(.workoutPhase(phase, occurredAt))
         }
-        let disposition = session.observeWorkoutPhase(phase, occurredAt: occurredAt)
-        refreshStatus(from: session)
         return disposition
     }
 
@@ -1132,11 +1229,14 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         }
     }
 
-    private func currentActiveSession() -> TelemetryV2ActiveSession? {
-        withLock {
-            guard activeSession?.generation == generation else { return nil }
-            return activeSession?.session
+    private func withActiveSession<T>(_ operation: (TelemetryV2ActiveSession) -> T) -> T? {
+        let observed: (TelemetryV2ActiveSession, T)? = withLock {
+            guard let active = activeSession, active.generation == generation else { return nil }
+            return (active.session, operation(active.session))
         }
+        guard let observed else { return nil }
+        refreshStatus(from: observed.0)
+        return observed.1
     }
 
     private func workoutReadCapability() -> (any TelemetryWorkoutReadCapability)? {
@@ -1165,10 +1265,12 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     }
 
     private func bufferDisposition(
-        _ evidence: PendingEvidence
+        _ evidence: PendingEvidence,
+        sessionID: SessionID? = nil
     ) -> TelemetryYieldDisposition? {
         withLock {
             guard var pending = pendingSession else { return nil }
+            if let sessionID, sessionID != pending.descriptor.sessionID { return nil }
             guard pending.evidence.count < Self.pendingEvidenceCapacity else {
                 let sourceID = evidence.sourceID(for: pending.descriptor)
                 let losesSourceRecord = sourceID.map {
@@ -2112,6 +2214,25 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
 }
 
 private extension TreadmillTelemetryEvidence {
+    func isEligible(for decisionID: DecisionID, attemptID: UUID,
+                    epoch: TreadmillConnectionEpoch) -> Bool {
+        switch self {
+        case let .observation(e): return e.connectionEpoch == epoch
+        case let .commandEnqueued(e): return e.connectionEpoch == epoch && e.decisionID == decisionID
+        case let .commandQueueDelay(e): return e.connectionEpoch == epoch && e.decisionID == decisionID
+        case let .sendAttempt(e): return e.connectionEpoch == epoch && e.decisionID == decisionID
+        case let .commandFailed(e): return e.connectionEpoch == epoch && e.decisionID == decisionID
+        case let .commandCancelled(e): return e.connectionEpoch == epoch && e.decisionID == decisionID
+        case let .stopEvidence(e):
+            return e.connectionEpoch == epoch && e.decisionID == decisionID && e.stopAttemptID == attemptID
+        case let .unassociatedWrite(e): return e.connectionEpoch == epoch
+        case let .acknowledgement(e): return e.connectionEpoch == epoch
+        case let .writeResult(e): return e.connectionEpoch == epoch
+        case let .commandTimeout(e): return e.connectionEpoch == epoch
+        case .unitsTruth, .decision: return false
+        }
+    }
+
     var occurredAt: Date {
         switch self {
         case let .observation(evidence): evidence.recordedAt

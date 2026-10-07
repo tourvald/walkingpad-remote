@@ -1070,9 +1070,22 @@ public protocol TreadmillTelemetrySink: AnyObject {
         _ evidence: TreadmillTelemetryEvidence,
         currentConnectionEpoch: TreadmillConnectionEpoch?
     ) -> TreadmillTelemetrySinkDisposition
+
+    /// Transient producer ownership, never persisted or inferred from command labels.
+    func observeTreadmillEvidence(
+        _ evidence: TreadmillTelemetryEvidence,
+        currentConnectionEpoch: TreadmillConnectionEpoch?, sessionID: SessionID?
+    ) -> TreadmillTelemetrySinkDisposition
 }
 
 public extension TreadmillTelemetrySink {
+    func observeTreadmillEvidence(
+        _ evidence: TreadmillTelemetryEvidence,
+        currentConnectionEpoch: TreadmillConnectionEpoch?, sessionID: SessionID?
+    ) -> TreadmillTelemetrySinkDisposition {
+        observeTreadmillEvidence(evidence, currentConnectionEpoch: currentConnectionEpoch)
+    }
+
     func observeTreadmillEvidence(
         _ evidence: TreadmillTelemetryEvidence,
         currentConnectionEpoch: TreadmillConnectionEpoch?
