@@ -35,6 +35,19 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
         XCTAssertFalse(sidecarSource.contains("CommandQueueService"))
     }
 
+    func testUnresolvedWriteKeepsObservationWithoutClaimingLostCommandOwnership() throws {
+        let queue = try functionBody("private func processCommandQueue", in: managerSource)
+        let lost = try XCTUnwrap(queue.range(of: "case .correlationLost(let entries):"))
+        let missing = try XCTUnwrap(queue.range(of: "case .missing:", range: lost.upperBound..<queue.endIndex))
+        let unresolved = String(queue[lost.upperBound..<missing.lowerBound])
+        XCTAssertTrue(unresolved.contains("telemetryEvidence = nil"))
+        XCTAssertTrue(unresolved.contains("queuedSessionID = self.activeTelemetryV2SessionID"))
+        XCTAssertTrue(unresolved.contains("lostEntries = entries"))
+        XCTAssertFalse(unresolved.contains("entries.first"))
+        let missingBranch = String(queue[missing.upperBound..<queue.endIndex])
+        XCTAssertTrue(missingBranch.contains("queuedSessionID = self.activeTelemetryV2SessionID"))
+    }
+
     func testTelemetryHotPathHasNoPersistenceAsyncOrRawPacketSurface() {
         let forbidden = [
             "TelemetryRecorder",
@@ -269,7 +282,7 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
             process.range(of: "self.nextCommandAllowedAt =")?.lowerBound
         )
         let sinkIndex = try XCTUnwrap(
-            process.range(of: "self.observeTreadmillTelemetry(evidence)")?.lowerBound
+            process.range(of: "self.observeTreadmillTelemetry(evidence, sessionID: queuedSessionID)")?.lowerBound
         )
         XCTAssertLessThan(writeIndex, nextAllowedIndex)
         XCTAssertLessThan(nextAllowedIndex, sinkIndex)

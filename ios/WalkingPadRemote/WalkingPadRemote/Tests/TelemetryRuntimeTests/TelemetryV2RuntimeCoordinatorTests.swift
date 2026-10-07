@@ -7,6 +7,237 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
+    func testStopTailDeadlineFinishesWithoutAnotherCallback() async throws {
+        let finalized = expectation(description: "Deadline finalizes without another callback")
+        let persistence = RuntimePersistence(finalizationDidPersist: { finalized.fulfill() })
+        let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence })
+        let descriptor = Self.descriptor(startedAt: Date())
+        coordinator.beginSession(descriptor)
+        try await eventually { coordinator.activeSessionIDForTesting != nil }
+        coordinator.captureStopAttempt(sessionID: descriptor.sessionID, attemptID: UUID(), decisionID: DecisionID(),
+            connectionEpoch: .init(rawValue: UUID()), observationWindow: .milliseconds(100))
+        coordinator.endSession(reason: "manual_stop")
+        await fulfillment(of: [finalized], timeout: 5)
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.finalizeCallCount, 1)
+        XCTAssertLessThan(try XCTUnwrap(snapshot.finalizations.first?.endedElapsed?.seconds), 0.1)
+        try await eventually { await persistence.analysisSessionIDs.count == 1 }
+    }
+
+    func testOldIdentityCannotEnterNewPendingRecorder() async throws {
+        let persistence = RuntimePersistence()
+        let preparationGate = DispatchSemaphore(value: 0)
+        let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: {
+            preparationGate.wait()
+            return persistence
+        })
+        let old = Self.descriptor(legacySessionID: UUID())
+        let new = Self.descriptor(legacySessionID: UUID())
+        coordinator.beginSession(old)
+        coordinator.endSession(reason: "old-end-before-ready")
+        coordinator.beginSession(new)
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let evidence = TreadmillTelemetryEvidence.commandEnqueued(.init(commandID: CommandID(), decisionID: DecisionID(),
+            kind: .stop, protocolKind: .walkingPad, connectionEpoch: epoch, enqueuedAt: Date()))
+        XCTAssertEqual(coordinator.observeTreadmillEvidence(evidence, currentConnectionEpoch: epoch,
+            sessionID: old.sessionID), .unavailable)
+        XCTAssertEqual(coordinator.observeTreadmillEvidence(evidence, currentConnectionEpoch: epoch,
+            sessionID: new.sessionID), .accepted)
+        coordinator.endSession(reason: "new-end-before-ready")
+        preparationGate.signal()
+    }
+
+    func testStopTailProtocolResultsAreObservationsNotEarlyClosure() async throws {
+        for protocolKind in [TreadmillProtocolKind.walkingPad, .ftms, .fitShow] {
+            let persistence = RuntimePersistence()
+            let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 40_000))
+            let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence }, runtimeClock: clock)
+            let descriptor = Self.descriptor(startedAt: clock.nowDate())
+            coordinator.beginSession(descriptor)
+            try await eventually { coordinator.activeSessionIDForTesting != nil }
+            let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+            let decisionID = DecisionID()
+            let attemptID = UUID()
+            let commandID = CommandID()
+            let captured = coordinator.stopAttemptMonotonicTime
+            clock.advance(by: .seconds(3)) // Owner work must not restart attempt capture.
+            coordinator.captureStopAttempt(sessionID: descriptor.sessionID, attemptID: attemptID,
+                decisionID: decisionID, connectionEpoch: epoch, observationWindow: .seconds(30),
+                attemptedMonotonic: captured)
+            clock.advance(by: .seconds(1))
+            coordinator.endSession(reason: "manual_stop")
+            func admit(_ evidence: TreadmillTelemetryEvidence) -> TreadmillTelemetrySinkDisposition {
+                coordinator.observeTreadmillEvidence(evidence, currentConnectionEpoch: epoch,
+                    sessionID: descriptor.sessionID)
+            }
+            let conclusion: StopEvidenceConclusion = protocolKind == .walkingPad
+                ? .confirmedByFreshFactualObservation(ObservationID()) : .unconfirmed(reason: "confirmation_context_unavailable")
+            XCTAssertEqual(admit(.stopEvidence(.init(stopAttemptID: attemptID, decisionID: decisionID,
+                commandID: commandID, observationID: nil, connectionEpoch: epoch, protocolKind: protocolKind,
+                conclusion: conclusion, rawSpeedTenths: nil, rawDeviceState: nil, checksumValid: nil,
+                observationReceivedAt: nil, evaluatedAt: clock.nowDate()))), .accepted)
+            clock.advance(by: .seconds(2))
+            for kind in [CommandKind.stop, .other("legacy_stop_toggle")] {
+                XCTAssertEqual(admit(.commandEnqueued(.init(commandID: CommandID(), decisionID: decisionID,
+                    kind: kind, protocolKind: protocolKind, connectionEpoch: epoch, enqueuedAt: clock.nowDate()))), .accepted)
+            }
+            XCTAssertEqual(admit(.sendAttempt(.init(commandID: commandID, decisionID: decisionID,
+                attemptID: CommandAttemptID(), attemptNumber: 2, protocolKind: protocolKind,
+                connectionEpoch: epoch, sentAt: clock.nowDate(), writeType: .withoutResponse))), .accepted)
+            let ack = LegacyAcknowledgementObservation.unresolved(protocolKind: protocolKind,
+                connectionEpoch: epoch, receivedAt: clock.nowDate(), recordedAt: clock.nowDate())
+            XCTAssertNil(ack.commandID)
+            XCTAssertNil(ack.attemptID)
+            XCTAssertEqual(admit(.acknowledgement(ack)), .accepted)
+            XCTAssertEqual(admit(.commandEnqueued(.init(commandID: CommandID(), decisionID: DecisionID(),
+                kind: .stop, protocolKind: protocolKind, connectionEpoch: epoch, enqueuedAt: clock.nowDate()))), .unavailable)
+            var normalizer = TreadmillObservationNormalizer()
+            let moving = normalizer.normalize(.walkingPad(speedRawTenths: 37, rawState: 1,
+                deviceState: .moving, checksumValid: true, connectionEpoch: epoch, receivedAt: clock.nowDate()),
+                unitsTruth: .notRead(connectionEpoch: epoch), observationID: ObservationID(), recordedAt: clock.nowDate())
+            XCTAssertEqual(admit(.observation(moving)), .accepted)
+            var hr = HeartRateObservationNormalizer()
+            let hrResult = hr.normalize(.init(source: .init(kind: .healthKitSelected, stableLocalKey: "tail"),
+                beatsPerMinute: 120, providerSequence: nil, providerNativeIdentity: nil,
+                measuredAt: clock.nowDate(), sourceCallbackObservedAt: nil, sourceClockRelationship: .receiverComparable,
+                receivedAt: clock.nowDate(), metadataQuality: []), canonicalObservationID: HeartRateCanonicalObservationID(),
+                deliveryID: HeartRateDeliveryID(), recordedAt: clock.nowDate())
+            XCTAssertEqual(coordinator.observeHeartRate(hrResult), .unavailable)
+            let before = await persistence.snapshot()
+            XCTAssertEqual(before.finalizeCallCount, 0)
+            clock.advance(by: .seconds(24)) // Original D, not product end + 30.
+            XCTAssertEqual(admit(.observation(moving)), .unavailable)
+            coordinator.stopAttemptFinalized(attemptID: attemptID)
+            try await eventually { await persistence.finalizations.count == 1 }
+            let snapshot = await persistence.snapshot()
+            XCTAssertEqual(snapshot.finalizeCallCount, 1)
+            XCTAssertEqual(snapshot.finalizations.first?.endedElapsed?.seconds, 4)
+            XCTAssertFalse(snapshot.records.contains { if case .heartRate = $0 { return true }; return false })
+            XCTAssertFalse(snapshot.records.contains { if case .frame = $0 { return true }; return false })
+            XCTAssertTrue(snapshot.records.contains { if case .treadmill = $0 { return true }; return false })
+        }
+    }
+
+    func testStopTailZeroRemainingAndMissingAttributionFinishImmediately() async throws {
+        for attributable in [true, false] {
+            let persistence = RuntimePersistence()
+            let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 40_000))
+            let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence }, runtimeClock: clock)
+            let descriptor = Self.descriptor(startedAt: clock.nowDate())
+            coordinator.beginSession(descriptor)
+            try await eventually { coordinator.activeSessionIDForTesting != nil }
+            if attributable {
+                coordinator.captureStopAttempt(sessionID: descriptor.sessionID, attemptID: UUID(), decisionID: DecisionID(),
+                    connectionEpoch: .init(rawValue: UUID()), observationWindow: .seconds(30))
+            }
+            clock.advance(by: .seconds(30))
+            coordinator.endSession(reason: "cooldown_complete")
+            try await eventually { await persistence.finalizations.count == 1 }
+            let snapshot = await persistence.snapshot()
+            XCTAssertEqual(snapshot.finalizations.first?.endedElapsed?.seconds, 30)
+            XCTAssertEqual(snapshot.finalizeCallCount, 1)
+        }
+    }
+
+    func testStopTailConcurrentEndFinalizationAndContextClosureFinishOnce() async throws {
+        let persistence = RuntimePersistence()
+        let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 40_000))
+        let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence }, runtimeClock: clock)
+        let descriptor = Self.descriptor(startedAt: clock.nowDate())
+        coordinator.beginSession(descriptor)
+        try await eventually { coordinator.activeSessionIDForTesting != nil }
+        let attemptID = UUID()
+        coordinator.captureStopAttempt(sessionID: descriptor.sessionID, attemptID: attemptID, decisionID: DecisionID(),
+            connectionEpoch: .init(rawValue: UUID()), observationWindow: .seconds(30))
+        clock.advance(by: .seconds(10))
+        DispatchQueue.concurrentPerform(iterations: 30) { index in
+            switch index % 3 {
+            case 0: coordinator.endSession(reason: "manual_stop")
+            case 1: coordinator.stopAttemptFinalized(attemptID: attemptID)
+            default: coordinator.invalidateStopTail()
+            }
+        }
+        try await eventually { await persistence.finalizations.count == 1 }
+        let snapshot = await persistence.snapshot()
+        XCTAssertEqual(snapshot.finalizations.first?.endedElapsed?.seconds, 10)
+        XCTAssertEqual(snapshot.finalizeCallCount, 1)
+        try await eventually { await persistence.analysisSessionIDs.count == 1 }
+    }
+
+    func testStopTailRetainsDelayedChainWithoutMovingProductBoundary() async throws {
+        for reason in ["manual_stop", "cooldown_complete"] {
+            let persistence = RuntimePersistence()
+            let start = Date(timeIntervalSince1970: 40_000)
+            let clock = ManualRuntimeClock(date: start)
+            let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence }, runtimeClock: clock)
+            let descriptor = Self.descriptor(startedAt: start)
+            coordinator.beginSession(descriptor)
+            try await eventually { coordinator.activeSessionIDForTesting != nil }
+            let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+            let decisionID = DecisionID()
+            let attemptID = UUID()
+            coordinator.captureStopAttempt(sessionID: descriptor.sessionID, attemptID: attemptID,
+                decisionID: decisionID, connectionEpoch: epoch, observationWindow: .seconds(30))
+            clock.advance(by: .seconds(10))
+            coordinator.endSession(reason: reason)
+            coordinator.endSession(reason: "repeated")
+            clock.advance(by: .seconds(4))
+            let delayed = TreadmillCommandEnqueuedEvidence(commandID: CommandID(), decisionID: decisionID,
+                kind: .stop, protocolKind: .walkingPad, connectionEpoch: epoch, enqueuedAt: clock.nowDate())
+            XCTAssertEqual(coordinator.observeTreadmillEvidence(.commandEnqueued(delayed),
+                currentConnectionEpoch: epoch, sessionID: descriptor.sessionID), .accepted)
+            XCTAssertNil(coordinator.observeCurrentElapsedSecond())
+            XCTAssertNil(coordinator.observeWorkoutPhase(.cooldown, occurredAt: clock.nowDate()))
+            let beforeClose = await persistence.snapshot()
+            XCTAssertEqual(beforeClose.finalizeCallCount, 0)
+            coordinator.stopAttemptFinalized(attemptID: attemptID)
+            coordinator.stopAttemptFinalized(attemptID: attemptID)
+            try await eventually { await persistence.finalizations.count == 1 }
+            let snapshot = await persistence.snapshot()
+            XCTAssertEqual(snapshot.finalizeCallCount, 1)
+            XCTAssertEqual(snapshot.finalizations.first?.endedElapsed?.seconds, 10)
+            XCTAssertEqual(snapshot.finalizations.first?.endedAt, start.addingTimeInterval(10))
+            let events = snapshot.records.compactMap { if case let .event(e) = $0 { return e }; return nil }
+            XCTAssertTrue(events.contains { $0.timestamp.occurredElapsed.seconds == 14 })
+            XCTAssertEqual(events.filter { $0.kind == .workoutPhase }.map { $0.timestamp.occurredElapsed.seconds }, [0, 10])
+            try await eventually { await persistence.analysisSessionIDs.count == 1 }
+        }
+    }
+
+    func testStopTailDeadlineAdmissionAndNextSessionRejectOldIdentity() async throws {
+        for boundary in ["deadline", "next-session", "context"] {
+            let persistence = RuntimePersistence()
+            let clock = ManualRuntimeClock(date: Date(timeIntervalSince1970: 40_000))
+            let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence }, runtimeClock: clock)
+            let old = Self.descriptor(startedAt: clock.nowDate())
+            coordinator.beginSession(old)
+            try await eventually { coordinator.activeSessionIDForTesting != nil }
+            let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+            let decisionID = DecisionID()
+            coordinator.captureStopAttempt(sessionID: old.sessionID, attemptID: UUID(), decisionID: decisionID,
+                connectionEpoch: epoch, observationWindow: .seconds(30))
+            coordinator.endSession(reason: "manual_stop")
+            if boundary == "deadline" { clock.advance(by: .seconds(30)) }
+            if boundary == "context" { coordinator.invalidateStopTail() }
+            var new: TelemetryV2SessionDescriptor?
+            if boundary == "next-session" {
+                new = Self.descriptor(legacySessionID: UUID(), startedAt: clock.nowDate())
+                coordinator.beginSession(new!)
+                try await eventually { coordinator.activeSessionIDForTesting == new?.sessionID }
+            }
+            let delayed = TreadmillCommandEnqueuedEvidence(commandID: CommandID(), decisionID: decisionID,
+                kind: .stop, protocolKind: .walkingPad, connectionEpoch: epoch, enqueuedAt: clock.nowDate())
+            XCTAssertEqual(coordinator.observeTreadmillEvidence(.commandEnqueued(delayed),
+                currentConnectionEpoch: epoch, sessionID: old.sessionID), .unavailable)
+            try await eventually { await persistence.finalizations.count == 1 }
+            let snapshot = await persistence.snapshot()
+            XCTAssertEqual(snapshot.finalizations.first?.endedElapsed?.seconds, 0)
+            let events = snapshot.records.compactMap { if case let .event(e) = $0 { return e }; return nil }
+            XCTAssertFalse(events.contains { $0.kind == .commandLifecycle })
+            if new != nil { coordinator.endSession(reason: "new-end") }
+        }
+    }
+
     func testUnavailableSessionStartResolvesAlreadyWaitingLinkage() async throws {
         let persistence = RuntimePersistence() // Read capability exists; linkage is unavailable.
         let prepared = expectation(description: "Store prepared")

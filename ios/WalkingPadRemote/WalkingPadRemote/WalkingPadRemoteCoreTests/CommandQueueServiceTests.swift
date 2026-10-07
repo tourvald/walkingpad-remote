@@ -4,6 +4,23 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class CommandQueueServiceTests: XCTestCase {
+    func testTelemetrySidecarKeepsOriginalSessionAcrossCancellationAndSameEpochDequeue() {
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let oldSession = SessionID()
+        let newSession = SessionID()
+        let old = evidence(label: "STOP", epoch: epoch)
+        let new = evidence(label: "START", epoch: epoch)
+        var sidecar = TreadmillCommandTelemetrySidecar()
+        _ = sidecar.enqueueRegular(label: "STOP", evidence: old, sessionID: oldSession, isSpeedLabel: isSpeed)
+        let cancelled = sidecar.replaceWithHighPriority(label: "START", evidence: new, sessionID: newSession)
+        XCTAssertEqual(cancelled, [.init(evidence: old, sessionID: oldSession)])
+        XCTAssertEqual(sidecar.dequeue(expectedLabel: "START", currentEpoch: epoch),
+            .matched(.init(evidence: new, sessionID: newSession)))
+        _ = sidecar.enqueueRegular(label: "STOP retry", evidence: old, sessionID: oldSession, isSpeedLabel: isSpeed)
+        XCTAssertEqual(sidecar.dequeue(expectedLabel: "STOP retry", currentEpoch: epoch),
+            .matched(.init(evidence: old, sessionID: oldSession)))
+    }
+
     private func isSpeed(_ label: String) -> Bool {
         label.lowercased().hasPrefix("speed")
     }
@@ -107,13 +124,13 @@ final class CommandQueueServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(result.coalescedSpeedCount, 1)
-        XCTAssertEqual(superseded.map(\.commandID), [first.commandID])
+        XCTAssertEqual(superseded.map(\.evidence.commandID), [first.commandID])
         XCTAssertEqual(legacyQueue.map(\.label), ["PING", "SPEED 4.0"])
         XCTAssertEqual(sidecar.count, legacyQueue.count)
-        XCTAssertEqual(sidecar.dequeue(expectedLabel: "PING", currentEpoch: epoch), .matched(second))
+        XCTAssertEqual(sidecar.dequeue(expectedLabel: "PING", currentEpoch: epoch), .matched(.init(evidence: second, sessionID: nil)))
         XCTAssertEqual(
             sidecar.dequeue(expectedLabel: "SPEED 4.0", currentEpoch: epoch),
-            .matched(third)
+            .matched(.init(evidence: third, sessionID: nil))
         )
     }
 
@@ -126,14 +143,14 @@ final class CommandQueueServiceTests: XCTestCase {
 
         XCTAssertEqual(
             sidecar.dequeue(expectedLabel: "PING", currentEpoch: newEpoch),
-            .staleEpoch(first)
+            .staleEpoch(.init(evidence: first, sessionID: nil))
         )
 
         let second = evidence(label: "STATUS", epoch: newEpoch)
         _ = sidecar.enqueueRegular(label: "STATUS", evidence: second, isSpeedLabel: isSpeed)
         XCTAssertEqual(
             sidecar.dequeue(expectedLabel: "DIFFERENT", currentEpoch: newEpoch),
-            .correlationLost([second])
+            .correlationLost([.init(evidence: second, sessionID: nil)])
         )
         XCTAssertEqual(sidecar.count, 0)
     }

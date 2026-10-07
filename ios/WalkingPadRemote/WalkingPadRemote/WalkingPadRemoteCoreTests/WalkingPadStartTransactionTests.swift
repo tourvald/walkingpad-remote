@@ -44,7 +44,7 @@ final class WalkingPadStartTransactionTests: XCTestCase {
                 guard case .matched(let current) = sidecar.dequeue(
                     expectedLabel: command.label, currentEpoch: epoch
                 ) else { return XCTFail("Expected current-connection command evidence") }
-                XCTAssertEqual(current.connectionEpoch, epoch)
+                XCTAssertEqual(current.evidence.connectionEpoch, epoch)
             }
             _ = CommandQueueService.clear(queue: &queue)
             CommandQueueService.replaceWithHighPriority(
@@ -72,9 +72,9 @@ final class WalkingPadStartTransactionTests: XCTestCase {
             )
             let stop = evidence(kind: .stop, epoch: epoch)
             let cancelled = sidecar.replaceWithHighPriority(label: "STOP", evidence: stop)
-            XCTAssertEqual(cancelled.map(\.kind), second.prefix(count).map { kind(for: $0.command) })
+            XCTAssertEqual(cancelled.map(\.evidence.kind), second.prefix(count).map { kind(for: $0.command) })
             XCTAssertEqual(queue.map(\.label), ["STOP"])
-            XCTAssertEqual(sidecar.dequeue(expectedLabel: "STOP", currentEpoch: epoch), .matched(stop))
+            XCTAssertEqual(sidecar.dequeue(expectedLabel: "STOP", currentEpoch: epoch), .matched(.init(evidence: stop, sessionID: nil)))
             XCTAssertEqual(sidecar.count, 0)
         }
     }
@@ -87,14 +87,14 @@ final class WalkingPadStartTransactionTests: XCTestCase {
         var sidecar = TreadmillCommandTelemetrySidecar()
         enqueue(commands, epoch: oldEpoch, queue: &queue, sidecar: &sidecar)
         XCTAssertEqual(CommandQueueService.clear(queue: &queue), 3)
-        XCTAssertEqual(sidecar.clear().map(\.connectionEpoch), Array(repeating: oldEpoch, count: 3))
+        XCTAssertEqual(sidecar.clear().map(\.evidence.connectionEpoch), Array(repeating: oldEpoch, count: 3))
         enqueue(commands, epoch: newEpoch, queue: &queue, sidecar: &sidecar)
         XCTAssertEqual(queue.map(\.label), ["MODE MANUAL", "START", "SPEED 3.0 km/h"])
         for command in queue {
             guard case .matched(let current) = sidecar.dequeue(
                 expectedLabel: command.label, currentEpoch: newEpoch
             ) else { return XCTFail("Expected new-connection evidence") }
-            XCTAssertEqual(current.connectionEpoch, newEpoch)
+            XCTAssertEqual(current.evidence.connectionEpoch, newEpoch)
         }
     }
 

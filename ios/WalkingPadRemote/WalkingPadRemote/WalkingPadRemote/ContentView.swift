@@ -232,13 +232,14 @@ private struct TrainingDistanceReading {
 }
 
 private struct TrainingSessionPresentationAnchor {
-    let nativeProjectionIDs: Set<String>?
+    let sessionID: SessionID?
+    let profileID: UUID?
     let distanceStart: TrainingDistanceReading?
 }
 
 private struct PendingTrainingResult {
-    let nativeProjectionIDs: Set<String>?
-    let projectionGenerationAtEnd: UInt
+    let sessionID: SessionID
+    let profileID: UUID
     let distanceKilometres: Double?
 }
 
@@ -972,6 +973,7 @@ private func activeWorkoutPreviewPresentation(named name: String) -> TrainingHub
 
 private enum TrainingResultPreview {
     case ending(String)
+    case processing(String)
     case summary(ResolvedTrainingResult)
     case unavailable
 }
@@ -1013,6 +1015,10 @@ private func trainingResultPreview(named name: String) -> TrainingResultPreview?
     )
 
     switch name {
+    case "processing-confirming":
+        return .processing("stop requested • confirming")
+    case "processing-unavailable":
+        return .processing("stop unconfirmed • confirmation unavailable")
     case "ending-confirming":
         return .ending("stop requested • confirming")
     case "ending-confirmed":
@@ -1830,41 +1836,63 @@ private struct ActiveWorkoutShell: View {
 private struct TrainingWorkoutEndingView: View {
     let stopStatusText: String
     var isProcessingResult = false
+    var onDone: () -> Void = {}
 
     @AccessibilityFocusState private var headingFocused: Bool
 
     var body: some View {
+        ViewThatFits(in: .vertical) {
+            endingContent
+            ScrollView { endingContent }
+        }
+        .onAppear { headingFocused = true }
+    }
+
+    private var endingContent: some View {
         VStack {
             Spacer(minLength: 24)
             VStack(spacing: 16) {
                 Text(isProcessingResult ? "Обрабатываем результат…" : "Завершаем тренировку…")
                     .font(.system(.title, design: .rounded, weight: .bold))
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityFocused($headingFocused)
 
                 if isProcessingResult {
                     ProgressView()
                         .accessibilityLabel("Обработка результата тренировки")
+                    Text("Результат появится в истории после обработки.")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.primary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let status = trainingEndingStatus(from: stopStatusText) {
                     Label(status.title, systemImage: status.systemImage)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(status.tint)
                         .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
                         .background(status.tint.opacity(0.12), in: Capsule(style: .continuous))
                         .accessibilityElement(children: .combine)
                 }
+                if isProcessingResult {
+                    Button("Готово", action: onDone)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .tint(Color(red: 0.28, green: 0.22, blue: 0.65))
+                        .accessibilityIdentifier("training-result-done")
+                        .accessibilityHint("Вернуться к тренировкам. Обработка продолжится в фоне.")
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(24)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             .padding(.horizontal, 16)
             Spacer(minLength: 24)
         }
-        .onAppear { headingFocused = true }
     }
 }
 
@@ -2218,6 +2246,9 @@ private struct ControlSwipeView: View, Equatable {
     @State private var pendingTrainingResult: PendingTrainingResult?
     @State private var resolvedTrainingResult: ResolvedTrainingResult?
     @State private var trainingResultError: String?
+    #if DEBUG
+    @State private var resultPreviewDismissed = false
+    #endif
     let onOpenStatistics: () -> Void
     private let heroAccent: Color = .orange
 
@@ -2275,6 +2306,7 @@ private struct ControlSwipeView: View, Equatable {
 
     #if DEBUG
     private var resultPreview: TrainingResultPreview? {
+        guard !resultPreviewDismissed else { return nil }
         guard let argument = ProcessInfo.processInfo.arguments.first(where: {
             $0.hasPrefix("--training-result-preview=")
         }) else { return nil }
@@ -2288,6 +2320,7 @@ private struct ControlSwipeView: View, Equatable {
         if let resultPreview {
             switch resultPreview {
             case .ending: return "preview-ending"
+            case .processing: return "preview-processing"
             case .summary: return "preview-summary"
             case .unavailable: return "preview-unavailable"
             }
@@ -2311,6 +2344,9 @@ private struct ControlSwipeView: View, Equatable {
             switch resultPreview {
             case .ending(let status):
                 TrainingWorkoutEndingView(stopStatusText: status)
+            case .processing(let status):
+                TrainingWorkoutEndingView(stopStatusText: status, isProcessingResult: true,
+                    onDone: { resultPreviewDismissed = true })
             case .summary(let result):
                 TrainingWorkoutSummaryView(
                     result: result,
@@ -2330,7 +2366,16 @@ private struct ControlSwipeView: View, Equatable {
 
     @ViewBuilder
     private var productionTrainingFlowContent: some View {
-        if let resolvedTrainingResult {
+        if let activePresentation = activeWorkoutPresentation {
+            ActiveWorkoutShell(
+                presentation: activePresentation,
+                onExtend: { manager.extendHrSession(minutes: 5) },
+                onStop: { manager.stopHrControl() },
+                stopEnabled: manager.canStopPresentedWorkout
+            )
+        } else if let pendingTrainingResult, pendingTrainingResult.profileID != manager.activeUserProfileID {
+            trainingHub
+        } else if let resolvedTrainingResult {
             TrainingWorkoutSummaryView(
                 result: resolvedTrainingResult,
                 onDone: clearTrainingResultPresentation,
@@ -2345,14 +2390,8 @@ private struct ControlSwipeView: View, Equatable {
         } else if pendingTrainingResult != nil {
             TrainingWorkoutEndingView(
                 stopStatusText: manager.stopTruthStatusText,
-                isProcessingResult: true
-            )
-        } else if let activePresentation = activeWorkoutPresentation {
-            ActiveWorkoutShell(
-                presentation: activePresentation,
-                onExtend: { manager.extendHrSession(minutes: 5) },
-                onStop: { manager.stopHrControl() },
-                stopEnabled: manager.canStopPresentedWorkout
+                isProcessingResult: true,
+                onDone: clearTrainingResultPresentation
             )
         } else {
             trainingHub
@@ -2415,15 +2454,9 @@ private struct ControlSwipeView: View, Equatable {
     }
 
     private func beginTrainingPresentationSession() {
-        let nativeProjectionIDs: Set<String>? = manager.telemetryV2WorkoutHistoryState == .loaded
-            ? Set(
-                manager.telemetryV2WorkoutHistory
-                    .filter { $0.origin == .nativeV2 }
-                    .map(\.id)
-            )
-            : nil
         sessionPresentationAnchor = TrainingSessionPresentationAnchor(
-            nativeProjectionIDs: nativeProjectionIDs,
+            sessionID: manager.activeTelemetryV2SessionID,
+            profileID: manager.activeTelemetryV2ProfileID,
             distanceStart: currentFactualDistanceReading()
         )
         pendingTrainingResult = nil
@@ -2432,8 +2465,18 @@ private struct ControlSwipeView: View, Equatable {
     }
 
     private func finishTrainingPresentationSession() {
+        guard !manager.isNativeWorkoutRecoveryActive else { return }
         guard let anchor = sessionPresentationAnchor else {
             showUnavailableTrainingResult()
+            return
+        }
+        guard let sessionID = anchor.sessionID, let profileID = anchor.profileID else {
+            sessionPresentationAnchor = nil
+            showUnavailableTrainingResult()
+            return
+        }
+        guard profileID == manager.activeUserProfileID else {
+            clearTrainingResultPresentation()
             return
         }
         let distance = factualSessionDistanceKilometres(
@@ -2441,20 +2484,23 @@ private struct ControlSwipeView: View, Equatable {
             to: currentFactualDistanceReading()
         )
         pendingTrainingResult = PendingTrainingResult(
-            nativeProjectionIDs: anchor.nativeProjectionIDs,
-            projectionGenerationAtEnd: manager.telemetryV2ProjectionGeneration,
+            sessionID: sessionID,
+            profileID: profileID,
             distanceKilometres: distance
         )
         sessionPresentationAnchor = nil
         resolvedTrainingResult = nil
         trainingResultError = nil
         resolveTrainingResultIfPossible()
+        resolveTerminalTelemetryFailureIfNeeded(manager.telemetryV2StatusText)
     }
 
     private func resolveTrainingResultIfPossible() {
         guard let pendingTrainingResult else { return }
-        guard let baselineIDs = pendingTrainingResult.nativeProjectionIDs else {
-            showUnavailableTrainingResult()
+        guard pendingTrainingResult.profileID == manager.activeUserProfileID,
+              !manager.shouldPresentActiveWorkout else { return }
+        if manager.terminalAnalysisFailed(sessionID: pendingTrainingResult.sessionID) {
+            showUnavailableTrainingResult(message: "Не удалось обработать результат тренировки.")
             return
         }
         if case .failed = manager.telemetryV2WorkoutHistoryState {
@@ -2462,19 +2508,10 @@ private struct ControlSwipeView: View, Equatable {
             return
         }
         guard manager.telemetryV2WorkoutHistoryState == .loaded else { return }
-        let candidates = manager.telemetryV2WorkoutHistory.filter {
-            $0.origin == .nativeV2 && !baselineIDs.contains($0.id)
-        }
-        // Analysis can finish before SwiftUI observes the terminal transition.
-        // A final projection already loaded at that generation must also resolve.
-        if candidates.isEmpty,
-           manager.telemetryV2ProjectionGeneration <= pendingTrainingResult.projectionGenerationAtEnd {
-            return
-        }
-        guard candidates.count == 1, let projection = candidates.first else {
-            showUnavailableTrainingResult()
-            return
-        }
+        // A missing paginated row is not an analysis failure. Never substitute another session.
+        guard let projection = manager.telemetryV2WorkoutHistory.first(where: {
+            $0.origin == .nativeV2 && $0.id == "native:\(pendingTrainingResult.sessionID)"
+        }) else { return }
         switch manager.summaryAnalysisState(for: projection) {
         case .processing:
             resolvedTrainingResult = nil
@@ -2495,7 +2532,10 @@ private struct ControlSwipeView: View, Equatable {
     }
 
     private func resolveTerminalTelemetryFailureIfNeeded(_ status: String) {
-        guard pendingTrainingResult != nil else { return }
+        guard let pendingTrainingResult,
+              pendingTrainingResult.sessionID == manager.activeTelemetryV2SessionID,
+              pendingTrainingResult.profileID == manager.activeUserProfileID,
+              !manager.shouldPresentActiveWorkout else { return }
         if status.hasPrefix("unavailable")
             || status.contains("ended-before-recorder-ready")
             || status.contains("session-start-failed")
@@ -2595,6 +2635,14 @@ private struct ControlSwipeView: View, Equatable {
                 } else if wasRunning {
                     finishTrainingPresentationSession()
                 }
+            }
+            .onChange(of: manager.isNativeWorkoutRecoveryActive) { _, isRecovering in
+                if !isRecovering, !manager.isHrControlRunning, sessionPresentationAnchor != nil {
+                    finishTrainingPresentationSession()
+                }
+            }
+            .onChange(of: manager.activeUserProfileID) { _, _ in
+                clearTrainingResultPresentation()
             }
             .onChange(of: manager.telemetryV2ProjectionGeneration) { _, _ in
                 resolveTrainingResultIfPossible()
