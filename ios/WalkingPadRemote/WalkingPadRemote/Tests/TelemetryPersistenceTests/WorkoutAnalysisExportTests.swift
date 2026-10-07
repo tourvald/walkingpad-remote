@@ -22,8 +22,16 @@ final class WorkoutAnalysisExportTests: XCTestCase {
                     measuredElapsed: .init(microseconds: 0), receivedElapsed: .init(microseconds: 20_000_000),
                     recordedElapsed: .init(microseconds: 21_000_000)
                 ) : TelemetryPersistenceFixtures.timestamp(elapsedMicroseconds: elapsed)
-                let hr = TelemetryPersistenceFixtures.heartRate(seed: UInt8(60 + index), session: session,
+                let original = TelemetryPersistenceFixtures.heartRate(seed: UInt8(60 + index), session: session,
                     source: source, arrivalOrder: UInt64(index), bpm: 120, timestamp: timestamp)
+                let hr = HeartRateObservation(recordID: original.recordID, observationID: original.observationID,
+                    sessionID: session.sessionID, source: source, beatsPerMinute: 120, arrivalOrder: UInt64(index),
+                    providerSequence: Int64(index), providerSampleIdentity: nil, timestamp: timestamp, provenance: original.provenance,
+                    freshness: .init(state: scenario == "delayed-hr" ? .stale : .fresh,
+                        evaluatedAt: .init(recordedAt: timestamp.recordedAt, elapsed: timestamp.recordedElapsed),
+                        age: .init(microseconds: timestamp.recordedElapsed.microseconds - timestamp.effectiveElapsed.microseconds),
+                        policyVersion: session.versions.safetyPolicy),
+                    quality: [], controlUse: original.controlUse)
                 observations.append(hr)
                 try await store.insertHeartRate(hr)
             }
@@ -36,7 +44,8 @@ final class WorkoutAnalysisExportTests: XCTestCase {
             for observation in treadmill { try await store.insertTreadmill(observation) }
             for second in 0..<60 {
                 let observation = treadmill[min(second / 5, treadmill.count - 1)]
-                let age = Int64(second) * 1_000_000 - observation.timestamp.effectiveElapsed.microseconds
+                let materializedElapsed = Int64(second) * 1_000_000 + 50_000
+                let age = materializedElapsed - observation.timestamp.effectiveElapsed.microseconds
                 let speed = TreadmillFrameEvidence(observationID: observation.observationID,
                     recordID: observation.recordID, sourceID: observation.source.id,
                     nativeSpeed: observation.nativeSpeed, factualSpeed: observation.factualSpeed,
@@ -44,14 +53,26 @@ final class WorkoutAnalysisExportTests: XCTestCase {
                     receivedAt: observation.timestamp.receivedAt, evidenceElapsed: observation.timestamp.effectiveElapsed,
                     ageAtMaterialization: .init(microseconds: age), freshness: age < 5_000_000 ? .fresh : .stale,
                     provenance: observation.provenance)
-                try await store.insertFrame(frame(seed: 2000 + second, session: session, second: Int64(second),
-                    heartRate: observations[min(second / 5, observations.count - 1)], treadmill: speed))
+                let hr = observations[min(second / 5, observations.count - 1)]
+                let original = frame(seed: 2000 + second, session: session, second: Int64(second), heartRate: nil, treadmill: nil)
+                let hrAge = materializedElapsed - hr.timestamp.effectiveElapsed.microseconds
+                let hrEvidence = HeartRateFrameEvidence(observationID: hr.observationID, recordID: hr.recordID,
+                    sourceID: hr.source.id, beatsPerMinute: hr.beatsPerMinute, measuredAt: hr.timestamp.measuredAt,
+                    receivedAt: hr.timestamp.receivedAt, evidenceElapsed: hr.timestamp.effectiveElapsed,
+                    ageAtMaterialization: .init(microseconds: hrAge), freshness: hrAge < 7_000_000 ? .fresh : .stale,
+                    provenance: hr.provenance)
+                try await store.insertFrame(CanonicalFrame(frameID: original.frameID, recordID: original.recordID,
+                    sessionID: session.sessionID, canonicalElapsedSecond: Int64(second),
+                    materializedAt: .init(recordedAt: session.startedAt.addingTimeInterval(Double(materializedElapsed) / 1_000_000),
+                        elapsed: .init(microseconds: materializedElapsed)),
+                    heartRateEvidence: scenario == "delayed-hr" && second < 20 ? nil : hrEvidence,
+                    treadmillEvidence: speed, precedingGap: nil))
             }
-            try await store.insertEvent(event(seed: 130, session: session, elapsedMicroseconds: 0,
+            try await store.insertEvent(semanticsEvent(seed: 130, session: session, elapsedMicroseconds: 0,
                 payload: .workoutPhase(.init(previous: nil, current: .main))))
-            try await store.insertEvent(event(seed: 131, session: session, elapsedMicroseconds: 30_000_000,
+            try await store.insertEvent(semanticsEvent(seed: 131, session: session, elapsedMicroseconds: 30_000_000,
                 payload: .workoutPhase(.init(previous: .main, current: .cooldown))))
-            try await store.insertEvent(event(seed: 132, session: session,
+            try await store.insertEvent(semanticsEvent(seed: 132, session: session,
                 elapsedMicroseconds: scenario == "invalid-phase" ? 62_000_000 : 60_000_000,
                 payload: .workoutPhase(.init(previous: .cooldown, current: .finished))))
             let policy = scenario == "custom-policy" ? AnalyzerV1Policy(
@@ -73,7 +94,8 @@ final class WorkoutAnalysisExportTests: XCTestCase {
             XCTAssertEqual(metadata["frame_coverage_semantics"], "populated-frame-row-ratio")
             XCTAssertEqual(metadata["stored_analysis_detail_status"], "available")
             XCTAssertEqual(metadata["stored_analysis_metric_definition_version"], detail.metricDefinitionVersion)
-            XCTAssertEqual(metadata["heart_rate_frame_coverage_ratio"], "1.000000")
+            let populatedRatio = scenario == "delayed-hr" ? "0.666667" : "1.000000"
+            XCTAssertEqual(metadata["heart_rate_frame_coverage_ratio"], populatedRatio)
             let coverage = try jsonObject(metadata["stored_analysis_heart_rate_duration_coverage_json"])
             XCTAssertEqual(coverage["coveredSeconds"] as? Double, detail.quality.heartRateCoverage.coveredSeconds)
             XCTAssertEqual(coverage["coverageRatio"] as? Double, detail.quality.heartRateCoverage.coverageRatio)
@@ -85,9 +107,21 @@ final class WorkoutAnalysisExportTests: XCTestCase {
             let storedPolicy = try jsonObject(metadata["stored_analysis_policy_json"])
             XCTAssertEqual(storedPolicy["heartRateFreshnessSeconds"] as? Double, policy.heartRateFreshnessSeconds)
             XCTAssertEqual(storedPolicy["treadmillFreshnessSeconds"] as? Double, policy.treadmillFreshnessSeconds)
+            let expectedPolicy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(policy)) as? [String: Any])
+            XCTAssertTrue((storedPolicy as NSDictionary).isEqual(to: expectedPolicy))
             let phasesData = try XCTUnwrap(metadata["stored_analysis_phase_summaries_json"]?.data(using: .utf8))
             let phases = try XCTUnwrap(JSONSerialization.jsonObject(with: phasesData) as? [[String: Any]])
             XCTAssertEqual(phases.compactMap { $0["phase"] as? String }, detail.quality.phases.map(\.phase))
+            let expectedPhases = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(detail.quality.phases)) as? [[String: Any]])
+            XCTAssertTrue((phases as NSArray).isEqual(to: expectedPhases))
+            if scenario == "ordinary" {
+                XCTAssertEqual(detail.quality.phases.map(\.phase), ["main", "cooldown"])
+                XCTAssertEqual(detail.quality.phases.map(\.durationSeconds), [30, 30])
+                XCTAssertEqual(detail.quality.heartRateCoverage.coverageRatio, 1)
+                XCTAssertEqual(detail.quality.treadmillFactualCoverage.coverageRatio, 1)
+                XCTAssertEqual(detail.quality.sessionGrade, .high)
+                XCTAssertTrue(detail.quality.phases.allSatisfy { $0.exclusionCodes.isEmpty })
+            }
             if scenario == "invalid-phase" {
                 XCTAssertEqual(phases.compactMap { $0["phase"] as? String }, ["unknown"])
                 XCTAssertTrue(rows.contains { $0.count > 5 && $0[1] == "frame" && $0[5] == "cooldown" })
@@ -105,7 +139,7 @@ final class WorkoutAnalysisExportTests: XCTestCase {
             let additive = Set(metadata.keys.filter { $0.hasPrefix("stored_analysis_") || $0 == "phase_semantics" || $0 == "frame_coverage_semantics" })
             let legacyRows = rows.filter { $0.count <= keyIndex || !additive.contains($0[keyIndex]) }
             XCTAssertFalse(metadataRows(legacyRows).keys.contains("stored_analysis_detail_status"))
-            XCTAssertEqual(metadataRows(legacyRows)["heart_rate_frame_coverage_ratio"], "1.000000")
+            XCTAssertEqual(metadataRows(legacyRows)["heart_rate_frame_coverage_ratio"], populatedRatio)
         }
     }
 
@@ -189,8 +223,21 @@ final class WorkoutAnalysisExportTests: XCTestCase {
             versionedDetailPayload: payload)
     }
 
+    private func semanticsEvent(seed: Int, session: WorkoutSessionRecord, elapsedMicroseconds: Int64,
+                                payload: WorkoutEventPayload) -> WorkoutEvent {
+        let original = event(seed: seed, session: session, elapsedMicroseconds: elapsedMicroseconds, payload: payload)
+        return WorkoutEvent(recordID: original.recordID, sessionID: original.sessionID,
+            timestamp: .init(occurredAt: original.timestamp.occurredAt, recordedAt: original.timestamp.occurredAt,
+                occurredElapsed: original.timestamp.occurredElapsed, recordedElapsed: original.timestamp.occurredElapsed),
+            payload: original.payload)
+    }
+
     private func semanticsSession(duration: Int64 = 60) -> WorkoutSessionRecord {
         let base = session(profile: "semantics-profile", configuration: configuration(target: 120), seed: 145)
+        let configuration = ImmutableConfigurationSnapshot(id: base.configuration.id, formatVersion: 1,
+            format: .canonicalJSON, canonicalPayload: Data(
+                #"{"targetHeartRate":120,"heartRateZones":[90,110,130,150],"cooldownTargetHeartRate":115,"cooldownMinimumSpeedKilometresPerHour":2.0}"#.utf8),
+            contentHash: base.configuration.contentHash)
         return WorkoutSessionRecord(recordID: base.recordID, sessionID: base.sessionID,
             profileLocalIdentifier: base.profileLocalIdentifier, lifecycleState: .completed,
             workoutMode: base.workoutMode, startedAt: base.startedAt,
@@ -198,8 +245,9 @@ final class WorkoutAnalysisExportTests: XCTestCase {
             incompleteReason: nil, appContext: base.appContext,
             versions: .init(telemetrySchema: .init(rawValue: "1.0.0"), algorithm: base.versions.algorithm,
                 safetyPolicy: base.versions.safetyPolicy, workoutProtocol: base.versions.workoutProtocol),
-            configuration: base.configuration, healthKitWorkoutIdentifier: base.healthKitWorkoutIdentifier,
-            treadmill: base.treadmill, recorderHealth: base.recorderHealth)
+            configuration: configuration, healthKitWorkoutIdentifier: base.healthKitWorkoutIdentifier,
+            treadmill: base.treadmill, recorderHealth: .init(isComplete: true, lostCriticalRecordCount: 0,
+                lostNativeRecordCount: 0, lastPersistedElapsed: .init(microseconds: duration * 1_000_000)))
     }
 
     func testCooldownCompletionReasonsRemainTruthfulInExport() async throws {
