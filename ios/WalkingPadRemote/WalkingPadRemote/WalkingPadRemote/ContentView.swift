@@ -2464,12 +2464,6 @@ private struct ControlSwipeView: View, Equatable {
         trainingResultError = nil
     }
 
-    private func finishTrainingPresentationAfterRecovery(_ isRecovering: Bool) {
-        guard !isRecovering, !manager.isHrControlRunning,
-              let _ = sessionPresentationAnchor else { return }
-        finishTrainingPresentationSession()
-    }
-
     private func finishTrainingPresentationSession() {
         guard !manager.isNativeWorkoutRecoveryActive else { return }
         guard let anchor = sessionPresentationAnchor else {
@@ -2588,7 +2582,7 @@ private struct ControlSwipeView: View, Equatable {
 
     var body: some View {
         NavigationStack {
-            ZStack {
+            let navigationContent = ZStack {
                 LinearGradient(
                     colors: [Color(.systemGroupedBackground), Color(.secondarySystemGroupedBackground)],
                     startPoint: .top,
@@ -2629,6 +2623,7 @@ private struct ControlSwipeView: View, Equatable {
                 DevicePickerView()
                     .environmentObject(manager)
             }
+            let sessionContent = navigationContent
             .onChange(of: manager.hrLastValueAt, initial: true) { _, _ in
                 captureLastAcceptedHeartRatePresentation()
             }
@@ -2643,11 +2638,14 @@ private struct ControlSwipeView: View, Equatable {
                 }
             }
             .onChange(of: manager.isNativeWorkoutRecoveryActive) { (_: Bool, isRecovering: Bool) in
-                finishTrainingPresentationAfterRecovery(isRecovering)
+                if !isRecovering, !manager.isHrControlRunning, sessionPresentationAnchor != nil {
+                    finishTrainingPresentationSession()
+                }
             }
             .onChange(of: manager.activeUserProfileID) { (_: UUID?, _: UUID?) in
                 clearTrainingResultPresentation()
             }
+            sessionContent
             .onChange(of: manager.telemetryV2ProjectionGeneration) { _, _ in
                 resolveTrainingResultIfPossible()
             }

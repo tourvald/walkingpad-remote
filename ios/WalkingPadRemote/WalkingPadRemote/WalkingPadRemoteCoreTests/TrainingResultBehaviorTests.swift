@@ -26,7 +26,6 @@ final class TrainingResultBehaviorTests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         let methods = [
             "beginTrainingPresentationSession()", "finishTrainingPresentationSession()",
-            "finishTrainingPresentationAfterRecovery(_ isRecovering: Bool)",
             "resolveTrainingResultIfPossible()", "resolveTerminalTelemetryFailureIfNeeded(_ status: String)",
             "showUnavailableTrainingResult(", "clearTrainingResultPresentation()"
         ].map { "private func " + $0 }
@@ -36,8 +35,11 @@ final class TrainingResultBehaviorTests: XCTestCase {
         let profileHook = try declaration(".onChange(of: manager.activeUserProfileID)", in:
             String(source[source.range(of: "private struct ControlSwipeView:")!.lowerBound...]))
         let profileBody = String(profileHook[profileHook.range(of: " in\n")!.upperBound...].dropLast())
+        let recoveryHook = try declaration(".onChange(of: manager.isNativeWorkoutRecoveryActive)", in:
+            String(source[source.range(of: "private struct ControlSwipeView:")!.lowerBound...]))
+        let recoveryBody = String(recoveryHook[recoveryHook.range(of: " in\n")!.upperBound...].dropLast())
         let program = Self.prefix + "\n" + production + "\nfunc profileDidChange() {\n" + profileBody
-            + "\n}\n" + Self.driver
+            + "\n}\nfunc recoveryDidChange(_ isRecovering: Bool) {\n" + recoveryBody + "\n}\n" + Self.driver
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -241,14 +243,14 @@ final class TrainingResultBehaviorTests: XCTestCase {
     check(missing.pendingTrainingResult == nil && missing.trainingResultError != nil, "Missing native identity fails closed")
     let recovery = Harness(); recovery.beginTrainingPresentationSession(); recovery.manager.isNativeWorkoutRecoveryActive = true; recovery.finishTrainingPresentationSession()
     check(recovery.sessionPresentationAnchor != nil && recovery.pendingTrainingResult == nil, "Actual recovery retains product boundary")
-    recovery.finishTrainingPresentationAfterRecovery(true)
+    recovery.recoveryDidChange(true)
     check(recovery.pendingTrainingResult == nil, "Active recovery callback cannot present completion")
     recovery.manager.isNativeWorkoutRecoveryActive = false; recovery.manager.isHrControlRunning = true
-    recovery.finishTrainingPresentationAfterRecovery(false)
+    recovery.recoveryDidChange(false)
     check(recovery.pendingTrainingResult == nil, "Recovery callback cannot replace an active workout")
-    recovery.manager.isHrControlRunning = false; recovery.finishTrainingPresentationAfterRecovery(false)
+    recovery.manager.isHrControlRunning = false; recovery.recoveryDidChange(false)
     check(recovery.pendingTrainingResult?.sessionID == "A", "Recovery completion enters processing")
-    recovery.clearTrainingResultPresentation(); recovery.finishTrainingPresentationAfterRecovery(false)
+    recovery.clearTrainingResultPresentation(); recovery.recoveryDidChange(false)
     check(recovery.pendingTrainingResult == nil && recovery.trainingResultError == nil, "Repeated recovery completion cannot reopen a dismissed result")
     let early = Harness(); early.manager.telemetryV2WorkoutHistory=[.init(id:"native:A")]; early.manager.outcomes["A"] = .ready; early.beginTrainingPresentationSession(); early.finishTrainingPresentationSession()
     check(early.resolvedTrainingResult?.projection.id == "native:A", "Analysis can precede terminal UI transition")
