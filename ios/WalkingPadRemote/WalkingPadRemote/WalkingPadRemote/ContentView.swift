@@ -2695,7 +2695,7 @@ private struct ControlSwipeView: View, Equatable {
 
 }
 
-private func hrZoneColor(_ zone: Int) -> Color {
+func hrZoneColor(_ zone: Int) -> Color {
     switch zone {
     case 1: return .blue
     case 2: return .green

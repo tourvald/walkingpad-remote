@@ -239,3 +239,14 @@ xcrun simctl spawn "$SIM" /tmp/issue208-scale-preview /tmp/issue208-scale-images
 The original base component, compiled with the same fixture but without the new constructor input, fails at main-unavailable: total height 60 rather than 80 pt (scale 44 rather than 64). The corrected production component passes all 10 invariants. App QA uses existing `--active-workout-preview=active-in-zone`, `active-no-hr`, `cooldown-above` and `--training-hub-preview=ready-unknown-source`; accessibility QA uses simulator content_size `accessibility-extra-extra-extra-large`, then restores `large`.
 
 Final local full Swift suite: 749 tests, one existing skip, zero failures. Initial suite and isolated telemetry overflow test attempts hit the existing `eventually` timeout; the unchanged full suite passed on rerun. No test assertion or runtime code was modified to mask it. These results do not establish physical-iPhone rendering performance.
+
+
+## Issue #198 — shared history zone palette (2026-10-07)
+
+Base: `5c83b815f181cf48c2b08c5e84f1f20727d5cc95`. Existing WorkoutHistoryZones uses the training palette via hrZoneColor; five small decorative markers identify zones while primary labels and monospaced duration text stay legible. History/detail already share this component. No data, state, timers, animation, persistence or control changes.
+
+Simulator/mock QA extracted the actual production WorkoutHistoryZones, WorkoutHistoryPresentation duration/value methods and hrZoneColor into an external transport-free SwiftUI fixture. Compact iPhone SE: eight combinations of light/dark, normal/accessibility XXXL and available/missing/zero values. All label/value, 5/2-column layout, clipping and sufficient-description assertions passed (`/tmp/wp198-ui-layout-result`). This is component QA, not full Statistics navigation or live VoiceOver interaction.
+
+Contrast disclosure: the first dual-component fixture also incorrectly expected ten LazyVGrid elements when the lower component was outside the viewport; corrected fixture checks the single visible reused component. The visible native contrast audit still reported 14 failed/nearly-passed samples on primary black text on light gray. All 14 exported flagged element crops were inspected and measured by a luminance script at 15.31–15.47:1 (`/tmp/wp198-pixel-contrast.json`, `/tmp/wp198-ui-attachments`); the native contrast audit is not reported as passing. Final layout/accessibility run checks clipping/descriptions separately, without a contrast issue handler. Markers are decorative and hidden from accessibility; existing zone names/values remain explicit. Independent review must assess this disclosed limitation.
+
+Local full Swift: 777 tests / one existing opt-in skip / zero failures. Final unsigned iOS/watchOS build passed. No physical device, BLE or treadmill activity, and no measured physical-iPhone performance claim.

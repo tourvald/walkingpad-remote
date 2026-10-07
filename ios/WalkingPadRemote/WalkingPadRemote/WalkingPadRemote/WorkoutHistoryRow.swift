@@ -168,7 +168,12 @@ private struct WorkoutHistoryZones: View {
         LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
             ForEach(0..<5) { index in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Z\(index + 1)").foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Circle().fill(hrZoneColor(index + 1))
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                        Text("Z\(index + 1)")
+                    }
                     Text(WorkoutHistoryPresentation.duration(values[index])).monospacedDigit()
                 }
                 .font(.caption2)
