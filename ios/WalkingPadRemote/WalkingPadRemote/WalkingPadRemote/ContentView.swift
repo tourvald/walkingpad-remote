@@ -2636,12 +2636,12 @@ private struct ControlSwipeView: View, Equatable {
                     finishTrainingPresentationSession()
                 }
             }
-            .onChange(of: manager.isNativeWorkoutRecoveryActive) { _, isRecovering in
+            .onChange(of: manager.isNativeWorkoutRecoveryActive) { (_: Bool, isRecovering: Bool) in
                 if !isRecovering, !manager.isHrControlRunning, sessionPresentationAnchor != nil {
                     finishTrainingPresentationSession()
                 }
             }
-            .onChange(of: manager.activeUserProfileID) { _, _ in
+            .onChange(of: manager.activeUserProfileID) { (_: UUID?, _: UUID?) in
                 clearTrainingResultPresentation()
             }
             .onChange(of: manager.telemetryV2ProjectionGeneration) { _, _ in

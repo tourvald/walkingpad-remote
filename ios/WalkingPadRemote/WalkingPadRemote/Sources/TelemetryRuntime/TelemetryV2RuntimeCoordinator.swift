@@ -826,9 +826,9 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         attemptedMonotonic: Duration? = nil
     ) {
         withLock {
+            guard activeSession?.session.sessionID == sessionID else { return }
             closeTailLocked(detailCode: "post-stop-tail-superseded")
             stopTail = nil
-            guard activeSession?.session.sessionID == sessionID else { return }
             stopTail = StopTail(
                 attemptID: attemptID, decisionID: decisionID,
                 connectionEpoch: connectionEpoch, deadline: (attemptedMonotonic ?? runtimeClock.now()) + observationWindow

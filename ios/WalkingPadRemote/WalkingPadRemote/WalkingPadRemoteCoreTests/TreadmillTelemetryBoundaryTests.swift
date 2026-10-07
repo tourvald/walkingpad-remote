@@ -48,6 +48,20 @@ final class TreadmillTelemetryBoundaryTests: XCTestCase {
         XCTAssertTrue(missingBranch.contains("queuedSessionID = self.activeTelemetryV2SessionID"))
     }
 
+    func testSelectedNotificationAndServiceReplacementCloseTheOriginalTailBeforeMutation() throws {
+        let discovery = try functionBody("func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor", in: managerSource)
+        let invalidation = try functionBody("func peripheral(_ peripheral: CBPeripheral, didModifyServices", in: managerSource)
+        for body in [discovery, invalidation] {
+            let close = try XCTUnwrap(body.range(of: "telemetryV2Coordinator.invalidateStopTail()")?.lowerBound)
+            let identity = try XCTUnwrap(body.range(of: "peripheral === connectedPeripheral")?.lowerBound)
+            let mutation = try XCTUnwrap(body.range(of: "commandCharacteristic = nil")?.lowerBound)
+            XCTAssertLessThan(identity, close)
+            XCTAssertLessThan(close, mutation)
+        }
+        XCTAssertTrue(discovery.contains("service === treadmillProtocolService"))
+        XCTAssertTrue(invalidation.contains("invalidatedServices.contains(where: { $0 === selectedService })"))
+    }
+
     func testTelemetryHotPathHasNoPersistenceAsyncOrRawPacketSurface() {
         let forbidden = [
             "TelemetryRecorder",

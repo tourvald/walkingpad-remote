@@ -4841,7 +4841,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             evaluation: evaluation,
             evaluatedAt: now
         )
-        telemetryV2Coordinator.stopAttemptFinalized(attemptID: lifecycle.attemptID)
+        if lifecycle.finalReason?.hasPrefix("stop_command_not_sent") != true {
+            telemetryV2Coordinator.stopAttemptFinalized(attemptID: lifecycle.attemptID)
+        }
     }
 
     private func finishActiveStopObservationUnconfirmed(reason: String, now: Date = Date()) {
@@ -6730,6 +6732,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.observeCancelledTreadmillCommands(
                 lostEntries, reason: .other("telemetry_sidecar_order_mismatch")
             )
+            if let lifecycle = self.stopObservationLifecycle, lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true {
+                self.telemetryV2Coordinator.stopAttemptFinalized(attemptID: lifecycle.attemptID)
+            }
         }
     }
 
@@ -8991,6 +8996,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               service === treadmillProtocolService else {
             return
         }
+        telemetryV2Coordinator.invalidateStopTail()
         if let error {
             invalidateTreadmillControlReadinessEvidence()
             return
@@ -9481,6 +9487,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               invalidatedServices.contains(where: { $0 === selectedService }) else {
             return
         }
+        telemetryV2Coordinator.invalidateStopTail()
         treadmillProtocolService = nil
         commandCharacteristic = nil
         notifyCharacteristic = nil

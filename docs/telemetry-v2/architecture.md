@@ -141,6 +141,9 @@ Admission closes on owner finalization (after its actual final evidence), contex
 invalidation, superseding motion/Stop, next-session begin or deadline. Closure is
 serialized with admission and schedules one asynchronous recorder finish using
 the original terminal timestamp, followed by one immutable-input analysis.
+Same-epoch notification/service replacement also closes the original context.
+A blocked first write retains its returning failure before telemetry closure,
+without deferring legacy Stop finalization.
 Existing typed `.drain` diagnostics explain capture closure without asserting
 physical Stop or recorder loss. Post-end timestamps remain raw evidence and do
 not extend v1.4 workout duration, phase intervals or factual freshness coverage.

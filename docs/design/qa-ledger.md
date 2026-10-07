@@ -13,7 +13,7 @@ Simulator fixtures contain synthetic values and skip normal app startup.
 | Visual | Processing / confirming, iPhone SE, normal Dynamic Type, light | Full processing explanation, truthful Stop status and «Готово» are visible; exit target is at least 48 pt. | `/tmp/wp203-processing-final-compact-light.png` | `ContentView.swift` | Pass |
 | Visual | Processing / unavailable, iPhone 17e, light | Existing unconfirmed Stop status remains explicit alongside the exit. | `/tmp/wp203-processing-final-standard-unavailable.png` | `ContentView.swift` | Pass |
 | Correction | iPhone SE, Accessibility XXXL, dark | Initial fixed-height card truncated title/explanation/status. Full vertical text sizing and a native scroll fallback remove the truncation; the exit remains reachable by scrolling. | Before `/tmp/wp203-processing-compact-axxxl-dark.png`, after `/tmp/wp203-processing-compact-axxxl-dark-fixed.png` | `TrainingWorkoutEndingView` | Corrected |
-| Interaction | Processing confirming/unavailable, compact simulator | Native accessibility query finds «Готово», verifies its hit region, taps it and observes processing disappearance. | Standalone `TrainingResultSimulatorUITests.swift`; `/tmp/wp203-ui-qa-dark-viewport-result` | Processing presentation | Pass |
+| Interaction | Processing confirming/unavailable, compact simulator | Native accessibility query finds «Готово», verifies its hit region, taps it and observes processing disappearance. | Standalone `TrainingResultSimulatorUITests.swift`; `/tmp/wp203-ui-qa-corrected-dark-result` | Processing presentation | Pass |
 | Boundary | Actual finishing preview | No processing exit is offered before product completion. | `testRealFinishingHasNoProcessingExit` | Ending presentation | Pass |
 | Accessibility | Accessibility XXXL, compact simulator | Native UI test scrolls to «Готово», verifies reachability and 48 pt target, audits detection/hit region/description, contrast and text clipping, then dismisses. | `testLargestDynamicTypeExitRemainsAccessible` | Ending presentation | Pass |
 
@@ -27,7 +27,7 @@ simulators; no physical device/BLE action is part of these checks.
 Expanded native contrast checks exposed insufficient contrast for status/exit colors
 and the explanatory text on the material card. Primary label colors, a fixed dark
 exit tint and an opaque system card background resolve the visible findings.
-The final dark run `/tmp/wp203-ui-qa-dark-viewport-result` passes all three UI tests.
+The final dark run `/tmp/wp203-ui-qa-corrected-dark-result` passes all three UI tests.
 At Accessibility XXXL, the native audit itself scrolls the explanation from a fully
 visible position to partially behind a bar (observed y=484...774 on a 667 pt screen).
 The UI test captures the fully visible explanation, requires the complete exit
@@ -35,7 +35,7 @@ frame above the tab bar before tapping, and excludes only that exact explanation
 contrast sample when its frame is outside the visible viewport. Other contrast
 issues, fully visible explanation issues and all text-clipping issues remain failures.
 This audit limitation is explicit review evidence, not a general contrast waiver.
-The final light run `/tmp/wp203-ui-qa-light-viewport-result` also passes all three UI tests.
+The final light run `/tmp/wp203-ui-qa-corrected-light-result` also passes all three UI tests.
 The narrow 5-production-file / <=510-churn exception is
 [PM decision 6039734039](https://github.com/tourvald/walkingpad-remote/issues/203#issuecomment-6039734039).
 Live VoiceOver audio/focus gestures are not claimed by an automated audit.
