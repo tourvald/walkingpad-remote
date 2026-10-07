@@ -4,12 +4,29 @@ import XCTest
 
 /// Executes the production methods verbatim with dependency fixtures, without extracting a production layer.
 final class TrainingResultBehaviorTests: XCTestCase {
+    func testSelectedNotificationLossClosesTailWithoutChangingCallbackGuards() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote/BluetoothManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let handler = try declaration("func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor", in: source)
+        let program = Self.notificationPrefix + "\n" + handler + "\n" + Self.notificationDriver
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("NotificationBoundary.swift")
+        let binary = directory.appendingPathComponent("notification-boundary")
+        try program.write(to: file, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", file.path, "-o", binary.path], directory: directory)
+        try execute(binary, arguments: [], directory: directory)
+    }
+
     func testProductionResultAcceptanceMatrix() throws {
         let sourceURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote/ContentView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         let methods = [
             "beginTrainingPresentationSession()", "finishTrainingPresentationSession()",
+            "finishTrainingPresentationAfterRecovery(_ isRecovering: Bool)",
             "resolveTrainingResultIfPossible()", "resolveTerminalTelemetryFailureIfNeeded(_ status: String)",
             "showUnavailableTrainingResult(", "clearTrainingResultPresentation()"
         ].map { "private func " + $0 }
@@ -94,6 +111,71 @@ final class TrainingResultBehaviorTests: XCTestCase {
         XCTAssertEqual(process.terminationStatus, 0, text)
     }
 
+    private static let notificationPrefix = #"""
+    import Foundation
+    final class CBPeripheral { let identifier = UUID() }
+    final class CBCharacteristic { var isNotifying = true; let uuid: String; init(_ uuid: String) { self.uuid = uuid } }
+    enum ProtocolKind { case walkingPad, ftms, fitShow }
+    final class Capture {
+     var closures = 0
+     func invalidateStopTail() { closures += 1 }
+    }
+    final class Owner {
+     let connectedPeripheral: CBPeripheral? = CBPeripheral()
+     var connectedPeripheralId: UUID? { connectedPeripheral?.identifier }
+     let notifyCharacteristic: CBCharacteristic? = CBCharacteristic("FE01")
+     let commandCharacteristic: CBCharacteristic? = CBCharacteristic("2AD9")
+     var treadmillProtocol = ProtocolKind.walkingPad
+     let ftmsCharControlPoint = "2AD9"
+     let charFE01 = "FE01"
+     var notifyCharacteristicConnection: UUID? = UUID()
+     var commandCharacteristicConnection: UUID? = UUID()
+     let currentTreadmillControlConnection: UUID? = UUID()
+     let telemetryV2Coordinator = Capture()
+     var callbackIsCurrent = true
+     var readinessUpdates = 0
+     var unitsRequests = 0
+     func isCurrentCharacteristicCallback(_ characteristic: CBCharacteristic) -> Bool { callbackIsCurrent }
+     func recomputeTreadmillControlReadiness() { readinessUpdates += 1 }
+     func requestInitialControllerUnitsTruthIfReady() { unitsRequests += 1 }
+    """#
+
+    private static let notificationDriver = #"""
+    }
+    for kind in [ProtocolKind.walkingPad, .ftms, .fitShow] {
+     for controlPoint in [false, true] where !controlPoint || kind == .ftms {
+      for (notifying, failed) in [(false, false), (false, true), (true, true)] {
+       let owner = Owner(); owner.treadmillProtocol = kind
+       let characteristic = controlPoint ? owner.commandCharacteristic! : owner.notifyCharacteristic!
+       characteristic.isNotifying = notifying
+       owner.peripheral(owner.connectedPeripheral!, didUpdateNotificationStateFor: characteristic,
+        error: failed ? NSError(domain: "fixture", code: 1) : nil)
+       precondition(owner.telemetryV2Coordinator.closures == 1)
+       precondition(owner.readinessUpdates == 1 && owner.unitsRequests == 0)
+       precondition(controlPoint ? owner.commandCharacteristicConnection == nil : owner.notifyCharacteristicConnection == nil)
+       characteristic.isNotifying = true
+       owner.peripheral(owner.connectedPeripheral!, didUpdateNotificationStateFor: characteristic, error: nil)
+       precondition(owner.telemetryV2Coordinator.closures == 1, "Resubscription must not reopen or close a new tail")
+       precondition(controlPoint ? owner.commandCharacteristicConnection != nil : owner.notifyCharacteristicConnection != nil)
+      }
+     }
+    }
+    for rejection in 0..<4 {
+     let owner = Owner()
+     let peripheral = rejection == 0 ? CBPeripheral() : owner.connectedPeripheral!
+     let characteristic = rejection == 1 ? CBCharacteristic("FE01") : owner.notifyCharacteristic!
+     if rejection == 2 { owner.callbackIsCurrent = false }
+     characteristic.isNotifying = rejection == 3
+     owner.peripheral(peripheral, didUpdateNotificationStateFor: characteristic,
+      error: rejection == 3 ? nil : NSError(domain: "fixture", code: 1))
+     precondition(owner.telemetryV2Coordinator.closures == 0, "Foreign, old and successful callbacks cannot close the tail")
+     precondition(owner.notifyCharacteristicConnection != nil)
+     precondition(owner.readinessUpdates == (rejection == 3 ? 1 : 0))
+     precondition(owner.unitsRequests == (rejection == 3 ? 1 : 0))
+    }
+    print("PASS: selected notification loss/error/resume and callback boundaries")
+    """#
+
     private static let prefix = #"""
     import Foundation
     typealias SessionID = String
@@ -159,8 +241,15 @@ final class TrainingResultBehaviorTests: XCTestCase {
     check(missing.pendingTrainingResult == nil && missing.trainingResultError != nil, "Missing native identity fails closed")
     let recovery = Harness(); recovery.beginTrainingPresentationSession(); recovery.manager.isNativeWorkoutRecoveryActive = true; recovery.finishTrainingPresentationSession()
     check(recovery.sessionPresentationAnchor != nil && recovery.pendingTrainingResult == nil, "Actual recovery retains product boundary")
-    recovery.manager.isNativeWorkoutRecoveryActive = false; recovery.finishTrainingPresentationSession()
+    recovery.finishTrainingPresentationAfterRecovery(true)
+    check(recovery.pendingTrainingResult == nil, "Active recovery callback cannot present completion")
+    recovery.manager.isNativeWorkoutRecoveryActive = false; recovery.manager.isHrControlRunning = true
+    recovery.finishTrainingPresentationAfterRecovery(false)
+    check(recovery.pendingTrainingResult == nil, "Recovery callback cannot replace an active workout")
+    recovery.manager.isHrControlRunning = false; recovery.finishTrainingPresentationAfterRecovery(false)
     check(recovery.pendingTrainingResult?.sessionID == "A", "Recovery completion enters processing")
+    recovery.clearTrainingResultPresentation(); recovery.finishTrainingPresentationAfterRecovery(false)
+    check(recovery.pendingTrainingResult == nil && recovery.trainingResultError == nil, "Repeated recovery completion cannot reopen a dismissed result")
     let early = Harness(); early.manager.telemetryV2WorkoutHistory=[.init(id:"native:A")]; early.manager.outcomes["A"] = .ready; early.beginTrainingPresentationSession(); early.finishTrainingPresentationSession()
     check(early.resolvedTrainingResult?.projection.id == "native:A", "Analysis can precede terminal UI transition")
     let wrong = Harness(); wrong.beginTrainingPresentationSession(); wrong.manager.activeUserProfileID = UUID(); wrong.finishTrainingPresentationSession()

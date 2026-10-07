@@ -36,8 +36,12 @@ contrast sample when its frame is outside the visible viewport. Other contrast
 issues, fully visible explanation issues and all text-clipping issues remain failures.
 This audit limitation is explicit review evidence, not a general contrast waiver.
 The final light run `/tmp/wp203-ui-qa-corrected-light-result` also passes all three UI tests.
-The narrow 5-production-file / <=510-churn exception is
-[PM decision 6039734039](https://github.com/tourvald/walkingpad-remote/issues/203#issuecomment-6039734039).
+The narrow 5-production-file / <=517-churn exception is
+[PM decision 6039734039](https://github.com/tourvald/walkingpad-remote/issues/203#issuecomment-6039734039),
+with the owner-approved numeric update [6044774712](https://github.com/tourvald/walkingpad-remote/issues/203#issuecomment-6044774712).
+After the selected-notification closure and recovery-callback correction, the rebuilt
+mock app passed the same three native tests in each theme: `/tmp/wp203-517-ui-light-result`
+and `/tmp/wp203-517-ui-dark-result`. The existing narrow audit exclusion is unchanged.
 Live VoiceOver audio/focus gestures are not claimed by an automated audit.
 [Apple ViewThatFits](https://developer.apple.com/documentation/swiftui/viewthatfits)
 selects the first fitting child on the constrained axis; the existing card is reused

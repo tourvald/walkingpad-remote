@@ -9110,6 +9110,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               isCurrentCharacteristicCallback(characteristic) else {
             return
         }
+        if error != nil || !characteristic.isNotifying {
+            telemetryV2Coordinator.invalidateStopTail()
+        }
         if let error {
             if isRequiredTelemetry { notifyCharacteristicConnection = nil }
             if isFtmsControlPoint { commandCharacteristicConnection = nil }

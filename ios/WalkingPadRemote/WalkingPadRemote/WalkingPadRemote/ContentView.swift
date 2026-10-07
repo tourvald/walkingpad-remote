@@ -2464,6 +2464,12 @@ private struct ControlSwipeView: View, Equatable {
         trainingResultError = nil
     }
 
+    private func finishTrainingPresentationAfterRecovery(_ isRecovering: Bool) {
+        guard !isRecovering, !manager.isHrControlRunning,
+              let _ = sessionPresentationAnchor else { return }
+        finishTrainingPresentationSession()
+    }
+
     private func finishTrainingPresentationSession() {
         guard !manager.isNativeWorkoutRecoveryActive else { return }
         guard let anchor = sessionPresentationAnchor else {
@@ -2637,9 +2643,7 @@ private struct ControlSwipeView: View, Equatable {
                 }
             }
             .onChange(of: manager.isNativeWorkoutRecoveryActive) { (_: Bool, isRecovering: Bool) in
-                if !isRecovering, !manager.isHrControlRunning, sessionPresentationAnchor != nil {
-                    finishTrainingPresentationSession()
-                }
+                finishTrainingPresentationAfterRecovery(isRecovering)
             }
             .onChange(of: manager.activeUserProfileID) { (_: UUID?, _: UUID?) in
                 clearTrainingResultPresentation()
