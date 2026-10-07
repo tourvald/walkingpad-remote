@@ -253,7 +253,10 @@ elapsed. Selected evidence elapsed, age and freshness remain consistent, with
 half-open 7 s and 5 s expiry. Raw timestamp roles are preserved. Native
 stale/unknown freshness or unusable quality cannot be upgraded; source lifecycle
 and connection transitions invalidate carried references. Fixed-size active-session
-eligibility cutoffs also reject delayed pre-boundary observations. Treadmill frame
+eligibility cutoffs also reject delayed pre-boundary observations.
+Typed HR transitions recognize the configured provider through the existing
+canonical source identity even before its first native observation; unrelated
+source transitions do not invalidate that configured HR stream. Treadmill frame
 eligibility additionally requires an independent snapshot of the existing
 connection owner's current epoch, captured at ingress and retained through staged
 replay. An observation cannot declare its own epoch current; absent or mismatched

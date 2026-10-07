@@ -1728,7 +1728,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             case let .sourceTransition(transition):
                 guard let previousSourceID = transition.previousSourceID else { break }
                 if previousSourceID == latestHeartRate?.observation.source.id
-                    || previousSourceID == heartRateFrameBoundary.sourceID {
+                    || previousSourceID == heartRateFrameBoundary.sourceID
+                    || previousSourceID == heartRateSource(configuredHeartRateProvider).id {
                     heartRateFrameBoundary = (max(heartRateFrameBoundary.elapsed, elapsed(at: occurredAt)),
                                               previousSourceID)
                     latestHeartRate = nil

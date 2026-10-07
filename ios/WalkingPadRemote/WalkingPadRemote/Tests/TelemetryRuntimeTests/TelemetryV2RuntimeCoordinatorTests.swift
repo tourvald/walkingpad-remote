@@ -924,6 +924,115 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         }
     }
 
+    func testConfiguredHRBoundariesBeforeFirstObservationPreserveEvidenceAndResetWithSession() async throws {
+        for (existingObservation, typedBoundary, unrelatedSource) in [
+            (false, true, false), (true, true, false),
+            (false, false, false), (false, true, true),
+        ] {
+            let persistence = RuntimePersistence()
+            let origin = Date(timeIntervalSince1970: 10_000)
+            let clock = ManualRuntimeClock(date: origin)
+            let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: { persistence }, runtimeClock: clock)
+            let source = HeartRateProviderIdentity(kind: .healthKitSelected, stableLocalKey: "fixture")
+            // Existing canonical identity for the fixture, also asserted against persisted native evidence.
+            let configuredID = SourceID(rawValue: UUID(uuidString: "270d498d-7a67-85e0-8572-e4139d54092a")!)
+            let boundaryID = unrelatedSource ? SourceID() : configuredID
+            var normalizer = HeartRateObservationNormalizer()
+            func beginSession() async throws {
+                coordinator.beginSession(Self.descriptor(startedAt: clock.nowDate(),
+                    heartRateProviderKind: "healthKitSelected", heartRateProviderStableLocalKey: "fixture"))
+                try await eventually { if case .active = coordinator.status { return true }; return false }
+            }
+            func deliver(measured: Double) {
+                let result = normalizer.normalize(HeartRateProviderObservation(
+                    source: source, beatsPerMinute: 120, providerSequence: nil, providerNativeIdentity: nil,
+                    measuredAt: origin.addingTimeInterval(measured), sourceCallbackObservedAt: nil,
+                    sourceClockRelationship: .receiverComparable, receivedAt: clock.nowDate(), metadataQuality: []
+                ), canonicalObservationID: HeartRateCanonicalObservationID(), deliveryID: HeartRateDeliveryID(),
+                   recordedAt: clock.nowDate())
+                _ = coordinator.observeHeartRate(result)
+                _ = coordinator.observeCurrentElapsedSecond()
+            }
+            func invalidate() {
+                if typedBoundary {
+                    _ = coordinator.observeEvent(.sourceTransition(SourceTransition(
+                        previousSourceID: boundaryID, currentSourceID: nil, reason: "fixture-boundary"
+                    )), occurredAt: clock.nowDate())
+                } else {
+                    _ = coordinator.observeSourceLifecycle(HeartRateSourceLifecycleEvidence(
+                        source: source, kind: .stopped, occurredAt: clock.nowDate()
+                    ))
+                }
+            }
+            try await beginSession()
+            clock.advance(by: .seconds(19))
+            if existingObservation { deliver(measured: 19) }
+            clock.advance(by: .seconds(1))
+            invalidate()
+            clock.advance(by: .seconds(1))
+            deliver(measured: 19)
+            clock.advance(by: .seconds(1))
+            deliver(measured: 22)
+            clock.advance(by: .milliseconds(500))
+            invalidate()
+            clock.advance(by: .milliseconds(500))
+            deliver(measured: 22.25)
+            clock.advance(by: .seconds(1))
+            deliver(measured: 24)
+            coordinator.endSession(reason: "complete")
+            try await eventually { await persistence.finalizations.count == 1 }
+            let records = await persistence.snapshot().records
+            let frames = records.compactMap { record -> CanonicalFrame? in
+                guard case let .frame(value) = record else { return nil }; return value
+            }.suffix(4)
+            XCTAssertEqual(frames.map(\.canonicalElapsedSecond), [21, 22, 23, 24])
+            XCTAssertEqual(frames.map { $0.heartRateEvidence?.freshness },
+                           [unrelatedSource ? .fresh : .unknown, .fresh,
+                            unrelatedSource ? .fresh : .unknown, .fresh])
+            let raw = records.compactMap { record -> HeartRateObservation? in
+                guard case let .heartRate(value) = record else { return nil }; return value
+            }.suffix(4)
+            XCTAssertEqual(raw.map { $0.source.id }, Array(repeating: configuredID, count: 4))
+            XCTAssertEqual(raw.map { $0.timestamp.measuredElapsed?.seconds }, [19, 22, 22.25, 24])
+            XCTAssertEqual(raw.map { $0.timestamp.receivedElapsed.seconds }, [21, 22, 23, 24])
+            XCTAssertEqual(raw.map { $0.timestamp.recordedElapsed.seconds }, [21, 22, 23, 24])
+            XCTAssertEqual(raw.map { $0.timestamp.measuredAt },
+                           [19.0, 22, 22.25, 24].map { origin.addingTimeInterval($0) })
+            XCTAssertEqual(raw.map { $0.timestamp.receivedAt },
+                           [21.0, 22, 23, 24].map { origin.addingTimeInterval($0) })
+            XCTAssertEqual(raw.map { $0.timestamp.recordedAt }, raw.map { $0.timestamp.receivedAt })
+            XCTAssertTrue(raw.allSatisfy { $0.controlUse == .acceptedNotUsed })
+            if typedBoundary {
+                let boundaries = records.compactMap { record -> WorkoutEvent? in
+                    guard case let .event(event) = record, event.kind == .sourceTransition else { return nil }
+                    return event
+                }
+                XCTAssertEqual(boundaries.map { $0.timestamp.occurredElapsed.seconds }, [20, 22.5])
+                XCTAssertEqual(boundaries.map { $0.timestamp.recordedElapsed.seconds }, [20, 22.5])
+                XCTAssertEqual(boundaries.map { $0.timestamp.occurredAt },
+                               [20.0, 22.5].map { origin.addingTimeInterval($0) })
+                for event in boundaries {
+                    guard case let .sourceTransition(value) = event.payload.payload else { return XCTFail() }
+                    XCTAssertEqual(value.previousSourceID, boundaryID)
+                    XCTAssertNil(value.currentSourceID)
+                    XCTAssertEqual(value.reason, "fixture-boundary")
+                    XCTAssertEqual(event.timestamp.recordedAt, event.timestamp.occurredAt)
+                }
+            }
+            try await beginSession()
+            clock.advance(by: .seconds(1))
+            deliver(measured: 25)
+            coordinator.endSession(reason: "complete")
+            try await eventually { await persistence.finalizations.count == 2 }
+            let restarted = await persistence.snapshot().records.compactMap { record -> CanonicalFrame? in
+                guard case let .frame(value) = record else { return nil }; return value
+            }.last
+            XCTAssertEqual(restarted?.canonicalElapsedSecond, 1)
+            XCTAssertEqual(restarted?.heartRateEvidence?.evidenceElapsed.seconds, 1)
+            XCTAssertEqual(restarted?.heartRateEvidence?.freshness, .fresh)
+        }
+    }
+
     func testFramesRequireAuthoritativeContextAcrossRepeatedEpochInvalidation() async throws {
         let persistence = RuntimePersistence()
         let origin = Date(timeIntervalSince1970: 10_000)
