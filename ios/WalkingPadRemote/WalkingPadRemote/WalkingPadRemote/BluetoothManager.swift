@@ -4830,7 +4830,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         case .confirmed:
             break
         case .timeoutUnconfirmed:
-            infoToastMessage = "Остановка дорожки не подтверждена. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
+            if lifecycle.shouldPresentTimeoutWarning(at: now,
+                currentObservationMatches: currentStopObservationContext() == lifecycle.context
+                    && latestTreadmillObservationEvidence?.receivedAt == lifecycle.observations.last?.observedAt,
+                queueIdle: commandQueue.isEmpty && !isCommandQueueProcessing) {
+                infoToastMessage = "Остановка дорожки не подтверждена. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
+            }
         case .unconfirmed:
             if lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true {
                 stopTruthStatusText = "stop command not sent • confirmation unavailable"

@@ -188,6 +188,41 @@ final class StopObservationServiceTests: XCTestCase {
             currentObservationMatches: true), "stop requested • confirming")
     }
 
+    func testTimeoutWarningDistinguishesOnlyCompletedHistoricalStopSilence() {
+        for scenario in ["silence", "moving", "contradictory", "checksum", "missing-speed", "missing-state",
+                         "never-confirmed", "not-sent", "wrong-context", "invalidated", "new-attempt",
+                         "pending-effects", "unknown-effects", "queued", "response-required", "later-write"] {
+            let expected = context()
+            var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test", attemptedAt: attemptAt,
+                context: expected, scheduledStopEffects: scenario == "unknown-effects" ? nil : 1)
+            if scenario != "not-sent" { lifecycle.markCommandSent(at: attemptAt) }
+            lifecycle.markMotionWrite(at: attemptAt.addingTimeInterval(2), requiresResponse: scenario == "response-required")
+            let received = attemptAt.addingTimeInterval(4.2)
+            if scenario != "never-confirmed" && scenario != "new-attempt" {
+                _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true, context: expected,
+                    observedAt: received, evaluatedAt: received)
+            }
+            if scenario != "pending-effects" { lifecycle.completeScheduledStopEffect() }
+            if scenario == "later-write" { lifecycle.markMotionWrite(at: received.addingTimeInterval(0.1)) }
+            let conflicts = ["moving", "contradictory", "checksum", "missing-speed", "missing-state"]
+            if conflicts.contains(scenario) {
+                let later = received.addingTimeInterval(1)
+                _ = lifecycle.record(speedRawTenths: scenario == "missing-speed" ? nil : (scenario == "moving" ? 35 : 0),
+                    state: scenario == "missing-state" ? nil : (scenario == "contradictory" ? 1 : 0),
+                    checksumValid: scenario != "checksum", context: expected, observedAt: later, evaluatedAt: later)
+            }
+            if scenario == "invalidated" {
+                _ = lifecycle.finalizeUnconfirmed(at: received, reason: "connection_context_changed")
+            } else {
+                _ = lifecycle.finalizeTimeout(at: lifecycle.deadline)
+            }
+            XCTAssertEqual(lifecycle.shouldPresentTimeoutWarning(at: lifecycle.deadline,
+                currentObservationMatches: scenario != "wrong-context", queueIdle: scenario != "queued"),
+                scenario != "silence", scenario)
+            XCTAssertFalse(lifecycle.currentEvaluation(at: lifecycle.deadline).isConfirmed, scenario)
+        }
+    }
+
     func testFreshZeroAndAcceptedNonRunningStateConfirmsStop() {
         let expectedContext = context()
         let result = StopObservationLifecycle.evaluate(
