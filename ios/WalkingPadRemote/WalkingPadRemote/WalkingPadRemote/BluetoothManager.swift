@@ -6838,7 +6838,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         p.writeValue(data, for: ch, type: type)
         if label != "QUERY STATUS", label != "QUERY PARAMS",
            var lifecycle = stopObservationLifecycle, lifecycle.finalResult == nil {
-            lifecycle.markMotionWrite(at: lastCommandSentAt ?? Date())
+            lifecycle.markMotionWrite(at: lastCommandSentAt ?? Date(), requiresResponse: type == .withResponse)
             stopObservationLifecycle = lifecycle
         }
         if label == "STOP" {

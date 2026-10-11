@@ -72,6 +72,8 @@ struct StopObservationLifecycle {
     private(set) var finalReason: String?
     private(set) var scheduledStopEffectsRemaining: Int?
     private(set) var lastMotionWriteAt: Date?
+    // Legacy response callbacks cannot prove completion of a specific queued motion write.
+    private(set) var hasResponseRequiredMotionWrite = false
     private var nextSequence = 1
 
     init(
@@ -109,12 +111,14 @@ struct StopObservationLifecycle {
         scheduledStopEffectsRemaining = remaining - 1
     }
 
-    mutating func markMotionWrite(at sentAt: Date) {
+    mutating func markMotionWrite(at sentAt: Date, requiresResponse: Bool = false) {
         lastMotionWriteAt = max(lastMotionWriteAt ?? sentAt, sentAt)
+        hasResponseRequiredMotionWrite = hasResponseRequiredMotionWrite || requiresResponse
     }
 
     mutating func finalizeCompletedStopIfReady(at now: Date, queueIdle: Bool) -> Bool {
         guard finalResult == nil, now < deadline, scheduledStopEffectsRemaining == 0,
+              !hasResponseRequiredMotionWrite,
               queueIdle, let lastMotionWriteAt, let latest = observations.last,
               latest.observedAt > lastMotionWriteAt, currentEvaluation(at: now).isConfirmed else {
             return false

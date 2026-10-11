@@ -108,13 +108,13 @@ final class TrainingResultBehaviorTests: XCTestCase {
         """#
         let driver = #"""
         }
-        for scenario in ["confirmed", "queued", "processing", "missing", "wrong-epoch", "wrong-protocol", "wrong-time", "new-context", "old-callback"] {
+        for scenario in ["confirmed", "queued", "processing", "missing", "wrong-epoch", "wrong-protocol", "wrong-time", "new-context", "old-callback", "response-required"] {
          let owner = Owner()
          let received = Date()
          let context = StopObservationContext(peripheralID: UUID(), connectionEpoch: UUID(), notificationStreamID: UUID())
          var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "fixture", attemptedAt: received.addingTimeInterval(-4.2), context: context, scheduledStopEffects: 1)
          lifecycle.markCommandSent(at: received.addingTimeInterval(-4.2))
-         lifecycle.markMotionWrite(at: received.addingTimeInterval(-2))
+         lifecycle.markMotionWrite(at: received.addingTimeInterval(-2), requiresResponse: scenario == "response-required")
          _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true, context: context, observedAt: received, evaluatedAt: received)
          owner.stopObservationLifecycle = lifecycle
          owner.latestTreadmillObservationEvidence = .init(protocolKind: scenario == "wrong-protocol" ? .ftms : .walkingPad,

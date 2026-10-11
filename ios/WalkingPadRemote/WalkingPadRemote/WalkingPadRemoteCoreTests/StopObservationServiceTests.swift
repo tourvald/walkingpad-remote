@@ -29,6 +29,32 @@ final class StopObservationServiceTests: XCTestCase {
         )
     }
 
+    func testResponseRequiredMotionWriteKeepsOriginalWindowForLateTransportResult() {
+        let expected = context()
+        var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test",
+            attemptedAt: attemptAt, context: expected, scheduledStopEffects: 0)
+        lifecycle.markCommandSent(at: attemptAt)
+        lifecycle.markMotionWrite(at: attemptAt.addingTimeInterval(2), requiresResponse: true)
+        let receivedAt = attemptAt.addingTimeInterval(4.2)
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: receivedAt, evaluatedAt: receivedAt)
+        XCTAssertFalse(lifecycle.finalizeCompletedStopIfReady(at: receivedAt, queueIdle: true))
+        // A later write without a response cannot erase an earlier unknown completion.
+        lifecycle.markMotionWrite(at: receivedAt.addingTimeInterval(0.1))
+        let freshAt = receivedAt.addingTimeInterval(0.2)
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: freshAt, evaluatedAt: freshAt)
+        XCTAssertTrue(lifecycle.hasResponseRequiredMotionWrite)
+        XCTAssertFalse(lifecycle.finalizeCompletedStopIfReady(at: freshAt, queueIdle: true))
+        XCTAssertNil(lifecycle.finalResult)
+        XCTAssertEqual(lifecycle.deadline, attemptAt.addingTimeInterval(30))
+        let finalAt = lifecycle.deadline.addingTimeInterval(-0.1)
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: finalAt, evaluatedAt: finalAt)
+        _ = lifecycle.finalizeTimeout(at: lifecycle.deadline)
+        XCTAssertEqual(lifecycle.finalResult, .confirmed)
+    }
+
     func testCompletedStopWaitsForEffectsQueueAndPostWriteObservation() {
         let expected = context()
         var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test",
