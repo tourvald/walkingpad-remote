@@ -214,6 +214,100 @@ final class TrainingResultBehaviorTests: XCTestCase {
         try execute(binary, arguments: [], directory: directory)
     }
 
+    func testStopRetryProducerPublishesOneOriginalEnqueuePerExplicitRequest() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let manager = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let sidecar = try String(contentsOf: app.appendingPathComponent("TreadmillCommandTelemetrySidecar.swift"), encoding: .utf8)
+        let queue = try String(contentsOf: app.appendingPathComponent("CommandQueueService.swift"), encoding: .utf8)
+        let request = manager.contains("private struct TreadmillCommandTelemetryRequest")
+            ? try declaration("private struct TreadmillCommandTelemetryRequest", in: manager)
+            : "private typealias TreadmillCommandTelemetryRequest = TreadmillCommandTelemetrySidecar.Request"
+        let enqueue = try declaration("private func enqueueCommand(", in: manager)
+        let prefix = #"""
+        import Foundation
+        typealias SessionID = Int
+        typealias CommandID = Int
+        typealias DecisionID = Int
+        typealias TreadmillConnectionEpoch = Int
+        enum CommandKind: Equatable { case stop; case other(String) }
+        enum TreadmillProtocolKind: Equatable { case walkingPad; case ftms }
+        struct TreadmillCommandEnqueuedEvidence: Equatable {
+          let commandID: Int; let decisionID: Int?; let kind: CommandKind
+          let protocolKind: TreadmillProtocolKind; let connectionEpoch: Int; let enqueuedAt: Date
+        }
+        enum TreadmillTelemetryEvidence { case commandEnqueued(TreadmillCommandEnqueuedEvidence) }
+        final class Owner {
+          var commandQueue: [CommandQueueService.Command] = []
+          var treadmillCommandTelemetrySidecar = TreadmillCommandTelemetrySidecar()
+          var treadmillTelemetryConnectionEpoch: Int? = 1
+          var treadmillTelemetryProtocolKind = TreadmillProtocolKind.walkingPad
+          var emitted: [(Int?, TreadmillCommandEnqueuedEvidence)] = []
+          var effects: [String] = []
+          func isSpeedCommandLabel(_ label: String) -> Bool { label.hasPrefix("SPEED") }
+          private func treadmillCommandRequest(kind: CommandKind) -> TreadmillCommandTelemetryRequest {
+            .init(sessionID: 1, commandID: 999, decisionID: nil, kind: kind)
+          }
+          func resetCommandQueue(reason: String, observeTelemetryImmediately: Bool) -> [TreadmillCommandTelemetrySidecar.Entry] {
+            _ = CommandQueueService.clear(queue: &commandQueue)
+            return treadmillCommandTelemetrySidecar.clear()
+          }
+          func processCommandQueue() { effects.append("queue") }
+          func observeCancelledTreadmillCommands(_ entries: [TreadmillCommandTelemetrySidecar.Entry], reason: CommandKind) {}
+          func observeSupersededTreadmillCommands(_ entries: [TreadmillCommandTelemetrySidecar.Entry]) {}
+          func logTrainingEvent(_ name: String, fields: [String: Any]) {}
+          func observeTreadmillTelemetry(_ evidence: TreadmillTelemetryEvidence, sessionID: Int?) {
+            if case let .commandEnqueued(value) = evidence { emitted.append((sessionID, value)); effects.append("sink") }
+          }
+        """#
+        let driver = #"""
+          func run() {
+            let stop = TreadmillCommandTelemetryRequest(sessionID: 1, commandID: 100, decisionID: 200, kind: .stop)
+            enqueueCommand(Data([1]), label: "STOP", highPriority: true, requiresControlReadiness: false, telemetryRequest: stop)
+            enqueueCommand(Data([2]), label: "START/STOP TOGGLE", highPriority: false, requiresControlReadiness: false,
+              telemetryRequest: .init(sessionID: 1, commandID: 101, decisionID: 200, kind: .other("legacy_stop_toggle")))
+            enqueueCommand(Data([1]), label: "STOP retry", highPriority: false, requiresControlReadiness: false, telemetryRequest: stop)
+            precondition(emitted.filter { $0.1.commandID == 100 }.count == 1, "Stop retry duplicated logical enqueue")
+            precondition(commandQueue.map(\.data) == [Data([1]), Data([2]), Data([1])])
+            precondition(commandQueue.map(\.label) == ["STOP", "START/STOP TOGGLE", "STOP retry"])
+            precondition(treadmillCommandTelemetrySidecar.count == 3)
+            precondition(treadmillCommandTelemetrySidecar.queued[0].entry.evidence == treadmillCommandTelemetrySidecar.queued[2].entry.evidence)
+            precondition(effects.prefix(2).elementsEqual(["queue", "sink"]))
+            let cancelled = Owner()
+            cancelled.enqueueCommand(Data([1]), label: "STOP", highPriority: true, requiresControlReadiness: false, telemetryRequest: stop)
+            cancelled.enqueueCommand(Data([1]), label: "STOP retry", highPriority: true, requiresControlReadiness: false, telemetryRequest: stop)
+            precondition(cancelled.emitted.isEmpty, "Explicit request copies must retain prior publication")
+            precondition(cancelled.treadmillCommandTelemetrySidecar.count == 1)
+            let fresh = TreadmillCommandTelemetryRequest(sessionID: 1, commandID: 102, decisionID: 200, kind: .stop)
+            cancelled.enqueueCommand(Data([1]), label: "STOP", highPriority: true, requiresControlReadiness: false, telemetryRequest: fresh)
+            cancelled.enqueueCommand(Data([1]), label: "STOP retry", highPriority: true, requiresControlReadiness: false, telemetryRequest: fresh)
+            precondition(cancelled.emitted.count == 1, "Cancellation before first send must retain enqueue")
+            cancelled.treadmillTelemetryConnectionEpoch = 2
+            cancelled.treadmillTelemetryProtocolKind = .ftms
+            cancelled.enqueueCommand(Data([1]), label: "STOP retry", highPriority: false, requiresControlReadiness: false, telemetryRequest: fresh)
+            precondition(cancelled.emitted.count == 1)
+            let original = cancelled.treadmillCommandTelemetrySidecar.queued.last!.entry
+            precondition(original.sessionID == 1 && original.evidence.connectionEpoch == 1 && original.evidence.protocolKind == .walkingPad)
+            let duplicate = TreadmillCommandTelemetryRequest(sessionID: 1, commandID: 100, decisionID: 200, kind: .stop)
+            enqueueCommand(Data([1]), label: "STOP", highPriority: true, requiresControlReadiness: false, telemetryRequest: duplicate)
+            precondition(emitted.filter { $0.1.commandID == 100 }.count == 2, "Separate requests must not be globally deduplicated")
+          }
+        }
+        Owner().run()
+        """#
+        let program = [try declaration("enum CommandQueueService", in: queue),
+            try declaration("struct TreadmillCommandTelemetrySidecar", in: sidecar),
+            prefix, request, enqueue, driver].joined(separator: "\n")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("StopEnqueue.swift")
+        let binary = directory.appendingPathComponent("stop-enqueue")
+        try program.write(to: file, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", file.path, "-o", binary.path], directory: directory)
+        try execute(binary, arguments: [], directory: directory)
+    }
+
     private func declaration(_ signature: String, in source: String) throws -> String {
         let start = try XCTUnwrap(source.range(of: signature)?.lowerBound)
         var cursor = try XCTUnwrap(source[start...].firstIndex(of: "{"))

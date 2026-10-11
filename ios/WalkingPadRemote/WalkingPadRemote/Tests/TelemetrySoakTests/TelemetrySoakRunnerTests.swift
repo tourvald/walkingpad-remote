@@ -19,6 +19,138 @@ private struct TestControlCycleObservation: ControlCycleObservation {
 final class TelemetrySoakRunnerTests: XCTestCase {
     private let start = TelemetrySoakFixture.baseDate
 
+    func testExplicitStopRetryProducerPersistsValidV14ChainAndKeepsStrictRejections() async throws {
+        let fixture = TelemetrySoakFixture(workload: .init(simulatedMinutes: 1,
+            heartRateCadenceMilliseconds: 1_000, treadmillCadenceMilliseconds: 1_000, burst: nil))
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let decision = TreadmillControlDecisionEvidence(decisionID: DecisionID(), source: .stop,
+            intent: .stop, heartRateInputs: [], occurredAt: start.addingTimeInterval(60), connectionEpoch: epoch)
+        let stop = TreadmillCommandTelemetrySidecar.Request(sessionID: fixture.sessionID,
+            commandID: CommandID(), decisionID: decision.decisionID, kind: .stop)
+        let toggle = TreadmillCommandTelemetrySidecar.Request(sessionID: fixture.sessionID,
+            commandID: CommandID(), decisionID: decision.decisionID, kind: .other("legacy_stop_toggle"))
+        var events: [WorkoutEvent] = []
+        func event(_ payload: WorkoutEventPayload, at seconds: Double) -> WorkoutEvent {
+            let elapsed = ElapsedDuration(microseconds: Int64((seconds * 1_000_000).rounded()))
+            let date = start.addingTimeInterval(elapsed.seconds)
+            return WorkoutEvent(recordID: RecordID(), sessionID: fixture.sessionID,
+                timestamp: .init(occurredAt: date, recordedAt: date, occurredElapsed: elapsed, recordedElapsed: elapsed),
+                payload: .init(schemaVersion: 1, payload: payload))
+        }
+        events.append(event(.workoutPhase(.init(previous: nil, current: .main)), at: 0))
+        events.append(event(.workoutPhase(.init(previous: .main, current: .finished)), at: 60))
+        events.append(event(.treadmillEvidence(.decision(decision)), at: 60))
+        var sidecar = TreadmillCommandTelemetrySidecar()
+        var attempts: [CommandID: UInt16] = [:]
+        var sends: [TreadmillCommandSendAttemptEvidence] = []
+        let physicalTimes = [60.024, 62.048, 64.096]
+        for (index, request) in [stop, toggle, stop].enumerated() {
+            let label = ["STOP", "START/STOP TOGGLE", "STOP retry"][index]
+            let requested = Double(60 + index * 2) + 0.01
+            let prepared = request.prepareEnqueue(protocolKind: .walkingPad, connectionEpoch: epoch,
+                enqueuedAt: start.addingTimeInterval(requested))
+            if let publication = prepared.publication {
+                events.append(event(.treadmillEvidence(.commandEnqueued(publication)), at: requested))
+            }
+            let queued = try XCTUnwrap(prepared.queued)
+            _ = sidecar.enqueueRegular(label: label, evidence: queued,
+                sessionID: request.sessionID, isSpeedLabel: { $0.hasPrefix("SPEED") })
+            guard case let .matched(entry) = sidecar.dequeue(expectedLabel: label, currentEpoch: epoch) else {
+                XCTFail("Original retry queue correlation lost"); return
+            }
+            XCTAssertEqual(entry.sessionID, fixture.sessionID)
+            let number = (attempts[queued.commandID] ?? 0) + 1
+            attempts[queued.commandID] = number
+            let sentAt = start.addingTimeInterval(physicalTimes[index])
+            events.append(event(.treadmillEvidence(.commandQueueDelay(.init(commandID: queued.commandID,
+                decisionID: queued.decisionID, connectionEpoch: queued.connectionEpoch,
+                enqueuedAt: queued.enqueuedAt, sentAt: sentAt))), at: physicalTimes[index]))
+            let send = TreadmillCommandSendAttemptEvidence(commandID: queued.commandID, decisionID: queued.decisionID,
+                attemptID: CommandAttemptID(), attemptNumber: number, protocolKind: queued.protocolKind,
+                connectionEpoch: queued.connectionEpoch, sentAt: sentAt, writeType: .withoutResponse)
+            sends.append(send)
+            events.append(event(.treadmillEvidence(.sendAttempt(send)), at: physicalTimes[index]))
+        }
+        XCTAssertEqual(sends.filter { $0.commandID == stop.commandID }.map(\.attemptNumber), [1, 2])
+        XCTAssertEqual(Set(sends.map(\.attemptID)).count, 3)
+        XCTAssertEqual(sidecar.count, 0)
+        events.append(event(.treadmillEvidence(.acknowledgement(.unresolved(protocolKind: .walkingPad,
+            connectionEpoch: epoch, receivedAt: start.addingTimeInterval(64.2),
+            recordedAt: start.addingTimeInterval(64.2)))), at: 64.2))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try TelemetryStoreFactory.make(.onDisk(directory.appendingPathComponent("stop-chain.store")))
+        let configuration = ImmutableConfigurationSnapshot(id: fixture.sessionHeader.configuration.id,
+            formatVersion: 1, format: .canonicalJSON,
+            canonicalPayload: Data(#"{"targetHeartRate":100,"heartRateZones":[90,110,130,150],"cooldownTargetHeartRate":120,"cooldownMinimumSpeedKilometresPerHour":2.0}"#.utf8),
+            contentHash: .init(algorithm: .sha256, lowercaseHexDigest: "cd20a25b3bbb127ea51edc0f07e3c38dbc7fd1fc2be1c5809e68e58610d34dce"))
+        let recorder = TelemetryRecorder(sessionHeader: supportedHeader(fixture.sessionHeader,
+            configuration: configuration), persistence: store)
+        for item in events { _ = recorder.ingress.yield(.event(item)) }
+        let terminal = start.addingTimeInterval(60)
+        let finish = await recorder.finish(endedAt: terminal, endedElapsed: .init(microseconds: 60_000_000))
+        let outcome = try await store.analyzeTerminalWorkout(sessionID: fixture.sessionID, generatedAt: start.addingTimeInterval(65))
+        let analysis = try XCTUnwrap(outcome.analysis)
+        let detail = try JSONDecoder().decode(WorkoutAnalysisDetailV1.self, from: analysis.versionedDetailPayload)
+        func malformed(_ detail: WorkoutAnalysisDetailV1) -> UInt64 {
+            detail.quality.issues.filter { $0.category == .malformedCorruptEvidence }.reduce(0) { $0 + $1.count }
+        }
+        XCTAssertEqual(finish.completeness, .complete)
+        XCTAssertEqual(analysis.analyzerVersion, WorkoutAnalyzerV1.analyzerVersion)
+        XCTAssertEqual(malformed(detail), 0)
+        XCTAssertEqual(detail.control.commandCount, 2)
+        XCTAssertEqual(try XCTUnwrap(detail.control.retryAttemptLatencySeconds.value).mean, 4.072, accuracy: 0.000001)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.unknownAssociationCount, 1)
+        XCTAssertEqual(detail.quality.commandAcknowledgement.provenEdgeCount, 0)
+        let stored = try await store.fetchEvents(sessionID: fixture.sessionID)
+        XCTAssertEqual(Set(stored), Set(events))
+        let sessions = try await store.fetchSessions()
+        let session = try XCTUnwrap(sessions.first)
+        XCTAssertEqual(session.endedAt, terminal)
+        XCTAssertEqual(session.endedElapsed?.seconds, 60)
+        let history = try await store.fetchWorkoutHistoryPage(filter: .init(profileScope: .exact(fixture.sessionHeader.profileLocalIdentifier)), after: nil, limit: 10)
+        XCTAssertEqual(history.items.first?.durationSeconds, 60)
+        let original = try XCTUnwrap(events.compactMap { item -> TreadmillCommandEnqueuedEvidence? in
+            if case let .treadmillEvidence(.commandEnqueued(value)) = item.payload.payload,
+               value.commandID == stop.commandID { return value }; return nil
+        }.first)
+        let duplicate = TreadmillCommandEnqueuedEvidence(commandID: original.commandID,
+            decisionID: original.decisionID, kind: original.kind, protocolKind: original.protocolKind,
+            connectionEpoch: original.connectionEpoch, enqueuedAt: start.addingTimeInterval(64.01))
+        let send = sends[2]
+        let wrongEpoch = TreadmillCommandSendAttemptEvidence(commandID: send.commandID,
+            decisionID: send.decisionID, attemptID: send.attemptID, attemptNumber: send.attemptNumber,
+            protocolKind: send.protocolKind, connectionEpoch: .init(rawValue: UUID()),
+            sentAt: send.sentAt, writeType: send.writeType)
+        let withoutEnqueue = events.filter { item in
+            if case let .treadmillEvidence(.commandEnqueued(value)) = item.payload.payload { return value.commandID != stop.commandID }
+            return true
+        }
+        let wrongContext = events.filter { item in
+            if case let .treadmillEvidence(.sendAttempt(value)) = item.payload.payload { return value.attemptID != send.attemptID }
+            return true
+        } + [event(.treadmillEvidence(.sendAttempt(wrongEpoch)), at: physicalTimes[2])]
+        let reversed = TreadmillCommandSendAttemptEvidence(commandID: send.commandID,
+            decisionID: send.decisionID, attemptID: send.attemptID, attemptNumber: send.attemptNumber,
+            protocolKind: send.protocolKind, connectionEpoch: send.connectionEpoch,
+            sentAt: start.addingTimeInterval(60.020), writeType: send.writeType)
+        let reordered = events.filter { item in
+            if case let .treadmillEvidence(.sendAttempt(value)) = item.payload.payload { return value.attemptID != send.attemptID }
+            return true
+        } + [event(.treadmillEvidence(.sendAttempt(reversed)), at: 60.020)]
+        let legacy = events + [event(.treadmillEvidence(.commandEnqueued(duplicate)), at: 64.01)]
+        for (index, invalid) in [legacy, withoutEnqueue, wrongContext, reordered].enumerated() {
+            let result = try WorkoutAnalyzerV1.analyze(.init(session: session, heartRate: [], treadmill: [],
+                events: invalid, frames: []), generatedAt: start.addingTimeInterval(70))
+            let bad = try JSONDecoder().decode(WorkoutAnalysisDetailV1.self, from: result.versionedDetailPayload)
+            XCTAssertGreaterThan(malformed(bad), 0)
+            if index == 0 { XCTAssertEqual(malformed(bad), 3) }
+            XCTAssertNil(bad.control.retryAttemptLatencySeconds.value)
+        }
+        print("STOP_CHAIN validMalformed=0 legacyDuplicateMalformed=3 enqueues=2 physicalAttempts=3 originalDuration=60 unknownAck=1")
+    }
+
     func testFractionalWriteSpacingKeepsStatusCoverageAndUnitsRefresh() {
         for cadence in [9, 10] {
             let result = runSchedule(cadence: cadence, dispatchDelay: 0.024, responseDelay: 0.1)
@@ -284,14 +416,15 @@ final class TelemetrySoakRunnerTests: XCTestCase {
                 freshness: hrAge.seconds <= 7 ? .fresh : .stale, provenance: hr.provenance), treadmillEvidence: speed)
     }
 
-    private func supportedHeader(_ base: WorkoutSessionRecord) -> WorkoutSessionRecord {
+    private func supportedHeader(_ base: WorkoutSessionRecord,
+                                 configuration: ImmutableConfigurationSnapshot? = nil) -> WorkoutSessionRecord {
         WorkoutSessionRecord(recordID: base.recordID, sessionID: base.sessionID,
             profileLocalIdentifier: base.profileLocalIdentifier, lifecycleState: base.lifecycleState,
             workoutMode: base.workoutMode, startedAt: base.startedAt, endedAt: nil, endedElapsed: nil,
             incompleteReason: nil, appContext: base.appContext,
             versions: RuntimeVersionContext(telemetrySchema: .init(rawValue: "1.0.0"),
                 algorithm: base.versions.algorithm, safetyPolicy: base.versions.safetyPolicy,
-                workoutProtocol: base.versions.workoutProtocol), configuration: base.configuration,
+                workoutProtocol: base.versions.workoutProtocol), configuration: configuration ?? base.configuration,
             healthKitWorkoutIdentifier: nil, treadmill: base.treadmill, recorderHealth: base.recorderHealth)
     }
 

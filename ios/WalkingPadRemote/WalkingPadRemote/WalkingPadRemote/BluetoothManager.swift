@@ -312,12 +312,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var latestTreadmillObservationEvidence: TreadmillObservationEvidence?
     private var treadmillCommandTelemetrySidecar = TreadmillCommandTelemetrySidecar()
     private var treadmillCommandAttemptNumbers: [CommandID: UInt16] = [:]
-    private struct TreadmillCommandTelemetryRequest {
-        let sessionID: SessionID?
-        let commandID: CommandID
-        let decisionID: DecisionID?
-        let kind: CommandKind
-    }
+    private typealias TreadmillCommandTelemetryRequest = TreadmillCommandTelemetrySidecar.Request
     private struct TreadmillStopTelemetryChain {
         let sessionID: SessionID?
         let decisionID: DecisionID
@@ -6567,16 +6562,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             requiresControlReadiness: requiresControlReadiness
         )
         let request = telemetryRequest ?? treadmillCommandRequest(kind: .other(label))
-        let telemetryEvidence = treadmillTelemetryConnectionEpoch.map {
-            TreadmillCommandEnqueuedEvidence(
-                commandID: request.commandID,
-                decisionID: request.decisionID,
-                kind: request.kind,
-                protocolKind: treadmillTelemetryProtocolKind,
-                connectionEpoch: $0,
-                enqueuedAt: Date()
-            )
-        }
+        let enqueue = request.prepareEnqueue(
+            protocolKind: treadmillTelemetryProtocolKind,
+            connectionEpoch: treadmillTelemetryConnectionEpoch,
+            enqueuedAt: Date()
+        )
+        let telemetryEvidence = enqueue.queued
         if highPriority {
             let cancelled = resetCommandQueue(
                 reason: "high priority → \(label)",
@@ -6597,8 +6588,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 reason: .other("legacy_queue_reset")
             )
             observeSupersededTreadmillCommands(superseded)
-            if let telemetryEvidence {
-                observeTreadmillTelemetry(.commandEnqueued(telemetryEvidence), sessionID: request.sessionID)
+            if let publication = enqueue.publication {
+                observeTreadmillTelemetry(.commandEnqueued(publication), sessionID: request.sessionID)
             }
             return
         }
@@ -6626,8 +6617,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         processCommandQueue()
         observeSupersededTreadmillCommands(superseded)
-        if let telemetryEvidence {
-            observeTreadmillTelemetry(.commandEnqueued(telemetryEvidence), sessionID: request.sessionID)
+        if let publication = enqueue.publication {
+            observeTreadmillTelemetry(.commandEnqueued(publication), sessionID: request.sessionID)
         }
     }
 
