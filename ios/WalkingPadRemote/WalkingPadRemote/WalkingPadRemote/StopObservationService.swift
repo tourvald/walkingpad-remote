@@ -70,18 +70,24 @@ struct StopObservationLifecycle {
     private(set) var finalizedAt: Date?
     private(set) var finalResult: StopObservationFinalResult?
     private(set) var finalReason: String?
+    private(set) var scheduledStopEffectsRemaining: Int?
+    private(set) var lastMotionWriteAt: Date?
+    // Legacy response callbacks cannot prove completion of a specific queued motion write.
+    private(set) var hasResponseRequiredMotionWrite = false
     private var nextSequence = 1
 
     init(
         attemptID: UUID,
         source: String,
         attemptedAt: Date,
-        context: StopObservationContext
+        context: StopObservationContext,
+        scheduledStopEffects: Int? = nil
     ) {
         self.attemptID = attemptID
         self.source = source
         self.attemptedAt = attemptedAt
         self.context = context
+        scheduledStopEffectsRemaining = scheduledStopEffects
     }
 
     var deadline: Date {
@@ -97,6 +103,30 @@ struct StopObservationLifecycle {
 
     mutating func markCommandSent(at sentAt: Date) {
         commandSentAt = commandSentAt ?? sentAt
+        markMotionWrite(at: sentAt)
+    }
+
+    mutating func completeScheduledStopEffect() {
+        guard let remaining = scheduledStopEffectsRemaining, remaining > 0 else { return }
+        scheduledStopEffectsRemaining = remaining - 1
+    }
+
+    mutating func markMotionWrite(at sentAt: Date, requiresResponse: Bool = false) {
+        lastMotionWriteAt = max(lastMotionWriteAt ?? sentAt, sentAt)
+        hasResponseRequiredMotionWrite = hasResponseRequiredMotionWrite || requiresResponse
+    }
+
+    mutating func finalizeCompletedStopIfReady(at now: Date, queueIdle: Bool) -> Bool {
+        guard finalResult == nil, now < deadline, scheduledStopEffectsRemaining == 0,
+              !hasResponseRequiredMotionWrite,
+              queueIdle, let lastMotionWriteAt, let latest = observations.last,
+              latest.observedAt > lastMotionWriteAt, currentEvaluation(at: now).isConfirmed else {
+            return false
+        }
+        finalizedAt = now
+        finalResult = .confirmed
+        finalReason = "fresh_zero_after_completed_stop_effects"
+        return true
     }
 
     mutating func record(

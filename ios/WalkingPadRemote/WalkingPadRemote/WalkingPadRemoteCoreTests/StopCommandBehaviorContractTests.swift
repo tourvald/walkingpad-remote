@@ -113,7 +113,7 @@ final class StopCommandBehaviorContractTests: XCTestCase {
                 "let stopCommandWasEnqueued = stopBeltOnce(",
                 "label: \"START/STOP TOGGLE\"",
                 "DispatchQueue.main.asyncAfter(deadline: .now() + 4.0)",
-                "beginStopObservation(source: reason, telemetryChain: telemetryChain)"
+                "beginStopObservation(source: reason, telemetryChain: telemetryChain,"
             ],
             in: body
         )
@@ -127,7 +127,7 @@ final class StopCommandBehaviorContractTests: XCTestCase {
         assertOrdered(
             [
                 "after: 4.0",
-                "beginStopObservation(source: \"direct\", telemetryChain: telemetryChain)"
+                "beginStopObservation(source: \"direct\", telemetryChain: telemetryChain,"
             ],
             in: directBody
         )
