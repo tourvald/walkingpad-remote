@@ -194,10 +194,7 @@ struct StopObservationLifecycle {
 
     /// Presentation only; currentEvaluation remains the authoritative fresh-device predicate.
     func statusText(for evaluation: StopObservationEvaluation, currentObservationMatches: Bool) -> String {
-        if evaluation.result == .stale, currentObservationMatches,
-           finalResult != .unconfirmed, firstConfirmedAt != nil, let latest = observations.last,
-           Self.evaluate(latest, attemptAt: attemptedAt, commandSentAt: commandSentAt,
-               expectedContext: context, now: latest.observedAt).isConfirmed {
+        if hasHistoricalStopConfirmation(for: evaluation, currentObservationMatches: currentObservationMatches) {
             return "stop previously confirmed • current evidence stale"
         }
         if finalResult == .timeoutUnconfirmed { return "stop unconfirmed • timeout" }
@@ -215,6 +212,27 @@ struct StopObservationLifecycle {
         case .missingSpeed, .missingState, .invalidChecksum, .wrongContext, .beforeAttempt:
             return "stop unconfirmed • evidence unavailable"
         }
+    }
+
+    private func hasHistoricalStopConfirmation(
+        for evaluation: StopObservationEvaluation,
+        currentObservationMatches: Bool
+    ) -> Bool {
+        guard evaluation.result == .stale, currentObservationMatches,
+              finalResult != .unconfirmed, firstConfirmedAt != nil, let latest = observations.last else {
+            return false
+        }
+        return Self.evaluate(latest, attemptAt: attemptedAt, commandSentAt: commandSentAt,
+            expectedContext: context, now: latest.observedAt).isConfirmed
+    }
+
+    /// Suppresses only the failure alert; stale evidence remains unconfirmed for current readiness.
+    func shouldPresentTimeoutWarning(at now: Date, currentObservationMatches: Bool, queueIdle: Bool) -> Bool {
+        guard scheduledStopEffectsRemaining == 0, !hasResponseRequiredMotionWrite, queueIdle,
+              let lastMotionWriteAt, let latest = observations.last, latest.observedAt > lastMotionWriteAt,
+              hasHistoricalStopConfirmation(for: currentEvaluation(at: now),
+                currentObservationMatches: currentObservationMatches) else { return true }
+        return false
     }
 
     mutating func finalizeTimeout(at now: Date) -> StopObservationEvaluation {

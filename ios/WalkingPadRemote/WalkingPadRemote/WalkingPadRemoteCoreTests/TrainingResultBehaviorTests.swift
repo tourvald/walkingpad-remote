@@ -96,16 +96,6 @@ final class TrainingResultBehaviorTests: XCTestCase {
         let prefix = Self.ownerPrefix.replacingOccurrences(of: "func finalizeCompletedStopIfReady() {}", with: "")
             .replacingOccurrences(of: "func logTrainingEvent(_ event: String, fields: [String: Any]) {}",
                 with: "func logTrainingEvent(_ event: String, fields: [String: Any]) { telemetryV2Coordinator.events.append(event) }")
-        let extra = #"""
-         enum ProtocolKind { case walkingPad, ftms }
-         struct Epoch { let rawValue: UUID }
-         struct Observation { let protocolKind: ProtocolKind; let connectionEpoch: Epoch; let receivedAt: Date }
-         var latestTreadmillObservationEvidence: Observation?
-         var commandQueue: [Int] = []
-         var isCommandQueueProcessing = false
-         var changedContext: StopObservationContext?
-         func currentStopObservationContext() -> StopObservationContext? { changedContext ?? stopObservationLifecycle?.context }
-        """#
         let driver = #"""
         }
         for scenario in ["confirmed", "queued", "processing", "missing", "wrong-epoch", "wrong-protocol", "wrong-time", "new-context", "old-callback", "response-required"] {
@@ -142,7 +132,46 @@ final class TrainingResultBehaviorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("CompletedStop.swift")
         let binary = directory.appendingPathComponent("completed-stop")
-        try [lifecycle, prefix, extra, methods, driver].joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+        try [lifecycle, prefix, methods, driver].joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", file.path, "-o", binary.path], directory: directory)
+        try execute(binary, arguments: [], directory: directory)
+    }
+
+    func testHistoricalStopSilenceDoesNotPresentFailureAlert() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let service = try String(contentsOf: app.appendingPathComponent("StopObservationService.swift"), encoding: .utf8)
+        let finish = try declaration("private func finishStopObservation(", in: source)
+            .replacingOccurrences(of: "private func", with: "func")
+        let driver = #"""
+        }
+        let owner = Owner()
+        let at = Date(timeIntervalSince1970: 100)
+        let context = StopObservationContext(peripheralID: UUID(), connectionEpoch: UUID(), notificationStreamID: UUID())
+        var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "fixture", attemptedAt: at,
+            context: context, scheduledStopEffects: 1)
+        lifecycle.markCommandSent(at: at)
+        lifecycle.markMotionWrite(at: at.addingTimeInterval(2))
+        let received = at.addingTimeInterval(4.2)
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true, context: context,
+            observedAt: received, evaluatedAt: received)
+        lifecycle.completeScheduledStopEffect()
+        _ = lifecycle.finalizeTimeout(at: lifecycle.deadline)
+        owner.stopObservationLifecycle = lifecycle
+        owner.latestTreadmillObservationEvidence = .init(protocolKind: .walkingPad,
+            connectionEpoch: .init(rawValue: context.connectionEpoch), receivedAt: received)
+        owner.finishStopObservation(lifecycle: lifecycle, now: lifecycle.deadline)
+        precondition(owner.infoToastMessage.isEmpty, "Freshness expiry must not claim that a proven Stop failed")
+        precondition(owner.telemetryV2Coordinator.finishes == 1, "Presentation cannot change finalization")
+        precondition(!lifecycle.currentEvaluation(at: lifecycle.deadline).isConfirmed, "Stale truth cannot authorize readiness")
+        """#
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("StopNotification.swift")
+        let binary = directory.appendingPathComponent("stop-notification")
+        try [service, Self.ownerPrefix, finish, driver].joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
         try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", file.path, "-o", binary.path], directory: directory)
         try execute(binary, arguments: [], directory: directory)
     }
@@ -364,6 +393,15 @@ final class TrainingResultBehaviorTests: XCTestCase {
      func observeCancelledTreadmillCommands(_ entries: [Int], reason: CancellationReason) {}
      enum CancellationReason { case other(String) }
      var queuedSessionID: String? = "original-session"
+         enum ProtocolKind { case walkingPad, ftms }
+         struct Epoch { let rawValue: UUID }
+         struct Observation { let protocolKind: ProtocolKind; let connectionEpoch: Epoch; let receivedAt: Date }
+         var latestTreadmillObservationEvidence: Observation?
+         var commandQueue: [Int] = []
+         var isCommandQueueProcessing = false
+         var changedContext: StopObservationContext?
+         func currentStopObservationContext() -> StopObservationContext? { changedContext ?? stopObservationLifecycle?.context }
+
     """#
 
     private static let ownerDriver = #"""

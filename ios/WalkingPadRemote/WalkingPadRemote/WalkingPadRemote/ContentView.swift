@@ -2692,8 +2692,11 @@ private struct ControlSwipeView: View, Equatable {
                 if newValue != nil { showInfoToast = true }
             }
             .alert("Информация", isPresented: $showInfoToast, presenting: manager.infoToastMessage) { _ in
-                Button("Открыть выбор") { showDevicePicker = true }
-                Button("OK", role: .cancel) {}
+                Button("Открыть выбор") {
+                    manager.infoToastMessage = nil
+                    showDevicePicker = true
+                }
+                Button("OK", role: .cancel) { manager.infoToastMessage = nil }
             } message: { msg in
                 Text(msg)
             }
