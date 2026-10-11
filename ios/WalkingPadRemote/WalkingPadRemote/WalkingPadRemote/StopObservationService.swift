@@ -162,6 +162,31 @@ struct StopObservationLifecycle {
         )
     }
 
+    /// Presentation only; currentEvaluation remains the authoritative fresh-device predicate.
+    func statusText(for evaluation: StopObservationEvaluation, currentObservationMatches: Bool) -> String {
+        if evaluation.result == .stale, currentObservationMatches,
+           finalResult != .unconfirmed, firstConfirmedAt != nil, let latest = observations.last,
+           Self.evaluate(latest, attemptAt: attemptedAt, commandSentAt: commandSentAt,
+               expectedContext: context, now: latest.observedAt).isConfirmed {
+            return "stop previously confirmed • current evidence stale"
+        }
+        if finalResult == .timeoutUnconfirmed { return "stop unconfirmed • timeout" }
+        if finalResult == .unconfirmed {
+            return finalReason?.hasPrefix("stop_command_not_sent") == true
+                ? "stop command not sent • confirmation unavailable" : "stop unconfirmed"
+        }
+        switch evaluation.result {
+        case .confirmed: return "stop confirmed by device"
+        case .moving: return "stop unconfirmed • moving"
+        case .contradictory: return "stop unconfirmed • contradictory"
+        case .stale: return "stop unconfirmed • stale"
+        case .missingObservation, .commandNotSent, .beforeCommand:
+            return "stop requested • confirming"
+        case .missingSpeed, .missingState, .invalidChecksum, .wrongContext, .beforeAttempt:
+            return "stop unconfirmed • evidence unavailable"
+        }
+    }
+
     mutating func finalizeTimeout(at now: Date) -> StopObservationEvaluation {
         let evaluation = currentEvaluation(at: now)
         finalizedAt = now

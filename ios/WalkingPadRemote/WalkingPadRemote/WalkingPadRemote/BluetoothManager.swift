@@ -4717,31 +4717,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         lifecycle: StopObservationLifecycle,
         evaluation: StopObservationEvaluation
     ) {
-        if lifecycle.finalResult == .timeoutUnconfirmed {
-            stopTruthStatusText = "stop unconfirmed • timeout"
-            return
-        }
-        if lifecycle.finalResult == .unconfirmed {
-            stopTruthStatusText = lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true
-                ? "stop command not sent • confirmation unavailable"
-                : "stop unconfirmed"
-            return
-        }
-
-        switch evaluation.result {
-        case .confirmed:
-            stopTruthStatusText = "stop confirmed by device"
-        case .moving:
-            stopTruthStatusText = "stop unconfirmed • moving"
-        case .contradictory:
-            stopTruthStatusText = "stop unconfirmed • contradictory"
-        case .stale:
-            stopTruthStatusText = "stop unconfirmed • stale"
-        case .missingObservation, .commandNotSent, .beforeCommand:
-            stopTruthStatusText = "stop requested • confirming"
-        case .missingSpeed, .missingState, .invalidChecksum, .wrongContext, .beforeAttempt:
-            stopTruthStatusText = "stop unconfirmed • evidence unavailable"
-        }
+        stopTruthStatusText = lifecycle.statusText(for: evaluation,
+            currentObservationMatches: currentStopObservationContext() == lifecycle.context
+                && latestTreadmillObservationEvidence?.receivedAt == lifecycle.observations.last?.observedAt)
     }
 
     private func stopObservationTelemetryFields(
@@ -4814,7 +4792,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         case .confirmed:
             break
         case .timeoutUnconfirmed:
-            stopTruthStatusText = "stop unconfirmed • timeout"
             infoToastMessage = "Остановка дорожки не подтверждена. Если полотно движется, используйте физическое отключение или аварийный способ остановки."
         case .unconfirmed:
             if lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true {
