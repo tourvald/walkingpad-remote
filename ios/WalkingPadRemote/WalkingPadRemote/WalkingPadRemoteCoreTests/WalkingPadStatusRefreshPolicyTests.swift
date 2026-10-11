@@ -105,6 +105,31 @@ final class WalkingPadStatusRefreshPolicyTests: XCTestCase {
         XCTAssertLessThanOrEqual(observationSeconds.count, sessionSeconds / 2)
     }
 
+    func testDeferredAdmissionPreservesLeadAndRejectsUnknownWriteTiming() {
+        for delay in [-1.0, .infinity, .nan, 1.0] {
+            let decision = WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(isWorkoutOrCooldownActive: true,
+                transportReady: true, motionQueueIdle: true, secondsUntilNextScheduledMotion: 3,
+                lastStatusQueryAt: nil, lastControllerUnitsQueryAt: start,
+                earliestWriteDelaySeconds: delay, now: start)
+            XCTAssertFalse(decision.shouldRequest)
+        }
+        let safe = WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(isWorkoutOrCooldownActive: true,
+            transportReady: true, motionQueueIdle: true, secondsUntilNextScheduledMotion: 3,
+            lastStatusQueryAt: nil, lastControllerUnitsQueryAt: start, earliestWriteDelaySeconds: 0.024, now: start)
+        XCTAssertEqual(safe.kind, .status)
+    }
+
+    func testUnitsQueryLeavesPacedStatusSlotAndCannotTakeAgingStatusWindow() {
+        for (age, lead, delay, expected) in [(4.0, 8, 0.0, WalkingPadReadOnlyRefreshKind.status as WalkingPadReadOnlyRefreshKind?),
+                                          (2.0, 5, 0.0, .controllerUnits), (2.0, 5, 1.0, nil)] {
+            let decision = WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(isWorkoutOrCooldownActive: true,
+                transportReady: true, motionQueueIdle: true, secondsUntilNextScheduledMotion: lead,
+                lastStatusQueryAt: start.addingTimeInterval(-age), lastControllerUnitsQueryAt: start.addingTimeInterval(-20),
+                earliestWriteDelaySeconds: delay, now: start)
+            XCTAssertEqual(decision.kind, expected)
+        }
+    }
+
     private func refresh(
         active: Bool,
         transport: Bool,

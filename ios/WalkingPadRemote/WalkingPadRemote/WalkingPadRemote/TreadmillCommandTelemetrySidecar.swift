@@ -47,6 +47,12 @@ struct TreadmillCommandTelemetrySidecar {
         return superseded
     }
 
+    mutating func removeQueued(where isRemovedLabel: (String) -> Bool) -> [Entry] {
+        let removed = queued.compactMap { isRemovedLabel($0.label) ? $0.entry : nil }
+        queued.removeAll { isRemovedLabel($0.label) }
+        return removed
+    }
+
     mutating func clear() -> [Entry] {
         let cancelled = queued.map(\.entry)
         queued.removeAll()

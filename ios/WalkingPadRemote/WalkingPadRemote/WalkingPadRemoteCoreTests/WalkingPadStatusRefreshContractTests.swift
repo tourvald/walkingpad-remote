@@ -46,10 +46,26 @@ final class WalkingPadStatusRefreshContractTests: XCTestCase {
 
         XCTAssertTrue(maintenance.contains("motionQueueIdle: commandQueue.isEmpty"))
         XCTAssertTrue(maintenance.contains("!isCommandQueueProcessing"))
-        XCTAssertTrue(maintenance.contains("nextCommandAllowedAt <= now"))
+        XCTAssertTrue(maintenance.contains("earliestWriteDelaySeconds: max(0, nextCommandAllowedAt.timeIntervalSince(now))"))
         XCTAssertTrue(maintenance.contains("controllerUnitsNextScheduledMotionLeadSeconds"))
         XCTAssertFalse(maintenance.contains("highPriority: true"))
         XCTAssertFalse(maintenance.contains("sendTreadmill"))
+    }
+
+    func testActualWriteOwnsStatusCadenceAndExistingCallbackRevalidatesReadOnlyWindow() throws {
+        let manager = try managerSource()
+        let request = try functionBody("private func requestWalkingPadStatusRefresh(", in: manager)
+        XCTAssertFalse(request.contains("lastWalkingPadStatusQueryAt ="))
+        let write = try functionBody("private func performWrite(", in: manager)
+        let invoked = try XCTUnwrap(write.range(of: "p.writeValue"))
+        let tracked = try XCTUnwrap(write.range(of: "lastWalkingPadStatusQueryAt = sentAt"))
+        XCTAssertLessThan(invoked.lowerBound, tracked.lowerBound)
+        let queue = try functionBody("private func processCommandQueue()", in: manager)
+        XCTAssertEqual(queue.components(separatedBy: "DispatchQueue.main.asyncAfter").count - 1, 1)
+        let prune = try XCTUnwrap(queue.range(of: "CommandQueueService.discardReadOnlyQueries"))
+        let send = try XCTUnwrap(queue.range(of: "self.performWrite"))
+        XCTAssertLessThan(prune.lowerBound, send.lowerBound)
+        XCTAssertTrue(queue.contains("self.controllerUnitsNextScheduledMotionLeadSeconds <= ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds"))
     }
 
     private func managerSource() throws -> String {

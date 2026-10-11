@@ -155,6 +155,42 @@ final class CommandQueueServiceTests: XCTestCase {
         XCTAssertEqual(sidecar.count, 0)
     }
 
+    func testReadOnlyQueriesYieldWithoutChangingMotionBytesOrderOrSessionOwnership() {
+        let epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let session = SessionID()
+        let labels = ["QUERY STATUS", "SPEED 4.0", "QUERY PARAMS", "START", "QUERY STATUS extra", "STOP retry"]
+        var queue: [CommandQueueService.Command] = []
+        var sidecar = TreadmillCommandTelemetrySidecar()
+        for (index, label) in labels.enumerated() {
+            queue.append(.init(data: Data([UInt8(index)]), label: label))
+            _ = sidecar.enqueueRegular(label: label, evidence: evidence(label: label, epoch: epoch),
+                sessionID: session, isSpeedLabel: isSpeed)
+        }
+        let originalMotion = queue.filter { !CommandQueueService.isReadOnlyQueryLabel($0.label) }
+        let discarded = CommandQueueService.discardReadOnlyQueries(queue: &queue, motionWindowIsProtected: false)
+        let cancelled = sidecar.removeQueued(where: CommandQueueService.isReadOnlyQueryLabel)
+        XCTAssertEqual(discarded.map(\.label), ["QUERY STATUS", "QUERY PARAMS"])
+        XCTAssertEqual(queue, originalMotion)
+        XCTAssertEqual(cancelled.count, 2)
+        XCTAssertTrue(cancelled.allSatisfy { $0.sessionID == session })
+        for command in queue {
+            guard case let .matched(entry) = sidecar.dequeue(expectedLabel: command.label, currentEpoch: epoch) else {
+                XCTFail("Correlation lost after read-only preemption"); return
+            }
+            XCTAssertEqual(entry.sessionID, session)
+        }
+    }
+
+    func testLateReadOnlyCallbackYieldsAtProtectedWindowButIdleQueryIsRetained() {
+        for protected in [false, true] {
+            let query = CommandQueueService.Command(data: Data([0xA2]), label: "QUERY STATUS")
+            var queue = [query]
+            let discarded = CommandQueueService.discardReadOnlyQueries(queue: &queue, motionWindowIsProtected: protected)
+            XCTAssertEqual(discarded, protected ? [query] : [])
+            XCTAssertEqual(queue, protected ? [] : [query])
+        }
+    }
+
     private func evidence(
         label: String,
         epoch: TreadmillConnectionEpoch
