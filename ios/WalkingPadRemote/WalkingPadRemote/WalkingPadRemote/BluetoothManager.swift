@@ -6684,14 +6684,38 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             ])
         }
         let epoch = commandQueueEpoch
+        // A cancelled query wakeup does not own the replacement queue or its Stop.
+        let queuedReadOnlyQuery = commandQueue.first.map {
+            CommandQueueService.isReadOnlyQueryLabel($0.label)
+        } ?? false
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             guard self.commandQueueEpoch == epoch else {
-                self.isCommandQueueProcessing = false
-                self.nativeWorkoutStopTransportInvocationFailedIfNeeded(
-                    reason: "Очередь Stop была сброшена"
-                )
+                if !queuedReadOnlyQuery {
+                    self.isCommandQueueProcessing = false
+                    self.nativeWorkoutStopTransportInvocationFailedIfNeeded(
+                        reason: "Очередь Stop была сброшена"
+                    )
+                }
                 return
+            }
+            let discardedQueries = CommandQueueService.discardReadOnlyQueries(
+                queue: &self.commandQueue,
+                motionWindowIsProtected: self.isHrControlRunning
+                    && self.controllerUnitsNextScheduledMotionLeadSeconds <= ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds
+            )
+            if !discardedQueries.isEmpty {
+                if discardedQueries.contains(where: { $0.label == "QUERY PARAMS" }) {
+                    self.lastControllerUnitsQueryAt = nil
+                }
+                self.observeCancelledTreadmillCommands(
+                    self.treadmillCommandTelemetrySidecar.removeQueued(where: CommandQueueService.isReadOnlyQueryLabel),
+                    reason: .other("read_only_query_yielded_to_motion")
+                )
+                if self.commandQueue.isEmpty {
+                    self.isCommandQueueProcessing = false
+                    return
+                }
             }
             guard !self.commandQueue.isEmpty else {
                 self.isCommandQueueProcessing = false
@@ -6850,6 +6874,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             nativeWorkoutStopTransportInvokedIfNeeded()
         }
         let sentAt = lastCommandSentAt ?? Date()
+        if label == "QUERY STATUS" { lastWalkingPadStatusQueryAt = sentAt }
         let telemetryWriteType: TreadmillCommandWriteType = type == .withoutResponse
             ? .withoutResponse
             : .withResponse
@@ -7345,17 +7370,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let refreshDecision = WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
             isWorkoutOrCooldownActive: isHrControlRunning,
             transportReady: controllerUnitsQueryTransportReady,
-            motionQueueIdle: commandQueue.isEmpty
-                && !isCommandQueueProcessing
-                && nextCommandAllowedAt <= now,
+            motionQueueIdle: commandQueue.isEmpty && !isCommandQueueProcessing,
             secondsUntilNextScheduledMotion: controllerUnitsNextScheduledMotionLeadSeconds,
             lastStatusQueryAt: lastWalkingPadStatusQueryAt,
             lastControllerUnitsQueryAt: lastControllerUnitsQueryAt,
+            earliestWriteDelaySeconds: max(0, nextCommandAllowedAt.timeIntervalSince(now)),
+            writeSpacingSeconds: commandMinIntervalSecondsForCurrentProtocol(),
             now: now
         )
         switch refreshDecision.kind {
         case .status:
-            requestWalkingPadStatusRefresh(now: now)
+            requestWalkingPadStatusRefresh()
         case .controllerUnits:
             requestControllerUnitsTruth(
                 trigger: ControllerUnitsRefreshTrigger.activeWorkoutIdleWindow.rawValue,
@@ -7366,9 +7391,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
-    private func requestWalkingPadStatusRefresh(now: Date) {
+    private func requestWalkingPadStatusRefresh() {
         guard controllerUnitsQueryTransportReady else { return }
-        lastWalkingPadStatusQueryAt = now
         logTrainingEvent("walkingpad_status_query_requested", fields: [
             "command_family": "A2",
             "key": 0,

@@ -17,6 +17,22 @@ enum CommandQueueService {
         let coalescedSpeedCount: Int
     }
 
+    static func isReadOnlyQueryLabel(_ label: String) -> Bool {
+        label == "QUERY STATUS" || label == "QUERY PARAMS"
+    }
+
+    static func discardReadOnlyQueries(
+        queue: inout [Command],
+        motionWindowIsProtected: Bool
+    ) -> [Command] {
+        guard motionWindowIsProtected || queue.contains(where: { !isReadOnlyQueryLabel($0.label) }) else {
+            return []
+        }
+        let discarded = queue.filter { isReadOnlyQueryLabel($0.label) }
+        queue.removeAll { isReadOnlyQueryLabel($0.label) }
+        return discarded
+    }
+
     static func clear(queue: inout [Command]) -> Int {
         let dropped = queue.count
         queue.removeAll()

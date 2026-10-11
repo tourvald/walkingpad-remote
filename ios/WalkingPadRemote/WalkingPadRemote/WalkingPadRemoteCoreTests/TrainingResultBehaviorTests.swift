@@ -176,6 +176,44 @@ final class TrainingResultBehaviorTests: XCTestCase {
         try execute(binary, arguments: [], directory: directory)
     }
 
+    func testCancelledReadOnlyEpochCannotFailReplacementStopOrUnlockItsQueue() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let queue = try declaration("private func processCommandQueue()", in: source)
+        let start = try XCTUnwrap(queue.range(of: "            guard self.commandQueueEpoch == epoch else {")?.lowerBound)
+        let end = try XCTUnwrap(queue.range(of: "            let discardedQueries", range: start..<queue.endIndex)?.lowerBound)
+        let guardBody = String(queue[start..<end])
+        let program = """
+        import Foundation
+        final class Owner {
+         var commandQueueEpoch = 2
+         var isCommandQueueProcessing = true
+         var failures = 0
+         var continued = 0
+         func nativeWorkoutStopTransportInvocationFailedIfNeeded(reason: String) { failures += 1 }
+         func callback(epoch: Int, queuedReadOnlyQuery: Bool) {
+        \(guardBody)
+          continued += 1
+         }
+        }
+        let oldQuery = Owner(); oldQuery.callback(epoch: 1, queuedReadOnlyQuery: true)
+        precondition(oldQuery.isCommandQueueProcessing && oldQuery.failures == 0 && oldQuery.continued == 0)
+        let oldMotion = Owner(); oldMotion.callback(epoch: 1, queuedReadOnlyQuery: false)
+        precondition(!oldMotion.isCommandQueueProcessing && oldMotion.failures == 1 && oldMotion.continued == 0)
+        let current = Owner(); current.callback(epoch: 2, queuedReadOnlyQuery: true)
+        precondition(current.isCommandQueueProcessing && current.failures == 0 && current.continued == 1)
+        """
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("ReadOnlyEpoch.swift")
+        let binary = directory.appendingPathComponent("read-only-epoch")
+        try program.write(to: file, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", file.path, "-o", binary.path], directory: directory)
+        try execute(binary, arguments: [], directory: directory)
+    }
+
     private func declaration(_ signature: String, in source: String) throws -> String {
         let start = try XCTUnwrap(source.range(of: signature)?.lowerBound)
         var cursor = try XCTUnwrap(source[start...].firstIndex(of: "{"))
