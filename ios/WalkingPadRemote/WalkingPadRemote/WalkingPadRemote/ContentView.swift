@@ -272,6 +272,13 @@ private struct TrainingEndingStatus {
 
 private func trainingEndingStatus(from rawStatus: String) -> TrainingEndingStatus? {
     guard !rawStatus.isEmpty else { return nil }
+    if rawStatus == "stop previously confirmed • current evidence stale" {
+        return TrainingEndingStatus(
+            title: "Остановка подтверждена • данные устарели",
+            systemImage: "clock.badge.checkmark",
+            tint: .orange
+        )
+    }
     if rawStatus.contains("confirmed by device") {
         return TrainingEndingStatus(
             title: "Дорожка остановлена",

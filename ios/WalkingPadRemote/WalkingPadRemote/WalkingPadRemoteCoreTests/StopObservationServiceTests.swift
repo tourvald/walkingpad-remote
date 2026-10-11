@@ -29,6 +29,68 @@ final class StopObservationServiceTests: XCTestCase {
         )
     }
 
+    func testHistoricalStopPresentationSurvivesSilenceWithoutCurrentConfirmation() {
+        let expected = context()
+        var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test",
+            attemptedAt: attemptAt, context: expected)
+        lifecycle.markCommandSent(at: attemptAt)
+        let receivedAt = attemptAt.addingTimeInterval(4.2)
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: receivedAt, evaluatedAt: receivedAt)
+        let now = receivedAt.addingTimeInterval(2.01)
+        let stale = lifecycle.currentEvaluation(at: now)
+        XCTAssertFalse(stale.isConfirmed)
+        XCTAssertEqual(lifecycle.statusText(for: stale, currentObservationMatches: true),
+            "stop previously confirmed • current evidence stale")
+        XCTAssertEqual(lifecycle.statusText(for: stale, currentObservationMatches: false),
+            "stop unconfirmed • stale")
+        _ = lifecycle.finalizeTimeout(at: lifecycle.deadline)
+        XCTAssertEqual(lifecycle.finalResult, .timeoutUnconfirmed)
+        XCTAssertEqual(lifecycle.statusText(for: lifecycle.currentEvaluation(at: lifecycle.deadline),
+            currentObservationMatches: true), "stop previously confirmed • current evidence stale")
+    }
+
+    func testLaterConflictingEvidenceCannotBecomeHistoricalConfirmationWhenStale() {
+        for (speed, state, checksum) in [(35 as Int?, 1 as Int?, true),
+            (0, 1, true), (35, 0, true), (0, 0, false), (nil, 0, true), (0, nil, true)] {
+            let expected = context()
+            var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test",
+                attemptedAt: attemptAt, context: expected)
+            lifecycle.markCommandSent(at: attemptAt)
+            let confirmedAt = attemptAt.addingTimeInterval(0.5)
+            _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+                context: expected, observedAt: confirmedAt, evaluatedAt: confirmedAt)
+            let laterAt = attemptAt.addingTimeInterval(1)
+            _ = lifecycle.record(speedRawTenths: speed, state: state, checksumValid: checksum,
+                context: expected, observedAt: laterAt, evaluatedAt: laterAt)
+            let stale = lifecycle.currentEvaluation(at: laterAt.addingTimeInterval(2.01))
+            XCTAssertEqual(stale.result, .stale)
+            XCTAssertNotNil(lifecycle.firstConfirmedAt)
+            XCTAssertEqual(lifecycle.statusText(for: stale, currentObservationMatches: true),
+                "stop unconfirmed • stale")
+            _ = lifecycle.finalizeTimeout(at: lifecycle.deadline)
+            XCTAssertEqual(lifecycle.statusText(for: lifecycle.currentEvaluation(at: lifecycle.deadline),
+                currentObservationMatches: true), "stop unconfirmed • timeout")
+        }
+    }
+
+    func testNewAttemptAndInvalidatedContextNeverReuseHistoricalStopPresentation() {
+        let expected = context()
+        var old = StopObservationLifecycle(attemptID: UUID(), source: "test",
+            attemptedAt: attemptAt, context: expected)
+        old.markCommandSent(at: attemptAt)
+        let at = attemptAt.addingTimeInterval(0.5)
+        _ = old.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: at, evaluatedAt: at)
+        _ = old.finalizeUnconfirmed(at: at.addingTimeInterval(3), reason: "connection_context_changed")
+        XCTAssertEqual(old.statusText(for: old.currentEvaluation(at: at.addingTimeInterval(3)),
+            currentObservationMatches: true), "stop unconfirmed")
+        let next = StopObservationLifecycle(attemptID: UUID(), source: "test",
+            attemptedAt: at.addingTimeInterval(3), context: context())
+        XCTAssertEqual(next.statusText(for: next.currentEvaluation(at: at.addingTimeInterval(3)),
+            currentObservationMatches: true), "stop requested • confirming")
+    }
+
     func testFreshZeroAndAcceptedNonRunningStateConfirmsStop() {
         let expectedContext = context()
         let result = StopObservationLifecycle.evaluate(
