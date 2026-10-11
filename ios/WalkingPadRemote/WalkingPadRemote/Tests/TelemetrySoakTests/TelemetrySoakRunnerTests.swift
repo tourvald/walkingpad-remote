@@ -2,7 +2,9 @@ import XCTest
 import TelemetryInstrumentation
 import TelemetryRecorder
 import TelemetryRuntime
-import WalkingPadCoreLogic
+@testable import WalkingPadCoreLogic
+import TelemetryDomain
+import TelemetryPersistence
 @testable import TelemetrySoak
 
 private struct TestControlCycleObservation: ControlCycleObservation {
@@ -14,6 +16,67 @@ private struct TestControlCycleObservation: ControlCycleObservation {
 }
 
 final class TelemetrySoakRunnerTests: XCTestCase {
+    func testRepresentativeTerminalStagesBeforeAndAfterStopOwnerCompletion() async throws {
+        let workload = TelemetrySoakWorkload(simulatedMinutes: 31,
+            heartRateCadenceMilliseconds: 1_000, treadmillCadenceMilliseconds: 1_000, burst: nil)
+        for early in [false, true] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let store = try TelemetryStoreFactory.make(.onDisk(directory.appendingPathComponent("terminal.store")))
+            let fixture = TelemetrySoakFixture(workload: workload)
+            let base = fixture.sessionHeader
+            let header = WorkoutSessionRecord(recordID: base.recordID, sessionID: base.sessionID,
+                profileLocalIdentifier: base.profileLocalIdentifier, lifecycleState: base.lifecycleState,
+                workoutMode: base.workoutMode, startedAt: base.startedAt, endedAt: nil, endedElapsed: nil,
+                incompleteReason: nil, appContext: base.appContext,
+                versions: RuntimeVersionContext(telemetrySchema: .init(rawValue: "1.0.0"),
+                    algorithm: base.versions.algorithm, safetyPolicy: base.versions.safetyPolicy,
+                    workoutProtocol: base.versions.workoutProtocol), configuration: base.configuration,
+                healthKitWorkoutIdentifier: nil, treadmill: base.treadmill, recorderHealth: base.recorderHealth)
+            let recorder = TelemetryRecorder(sessionHeader: header, persistence: store)
+            for record in fixture.sourceRecords { _ = recorder.ingress.yield(record) }
+            _ = recorder.ingress.yield(fixture.lifecycleEvent(elapsedSecond: 0, ending: false))
+            for second in 0..<1860 {
+                _ = recorder.ingress.yield(fixture.heartRate(index: UInt64(second + 1), elapsedMilliseconds: second * 1_000))
+                _ = recorder.ingress.yield(fixture.treadmill(index: UInt64(second + 1), elapsedMilliseconds: second * 1_000))
+                _ = recorder.ingress.yield(fixture.frame(elapsedSecond: second))
+                if second.isMultiple(of: 5) { _ = await recorder.flush(reason: .explicit) }
+            }
+            _ = recorder.ingress.yield(fixture.lifecycleEvent(elapsedSecond: 1860, ending: true))
+            let terminal = TelemetrySoakFixture.baseDate.addingTimeInterval(1860)
+            let context = StopObservationContext(peripheralID: UUID(), connectionEpoch: UUID(), notificationStreamID: UUID())
+            var owner = StopObservationLifecycle(attemptID: UUID(), source: "synthetic-terminal",
+                attemptedAt: terminal, context: context, scheduledStopEffects: 2)
+            owner.markCommandSent(at: terminal)
+            owner.markMotionWrite(at: terminal.addingTimeInterval(2))
+            owner.completeScheduledStopEffect()
+            owner.completeScheduledStopEffect()
+            let observedAt = terminal.addingTimeInterval(4.2)
+            _ = owner.record(speedRawTenths: 0, state: 0, checksumValid: true,
+                context: context, observedAt: observedAt, evaluatedAt: observedAt)
+            let closeAt = early ? observedAt : owner.deadline
+            if early { XCTAssertTrue(owner.finalizeCompletedStopIfReady(at: closeAt, queueIdle: true)) }
+            else { _ = owner.finalizeTimeout(at: closeAt) }
+            let clock = ContinuousClock()
+            let finishStart = clock.now
+            let finish = await recorder.finish(endedAt: terminal,
+                endedElapsed: ElapsedDuration(microseconds: 1_860_000_000))
+            let analysisStart = clock.now
+            let analysis = try await store.analyzeTerminalWorkout(sessionID: fixture.sessionID, generatedAt: closeAt)
+            let projectionStart = clock.now
+            let history = try await store.fetchWorkoutHistoryPage(filter: .init(profileScope: .exact(fixture.sessionHeader.profileLocalIdentifier)), after: nil, limit: 10)
+            let projectionEnd = clock.now
+            XCTAssertEqual(finish.completeness, .complete)
+            XCTAssertEqual(analysis.triggerResult, .inserted)
+            XCTAssertEqual(history.items.count, 1)
+            XCTAssertEqual(history.items.first?.endedAt, terminal)
+            XCTAssertEqual(history.items.first?.durationSeconds, 1860)
+            XCTAssertEqual(owner.deadline, terminal.addingTimeInterval(30))
+            print("TERMINAL_STAGES early=\(early) simulated_tail_s=\(closeAt.timeIntervalSince(terminal)) recorder_finish=\(finishStart.duration(to: analysisStart)) analyzer=\(analysisStart.duration(to: projectionStart)) projection=\(projectionStart.duration(to: projectionEnd))")
+        }
+    }
+
     func testProvisionalConfigurationMatchesRecorderDefaults() {
         let configuration = TelemetrySoakRecorderConfiguration.provisionalDefault
 

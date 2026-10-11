@@ -84,6 +84,69 @@ final class TrainingResultBehaviorTests: XCTestCase {
         try execute(binary, arguments: [], directory: directory)
     }
 
+    func testCompletedStopClosesOnlyAfterCorrelatedEvidenceAndCallbackAdmission() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let lifecycle = try String(contentsOf: app.appendingPathComponent("StopObservationService.swift"), encoding: .utf8)
+        let methods = try ["private func finalizeCompletedStopIfReady(",
+            "private func completeScheduledStopEffect(", "private func finishStopObservation("].map {
+            try declaration($0, in: source).replacingOccurrences(of: "private func", with: "func")
+        }.joined(separator: "\n")
+        let prefix = Self.ownerPrefix.replacingOccurrences(of: "func finalizeCompletedStopIfReady() {}", with: "")
+            .replacingOccurrences(of: "func logTrainingEvent(_ event: String, fields: [String: Any]) {}",
+                with: "func logTrainingEvent(_ event: String, fields: [String: Any]) { telemetryV2Coordinator.events.append(event) }")
+        let extra = #"""
+         enum ProtocolKind { case walkingPad, ftms }
+         struct Epoch { let rawValue: UUID }
+         struct Observation { let protocolKind: ProtocolKind; let connectionEpoch: Epoch; let receivedAt: Date }
+         var latestTreadmillObservationEvidence: Observation?
+         var commandQueue: [Int] = []
+         var isCommandQueueProcessing = false
+         var changedContext: StopObservationContext?
+         func currentStopObservationContext() -> StopObservationContext? { changedContext ?? stopObservationLifecycle?.context }
+        """#
+        let driver = #"""
+        }
+        for scenario in ["confirmed", "queued", "processing", "missing", "wrong-epoch", "wrong-protocol", "wrong-time", "new-context", "old-callback"] {
+         let owner = Owner()
+         let received = Date()
+         let context = StopObservationContext(peripheralID: UUID(), connectionEpoch: UUID(), notificationStreamID: UUID())
+         var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "fixture", attemptedAt: received.addingTimeInterval(-4.2), context: context, scheduledStopEffects: 1)
+         lifecycle.markCommandSent(at: received.addingTimeInterval(-4.2))
+         lifecycle.markMotionWrite(at: received.addingTimeInterval(-2))
+         _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true, context: context, observedAt: received, evaluatedAt: received)
+         owner.stopObservationLifecycle = lifecycle
+         owner.latestTreadmillObservationEvidence = .init(protocolKind: scenario == "wrong-protocol" ? .ftms : .walkingPad,
+          connectionEpoch: .init(rawValue: scenario == "wrong-epoch" ? UUID() : context.connectionEpoch), receivedAt: scenario == "wrong-time" ? received.addingTimeInterval(-1) : received)
+         if scenario == "missing" { owner.latestTreadmillObservationEvidence = nil }
+         if scenario == "queued" { owner.commandQueue = [1] }
+         if scenario == "processing" { owner.isCommandQueueProcessing = true }
+         if scenario == "new-context" { owner.changedContext = .init(peripheralID: UUID(), connectionEpoch: UUID(), notificationStreamID: UUID()) }
+         owner.finalizeCompletedStopIfReady()
+         precondition(!owner.telemetryV2Coordinator.closed, "Pending callback cannot be ignored")
+         owner.completeScheduledStopEffect(attemptID: scenario == "old-callback" ? UUID() : lifecycle.attemptID, cancelled: true)
+         if scenario == "confirmed" {
+          precondition(owner.stopObservationLifecycle?.finalResult == .confirmed, "Confirmed owner did not finalize")
+          precondition(owner.telemetryV2Coordinator.events == ["stop_scheduled_effect_finished", "stop_observation_finished", "owner-final", "close"], "Unexpected order: \(owner.telemetryV2Coordinator.events)")
+          owner.finalizeCompletedStopIfReady()
+          precondition(owner.telemetryV2Coordinator.finishes == 1)
+         } else {
+          precondition(!owner.telemetryV2Coordinator.closed, "Unqualified correlation/queue must keep admission open")
+          precondition(owner.stopObservationLifecycle?.finalResult == nil, "Unexpected final result in \(scenario): \(String(describing: owner.stopObservationLifecycle?.finalResult))")
+         }
+        }
+        """#
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("CompletedStop.swift")
+        let binary = directory.appendingPathComponent("completed-stop")
+        try [lifecycle, prefix, extra, methods, driver].joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", file.path, "-o", binary.path], directory: directory)
+        try execute(binary, arguments: [], directory: directory)
+    }
+
     private func declaration(_ signature: String, in source: String) throws -> String {
         let start = try XCTUnwrap(source.range(of: signature)?.lowerBound)
         var cursor = try XCTUnwrap(source[start...].firstIndex(of: "{"))
@@ -297,6 +360,7 @@ final class TrainingResultBehaviorTests: XCTestCase {
       precondition(!telemetryV2Coordinator.closed, "Failure must precede closure")
       if case let .commandFailed(failure) = evidence { precondition(failure.commandID == "original-stop"); telemetryV2Coordinator.events.append("failure") }
      }
+     func finalizeCompletedStopIfReady() {}
      func observeCancelledTreadmillCommands(_ entries: [Int], reason: CancellationReason) {}
      enum CancellationReason { case other(String) }
      var queuedSessionID: String? = "original-session"

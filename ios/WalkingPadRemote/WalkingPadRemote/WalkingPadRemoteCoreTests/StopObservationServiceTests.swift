@@ -29,6 +29,77 @@ final class StopObservationServiceTests: XCTestCase {
         )
     }
 
+    func testCompletedStopWaitsForEffectsQueueAndPostWriteObservation() {
+        let expected = context()
+        var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test",
+            attemptedAt: attemptAt, context: expected, scheduledStopEffects: 2)
+        lifecycle.markCommandSent(at: attemptAt)
+        lifecycle.markMotionWrite(at: attemptAt.addingTimeInterval(2))
+        lifecycle.completeScheduledStopEffect()
+        let receivedAt = attemptAt.addingTimeInterval(4.2)
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: receivedAt, evaluatedAt: receivedAt)
+        XCTAssertFalse(lifecycle.finalizeCompletedStopIfReady(at: receivedAt, queueIdle: true))
+        lifecycle.completeScheduledStopEffect()
+        XCTAssertFalse(lifecycle.finalizeCompletedStopIfReady(at: receivedAt, queueIdle: false))
+        let retryAt = receivedAt.addingTimeInterval(0.1)
+        lifecycle.markMotionWrite(at: retryAt)
+        XCTAssertFalse(lifecycle.finalizeCompletedStopIfReady(at: retryAt, queueIdle: true))
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: retryAt, evaluatedAt: retryAt)
+        XCTAssertFalse(lifecycle.finalizeCompletedStopIfReady(at: retryAt, queueIdle: true))
+        let finalAt = retryAt.addingTimeInterval(0.1)
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: finalAt, evaluatedAt: finalAt)
+        XCTAssertTrue(lifecycle.finalizeCompletedStopIfReady(at: finalAt, queueIdle: true))
+        XCTAssertEqual(lifecycle.finalResult, .confirmed)
+        XCTAssertEqual(lifecycle.finalizedAt, finalAt)
+        XCTAssertEqual(lifecycle.deadline, attemptAt.addingTimeInterval(30))
+        XCTAssertFalse(lifecycle.finalizeCompletedStopIfReady(at: finalAt, queueIdle: true))
+    }
+
+    func testCancelledCallbackCompletesOnceAndSilenceKeepsOriginalDeadline() {
+        let expected = context()
+        var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test",
+            attemptedAt: attemptAt, context: expected, scheduledStopEffects: 2)
+        lifecycle.markCommandSent(at: attemptAt)
+        let receivedAt = attemptAt.addingTimeInterval(4.2)
+        _ = lifecycle.record(speedRawTenths: 0, state: 0, checksumValid: true,
+            context: expected, observedAt: receivedAt, evaluatedAt: receivedAt)
+        lifecycle.completeScheduledStopEffect()
+        lifecycle.completeScheduledStopEffect()
+        lifecycle.completeScheduledStopEffect()
+        XCTAssertEqual(lifecycle.scheduledStopEffectsRemaining, 0)
+        XCTAssertTrue(lifecycle.finalizeCompletedStopIfReady(at: receivedAt, queueIdle: true))
+        XCTAssertEqual(lifecycle.lastMotionWriteAt, attemptAt)
+        var silent = StopObservationLifecycle(attemptID: UUID(), source: "test",
+            attemptedAt: attemptAt, context: expected, scheduledStopEffects: 0)
+        silent.markCommandSent(at: attemptAt)
+        XCTAssertFalse(silent.finalizeCompletedStopIfReady(at: receivedAt, queueIdle: true))
+        _ = silent.finalizeTimeout(at: silent.deadline)
+        XCTAssertEqual(silent.finalResult, .timeoutUnconfirmed)
+        XCTAssertEqual(silent.deadline, attemptAt.addingTimeInterval(30))
+    }
+
+    func testEarlyStopRejectsUnknownEffectsAndNonqualifyingEvidence() {
+        for scenario in ["unknown-effects", "stale", "moving", "contradictory", "checksum", "missing-speed", "missing-state", "not-sent", "deadline", "wrong-context", "invalidated"] {
+            let expected = context()
+            var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test",
+                attemptedAt: attemptAt, context: expected, scheduledStopEffects: scenario == "unknown-effects" ? nil : 0)
+            if scenario != "not-sent" { lifecycle.markCommandSent(at: attemptAt) }
+            let receivedAt = attemptAt.addingTimeInterval(4.2)
+            _ = lifecycle.record(speedRawTenths: scenario == "missing-speed" ? nil : (scenario == "moving" ? 12 : 0),
+                state: scenario == "missing-state" ? nil : (["moving", "contradictory"].contains(scenario) ? 1 : 0),
+                checksumValid: scenario != "checksum", context: scenario == "wrong-context" ? context() : expected,
+                observedAt: receivedAt, evaluatedAt: receivedAt)
+            if scenario == "invalidated" { _ = lifecycle.finalizeUnconfirmed(at: receivedAt, reason: "new_motion_requested") }
+            let now = scenario == "deadline" ? lifecycle.deadline : receivedAt.addingTimeInterval(scenario == "stale" ? 2.01 : 0)
+            XCTAssertFalse(lifecycle.finalizeCompletedStopIfReady(at: now, queueIdle: true), scenario)
+            if scenario == "invalidated" { XCTAssertEqual(lifecycle.finalResult, .unconfirmed) }
+            else { XCTAssertNil(lifecycle.finalResult, scenario) }
+        }
+    }
+
     func testHistoricalStopPresentationSurvivesSilenceWithoutCurrentConfirmation() {
         let expected = context()
         var lifecycle = StopObservationLifecycle(attemptID: UUID(), source: "test",

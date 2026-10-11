@@ -4301,6 +4301,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 commandID: telemetryRequest.commandID
             )
         }
+        let stopAttemptID = UUID()
         writeCommand(
             packet,
             label: "STOP",
@@ -4311,15 +4312,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             packet,
             label: "STOP retry",
             after: 2.0,
-            telemetryRequest: telemetryRequest
+            telemetryRequest: telemetryRequest,
+            stopAttemptID: stopAttemptID
         )
         scheduleWrite(
             packet,
             label: "STOP retry",
             after: 4.0,
-            telemetryRequest: telemetryRequest
+            telemetryRequest: telemetryRequest,
+            stopAttemptID: stopAttemptID
         )
-        beginStopObservation(source: "direct", telemetryChain: telemetryChain)
+        beginStopObservation(source: "direct", telemetryChain: telemetryChain,
+            scheduledStopEffects: 2, attemptID: stopAttemptID)
     }
 
     private func stopBeltOnce(
@@ -4377,8 +4381,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 commandID: stopCommandWasEnqueued ? telemetryRequest.commandID : nil
             )
         }
+        let stopAttemptID = UUID()
         guard wasRunning else {
-            beginStopObservation(source: reason, telemetryChain: telemetryChain)
+            beginStopObservation(source: reason, telemetryChain: telemetryChain,
+                scheduledStopEffects: 0, attemptID: stopAttemptID)
             return stopCommandWasEnqueued
         }
         switch treadmillProtocol {
@@ -4391,10 +4397,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryRequest: treadmillCommandRequest(
                     kind: .other("legacy_stop_toggle"),
                     decision: telemetryDecision
-                )
+                ),
+                stopAttemptID: stopAttemptID
             )
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
                 guard let self else { return }
+                defer { self.completeScheduledStopEffect(attemptID: stopAttemptID, cancelled: false) }
                 let reported = self.deviceReportedSpeedKmh
                 let observed = max(self.speedKmh, reported)
                 if observed > 0.2 {
@@ -4427,7 +4435,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 )
             }
         }
-        beginStopObservation(source: reason, telemetryChain: telemetryChain)
+        beginStopObservation(source: reason, telemetryChain: telemetryChain,
+            scheduledStopEffects: treadmillProtocol == .walkingPad ? 2 : nil, attemptID: stopAttemptID)
         return stopCommandWasEnqueued
     }
 
@@ -4448,6 +4457,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func beginStopObservation(
         source: String,
         telemetryChain: TreadmillStopTelemetryChain? = nil,
+        scheduledStopEffects: Int? = nil,
+        attemptID: UUID = UUID(),
         now: Date = Date()
     ) {
         let attemptedMonotonic = telemetryV2Coordinator.stopAttemptMonotonicTime
@@ -4471,10 +4482,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopObservationOwnsTrainingLog = needsOwnLog
 
         let lifecycle = StopObservationLifecycle(
-            attemptID: UUID(),
+            attemptID: attemptID,
             source: source,
             attemptedAt: now,
-            context: context
+            context: context,
+            scheduledStopEffects: scheduledStopEffects
         )
         stopObservationLifecycle = lifecycle
         captureStopTelemetryAttempt(lifecycle.attemptID, attemptedMonotonic: attemptedMonotonic)
@@ -4767,6 +4779,32 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "stop_accepted_non_running_states": StopObservationPolicy.acceptedNonRunningStates.sorted(),
             "stop_evaluated_at": trainingLogIsoFormatter.string(from: now)
         ]
+    }
+
+    private func completeScheduledStopEffect(attemptID: UUID?, cancelled: Bool) {
+        guard let attemptID, var lifecycle = stopObservationLifecycle,
+              lifecycle.attemptID == attemptID, lifecycle.finalResult == nil else { return }
+        lifecycle.completeScheduledStopEffect()
+        stopObservationLifecycle = lifecycle
+        logTrainingEvent("stop_scheduled_effect_finished", fields: [
+            "stop_attempt_id": attemptID.uuidString,
+            "cancelled": cancelled,
+            "remaining_count": lifecycle.scheduledStopEffectsRemaining ?? -1
+        ])
+        finalizeCompletedStopIfReady()
+    }
+
+    private func finalizeCompletedStopIfReady(now: Date = Date()) {
+        guard var lifecycle = stopObservationLifecycle,
+              currentStopObservationContext() == lifecycle.context,
+              let observation = latestTreadmillObservationEvidence,
+              observation.protocolKind == .walkingPad,
+              observation.connectionEpoch.rawValue == lifecycle.context.connectionEpoch,
+              observation.receivedAt == lifecycle.observations.last?.observedAt,
+              lifecycle.finalizeCompletedStopIfReady(at: now,
+                queueIdle: commandQueue.isEmpty && !isCommandQueueProcessing) else { return }
+        stopObservationLifecycle = lifecycle
+        finishStopObservation(lifecycle: lifecycle, now: now)
     }
 
     private func finishStopObservation(lifecycle: StopObservationLifecycle, now: Date) {
@@ -6709,6 +6747,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             self.observeCancelledTreadmillCommands(
                 lostEntries, reason: .other("telemetry_sidecar_order_mismatch")
             )
+            self.finalizeCompletedStopIfReady()
             if let lifecycle = self.stopObservationLifecycle, lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true {
                 self.telemetryV2Coordinator.stopAttemptFinalized(attemptID: lifecycle.attemptID)
             }
@@ -6797,6 +6836,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         ])
         trackExpectedSpeedIfNeeded(label: label)
         p.writeValue(data, for: ch, type: type)
+        if label != "QUERY STATUS", label != "QUERY PARAMS",
+           var lifecycle = stopObservationLifecycle, lifecycle.finalResult == nil {
+            lifecycle.markMotionWrite(at: lastCommandSentAt ?? Date())
+            stopObservationLifecycle = lifecycle
+        }
         if label == "STOP" {
             nativeWorkoutStopTransportInvokedIfNeeded()
         }
@@ -8880,11 +8924,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         label: String,
         after delay: TimeInterval,
         requiresControlReadiness: Bool = false,
-        telemetryRequest: TreadmillCommandTelemetryRequest? = nil
+        telemetryRequest: TreadmillCommandTelemetryRequest? = nil,
+        stopAttemptID: UUID? = nil
     ) {
         let epoch = commandQueueEpoch
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
+            let cancelled = self.commandQueueEpoch != epoch
+            defer { self.completeScheduledStopEffect(attemptID: stopAttemptID, cancelled: cancelled) }
             guard self.commandQueueEpoch == epoch else { return }
             self.writeCommand(
                 data,
@@ -9303,6 +9350,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                                 evaluatedAt: Date()
                             )
                         }
+                        self.finalizeCompletedStopIfReady()
                     }
                 }
                 logActualSpeedChangeIfNeeded(status.speedKmh, source: "fe01_notify")
