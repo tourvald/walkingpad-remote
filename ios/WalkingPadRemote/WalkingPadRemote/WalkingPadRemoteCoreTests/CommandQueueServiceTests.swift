@@ -21,6 +21,66 @@ final class CommandQueueServiceTests: XCTestCase {
             .matched(.init(evidence: old, sessionID: oldSession)))
     }
 
+    func testLogicalRequestRetainsOriginalContextAndPublishesBeforeAnySendOnlyOnce() throws {
+        let session = SessionID(), epoch = TreadmillConnectionEpoch(rawValue: UUID())
+        let at = Date(timeIntervalSince1970: 100)
+        let request = TreadmillCommandTelemetrySidecar.Request(sessionID: session,
+            commandID: CommandID(), decisionID: DecisionID(), kind: .stop)
+        let first = request.prepareEnqueue(protocolKind: .walkingPad, connectionEpoch: epoch, enqueuedAt: at)
+        let original = try XCTUnwrap(first.publication)
+        XCTAssertEqual(first.queued, original)
+        var sidecar = TreadmillCommandTelemetrySidecar()
+        _ = sidecar.replaceWithHighPriority(label: "STOP", evidence: original, sessionID: request.sessionID)
+        XCTAssertEqual(sidecar.clear().first?.evidence, original) // Cancelled before a send counter exists.
+        let retry = request.prepareEnqueue(protocolKind: .ftms,
+            connectionEpoch: .init(rawValue: UUID()), enqueuedAt: at.addingTimeInterval(4))
+        XCTAssertNil(retry.publication)
+        XCTAssertEqual(retry.queued, original)
+        XCTAssertEqual(request.sessionID, session)
+        _ = sidecar.enqueueRegular(label: "STOP retry", evidence: try XCTUnwrap(retry.queued),
+            sessionID: request.sessionID, isSpeedLabel: isSpeed)
+        XCTAssertEqual(sidecar.dequeue(expectedLabel: "STOP retry", currentEpoch: epoch),
+            .matched(.init(evidence: original, sessionID: session)))
+        let duplicate = TreadmillCommandTelemetrySidecar.Request(sessionID: session,
+            commandID: request.commandID, decisionID: request.decisionID, kind: .stop)
+        XCTAssertNotNil(duplicate.prepareEnqueue(protocolKind: .walkingPad,
+            connectionEpoch: epoch, enqueuedAt: at).publication)
+    }
+
+    func testUnknownFirstEnqueueCannotAcquireAReplacementConnectionContext() {
+        let request = TreadmillCommandTelemetrySidecar.Request(sessionID: nil,
+            commandID: CommandID(), decisionID: nil, kind: .stop)
+        let first = request.prepareEnqueue(protocolKind: .unknown, connectionEpoch: nil, enqueuedAt: Date())
+        XCTAssertNil(first.queued)
+        XCTAssertNil(first.publication)
+        let retry = request.prepareEnqueue(protocolKind: .walkingPad,
+            connectionEpoch: .init(rawValue: UUID()), enqueuedAt: Date())
+        XCTAssertNil(retry.queued)
+        XCTAssertNil(retry.publication)
+        XCTAssertNil(request.sessionID)
+    }
+
+    func testRequestMetadataLifetimeEndsWithExplicitRetryCallbacks() throws {
+        var sidecar = TreadmillCommandTelemetrySidecar()
+        var callback: (() -> Void)?
+        weak var retained: TreadmillCommandTelemetrySidecar.Request?
+        do {
+            let request = TreadmillCommandTelemetrySidecar.Request(sessionID: SessionID(),
+                commandID: CommandID(), decisionID: nil, kind: .stop)
+            retained = request
+            let first = request.prepareEnqueue(protocolKind: .walkingPad,
+                connectionEpoch: .init(rawValue: UUID()), enqueuedAt: Date())
+            _ = sidecar.enqueueRegular(label: "STOP", evidence: try XCTUnwrap(first.queued),
+                sessionID: request.sessionID, isSpeedLabel: isSpeed)
+            callback = { _ = request.prepareEnqueue(protocolKind: .unknown, connectionEpoch: nil, enqueuedAt: Date()) }
+        }
+        XCTAssertNotNil(retained)
+        callback?()
+        callback = nil
+        XCTAssertNil(retained)
+        XCTAssertEqual(sidecar.count, 1) // Queue metadata is a value, not a retained request owner.
+    }
+
     private func isSpeed(_ label: String) -> Bool {
         label.lowercased().hasPrefix("speed")
     }

@@ -4,6 +4,38 @@ import TelemetryDomain
 /// Observational metadata that mirrors the legacy queue without participating in
 /// command equality, admission, ordering, coalescing, or transport decisions.
 struct TreadmillCommandTelemetrySidecar {
+    /// Explicit retries share only this request's first enqueue; callbacks own its lifetime.
+    final class Request {
+        let sessionID: SessionID?
+        let commandID: CommandID
+        let decisionID: DecisionID?
+        let kind: CommandKind
+        private var hasPreparedEnqueue = false
+        private var originalEnqueue: TreadmillCommandEnqueuedEvidence?
+
+        init(sessionID: SessionID?, commandID: CommandID, decisionID: DecisionID?, kind: CommandKind) {
+            self.sessionID = sessionID
+            self.commandID = commandID
+            self.decisionID = decisionID
+            self.kind = kind
+        }
+
+        func prepareEnqueue(
+            protocolKind: TreadmillProtocolKind,
+            connectionEpoch: TreadmillConnectionEpoch?,
+            enqueuedAt: Date
+        ) -> (queued: TreadmillCommandEnqueuedEvidence?, publication: TreadmillCommandEnqueuedEvidence?) {
+            guard !hasPreparedEnqueue else { return (originalEnqueue, nil) }
+            hasPreparedEnqueue = true
+            // Unknown first context cannot be backfilled from a later connection.
+            originalEnqueue = connectionEpoch.map {
+                TreadmillCommandEnqueuedEvidence(commandID: commandID, decisionID: decisionID,
+                    kind: kind, protocolKind: protocolKind, connectionEpoch: $0, enqueuedAt: enqueuedAt)
+            }
+            return (originalEnqueue, originalEnqueue)
+        }
+    }
+
     struct Entry: Equatable {
         let evidence: TreadmillCommandEnqueuedEvidence
         let sessionID: SessionID?
