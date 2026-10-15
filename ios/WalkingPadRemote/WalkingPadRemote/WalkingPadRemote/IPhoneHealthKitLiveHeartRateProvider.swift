@@ -143,6 +143,7 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
     private var beginCollectionContinuation: CheckedContinuation<Void, Error>?
     private var stoppedTransitionContinuation: CheckedContinuation<Date, Error>?
     private var stoppedAt: Date?
+    private var pendingStopDate: Date?
     private var endCollectionContinuation: CheckedContinuation<Void, Error>?
     private var finishContinuation: CheckedContinuation<HKWorkout?, Error>?
     private var nextRuntimeFailureContext: IPhoneHealthKitRuntimeFailureContext?
@@ -299,16 +300,24 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
     }
 
     func stopActivity(at date: Date) {
-        guard let session else { return }
-        if session.state == .running || session.state == .paused {
-            session.stopActivity(with: date)
-        }
+        pendingStopDate = date
+        stopPendingActivityIfReady()
+    }
+
+    private func stopPendingActivityIfReady() {
+        guard let session, let date = pendingStopDate,
+              session.state == .running || session.state == .paused else { return }
+        pendingStopDate = nil
+        session.stopActivity(with: date)
     }
 
     func waitForStoppedTransition() async throws -> Date {
         if let stoppedAt {
             self.stoppedAt = nil
             return stoppedAt
+        }
+        guard let session, session.state != .ended else {
+            throw HealthKitLiveWorkoutDriverError.missingWorkout
         }
         return try await withCheckedThrowingContinuation { continuation in
             stoppedTransitionContinuation = continuation
@@ -378,6 +387,7 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
         beginCollectionContinuation = nil
         stoppedTransitionContinuation = nil
         stoppedAt = nil
+        pendingStopDate = nil
         endCollectionContinuation = nil
         finishContinuation = nil
         session = nil
@@ -450,7 +460,15 @@ extension HealthKitLiveWorkoutDriver: HKWorkoutSessionDelegate, HKLiveWorkoutBui
                 let continuation = self.prepareContinuation
                 self.prepareContinuation = nil
                 continuation?.resume()
+            case .running, .paused:
+                self.stopPendingActivityIfReady()
+            case .ended:
+                self.pendingStopDate = nil
+                let continuation = self.stoppedTransitionContinuation
+                self.stoppedTransitionContinuation = nil
+                continuation?.resume(throwing: HealthKitLiveWorkoutDriverError.operationCancelled)
             case .stopped:
+                self.pendingStopDate = nil
                 if let continuation = self.stoppedTransitionContinuation {
                     self.stoppedTransitionContinuation = nil
                     continuation.resume(returning: date)

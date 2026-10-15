@@ -370,6 +370,25 @@ struct NativeWorkoutRecoveryStore {
         try data.write(to: fileURL, options: .atomic)
     }
 
+    /// Retain the original incomplete attempt; never label it as a saved workout.
+    func archiveInterrupted(_ record: NativeWorkoutRecoveryRecord,
+                            fileManager: FileManager = .default) throws {
+        guard record.phase == .finishing, record.healthKitStopActivityAt == nil,
+              load(fileManager: fileManager) == .record(record) else {
+            throw NativeWorkoutRecoveryStoreError.invalidRecord
+        }
+        let archive = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("interrupted_native_workout_\(record.appWorkoutID.uuidString).json")
+        if fileManager.fileExists(atPath: archive.path) {
+            guard try Data(contentsOf: archive) == Data(contentsOf: fileURL) else {
+                throw NativeWorkoutRecoveryStoreError.invalidRecord
+            }
+            try fileManager.removeItem(at: fileURL)
+        } else {
+            try fileManager.moveItem(at: fileURL, to: archive)
+        }
+    }
+
     func clear(fileManager: FileManager = .default) throws {
         guard fileManager.fileExists(atPath: fileURL.path) else { return }
         try fileManager.removeItem(at: fileURL)

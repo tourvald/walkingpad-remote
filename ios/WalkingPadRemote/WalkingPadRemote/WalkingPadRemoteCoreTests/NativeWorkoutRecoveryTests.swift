@@ -58,6 +58,53 @@ final class NativeWorkoutRecoveryTests: XCTestCase {
         XCTAssertEqual(store.load(), .missing)
     }
 
+    func testInterruptedFinishingArchivePreservesOriginalBytesAndOtherHistory() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = NativeWorkoutRecoveryStore(fileURL: directory.appendingPathComponent("recovery.json"))
+        let record = makeCommitted(makePreflight(), latency: 2)
+            .finishing(requestedAt: makePreflight().acquisitionStartedAt.addingTimeInterval(60))
+        try store.save(record)
+        let original = try Data(contentsOf: store.fileURL)
+        let history = directory.appendingPathComponent("history.sqlite")
+        try Data("unchanged history".utf8).write(to: history)
+        try store.archiveInterrupted(record)
+        XCTAssertEqual(store.load(), .missing)
+        let archive = directory.appendingPathComponent("interrupted_native_workout_\(record.appWorkoutID.uuidString).json")
+        XCTAssertEqual(try Data(contentsOf: archive), original)
+        XCTAssertEqual(try Data(contentsOf: history), Data("unchanged history".utf8))
+        // An identical surviving marker may be safely reconciled without replacing the archive.
+        try original.write(to: store.fileURL)
+        try store.archiveInterrupted(record)
+        XCTAssertEqual(store.load(), .missing)
+        XCTAssertEqual(try Data(contentsOf: archive), original)
+    }
+
+    func testInterruptedArchiveRejectsWrongPhaseSavedBoundaryAndConflictingArchive() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = NativeWorkoutRecoveryStore(fileURL: directory.appendingPathComponent("recovery.json"))
+        let preflight = makePreflight()
+        let committed = makeCommitted(preflight, latency: 2)
+        let finishing = committed.finishing(requestedAt: preflight.acquisitionStartedAt.addingTimeInterval(60))
+        for record in [preflight, committed, committed.stopping(requestedAt: preflight.acquisitionStartedAt.addingTimeInterval(60)),
+                       finishing.recordingHealthKitStopActivity(at: preflight.acquisitionStartedAt.addingTimeInterval(61))] {
+            try store.save(record)
+            XCTAssertThrowsError(try store.archiveInterrupted(record))
+            XCTAssertEqual(store.load(), .record(record))
+        }
+        try store.save(finishing)
+        let archive = directory.appendingPathComponent("interrupted_native_workout_\(finishing.appWorkoutID.uuidString).json")
+        try Data("conflicting evidence".utf8).write(to: archive)
+        XCTAssertThrowsError(try store.archiveInterrupted(finishing))
+        XCTAssertEqual(store.load(), .record(finishing))
+        XCTAssertEqual(try Data(contentsOf: archive), Data("conflicting evidence".utf8))
+        try FileManager.default.removeItem(at: archive)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: false)
+        XCTAssertThrowsError(try store.archiveInterrupted(finishing))
+        XCTAssertEqual(store.load(), .record(finishing))
+    }
+
     func testCorruptRecoveryMarkerRemainsInvalidRatherThanInventingIdentity() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

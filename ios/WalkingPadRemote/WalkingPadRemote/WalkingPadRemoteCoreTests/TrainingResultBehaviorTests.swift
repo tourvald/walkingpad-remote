@@ -4,6 +4,166 @@ import XCTest
 
 /// Executes the production methods verbatim with dependency fixtures, without extracting a production layer.
 final class TrainingResultBehaviorTests: XCTestCase {
+    func testHealthKitStopRequestedBeforeRunningIsDeliveredOnStateTransition() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("IPhoneHealthKitLiveHeartRateProvider.swift"), encoding: .utf8)
+        let stop = try declaration("    func stopActivity(at date: Date)", in: source)
+        let pending = source.contains("    private func stopPendingActivityIfReady()")
+            ? try declaration("    private func stopPendingActivityIfReady()", in: source) : ""
+        let callback = try declaration("    func workoutSession(\n        _ workoutSession: HKWorkoutSession,\n        didChangeTo", in: source)
+        let program = """
+        import Foundation
+        enum HKWorkoutSessionState { case prepared, running, paused, stopped, ended }
+        enum HealthKitLiveWorkoutDriverError: Error { case operationCancelled }
+        final class HKWorkoutSession {
+            var state: HKWorkoutSessionState = .prepared
+            var sent: [Date] = []
+            func stopActivity(with date: Date) { sent.append(date) }
+        }
+        final class Fixture {
+            var session: HKWorkoutSession? = HKWorkoutSession()
+            var pendingStopDate: Date?
+            var stoppedAt: Date?
+            var prepareContinuation: CheckedContinuation<Void, Error>?
+            var stoppedTransitionContinuation: CheckedContinuation<Date, Error>?
+        \(stop)
+        \(pending)
+        \(callback)
+        }
+        @main struct Main {
+            static func main() async {
+                let owner = Fixture()
+                let session = owner.session!
+                let requested = Date(timeIntervalSince1970: 100)
+                owner.stopActivity(at: requested)
+                precondition(session.sent.isEmpty)
+                session.state = .running
+                owner.workoutSession(session, didChangeTo: .running, from: .prepared, date: requested)
+                for _ in 0..<100 { await Task.yield() }
+                precondition(session.sent == [requested], "Stop lost while HealthKit was starting")
+                owner.workoutSession(session, didChangeTo: .running, from: .prepared, date: requested)
+                for _ in 0..<100 { await Task.yield() }
+                precondition(session.sent.count == 1)
+                let foreign = HKWorkoutSession()
+                owner.pendingStopDate = requested
+                owner.workoutSession(foreign, didChangeTo: .running, from: .prepared, date: requested)
+                for _ in 0..<100 { await Task.yield() }
+                precondition(session.sent.count == 1)
+                session.state = .paused
+                owner.stopActivity(at: requested.addingTimeInterval(1))
+                precondition(session.sent.count == 2)
+            }
+        }
+        """
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("HealthKitStop.swift")
+        let binary = directory.appendingPathComponent("healthkit-stop")
+        try program.write(to: file, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", "-parse-as-library", file.path, "-o", binary.path], directory: directory)
+        try execute(binary, arguments: [], directory: directory)
+    }
+
+    func testInterruptedRecoveryRequiresExplicitNilHealthKitResultBeforeArchiving() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let engine = try String(contentsOf: app.appendingPathComponent("NativeHeartRatePreflightEngine.swift"), encoding: .utf8)
+        let pending = try declaration("    private func processPendingActiveWorkoutRecoveryIfPossible()", in: source)
+        let nilPath = String(pending[..<pending.range(of: "        guard result.1 == nil, let recoveredSession")!.lowerBound]) + "        failed = true\n}"
+        let probe = try declaration("    private func processNoActiveWorkoutRecoveryIfPossible()", in: source)
+        let probePath = String(probe[..<probe.range(of: "        let resolution = NativeWorkoutRecoveryPolicy")!.lowerBound]) + "}"
+        let program = engine + "\n" + """
+        final class HKWorkoutSession {}
+        final class Logger { func info(_ value: String) {} }
+        final class HealthStore {
+            var calls = 0
+            var callback: ((HKWorkoutSession?, Error?) -> Void)?
+            func recoverActiveWorkoutSession(_ callback: @escaping (HKWorkoutSession?, Error?) -> Void) {
+                calls += 1; self.callback = callback
+            }
+        }
+        final class Fixture {
+            var didStartApplicationRuntime = true
+            var pendingActiveWorkoutRecoveryResult: (HKWorkoutSession?, Error?)?
+            var nativeWorkoutRecoveryLoadResult: NativeWorkoutRecoveryLoadResult = .missing
+            var activeNativeWorkoutRecoveryRecord: NativeWorkoutRecoveryRecord?
+            var nativeWorkoutRecoveryStore: NativeWorkoutRecoveryStore?
+            var nativeHeartRateLogger = Logger()
+            var infoToastMessage: String?
+            var failed = false
+            var unlocked = false
+            var activeWorkoutRecoveryAvailability: Bool? = false
+            var activeWorkoutRecoveryRequestPending = false
+            var didHandleActiveWorkoutRecoveryCallback = false
+            var nativeHealthKitWorkoutCommitted = false
+            var nativeHeartRateFlowOwnsController = false
+            var nativeHealthKitWorkoutFinishInFlight = false
+            var healthStore = HealthStore()
+            func completeNativeWorkoutRecoveryToIdle() { unlocked = true }
+            func handleUnavailableActiveWorkoutRecovery(error: Error?) { failed = true }
+            func handleActiveWorkoutRecoveryRequest() { activeWorkoutRecoveryRequestPending = true }
+            func handleActiveWorkoutRecovery(session: HKWorkoutSession?, error: Error?) {
+                activeWorkoutRecoveryRequestPending = false
+                didHandleActiveWorkoutRecoveryCallback = true
+                pendingActiveWorkoutRecoveryResult = (session, error)
+                processPendingActiveWorkoutRecoveryIfPossible()
+            }
+        \(nilPath.replacingOccurrences(of: "private func", with: "func"))
+        \(probePath.replacingOccurrences(of: "private func", with: "func"))
+        }
+        @main struct Main {
+            static func main() async throws {
+                let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: directory) }
+                let store = NativeWorkoutRecoveryStore(fileURL: directory.appendingPathComponent("recovery.json"))
+                let preflight = NativeWorkoutRecoveryRecord.preflight(
+                    appWorkoutID: UUID(), targetBPM: 140, durationMinutes: 25,
+                    acquisitionStartedAt: Date(timeIntervalSince1970: 100), profileID: UUID())
+                let sessionID = UUID()
+                let record = preflight.committed(controlledWorkoutStartedAt: Date(timeIntervalSince1970: 101),
+                    profileID: UUID(), legacySessionID: sessionID, telemetrySessionID: sessionID)
+                    .finishing(requestedAt: Date(timeIntervalSince1970: 110))
+                try store.save(record)
+                let original = try Data(contentsOf: store.fileURL)
+                let f = Fixture()
+                f.nativeWorkoutRecoveryStore = store
+                f.nativeWorkoutRecoveryLoadResult = .record(record)
+                f.activeNativeWorkoutRecoveryRecord = record
+                // Scene's false recovery flag must only trigger a probe, never clear the record.
+                f.processNoActiveWorkoutRecoveryIfPossible()
+                f.processNoActiveWorkoutRecoveryIfPossible()
+                precondition(f.healthStore.calls == 1 && !f.unlocked)
+                precondition(try! Data(contentsOf: store.fileURL) == original)
+                f.healthStore.callback?(nil, NSError(domain: "unavailable", code: 1))
+                for _ in 0..<100 { await Task.yield() }
+                precondition(!f.unlocked && f.failed)
+                precondition(try! Data(contentsOf: store.fileURL) == original)
+                f.failed = false
+                f.pendingActiveWorkoutRecoveryResult = (HKWorkoutSession(), nil)
+                f.processPendingActiveWorkoutRecoveryIfPossible()
+                precondition(!f.unlocked && f.failed)
+                f.failed = false
+                f.pendingActiveWorkoutRecoveryResult = (nil, nil)
+                f.processPendingActiveWorkoutRecoveryIfPossible()
+                precondition(f.unlocked && !f.failed && store.load() == .missing)
+                let archive = directory.appendingPathComponent("interrupted_native_workout_\\(record.appWorkoutID.uuidString).json")
+                precondition(try! Data(contentsOf: archive) == original)
+            }
+        }
+        """
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("InterruptedRecovery.swift")
+        let binary = directory.appendingPathComponent("interrupted-recovery")
+        try program.write(to: file, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", "-parse-as-library", file.path, "-o", binary.path], directory: directory)
+        try execute(binary, arguments: [], directory: directory)
+    }
+
     func testSelectedNotificationLossClosesTailWithoutChangingCallbackGuards() throws {
         let sourceURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote/BluetoothManager.swift")
