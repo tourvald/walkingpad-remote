@@ -8,14 +8,19 @@ final class TrainingResultBehaviorTests: XCTestCase {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
         let source = try String(contentsOf: app.appendingPathComponent("IPhoneHealthKitLiveHeartRateProvider.swift"), encoding: .utf8)
-        let stop = try declaration("    func stopActivity(at date: Date)", in: source)
-        let pending = source.contains("    private func stopPendingActivityIfReady()")
-            ? try declaration("    private func stopPendingActivityIfReady()", in: source) : ""
-        let callback = try declaration("    func workoutSession(\n        _ workoutSession: HKWorkoutSession,\n        didChangeTo", in: source)
+        let methods = try [
+            "    func stopActivity(at date: Date)",
+            "    private func stopPendingActivityIfReady()",
+            "    func waitForStoppedTransition()",
+            "    func reset()",
+            "    func workoutSession(\n        _ workoutSession: HKWorkoutSession,\n        didChangeTo",
+            "    func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError",
+        ].map { try declaration($0, in: source) }.joined(separator: "\n")
         let program = """
         import Foundation
         enum HKWorkoutSessionState { case prepared, running, paused, stopped, ended }
-        enum HealthKitLiveWorkoutDriverError: Error { case operationCancelled }
+        enum HealthKitLiveWorkoutDriverError: Error { case operationCancelled, missingWorkout }
+        final class HKWorkout {}
         final class HKWorkoutSession {
             var state: HKWorkoutSessionState = .prepared
             var sent: [Date] = []
@@ -23,16 +28,39 @@ final class TrainingResultBehaviorTests: XCTestCase {
         }
         final class Fixture {
             var session: HKWorkoutSession? = HKWorkoutSession()
+            var builder: NSObject?
             var pendingStopDate: Date?
             var stoppedAt: Date?
             var prepareContinuation: CheckedContinuation<Void, Error>?
-            var stoppedTransitionContinuation: CheckedContinuation<Date, Error>?
-        \(stop)
-        \(pending)
-        \(callback)
+            var beginCollectionContinuation: CheckedContinuation<Void, Error>?
+            var endCollectionContinuation: CheckedContinuation<Void, Error>?
+            var finishContinuation: CheckedContinuation<HKWorkout?, Error>?
+            var registered: CheckedContinuation<Void, Never>?
+            var stoppedTransitionContinuation: CheckedContinuation<Date, Error>? {
+                didSet { if stoppedTransitionContinuation != nil { registered?.resume(); registered = nil } }
+            }
+            var runtimeFailureContexts: [ObjectIdentifier: String] = [:]
+            var runtimeFailureContextOrder: [ObjectIdentifier] = []
+            var onRuntimeFailure: ((String) -> Void)?
+        \(methods)
         }
         @main struct Main {
-            static func main() async {
+            static func barrier() async {
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.main.async { c.resume() }
+                }
+            }
+            static func wait(_ owner: Fixture) async -> Task<Date, Error> {
+                let task = Task { try await owner.waitForStoppedTransition() }
+                await withCheckedContinuation { c in
+                    if owner.stoppedTransitionContinuation != nil { c.resume() } else { owner.registered = c }
+                }
+                return task
+            }
+            static func rejected(_ task: Task<Date, Error>) async {
+                do { _ = try await task.value; preconditionFailure("Unexpected stopped proof") } catch {}
+            }
+            static func main() async throws {
                 let owner = Fixture()
                 let session = owner.session!
                 let requested = Date(timeIntervalSince1970: 100)
@@ -40,30 +68,72 @@ final class TrainingResultBehaviorTests: XCTestCase {
                 precondition(session.sent.isEmpty)
                 session.state = .running
                 owner.workoutSession(session, didChangeTo: .running, from: .prepared, date: requested)
-                for _ in 0..<100 { await Task.yield() }
+                await barrier()
                 precondition(session.sent == [requested], "Stop lost while HealthKit was starting")
                 owner.workoutSession(session, didChangeTo: .running, from: .prepared, date: requested)
-                for _ in 0..<100 { await Task.yield() }
+                await barrier()
                 precondition(session.sent.count == 1)
                 let foreign = HKWorkoutSession()
                 owner.pendingStopDate = requested
                 owner.workoutSession(foreign, didChangeTo: .running, from: .prepared, date: requested)
-                for _ in 0..<100 { await Task.yield() }
+                await barrier()
                 precondition(session.sent.count == 1)
                 session.state = .paused
                 owner.stopActivity(at: requested.addingTimeInterval(1))
                 precondition(session.sent.count == 2)
+
+                let stopped = requested.addingTimeInterval(2)
+                session.state = .stopped
+                owner.workoutSession(session, didChangeTo: .stopped, from: .running, date: stopped)
+                await barrier()
+                let buffered = try await owner.waitForStoppedTransition()
+                precondition(buffered == stopped && owner.pendingStopDate == nil)
+                session.state = .running
+                let waiting = await wait(owner)
+                session.state = .stopped
+                owner.workoutSession(session, didChangeTo: .stopped, from: .running, date: stopped)
+                let observed = try await waiting.value
+                precondition(observed == stopped)
+
+                session.state = .ended
+                do { _ = try await owner.waitForStoppedTransition(); preconditionFailure("Ended session waited") } catch {}
+                session.state = .running
+                let ended = await wait(owner)
+                session.state = .ended
+                owner.workoutSession(session, didChangeTo: .ended, from: .running, date: stopped)
+                await rejected(ended)
+
+                session.state = .running
+                let reset = await wait(owner)
+                owner.pendingStopDate = requested
+                owner.reset()
+                await rejected(reset)
+                precondition(owner.session == nil && owner.pendingStopDate == nil)
+                let replacement = HKWorkoutSession()
+                replacement.state = .running
+                owner.session = replacement
+                owner.workoutSession(session, didChangeTo: .running, from: .prepared, date: stopped)
+                owner.workoutSession(replacement, didChangeTo: .running, from: .prepared, date: stopped)
+                await barrier()
+                precondition(replacement.sent.isEmpty)
+
+                let failure = await wait(owner)
+                owner.runtimeFailureContexts[ObjectIdentifier(session)] = "old"
+                owner.runtimeFailureContexts[ObjectIdentifier(replacement)] = "current"
+                var failures: [String] = []
+                owner.onRuntimeFailure = { failures.append($0) }
+                owner.workoutSession(session, didFailWithError: HealthKitLiveWorkoutDriverError.operationCancelled)
+                await barrier()
+                precondition(owner.stoppedTransitionContinuation != nil && failures == ["old"])
+                owner.workoutSession(replacement, didFailWithError: HealthKitLiveWorkoutDriverError.operationCancelled)
+                await rejected(failure)
+                precondition(failures == ["old", "current"])
+                owner.reset()
+                do { _ = try await owner.waitForStoppedTransition(); preconditionFailure("Missing session waited") } catch {}
             }
         }
         """
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("HealthKitStop.swift")
-        let binary = directory.appendingPathComponent("healthkit-stop")
-        try program.write(to: file, atomically: true, encoding: .utf8)
-        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", "-parse-as-library", file.path, "-o", binary.path], directory: directory)
-        try execute(binary, arguments: [], directory: directory)
+        try executeFixture(program, name: "HealthKitStop")
     }
 
     func testInterruptedRecoveryRequiresExplicitNilHealthKitResultBeforeArchiving() throws {
@@ -72,12 +142,28 @@ final class TrainingResultBehaviorTests: XCTestCase {
         let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
         let engine = try String(contentsOf: app.appendingPathComponent("NativeHeartRatePreflightEngine.swift"), encoding: .utf8)
         let pending = try declaration("    private func processPendingActiveWorkoutRecoveryIfPossible()", in: source)
-        let nilPath = String(pending[..<pending.range(of: "        guard result.1 == nil, let recoveredSession")!.lowerBound]) + "        failed = true\n}"
         let probe = try declaration("    private func processNoActiveWorkoutRecoveryIfPossible()", in: source)
         let probePath = String(probe[..<probe.range(of: "        let resolution = NativeWorkoutRecoveryPolicy")!.lowerBound]) + "}"
+        let handlers = try ["    func handleActiveWorkoutRecoveryRequest()", "    func handleActiveWorkoutRecovery(\n"]
+            .map { try declaration($0, in: source) }.joined(separator: "\n")
         let program = engine + "\n" + """
-        final class HKWorkoutSession {}
-        final class Logger { func info(_ value: String) {} }
+        enum Activity { case walking, other }
+        enum Location { case indoor, outdoor }
+        struct Configuration { var activityType: Activity = .walking; var locationType: Location = .indoor }
+        final class HKWorkoutSession {
+            var workoutConfiguration = Configuration()
+            var startDate: Date? = Date(timeIntervalSince1970: 100)
+        }
+        struct Lifecycle { let startedAt: Date?; let collectionStarted = true }
+        enum ProviderState { case idle }
+        final class Provider {
+            var state: ProviderState = .idle
+            var recovered = 0
+            func recover(_ session: HKWorkoutSession, failureContext: IPhoneHealthKitRuntimeFailureContext) throws -> Lifecycle {
+                recovered += 1; return Lifecycle(startedAt: session.startDate)
+            }
+        }
+        final class Logger { func info(_ value: String) {}; func error(_ value: String) {} }
         final class HealthStore {
             var calls = 0
             var callback: ((HKWorkoutSession?, Error?) -> Void)?
@@ -93,8 +179,14 @@ final class TrainingResultBehaviorTests: XCTestCase {
             var nativeWorkoutRecoveryStore: NativeWorkoutRecoveryStore?
             var nativeHeartRateLogger = Logger()
             var infoToastMessage: String?
+            var isNativeWorkoutRecoveryActive = true
+            var isNativeHeartRatePreflightActive = false
+            var nativeWorkoutRecoveryStatusText: String?
             var failed = false
             var unlocked = false
+            var finished = 0
+            var discarded = 0
+            var restored = 0
             var activeWorkoutRecoveryAvailability: Bool? = false
             var activeWorkoutRecoveryRequestPending = false
             var didHandleActiveWorkoutRecoveryCallback = false
@@ -102,25 +194,29 @@ final class TrainingResultBehaviorTests: XCTestCase {
             var nativeHeartRateFlowOwnsController = false
             var nativeHealthKitWorkoutFinishInFlight = false
             var healthStore = HealthStore()
-            func completeNativeWorkoutRecoveryToIdle() { unlocked = true }
+            var nativeHeartRateProviderLifecycle = NativeHeartRateProviderLifecycle()
+            var iPhoneHealthKitHeartRateProvider = Provider()
+            func recomputeHrStartAllowed() {}
+            func completeNativeWorkoutRecoveryToIdle() { unlocked = true; isNativeWorkoutRecoveryActive = false }
             func handleUnavailableActiveWorkoutRecovery(error: Error?) { failed = true }
-            func handleActiveWorkoutRecoveryRequest() { activeWorkoutRecoveryRequestPending = true }
-            func handleActiveWorkoutRecovery(session: HKWorkoutSession?, error: Error?) {
-                activeWorkoutRecoveryRequestPending = false
-                didHandleActiveWorkoutRecoveryCallback = true
-                pendingActiveWorkoutRecoveryResult = (session, error)
-                processPendingActiveWorkoutRecoveryIfPossible()
-            }
-        \(nilPath.replacingOccurrences(of: "private func", with: "func"))
+            func discardRecoveredUncommittedWorkout() { discarded += 1 }
+            func restoreCommittedNativeWorkout(_ record: NativeWorkoutRecoveryRecord) { restored += 1 }
+            func resumeFinishingNativeWorkout(_ record: NativeWorkoutRecoveryRecord) { finished += 1 }
+        \(pending.replacingOccurrences(of: "private func", with: "func"))
         \(probePath.replacingOccurrences(of: "private func", with: "func"))
+        \(handlers)
         }
         @main struct Main {
+            static func barrier() async {
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.main.async { c.resume() }
+                }
+            }
             static func main() async throws {
                 let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
                 defer { try? FileManager.default.removeItem(at: directory) }
                 let store = NativeWorkoutRecoveryStore(fileURL: directory.appendingPathComponent("recovery.json"))
-                let preflight = NativeWorkoutRecoveryRecord.preflight(
-                    appWorkoutID: UUID(), targetBPM: 140, durationMinutes: 25,
+                let preflight = NativeWorkoutRecoveryRecord.preflight(appWorkoutID: UUID(), targetBPM: 140, durationMinutes: 25,
                     acquisitionStartedAt: Date(timeIntervalSince1970: 100), profileID: UUID())
                 let sessionID = UUID()
                 let record = preflight.committed(controlledWorkoutStartedAt: Date(timeIntervalSince1970: 101),
@@ -128,37 +224,78 @@ final class TrainingResultBehaviorTests: XCTestCase {
                     .finishing(requestedAt: Date(timeIntervalSince1970: 110))
                 try store.save(record)
                 let original = try Data(contentsOf: store.fileURL)
-                let f = Fixture()
-                f.nativeWorkoutRecoveryStore = store
-                f.nativeWorkoutRecoveryLoadResult = .record(record)
-                f.activeNativeWorkoutRecoveryRecord = record
-                // Scene's false recovery flag must only trigger a probe, never clear the record.
+                func fixture() -> Fixture {
+                    let f = Fixture(); f.nativeWorkoutRecoveryStore = store
+                    f.nativeWorkoutRecoveryLoadResult = .record(record); f.activeNativeWorkoutRecoveryRecord = record
+                    return f
+                }
+                let f = fixture()
                 f.processNoActiveWorkoutRecoveryIfPossible()
                 f.processNoActiveWorkoutRecoveryIfPossible()
                 precondition(f.healthStore.calls == 1 && !f.unlocked)
-                precondition(try! Data(contentsOf: store.fileURL) == original)
                 f.healthStore.callback?(nil, NSError(domain: "unavailable", code: 1))
-                for _ in 0..<100 { await Task.yield() }
-                precondition(!f.unlocked && f.failed)
+                await barrier()
+                precondition(!f.unlocked && f.failed && f.didHandleActiveWorkoutRecoveryCallback)
                 precondition(try! Data(contentsOf: store.fileURL) == original)
-                f.failed = false
-                f.pendingActiveWorkoutRecoveryResult = (HKWorkoutSession(), nil)
-                f.processPendingActiveWorkoutRecoveryIfPossible()
-                precondition(!f.unlocked && f.failed)
-                f.failed = false
-                f.pendingActiveWorkoutRecoveryResult = (nil, nil)
-                f.processPendingActiveWorkoutRecoveryIfPossible()
-                precondition(f.unlocked && !f.failed && store.load() == .missing)
+                f.handleActiveWorkoutRecovery(session: nil, error: nil)
+                precondition(!f.unlocked, "Duplicate callback must not unlock")
+
+                for variant in 0..<4 {
+                    let foreign = HKWorkoutSession()
+                    switch variant {
+                    case 0: foreign.startDate = nil
+                    case 1: foreign.startDate = Date(timeIntervalSince1970: 200)
+                    case 2: foreign.workoutConfiguration.activityType = .other
+                    default: foreign.workoutConfiguration.locationType = .outdoor
+                    }
+                    let other = fixture()
+                    other.handleActiveWorkoutRecovery(session: foreign, error: nil)
+                    precondition(other.failed && !other.unlocked && other.iPhoneHealthKitHeartRateProvider.recovered == 0)
+                    precondition(other.discarded == 0 && other.finished == 0)
+                    precondition(try! Data(contentsOf: store.fileURL) == original)
+                }
+                let matching = fixture()
+                matching.handleActiveWorkoutRecovery(session: HKWorkoutSession(), error: nil)
+                precondition(matching.finished == 1 && matching.discarded == 0 && !matching.unlocked)
+                precondition(try! Data(contentsOf: store.fileURL) == original)
+
                 let archive = directory.appendingPathComponent("interrupted_native_workout_\\(record.appWorkoutID.uuidString).json")
+                try Data("conflict".utf8).write(to: archive)
+                let conflict = fixture()
+                conflict.handleActiveWorkoutRecovery(session: nil, error: nil)
+                precondition(conflict.failed && !conflict.unlocked)
+                precondition(try! Data(contentsOf: store.fileURL) == original)
+                try FileManager.default.removeItem(at: archive)
+
+                for load in [NativeWorkoutRecoveryLoadResult.invalid, .record(preflight),
+                             .record(record.stopping(requestedAt: Date(timeIntervalSince1970: 110)))] {
+                    let blocked = fixture(); blocked.nativeWorkoutRecoveryLoadResult = load
+                    blocked.handleActiveWorkoutRecovery(session: nil, error: nil)
+                    precondition(blocked.failed && !blocked.unlocked)
+                    precondition(try! Data(contentsOf: store.fileURL) == original)
+                }
+                let buffered = fixture()
+                buffered.didStartApplicationRuntime = false
+                buffered.handleActiveWorkoutRecovery(session: nil, error: nil)
+                precondition(!buffered.unlocked && buffered.pendingActiveWorkoutRecoveryResult != nil)
+                buffered.didStartApplicationRuntime = true
+                buffered.processPendingActiveWorkoutRecoveryIfPossible()
+                precondition(buffered.unlocked && !buffered.failed && store.load() == .missing)
                 precondition(try! Data(contentsOf: archive) == original)
+                buffered.handleActiveWorkoutRecovery(session: HKWorkoutSession(), error: nil)
+                precondition(buffered.finished == 0)
             }
         }
         """
+        try executeFixture(program, name: "InterruptedRecovery")
+    }
+
+    private func executeFixture(_ program: String, name: String) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("InterruptedRecovery.swift")
-        let binary = directory.appendingPathComponent("interrupted-recovery")
+        let file = directory.appendingPathComponent(name + ".swift")
+        let binary = directory.appendingPathComponent(name)
         try program.write(to: file, atomically: true, encoding: .utf8)
         try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", "-parse-as-library", file.path, "-o", binary.path], directory: directory)
         try execute(binary, arguments: [], directory: directory)
