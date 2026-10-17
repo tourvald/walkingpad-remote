@@ -119,6 +119,8 @@ let package = Package(
                 "CommonInfoCard.swift",
                 "ContentSharedUIComponents.swift",
                 "ContentView.swift",
+                "WorkoutActivityAttributes.swift",
+                "WorkoutLiveActivityController.swift",
                 "DebugHrFailuresCard.swift",
                 "DebugStopTruthExperimentCard.swift",
                 "DebugSharedUIComponents.swift",
@@ -166,7 +168,8 @@ let package = Package(
                 "TreadmillCommandTelemetrySidecar.swift",
                 "WalkingPadStatusRefreshPolicy.swift",
                 "WalkingPadStartTransaction.swift",
-                "WorkoutLifecyclePolicy.swift"
+                "WorkoutLifecyclePolicy.swift",
+                "WorkoutLiveActivityState.swift"
             ]
         ),
         .testTarget(
