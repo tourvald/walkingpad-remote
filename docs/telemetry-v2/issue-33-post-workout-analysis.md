@@ -3,7 +3,7 @@
 Status: implemented Analyzer V1 contract.
 
 This document owns the concrete metric definitions and lifecycle for
-`workout-analyzer-v1.5`. The canonical evidence, causal, and safety rules remain
+`workout-analyzer-v1.6`. The canonical evidence, causal, and safety rules remain
 owned by the [data contract](data-contract.md),
 [treadmill truth contract](treadmill-truth-and-command-lifecycle.md), and
 [safety boundary](safety-boundary.md).
@@ -217,7 +217,7 @@ Analyzer metadata includes:
 
 - analyzer version `workout-analyzer-v1.6`;
 - detail schema version `1`;
-- metric definition `timestamp-hold-metrics-v2`;
+- metric definition `timestamp-hold-metrics-v3`;
 - accepted telemetry schema range `1.0.0...1.0.0`;
 - complete analyzer policy;
 - generation timestamp;
