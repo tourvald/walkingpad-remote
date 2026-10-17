@@ -24,6 +24,7 @@ struct HrFailureReport: Identifiable {
 struct ContentView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @Environment(\.scenePhase) private var scenePhase
+    @State private var workoutLiveActivity = WorkoutLiveActivityController()
     @AppStorage("content_selected_root_tab_v1") private var selectedRootTabRaw: Int = RootTab.control.rawValue
 
     private enum RootTab: Int {
@@ -92,6 +93,7 @@ struct ContentView: View {
             #endif
             manager.start()
             updateNativeHeartRateLifecycle(scenePhase)
+            workoutLiveActivity.observe(manager, isForeground: scenePhase == .active)
         }
         .onChange(of: scenePhase) { _, phase in
             #if DEBUG
@@ -103,12 +105,17 @@ struct ContentView: View {
                 manager.treadmillTestRunAppBecameInactive()
             }
             updateNativeHeartRateLifecycle(phase)
+            workoutLiveActivity.synchronize(workoutLiveActivityInput, isForeground: phase == .active)
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
             if phase != .active {
                 manager.stopTruthExperimentAppBecameInactive()
             }
 #endif
         }
+    }
+
+    private var workoutLiveActivityInput: WorkoutLiveActivityInput {
+        WorkoutLiveActivityController.input(from: manager)
     }
 
     private func updateNativeHeartRateLifecycle(_ phase: ScenePhase) {
