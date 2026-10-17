@@ -1573,7 +1573,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let zone = currentTargetZoneSnapshot()
         let cooldownState = cooldownRuntimeState
         var payload: [String: Any] = [
-            "ts": trainingLogIsoFormatter.string(from: Date()),
             "event": event,
             "installation_id": installationID,
             "profile_id": activeUserProfile?.id.uuidString ?? "",
@@ -1620,18 +1619,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             "steps": stepsCount,
             "treadmill_status": treadmillStatusText
         ]
-        if let sessionId = trainingLogSessionId {
-            payload["session_id"] = sessionId
-        }
         for (key, value) in fields {
             payload[key] = value
         }
         return payload
     }
 
-    private func writeTrainingLogLocked(event: String, fields: [String: Any]) {
+    private func writeTrainingLogLocked(_ snapshot: [String: Any]) {
         guard let handle = trainingLogFileHandle else { return }
-        let payload = makeTrainingLogPayload(event: event, fields: fields)
+        var payload = snapshot
+        if payload["ts"] == nil {
+            payload["ts"] = trainingLogIsoFormatter.string(from: Date())
+        }
+        if payload["session_id"] == nil, let sessionId = trainingLogSessionId {
+            payload["session_id"] = sessionId
+        }
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
             return
@@ -1642,8 +1644,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func logTrainingEvent(_ event: String, fields: [String: Any] = [:]) {
+        let payload = makeTrainingLogPayload(event: event, fields: fields)
         trainingLogQueue.async { [weak self] in
-            self?.writeTrainingLogLocked(event: event, fields: fields)
+            self?.writeTrainingLogLocked(payload)
         }
     }
 
@@ -1698,38 +1701,43 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func stopTrainingStructuredLog(reason: String) {
-        trainingLogQueue.sync {
-            guard trainingLogFileHandle != nil else { return }
-            let cooldownState = self.cooldownRuntimeState
-            writeTrainingLogLocked(event: "session_end", fields: [
-                "reason": reason,
-                "remaining_s": hrRemainingSeconds,
-                "cooldown_remaining_s": hrCooldownRemainingSeconds,
-                "avg_bpm": hrAverageBPM,
-                "session_peak_bpm": hrSessionPeakBPM,
-                "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
-                "main_peak_bpm": hrMainPeakBPM,
-                "zone_seconds": zoneSecondsSnapshot(),
-                "zone4plus_seconds": zone4PlusSecondsSnapshot(),
-                "cooldown_start_hr_bpm": cooldownState?.startBpm ?? 0,
-                "cooldown_end_hr_bpm": cooldownState?.endBpm ?? 0,
-                "cooldown_peak_hr_bpm": cooldownState?.peakBpm ?? 0,
-                "cooldown_planned_s": cooldownState?.totalSeconds ?? 0,
-                "cooldown_elapsed_s": cooldownState?.elapsedSeconds ?? 0,
-                "cooldown_target_hit_elapsed_s": cooldownState?.targetHitElapsedSeconds ?? -1,
-                "cooldown_hr_drop_bpm": cooldownState?.hrDropBpm ?? 0,
-                "cooldown_hr_recovery_bpm_per_min": cooldownState?.recoveryBpmPerMinute ?? 0,
-                "distance_km": distKm,
-                "duration_s": timeSec
-            ])
-            trainingLogFileHandle?.synchronizeFile()
-            trainingLogFileHandle?.closeFile()
-            trainingLogFileHandle = nil
-            trainingLogFileURL = nil
-            trainingLogSessionId = nil
-        }
-        DispatchQueue.main.async {
-            self.refreshTrainingLogsInventory()
+        let cooldownState = cooldownRuntimeState
+        let payload = makeTrainingLogPayload(event: "session_end", fields: [
+            "reason": reason,
+            "remaining_s": hrRemainingSeconds,
+            "cooldown_remaining_s": hrCooldownRemainingSeconds,
+            "avg_bpm": hrAverageBPM,
+            "session_peak_bpm": hrSessionPeakBPM,
+            "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
+            "main_peak_bpm": hrMainPeakBPM,
+            "zone_seconds": zoneSecondsSnapshot(),
+            "zone4plus_seconds": zone4PlusSecondsSnapshot(),
+            "cooldown_start_hr_bpm": cooldownState?.startBpm ?? 0,
+            "cooldown_end_hr_bpm": cooldownState?.endBpm ?? 0,
+            "cooldown_peak_hr_bpm": cooldownState?.peakBpm ?? 0,
+            "cooldown_planned_s": cooldownState?.totalSeconds ?? 0,
+            "cooldown_elapsed_s": cooldownState?.elapsedSeconds ?? 0,
+            "cooldown_target_hit_elapsed_s": cooldownState?.targetHitElapsedSeconds ?? -1,
+            "cooldown_hr_drop_bpm": cooldownState?.hrDropBpm ?? 0,
+            "cooldown_hr_recovery_bpm_per_min": cooldownState?.recoveryBpmPerMinute ?? 0,
+            "distance_km": distKm,
+            "duration_s": timeSec
+        ])
+        // Freeze terminal context before a later workout/profile can replace it.
+        // The serial queue still orders prior events, terminal write, close, then the next log.
+        trainingLogQueue.async {
+            defer {
+                DispatchQueue.main.async {
+                    self.refreshTrainingLogsInventory()
+                }
+            }
+            guard self.trainingLogFileHandle != nil else { return }
+            self.writeTrainingLogLocked(payload)
+            self.trainingLogFileHandle?.synchronizeFile()
+            self.trainingLogFileHandle?.closeFile()
+            self.trainingLogFileHandle = nil
+            self.trainingLogFileURL = nil
+            self.trainingLogSessionId = nil
         }
     }
 
