@@ -486,26 +486,13 @@ enum NativeWorkoutSavedProofPolicy {
     }
 }
 
-enum NativeWorkoutLegacyLinkPolicy {
-    static func canLink(
-        existingWorkoutUUID: String?,
-        expectedWorkoutUUID: UUID
-    ) -> Bool {
-        existingWorkoutUUID == nil
-            || existingWorkoutUUID == expectedWorkoutUUID.uuidString
-    }
-}
-
 enum NativeWorkoutRequiredLinkagePolicy {
     static func complete(
-        legacyRequired: Bool,
-        persistLegacy: () -> Bool,
-        telemetryRequired: Bool,
-        persistTelemetry: () async -> Bool
+        telemetrySessionID: UUID?,
+        persistTelemetry: (UUID) async -> Bool
     ) async -> Bool {
-        if legacyRequired, !persistLegacy() { return false }
-        if telemetryRequired, !(await persistTelemetry()) { return false }
-        return true
+        guard let telemetrySessionID else { return false }
+        return await persistTelemetry(telemetrySessionID)
     }
 }
 

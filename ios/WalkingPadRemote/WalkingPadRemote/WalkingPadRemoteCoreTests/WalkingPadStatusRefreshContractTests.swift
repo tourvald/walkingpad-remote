@@ -11,7 +11,7 @@ final class WalkingPadStatusRefreshContractTests: XCTestCase {
         )
 
         XCTAssertTrue(request.contains("buildWalkingPadQueryStatusPacket"))
-        XCTAssertTrue(request.contains("read_only"))
+        XCTAssertTrue(request.contains("label: \"QUERY STATUS\""))
         XCTAssertFalse(request.contains("observeTreadmillProviderObservation"))
         XCTAssertFalse(request.contains("deviceReportedSpeedKmh ="))
         XCTAssertFalse(request.contains("speedKmh ="))

@@ -108,12 +108,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var stopObservationLifecycle: StopObservationLifecycle? = nil
     private var stopObservationCheckpointWorkItems: [DispatchWorkItem] = []
     private var stopObservationFreshnessWorkItem: DispatchWorkItem?
-    private var stopObservationOwnsTrainingLog = false
     private struct UnavailableStopAttempt {
         let id: UUID
         let source: String
         let attemptedAt: Date
-        let ownsTrainingLog: Bool
         var commandSentAt: Date?
     }
     private var unavailableStopAttempt: UnavailableStopAttempt? = nil
@@ -190,7 +188,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let installationIDStoreKey = "installation_id_v1"
     private let hrSettingsStoreKey = "hr_settings_v1"
     private let zonePlanStoreKey = "zone_plan_v1"
-    private let workoutHistoryStoreKey = "workout_history_v1"
     private var isLoadingHrSettings: Bool = false
     private var autoConnectSuppressed: Bool = false
     private var lastSuccessfulPeripheralID: UUID? = nil
@@ -245,7 +242,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var commandQueueEpoch: Int = 0
     private var nextCommandAllowedAt: Date = .distantPast
     private var pendingHealthkitWorkoutUUID: String? = nil
-    private var pendingHealthkitWorkoutProfileID: UUID? = nil
     private(set) var activeTelemetryV2SessionID: SessionID? = nil
     private(set) var activeTelemetryV2ProfileID: UUID?
     private var pendingHealthkitTelemetryV2SessionID: SessionID? = nil
@@ -284,7 +280,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var treadmillTelemetrySink: (any TreadmillTelemetrySink)?
     @Published private(set) var telemetryV2StatusText: String = "idle"
     @Published private(set) var telemetryV2WriterHealthSnapshot: TelemetryV2WriterHealthSnapshot = .idle
-    @Published private(set) var legacyShadowWriterStatusText: String = "idle"
     private lazy var telemetryV2Coordinator = TelemetryV2RuntimeCoordinator(
         persistenceFactory: {
             let appIdentifier = Bundle.main.bundleIdentifier ?? "sw.WalkingPadRemote"
@@ -319,21 +314,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let commandID: CommandID?
     }
     private var activeTreadmillStopTelemetryChain: TreadmillStopTelemetryChain?
-    private var expectedSpeedKmh: Double? = nil
-    private var expectedSpeedSetAt: Date? = nil
-    private var expectedSpeedSource: String? = nil
-    private var lastLoggedActualSpeedKmh: Double? = nil
-    private let trainingLogsDirectoryName = "TrainingLogs"
-    private let trainingLogMaxFiles = 40
-    private let trainingLogQueue = DispatchQueue(label: "BluetoothManager.trainingLog")
-    private let trainingLogTimestampFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
-        formatter.dateFormat = "yyyyMMdd_HHmmss"
-        return formatter
-    }()
-
     var activeUserProfileLabel: String {
         activeUserProfile?.label ?? "Пользователь 1"
     }
@@ -342,22 +322,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard let activeUserProfileID else { return userProfiles.first }
         return userProfiles.first(where: { $0.id == activeUserProfileID }) ?? userProfiles.first
     }
-    private let trainingLogIsoFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-    struct TrainingLogsCsvExport {
-        let csvURL: URL
-        let rowCount: Int
-        let scope: TrainingLogCsvExportScope
-        fileprivate let sourceFiles: [URL]
-    }
-    private var trainingLogSessionId: String? = nil
-    private var trainingLogFileURL: URL? = nil
-    private var trainingLogFileHandle: FileHandle? = nil
-    private var trainingLogsInventoryRefreshID = UUID()
-
     private func loadKnownPeripherals() {
         guard let data = UserDefaults.standard.data(forKey: knownStoreKey) else { return }
         if let list = try? JSONDecoder().decode([KnownPeripheralDTO].self, from: data) {
@@ -388,47 +352,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         UserDefaults.standard.set(peripheralID.uuidString, forKey: lastSuccessfulPeripheralStoreKey)
     }
 
-    private struct WorkoutEntryDTO: Codable {
-        let id: UUID
-        let date: Date
-        let beatsPerMeter: Double?
-        let targetBpm: Int
-        let durationSeconds: Int
-        let avgBpm: Int
-        let avgSpeedKmh: Double?
-        let healthkitWorkoutUUID: String?
-        let zoneSeconds: [Int]?
-
-        enum CodingKeys: String, CodingKey {
-            case id, date, beatsPerMeter, targetBpm, durationSeconds, avgBpm, avgSpeedKmh, healthkitWorkoutUUID, zoneSeconds
-        }
-
-        init(id: UUID, date: Date, beatsPerMeter: Double?, targetBpm: Int, durationSeconds: Int, avgBpm: Int, avgSpeedKmh: Double?, healthkitWorkoutUUID: String?, zoneSeconds: [Int]?) {
-            self.id = id
-            self.date = date
-            self.beatsPerMeter = beatsPerMeter
-            self.targetBpm = targetBpm
-            self.durationSeconds = durationSeconds
-            self.avgBpm = avgBpm
-            self.avgSpeedKmh = avgSpeedKmh
-            self.healthkitWorkoutUUID = healthkitWorkoutUUID
-            self.zoneSeconds = zoneSeconds
-        }
-
-        init(from decoder: Swift.Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            id = (try? container.decode(UUID.self, forKey: .id)) ?? UUID()
-            date = try container.decode(Date.self, forKey: .date)
-            beatsPerMeter = try? container.decode(Double.self, forKey: .beatsPerMeter)
-            targetBpm = try container.decode(Int.self, forKey: .targetBpm)
-            durationSeconds = try container.decode(Int.self, forKey: .durationSeconds)
-            avgBpm = (try? container.decode(Int.self, forKey: .avgBpm)) ?? 0
-            avgSpeedKmh = try? container.decode(Double.self, forKey: .avgSpeedKmh)
-            healthkitWorkoutUUID = try? container.decode(String.self, forKey: .healthkitWorkoutUUID)
-            zoneSeconds = try? container.decode([Int].self, forKey: .zoneSeconds)
-        }
-    }
-
     private func userProfileDTO(from profile: UserProfile) -> UserProfileDTO {
         UserProfileDTO(id: profile.id, label: profile.label, createdAt: profile.createdAt)
     }
@@ -448,10 +371,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func profileScopedStoreKey(_ baseKey: String, profileID: UUID) -> String {
         "\(baseKey)_profile_\(profileID.uuidString.lowercased())"
-    }
-
-    private var legacyFallbackProfileID: String? {
-        sortedProfiles(userProfiles).first?.id.uuidString
     }
 
     private func makeDefaultProfileLabel() -> String {
@@ -498,7 +417,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func migrateLegacyProfileStoresIfNeeded(to profileID: UUID) {
         let defaults = UserDefaults.standard
 
-        for baseKey in [hrSettingsStoreKey, zonePlanStoreKey, workoutHistoryStoreKey] {
+        for baseKey in [hrSettingsStoreKey, zonePlanStoreKey] {
             let scopedKey = profileScopedStoreKey(baseKey, profileID: profileID)
             guard defaults.object(forKey: scopedKey) == nil,
                   let legacyValue = defaults.object(forKey: baseKey) else {
@@ -608,77 +527,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         UserDefaults.standard.set(data, forKey: profileScopedStoreKey(zonePlanStoreKey, profileID: profileID))
     }
 
-    private func legacyShadowWorkoutEntry(from dto: WorkoutEntryDTO) -> LegacyShadowWorkoutEntry {
-        LegacyShadowWorkoutEntry(
-            id: dto.id,
-            date: dto.date,
-            beatsPerMeter: dto.beatsPerMeter,
-            targetBpm: dto.targetBpm,
-            durationSeconds: dto.durationSeconds,
-            avgBpm: dto.avgBpm,
-            avgSpeedKmh: dto.avgSpeedKmh,
-            healthkitWorkoutUUID: dto.healthkitWorkoutUUID,
-            zoneSeconds: dto.zoneSeconds
-        )
-    }
-
-    private func workoutEntryDTO(from entry: LegacyShadowWorkoutEntry) -> WorkoutEntryDTO {
-        WorkoutEntryDTO(
-            id: entry.id,
-            date: entry.date,
-            beatsPerMeter: entry.beatsPerMeter,
-            targetBpm: entry.targetBpm,
-            durationSeconds: entry.durationSeconds,
-            avgBpm: entry.avgBpm,
-            avgSpeedKmh: entry.avgSpeedKmh,
-            healthkitWorkoutUUID: entry.healthkitWorkoutUUID,
-            zoneSeconds: entry.zoneSeconds
-        )
-    }
-
-    private func loadLegacyShadowWorkoutHistory(profileID: UUID) -> [LegacyShadowWorkoutEntry] {
-        let key = profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID)
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let list = try? JSONDecoder().decode([WorkoutEntryDTO].self, from: data) else {
-            return []
-        }
-
-        return list.map { legacyShadowWorkoutEntry(from: $0) }
-    }
-
-    @discardableResult
-    private func saveLegacyShadowWorkoutHistory(
-        _ entries: [LegacyShadowWorkoutEntry],
-        profileID: UUID
-    ) -> Bool {
-        // Compatibility-only parity evidence through #37; #36 owns mandatory removal.
-        let list = entries.prefix(50).map { workoutEntryDTO(from: $0) }
-        guard let data = try? JSONEncoder().encode(list) else {
-            legacyShadowWriterStatusText = "failed: encode"
-            return false
-        }
-        let key = profileScopedStoreKey(workoutHistoryStoreKey, profileID: profileID)
-        UserDefaults.standard.set(data, forKey: key)
-        if UserDefaults.standard.data(forKey: key) == data {
-            legacyShadowWriterStatusText = "ok"
-            return true
-        } else {
-            legacyShadowWriterStatusText = "failed: persistence"
-            return false
-        }
-    }
-
     private func removeStoredData(for profileID: UUID) {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: profileScopedStoreKey(hrSettingsStoreKey, profileID: profileID))
         defaults.removeObject(forKey: profileScopedStoreKey(zonePlanStoreKey, profileID: profileID))
-        // Preserve legacy workout shadow evidence until the explicit #36 retirement.
+        // Legacy workout source evidence is retained for the read-only compatibility importer.
     }
 
     private func loadActiveProfileScopedData() {
         loadHrSettings()
         loadZonePlan()
-        loadLegacyShadowWorkoutHistory()
     }
 
     func selectUserProfile(id: UUID) {
@@ -691,13 +549,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         saveHrSettingsIfNeeded()
         saveZonePlan()
-        saveLegacyShadowWorkoutHistory()
 
         activeUserProfileID = id
         saveProfilesState()
         loadActiveProfileScopedData()
         refreshWorkoutHistoryFromV2(reset: true)
-        refreshTrainingLogsInventory()
         infoToastMessage = "Активный профиль: \(activeUserProfileLabel)"
     }
 
@@ -715,18 +571,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         saveHrSettingsIfNeeded()
         saveZonePlan()
-        saveLegacyShadowWorkoutHistory()
 
         saveHrSettings(profileID: profile.id)
         saveZonePlan(profileID: profile.id)
-        saveLegacyShadowWorkoutHistory([], profileID: profile.id)
 
         userProfiles = sortedProfiles(userProfiles + [profile])
         activeUserProfileID = profile.id
         saveProfilesState()
         loadActiveProfileScopedData()
         refreshWorkoutHistoryFromV2(reset: true)
-        refreshTrainingLogsInventory()
         infoToastMessage = "Создан профиль: \(profile.label)"
     }
 
@@ -768,26 +621,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         saveProfilesState()
         loadActiveProfileScopedData()
         refreshWorkoutHistoryFromV2(reset: true)
-        refreshTrainingLogsInventory()
         infoToastMessage = "Профиль удалён: \(deletedLabel)"
-    }
-
-    private func loadLegacyShadowWorkoutHistory() {
-        guard let activeUserProfileID else {
-            legacyShadowWorkoutHistory = []
-            return
-        }
-        legacyShadowWorkoutHistory = loadLegacyShadowWorkoutHistory(
-            profileID: activeUserProfileID
-        )
-    }
-
-    private func saveLegacyShadowWorkoutHistory() {
-        guard let activeUserProfileID else { return }
-        saveLegacyShadowWorkoutHistory(
-            legacyShadowWorkoutHistory,
-            profileID: activeUserProfileID
-        )
     }
 
     private struct HrSettingsDTO: Codable {
@@ -1177,45 +1011,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     struct HrFailureReport: Identifiable { let id = UUID(); let reason: String; let start: Date; let end: Date; let lines: [String] }
     @Published var hrFailureReports: [HrFailureReport] = []
     private var lastCommandLine: String = ""
-    @Published var lastTrainingLogPath: String = ""
-    @Published private(set) var trainingLogsInventory: TrainingTelemetryWriter.TrainingLogsInventory = .empty
-
-    private func currentTrainingPhase() -> String {
-        if isHrControlRunning && hrRemainingSeconds > 0 { return "hr_control" }
-        if isHrControlRunning && hrCooldownRemainingSeconds > 0 { return "cooldown" }
-        if isHrControlRunning { return "running" }
-        return "idle"
-    }
-
-    private func currentSessionState() -> String {
-        guard isHrControlRunning else { return "idle" }
-        if hrCooldownRemainingSeconds > 0 { return "cooldown" }
-        if hrRemainingSeconds > 0 {
-            if HRDomainService.isWithinInitialHeartRateGrace(
-                startedAt: hrControlStartedAt,
-                now: Date(),
-                graceSeconds: hrStartGraceSeconds
-            ) {
-                return "warmup"
-            }
-            return "main"
-        }
-        return "running"
-    }
-
-    private func currentTargetZoneSnapshot() -> (index: Int, lower: Int, upper: Int) {
-        let z1 = max(60, min(220, hrZone1Max))
-        let z2 = max(z1, min(220, hrZone2Max))
-        let z3 = max(z2, min(220, hrZone3Max))
-        let z4 = max(z3, min(220, hrZone4Max))
-        let hr = max(60, min(220, hrTargetBPM))
-
-        if hr <= z1 { return (index: 1, lower: 60, upper: z1) }
-        if hr <= z2 { return (index: 2, lower: z1 + 1, upper: z2) }
-        if hr <= z3 { return (index: 3, lower: z2 + 1, upper: z3) }
-        if hr <= z4 { return (index: 4, lower: z3 + 1, upper: z4) }
-        return (index: 5, lower: z4 + 1, upper: 220)
-    }
 
     private func zoneSecondsSnapshot() -> [Int] {
         var out = Array(hrZoneSeconds.prefix(5))
@@ -1354,7 +1149,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 isHrControlRunning = false
                 hrControlStartedAt = nil
             }
-            stopTrainingStructuredLog(reason: completionEffect.structuredLogReason)
+
             if completionEffect.shouldStopWatch {
                 stopLegacyWatchHeartRateIfNeeded()
             }
@@ -1368,558 +1163,29 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func logCooldownTelemetry(_ effect: CooldownRuntimeEngine.TelemetryEffect) {
-        defer {
-            let now = Date()
-            switch effect {
-            case let .start(telemetry):
-                _ = telemetryV2Coordinator.observeWorkoutPhase(.cooldown, occurredAt: now)
-                _ = telemetryV2Coordinator.observeEvent(
-                    .cooldown(
-                        CooldownEvent(
-                            lifecycle: .started,
-                            targetHeartRate: UInt16(exactly: telemetry.targetBpm)
-                        )
-                    ),
-                    occurredAt: now
-                )
-            case .complete:
-                _ = telemetryV2Coordinator.observeEvent(
-                    .cooldown(CooldownEvent(lifecycle: .completed)),
-                    occurredAt: now
-                )
-            case .insufficient:
-                _ = telemetryV2Coordinator.observeEvent(
-                    .cooldown(CooldownEvent(lifecycle: .insufficient)),
-                    occurredAt: now
-                )
-            case .speedSet, .state, .analysis:
-                break
-            }
-        }
+        let now = Date()
         switch effect {
-        case .start(let telemetry):
-            logTrainingEvent("cooldown_start", fields: [
-                "from_speed_kmh": telemetry.fromSpeedKmh,
-                "target_bpm": telemetry.targetBpm,
-                "min_speed_kmh": telemetry.minSpeedKmh,
-                "step_kmh": telemetry.stepKmh,
-                "interval_s": telemetry.intervalSeconds,
-                "base_max_s": telemetry.baseMaxSeconds,
-                "max_s": telemetry.maxSeconds,
-                "extra_s": telemetry.extraSeconds,
-                "start_hr_bpm": telemetry.startBpm,
-                "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
-                "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
-                "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm,
-                "zone_seconds": telemetry.sessionAggregates.zoneSeconds,
-                "zone4plus_seconds": telemetry.sessionAggregates.zone4PlusSeconds
-            ])
-
-        case .speedSet(let telemetry):
-            logTrainingEvent("cooldown_speed_set", fields: [
-                "hr_bpm": telemetry.hrBpm,
-                "target_bpm": telemetry.targetBpm,
-                "adaptive_factor": telemetry.adaptiveFactor,
-                "step_kmh": telemetry.stepKmh,
-                "speed_before_kmh": telemetry.speedBeforeKmh,
-                "speed_after_kmh": telemetry.speedAfterKmh,
-                "elapsed_s": telemetry.elapsedSeconds,
-                "trigger": telemetry.trigger
-            ])
-
-        case .state(let telemetry):
-            logTrainingEvent("cooldown_state", fields: [
-                "hr_bpm": telemetry.hrBpm,
-                "target_bpm": telemetry.targetBpm,
-                "speed_kmh": telemetry.observedSpeedKmh,
-                "cooldown_observed_speed_kmh": telemetry.observedSpeedKmh,
-                "cooldown_controller_speed_kmh": telemetry.controllerSpeedKmh,
-                "elapsed_s": telemetry.elapsedSeconds,
-                "stable_s": telemetry.stableSeconds,
-                "stable_required_s": telemetry.stableRequiredSeconds,
-                "remaining_s": telemetry.remainingSeconds,
-                "target_hit_elapsed_s": telemetry.targetHitElapsedSeconds ?? -1,
-                "cooldown_hr_ok": telemetry.hrOk,
-                "cooldown_min_speed_ok": telemetry.minSpeedOk,
-                "cooldown_stable_ok": telemetry.stableOk,
-                "cooldown_stability_blocker": telemetry.blocker,
-                "cooldown_first_min_speed_elapsed_s": telemetry.firstMinSpeedElapsedSeconds ?? -1,
-                "cooldown_first_stable_elapsed_s": telemetry.firstStableElapsedSeconds ?? -1,
-                "cooldown_hr_below_target_s": telemetry.belowTargetSeconds,
-                "cooldown_min_speed_s": telemetry.minSpeedSeconds,
-                "cooldown_target_and_min_speed_s": telemetry.targetAndMinSpeedSeconds,
-                "cooldown_target_and_min_speed_max_streak_s": telemetry.maxStableStreakSeconds,
-                "start_hr_bpm": telemetry.startBpm,
-                "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
-                "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
-                "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm
-            ].merging(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(
-                factualSpeedKmh: telemetry.factualSpeedKmh
-            )) { _, provenance in provenance })
-
-        case .analysis(let telemetry):
-            logTrainingEvent("cooldown_analysis", fields: [
-                "reason": telemetry.reason,
-                "timeout_blocker": telemetry.timeoutBlocker,
-                "hr_bpm": telemetry.hrBpm,
-                "target_bpm": telemetry.targetBpm,
-                "cooldown_observed_speed_kmh": telemetry.observedSpeedKmh,
-                "cooldown_controller_speed_kmh": telemetry.controllerSpeedKmh,
-                "cooldown_hr_ok": telemetry.hrOk,
-                "cooldown_min_speed_ok": telemetry.minSpeedOk,
-                "cooldown_stable_ok": telemetry.stableOk,
-                "cooldown_stability_blocker": telemetry.blocker,
-                "cooldown_first_min_speed_elapsed_s": telemetry.firstMinSpeedElapsedSeconds ?? -1,
-                "cooldown_first_stable_elapsed_s": telemetry.firstStableElapsedSeconds ?? -1,
-                "cooldown_hr_below_target_s": telemetry.belowTargetSeconds,
-                "cooldown_min_speed_s": telemetry.minSpeedSeconds,
-                "cooldown_target_and_min_speed_s": telemetry.targetAndMinSpeedSeconds,
-                "cooldown_target_and_min_speed_max_streak_s": telemetry.maxStableStreakSeconds,
-                "stable_s": telemetry.stableSeconds,
-                "stable_required_s": telemetry.stableRequiredSeconds,
-                "elapsed_s": telemetry.elapsedSeconds,
-                "planned_s": telemetry.plannedSeconds
-            ].merging(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(
-                factualSpeedKmh: telemetry.factualSpeedKmh
-            )) { _, provenance in provenance })
-
-        case .complete(let telemetry):
-            logTrainingEvent("cooldown_complete", fields: [
-                "reason": telemetry.reason,
-                "cooldown_finish_reason": telemetry.reason,
-                "cooldown_timeout_blocker": telemetry.timeoutBlocker,
-                "stable_s": telemetry.stableSeconds,
-                "stable_required_s": telemetry.stableRequiredSeconds,
-                "remaining_s": telemetry.remainingSeconds,
-                "hr_bpm": telemetry.hrBpm,
-                "target_bpm": telemetry.targetBpm,
-                "cooldown_observed_speed_kmh": telemetry.observedSpeedKmh,
-                "cooldown_controller_speed_kmh": telemetry.controllerSpeedKmh,
-                "cooldown_hr_ok": telemetry.hrOk,
-                "cooldown_min_speed_ok": telemetry.minSpeedOk,
-                "cooldown_stable_ok": telemetry.stableOk,
-                "cooldown_stability_blocker": telemetry.blocker,
-                "elapsed_s": telemetry.elapsedSeconds,
-                "planned_s": telemetry.plannedSeconds,
-                "target_hit_elapsed_s": telemetry.targetHitElapsedSeconds ?? -1,
-                "cooldown_first_min_speed_elapsed_s": telemetry.firstMinSpeedElapsedSeconds ?? -1,
-                "cooldown_first_stable_elapsed_s": telemetry.firstStableElapsedSeconds ?? -1,
-                "cooldown_hr_below_target_s": telemetry.belowTargetSeconds,
-                "cooldown_min_speed_s": telemetry.minSpeedSeconds,
-                "cooldown_target_and_min_speed_s": telemetry.targetAndMinSpeedSeconds,
-                "cooldown_target_and_min_speed_max_streak_s": telemetry.maxStableStreakSeconds,
-                "start_hr_bpm": telemetry.startBpm,
-                "end_hr_bpm": telemetry.endBpm,
-                "peak_hr_bpm": telemetry.peakBpm,
-                "hr_drop_bpm": telemetry.hrDropBpm,
-                "hr_recovery_bpm_per_min": telemetry.recoveryBpmPerMinute,
-                "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
-                "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
-                "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm,
-                "zone_seconds": telemetry.sessionAggregates.zoneSeconds,
-                "zone4plus_seconds": telemetry.sessionAggregates.zone4PlusSeconds
-            ].merging(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(
-                factualSpeedKmh: telemetry.factualSpeedKmh
-            )) { _, provenance in provenance })
-
-        case .insufficient(let telemetry):
-            logTrainingEvent("cooldown_insufficient", fields: [
-                "hr_bpm": telemetry.hrBpm,
-                "target_bpm": telemetry.targetBpm,
-                "excess_bpm": telemetry.excessBpm,
-                "cooldown_finish_reason": telemetry.finishReason,
-                "cooldown_timeout_blocker": telemetry.timeoutBlocker,
-                "cooldown_observed_speed_kmh": telemetry.observedSpeedKmh,
-                "cooldown_controller_speed_kmh": telemetry.controllerSpeedKmh,
-                "cooldown_first_min_speed_elapsed_s": telemetry.firstMinSpeedElapsedSeconds ?? -1,
-                "cooldown_first_stable_elapsed_s": telemetry.firstStableElapsedSeconds ?? -1,
-                "cooldown_hr_below_target_s": telemetry.belowTargetSeconds,
-                "cooldown_min_speed_s": telemetry.minSpeedSeconds,
-                "cooldown_target_and_min_speed_s": telemetry.targetAndMinSpeedSeconds,
-                "cooldown_target_and_min_speed_max_streak_s": telemetry.maxStableStreakSeconds,
-                "elapsed_s": telemetry.elapsedSeconds,
-                "planned_s": telemetry.plannedSeconds,
-                "start_hr_bpm": telemetry.startBpm,
-                "end_hr_bpm": telemetry.endBpm,
-                "hr_drop_bpm": telemetry.hrDropBpm,
-                "hr_recovery_bpm_per_min": telemetry.recoveryBpmPerMinute,
-                "session_peak_bpm": telemetry.sessionAggregates.sessionPeakBpm,
-                "main_avg_bpm": telemetry.sessionAggregates.mainAvgBpm,
-                "main_peak_bpm": telemetry.sessionAggregates.mainPeakBpm,
-                "zone4plus_seconds": telemetry.sessionAggregates.zone4PlusSeconds
-            ].merging(TrainingTelemetryWriter.cooldownSpeedProvenanceFields(
-                factualSpeedKmh: telemetry.factualSpeedKmh
-            )) { _, provenance in provenance })
-        }
-    }
-
-    private func trainingLogsDirectoryURL() -> URL? {
-        TrainingTelemetryWriter.makeDirectoryURL(directoryName: trainingLogsDirectoryName)
-    }
-
-    private func pruneTrainingLogs(in directory: URL) {
-        TrainingTelemetryWriter.pruneJsonlFiles(in: directory, maxFiles: trainingLogMaxFiles)
-    }
-
-    private func scheduleTrainingLogsInventoryRefresh() {
-        trainingLogQueue.async { [weak self] in
-            DispatchQueue.main.async {
-                self?.refreshTrainingLogsInventory()
-            }
-        }
-    }
-
-    private func makeTrainingLogPayload(event: String, fields: [String: Any]) -> [String: Any] {
-        let zone = currentTargetZoneSnapshot()
-        let cooldownState = cooldownRuntimeState
-        var payload: [String: Any] = [
-            "event": event,
-            "installation_id": installationID,
-            "profile_id": activeUserProfile?.id.uuidString ?? "",
-            "profile_label": activeUserProfileLabel,
-            "phase": currentTrainingPhase(),
-            "session_state": currentSessionState(),
-            "is_hr_running": isHrControlRunning,
-            "hr_bpm": heartRateBPM,
-            "hr_last_bpm": lastKnownHeartRateBPM,
-            "target_bpm": hrTargetBPM,
-            "target_zone_index": zone.index,
-            "target_zone_lower_bpm": zone.lower,
-            "target_zone_upper_bpm": zone.upper,
-            "session_peak_bpm": hrSessionPeakBPM,
-            "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
-            "main_peak_bpm": hrMainPeakBPM,
-            "zone_seconds": zoneSecondsSnapshot(),
-            "zone4plus_seconds": zone4PlusSecondsSnapshot(),
-            "cooldown_start_hr_bpm": cooldownState?.startBpm ?? 0,
-            "cooldown_end_hr_bpm": cooldownState?.endBpm ?? 0,
-            "cooldown_peak_hr_bpm": cooldownState?.peakBpm ?? 0,
-            "cooldown_target_bpm": hrCooldownTargetBpm,
-            "cooldown_planned_s": cooldownState?.totalSeconds ?? 0,
-            "cooldown_elapsed_s": cooldownState?.elapsedSeconds ?? 0,
-            "cooldown_target_hit_elapsed_s": cooldownState?.targetHitElapsedSeconds ?? -1,
-            "cooldown_hr_drop_bpm": cooldownState?.hrDropBpm ?? 0,
-            "cooldown_hr_recovery_bpm_per_min": cooldownState?.recoveryBpmPerMinute ?? 0,
-            "cooldown_finish_reason": cooldownState?.finishReason ?? "",
-            "cooldown_timeout_blocker": cooldownState?.timeoutBlocker ?? "",
-            "cooldown_first_min_speed_elapsed_s": cooldownState?.firstMinSpeedElapsedSeconds ?? -1,
-            "cooldown_first_stable_elapsed_s": cooldownState?.firstStableElapsedSeconds ?? -1,
-            "cooldown_hr_below_target_s": cooldownState?.belowTargetSeconds ?? 0,
-            "cooldown_min_speed_s": cooldownState?.minSpeedSeconds ?? 0,
-            "cooldown_target_and_min_speed_s": cooldownState?.targetAndMinSpeedSeconds ?? 0,
-            "cooldown_target_and_min_speed_max_streak_s": cooldownState?.maxStableStreakSeconds ?? 0,
-            "speed_actual_kmh": speedKmh,
-            "speed_target_kmh": desiredSpeedKmh,
-            "speed_device_target_kmh": deviceTargetSpeedKmh,
-            "speed_reported_kmh": deviceReportedSpeedKmh,
-            "speed_reported_app_kmh": deviceReportedAppSpeedKmh,
-            "speed_delta_kmh": lastSpeedDeltaKmh,
-            "distance_km": distKm,
-            "duration_s": timeSec,
-            "steps": stepsCount,
-            "treadmill_status": treadmillStatusText
-        ]
-        for (key, value) in fields {
-            payload[key] = value
-        }
-        return payload
-    }
-
-    private func writeTrainingLogLocked(_ snapshot: [String: Any]) {
-        guard let handle = trainingLogFileHandle else { return }
-        var payload = snapshot
-        if payload["ts"] == nil {
-            payload["ts"] = trainingLogIsoFormatter.string(from: Date())
-        }
-        if payload["session_id"] == nil, let sessionId = trainingLogSessionId {
-            payload["session_id"] = sessionId
-        }
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
-            return
-        }
-        handle.seekToEndOfFile()
-        handle.write(data)
-        handle.write(Data([0x0A]))
-    }
-
-    private func logTrainingEvent(_ event: String, fields: [String: Any] = [:]) {
-        let payload = makeTrainingLogPayload(event: event, fields: fields)
-        trainingLogQueue.async { [weak self] in
-            self?.writeTrainingLogLocked(payload)
-        }
-    }
-
-    @discardableResult
-    private func startTrainingStructuredLog(
-        trigger: String,
-        sessionID: UUID? = nil
-    ) -> UUID? {
-        stopTrainingStructuredLog(reason: "restart_before_new_session")
-        let resolvedSessionID = sessionID
-            ?? (trigger == "start_hr"
-                ? activeNativeWorkoutRecoveryRecord?.legacySessionID
-                : nil)
-            ?? UUID()
-        guard let dir = trainingLogsDirectoryURL() else {
-            return resolvedSessionID
-        }
-        let sessionId = resolvedSessionID.uuidString
-        let fileName = "hr_session_\(trainingLogTimestampFormatter.string(from: Date()))_\(sessionId).jsonl"
-        let fileURL = dir.appendingPathComponent(fileName, isDirectory: false)
-        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
-
-        do {
-            let handle = try FileHandle(forWritingTo: fileURL)
-            trainingLogQueue.sync {
-                trainingLogSessionId = sessionId
-                trainingLogFileURL = fileURL
-                trainingLogFileHandle = handle
-            }
-            DispatchQueue.main.async {
-                self.lastTrainingLogPath = fileURL.path
-                self.refreshTrainingLogsInventory()
-            }
-            let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
-            logTrainingEvent("session_start", fields: [
-                "trigger": trigger,
-                "target_bpm": hrTargetBPM,
-                "duration_min": hrDurationMinutes,
-                "decision_interval_s": hrDecisionIntervalSeconds,
-                "adaptive_step_enabled": hrAdaptiveStepEnabled,
-                "max_step_kmh": hrSpeedStepKmh,
-                "adaptive_levels_kmh": adaptiveLevels,
-                "cooldown_target_bpm": hrCooldownTargetBpm,
-                "cooldown_min_speed_kmh": hrCooldownMinSpeed,
-                "zone_bounds": [hrZone1Max, hrZone2Max, hrZone3Max, hrZone4Max]
-            ].merging(controllerUnitsTelemetryFields(action: "session_start")) { current, _ in current })
-            scheduleTrainingLogsInventoryRefresh()
-            return resolvedSessionID
-        } catch {
-            return resolvedSessionID
-        }
-    }
-
-    private func stopTrainingStructuredLog(reason: String) {
-        let cooldownState = cooldownRuntimeState
-        let payload = makeTrainingLogPayload(event: "session_end", fields: [
-            "reason": reason,
-            "remaining_s": hrRemainingSeconds,
-            "cooldown_remaining_s": hrCooldownRemainingSeconds,
-            "avg_bpm": hrAverageBPM,
-            "session_peak_bpm": hrSessionPeakBPM,
-            "main_avg_bpm": mainPhaseAverageBPMSnapshot(),
-            "main_peak_bpm": hrMainPeakBPM,
-            "zone_seconds": zoneSecondsSnapshot(),
-            "zone4plus_seconds": zone4PlusSecondsSnapshot(),
-            "cooldown_start_hr_bpm": cooldownState?.startBpm ?? 0,
-            "cooldown_end_hr_bpm": cooldownState?.endBpm ?? 0,
-            "cooldown_peak_hr_bpm": cooldownState?.peakBpm ?? 0,
-            "cooldown_planned_s": cooldownState?.totalSeconds ?? 0,
-            "cooldown_elapsed_s": cooldownState?.elapsedSeconds ?? 0,
-            "cooldown_target_hit_elapsed_s": cooldownState?.targetHitElapsedSeconds ?? -1,
-            "cooldown_hr_drop_bpm": cooldownState?.hrDropBpm ?? 0,
-            "cooldown_hr_recovery_bpm_per_min": cooldownState?.recoveryBpmPerMinute ?? 0,
-            "distance_km": distKm,
-            "duration_s": timeSec
-        ])
-        // Freeze terminal context before a later workout/profile can replace it.
-        // The serial queue still orders prior events, terminal write, close, then the next log.
-        trainingLogQueue.async {
-            defer {
-                DispatchQueue.main.async {
-                    self.refreshTrainingLogsInventory()
-                }
-            }
-            guard self.trainingLogFileHandle != nil else { return }
-            self.writeTrainingLogLocked(payload)
-            self.trainingLogFileHandle?.synchronizeFile()
-            self.trainingLogFileHandle?.closeFile()
-            self.trainingLogFileHandle = nil
-            self.trainingLogFileURL = nil
-            self.trainingLogSessionId = nil
-        }
-    }
-
-    func prepareTrainingLogsCsvExport(scope: TrainingLogCsvExportScope = .all) -> TrainingLogsCsvExport? {
-        trainingLogQueue.sync {
-            trainingLogFileHandle?.synchronizeFile()
-        }
-        guard let jsonlFiles = availableTrainingJsonlFiles(scope: scope) else {
-            return nil
-        }
-
-        let headers = TrainingTelemetryWriter.trainingCsvHeaders
-        var lines: [String] = [headers.map(TrainingTelemetryWriter.csvEscape).joined(separator: ",")]
-        var exportedRows = 0
-
-        for file in jsonlFiles {
-            for payload in TrainingTelemetryWriter.loadJsonlPayloads(from: file) {
-                let row = TrainingTelemetryWriter.csvRow(
-                    sourceFile: file.lastPathComponent,
-                    payload: payload
-                )
-
-                lines.append(row.map(TrainingTelemetryWriter.csvEscape).joined(separator: ","))
-                exportedRows += 1
-            }
-        }
-
-        guard exportedRows > 0 else { return nil }
-        let ts = trainingLogTimestampFormatter.string(from: Date())
-        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("Training_History\(scope.fileNameSuffix)_\(ts).csv")
-        do {
-            try lines.joined(separator: "\n").write(to: outURL, atomically: true, encoding: .utf8)
-            return TrainingLogsCsvExport(
-                csvURL: outURL,
-                rowCount: exportedRows,
-                scope: scope,
-                sourceFiles: jsonlFiles
+        case let .start(telemetry):
+            _ = telemetryV2Coordinator.observeWorkoutPhase(.cooldown, occurredAt: now)
+            _ = telemetryV2Coordinator.observeEvent(
+                .cooldown(CooldownEvent(lifecycle: .started,
+                    targetHeartRate: UInt16(exactly: telemetry.targetBpm))), occurredAt: now
             )
-        } catch {
-            return nil
-        }
-    }
-
-    func prepareTrainingSessionSummaryCsvExport(
-        scope: TrainingLogCsvExportScope = .all
-    ) -> TrainingLogsCsvExport? {
-        trainingLogQueue.sync {
-            trainingLogFileHandle?.synchronizeFile()
-        }
-        guard let allJsonlFiles = allTrainingJsonlFiles(),
-              !allJsonlFiles.isEmpty else {
-            return nil
-        }
-
-        let filteredFiles = TrainingTelemetryWriter.filterJsonlFiles(
-            allJsonlFiles,
-            matchingProfileID: activeUserProfileID?.uuidString,
-            legacyFallbackProfileID: legacyFallbackProfileID
-        )
-        let jsonlFiles = TrainingTelemetryWriter.selectCompletedJsonlFilesForExport(filteredFiles, scope: scope)
-        guard !jsonlFiles.isEmpty else { return nil }
-
-        let headers = TrainingTelemetryWriter.trainingSessionSummaryHeaders
-        var lines: [String] = [headers.map(TrainingTelemetryWriter.csvEscape).joined(separator: ",")]
-        var exportedRows = 0
-
-        for file in jsonlFiles {
-            let payloads = TrainingTelemetryWriter.loadJsonlPayloads(from: file)
-            guard let row = TrainingTelemetryWriter.sessionSummaryRow(
-                sourceFile: file.lastPathComponent,
-                payloads: payloads
-            ) else {
-                continue
-            }
-
-            lines.append(row.map(TrainingTelemetryWriter.csvEscape).joined(separator: ","))
-            exportedRows += 1
-        }
-
-        guard exportedRows > 0 else { return nil }
-        let ts = trainingLogTimestampFormatter.string(from: Date())
-        let outURL = FileManager.default.temporaryDirectory.appendingPathComponent("Training_Session_Summary\(scope.fileNameSuffix)_\(ts).csv")
-
-        do {
-            try lines.joined(separator: "\n").write(to: outURL, atomically: true, encoding: .utf8)
-            return TrainingLogsCsvExport(
-                csvURL: outURL,
-                rowCount: exportedRows,
-                scope: scope,
-                sourceFiles: jsonlFiles
+        case .complete:
+            _ = telemetryV2Coordinator.observeEvent(
+                .cooldown(CooldownEvent(lifecycle: .completed)), occurredAt: now
             )
-        } catch {
-            return nil
+        case .insufficient:
+            _ = telemetryV2Coordinator.observeEvent(
+                .cooldown(CooldownEvent(lifecycle: .insufficient)), occurredAt: now
+            )
+        case .speedSet, .state, .analysis:
+            break
         }
-    }
-
-    func finalizeTrainingLogsCsvExport(_ export: TrainingLogsCsvExport, completed: Bool) {
-        try? FileManager.default.removeItem(at: export.csvURL)
     }
 
     private func hex(_ data: Data) -> String {
         data.map { String(format: "%02X", $0) }.joined(separator: " ")
-    }
-
-    private func allTrainingJsonlFiles() -> [URL]? {
-        guard let dir = trainingLogsDirectoryURL() else { return nil }
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: [.creationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
-
-        return files
-            .filter { $0.pathExtension.lowercased() == "jsonl" }
-            .sorted { lhs, rhs in
-                let l = (try? lhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-                let r = (try? rhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-                return l < r
-            }
-    }
-
-    func refreshTrainingLogsInventory() {
-        let refreshID = UUID()
-        trainingLogsInventoryRefreshID = refreshID
-        let profileID = activeUserProfileID?.uuidString
-        let fallbackProfileID = legacyFallbackProfileID
-
-        trainingLogQueue.async { [weak self] in
-            guard let self else { return }
-            self.trainingLogFileHandle?.synchronizeFile()
-            let protectedFiles = Set(
-                self.trainingLogFileURL.map { [$0.standardizedFileURL] } ?? []
-            )
-            let snapshot = TrainingTelemetryWriter.trainingLogsInventorySnapshot(
-                self.allTrainingJsonlFiles() ?? [],
-                matchingProfileID: profileID,
-                legacyFallbackProfileID: fallbackProfileID,
-                keeping: protectedFiles
-            )
-            DispatchQueue.main.async {
-                guard self.trainingLogsInventoryRefreshID == refreshID else { return }
-                self.trainingLogsInventory = snapshot.inventory
-                self.lastTrainingLogPath = snapshot.latestMatchingProfileFile?.path ?? ""
-            }
-        }
-    }
-
-    func trainingLogsExportCount(
-        for scope: TrainingLogCsvExportScope,
-        sessionSummaryOnly: Bool
-    ) -> Int {
-        switch scope {
-        case .all:
-            return sessionSummaryOnly
-                ? trainingLogsInventory.matchingProfileCompletedWorkoutFiles
-                : trainingLogsInventory.matchingProfileSessionFiles
-        case .lastCompletedWorkouts(let count):
-            let completedCount = trainingLogsInventory.matchingProfileCompletedWorkoutFiles
-            return min(max(0, count), completedCount)
-        }
-    }
-
-    func clearTrainingLogsForActiveProfile() {
-        infoToastMessage = "Legacy source evidence is preserved until the explicit retirement gate."
-    }
-
-    private func availableTrainingJsonlFiles(scope: TrainingLogCsvExportScope) -> [URL]? {
-        guard let allJsonlFiles = allTrainingJsonlFiles(),
-              !allJsonlFiles.isEmpty else {
-            return nil
-        }
-
-        let filteredFiles = TrainingTelemetryWriter.filterJsonlFiles(
-            allJsonlFiles,
-            matchingProfileID: activeUserProfileID?.uuidString,
-            legacyFallbackProfileID: legacyFallbackProfileID
-        )
-        let selected = TrainingTelemetryWriter.selectJsonlFilesForExport(filteredFiles, scope: scope)
-        return selected.isEmpty ? nil : selected
     }
 
     // UI messaging hooks
@@ -1932,18 +1198,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     // History
-    private struct LegacyShadowWorkoutEntry: Identifiable {
-        let id: UUID
-        let date: Date
-        let beatsPerMeter: Double?
-        let targetBpm: Int
-        let durationSeconds: Int
-        let avgBpm: Int
-        let avgSpeedKmh: Double?
-        let healthkitWorkoutUUID: String?
-        let zoneSeconds: [Int]?
-    }
-    private var legacyShadowWorkoutHistory: [LegacyShadowWorkoutEntry] = []
 
     enum WorkoutReadState: Equatable {
         case idle
@@ -2101,7 +1355,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func prepareTelemetryV2Export(
-        scope: TrainingLogCsvExportScope
+        scope: WorkoutDiagnosticExportScope
     ) async throws -> WorkoutExportArtifact {
         guard let filter = activeWorkoutReadFilter() else {
             throw TelemetryWorkoutReadError.unavailable("active-profile-unavailable")
@@ -2142,7 +1396,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func prepareDiagnosticBundle(
-        scope: TrainingLogCsvExportScope,
+        scope: WorkoutDiagnosticExportScope,
         archiveName: String
     ) async throws -> DiagnosticBundleArtifact {
         let supportSnapshot = diagnosticSupportSnapshot()
@@ -2552,7 +1806,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 return
             }
             nativeHealthKitAcquisitionStartedAt = record.acquisitionStartedAt
-            pendingHealthkitWorkoutProfileID = record.profileID
             pendingHealthkitTelemetryV2SessionID = record.telemetrySessionID.map {
                 SessionID(rawValue: $0)
             }
@@ -2625,7 +1878,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ record: NativeWorkoutRecoveryRecord
     ) {
         guard let controlledWorkoutStartedAt = record.controlledWorkoutStartedAt,
-              let profileID = record.profileID,
+              record.profileID != nil,
               let telemetrySessionID = record.telemetrySessionID else {
             discardRecoveredUncommittedWorkout()
             return
@@ -2637,7 +1890,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         nativeWorkoutRecoverySessionRecovered = true
         nativeWorkoutRecoveryStopRequested = false
         nativeHealthKitAcquisitionStartedAt = record.acquisitionStartedAt
-        pendingHealthkitWorkoutProfileID = profileID
         pendingHealthkitTelemetryV2SessionID = SessionID(rawValue: telemetrySessionID)
         hrControlStartedAt = controlledWorkoutStartedAt
         restoreNativeWorkoutRecoveryPresentation(record)
@@ -2709,10 +1961,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         loadProfilesState()
         loadHrSettings()
         loadZonePlan()
-        loadLegacyShadowWorkoutHistory()
         loadNativeWorkoutRecoveryState()
         refreshWorkoutHistoryFromV2(reset: true)
-        refreshTrainingLogsInventory()
         setHeartRateTelemetrySink(telemetryV2Coordinator)
         setTreadmillTelemetrySink(telemetryV2Coordinator)
         telemetryV2Coordinator.prepareStoreAndRecover()
@@ -2746,9 +1996,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     // Discovery controls
     func startDiscoveryScan() {
-        if let central {
-        } else {
-        }
         ensureCentral()
         shouldBeScanning = true
         DispatchQueue.main.async {
@@ -2902,7 +2149,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if autoConnectSuppressed {
             return
         }
-        if let cancellingConnectionPeripheralId {
+        if cancellingConnectionPeripheralId != nil {
             return
         }
 
@@ -3112,11 +2359,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 central.cancelPeripheralConnection(peripheral)
                 return
             }
-            self.logTrainingEvent("ble_connection_event", fields: [
-                "status": "connected",
-                "peripheral_id": peripheralID.uuidString,
-                "name": peripheral.name ?? ""
-            ])
+
             self.autoConnectPendingWorkItem?.cancel()
             self.autoConnectPendingWorkItem = nil
             self.completeKnownDiscoveryGrace()
@@ -3156,11 +2399,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 return
             }
             let wasAutomatic = self.connectingAttemptIsAutomatic
-            self.logTrainingEvent("ble_connection_event", fields: [
-                "status": "failed_to_connect",
-                "peripheral_id": peripheral.identifier.uuidString,
-                "error": error?.localizedDescription ?? "unknown error"
-            ])
+
             self.isConnected = false
             self.connectionStateText = "Disconnected"
             if wasAutomatic {
@@ -3194,11 +2433,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard endedConnectionAttempt || endedEstablishedConnection else {
                 return
             }
-            self.logTrainingEvent("ble_connection_event", fields: [
-                "status": "disconnected",
-                "peripheral_id": peripheralID.uuidString,
-                "error": error?.localizedDescription ?? "none"
-            ])
+
             if endedConnectionAttempt {
                 let shouldContinueAutoConnect = self.connectingAttemptIsAutomatic
                     && !self.autoConnectSuppressed
@@ -3229,7 +2464,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 self.finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
             }
             if self.isHrControlRunning {
-                self.stopTrainingStructuredLog(reason: "ble_disconnected")
+
             }
             self.resetProtocolState()
             self.connectedPeripheral = nil
@@ -3281,10 +2516,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
     private func disconnect(userInitiated: Bool = false) {
         central?.stopScan()
-        logTrainingEvent("ble_connection_event", fields: [
-            "status": "disconnect_requested",
-            "user_initiated": userInitiated
-        ])
+
         if userInitiated {
             autoConnectSuppressed = true
         }
@@ -3294,7 +2526,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
         }
         if isHrControlRunning {
-            stopTrainingStructuredLog(reason: userInitiated ? "disconnect_user" : "disconnect")
+
         }
         if let central {
             if let id = connectedPeripheralId, let p = discoveredMap[id] {
@@ -3342,7 +2574,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         autoConnectSuppressed = false
         // Prevent duplicate connection attempts
         if isConnected { return }
-        if let cancellingConnectionPeripheralId {
+        if cancellingConnectionPeripheralId != nil {
             return
         }
         if let inProgress = connectingPeripheralId {
@@ -3391,7 +2623,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         // Prevent duplicate connection attempts
         if isConnected { return }
-        if let cancellingConnectionPeripheralId {
+        if cancellingConnectionPeripheralId != nil {
             return
         }
         if let inProgress = connectingPeripheralId {
@@ -4520,12 +3752,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
-        let needsOwnLog = trainingLogQueue.sync { trainingLogFileHandle == nil }
-        if needsOwnLog {
-            startTrainingStructuredLog(trigger: "stop_observation")
-        }
-        stopObservationOwnsTrainingLog = needsOwnLog
-
         let lifecycle = StopObservationLifecycle(
             attemptID: attemptID,
             source: source,
@@ -4536,44 +3762,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopObservationLifecycle = lifecycle
         captureStopTelemetryAttempt(lifecycle.attemptID, attemptedMonotonic: attemptedMonotonic)
         stopTruthStatusText = "stop requested • confirming"
-        logTrainingEvent(
-            "stop_attempt_started",
-            fields: stopObservationTelemetryFields(
-                lifecycle: lifecycle,
-                evaluation: lifecycle.currentEvaluation(at: now),
-                now: now
-            )
-        )
+
         scheduleStopObservationCheckpoints(attemptID: lifecycle.attemptID)
     }
 
     private func recordUnavailableStopAttempt(source: String, attemptedAt: Date, attemptedMonotonic: Duration) {
         let attemptID = UUID()
         captureStopTelemetryAttempt(attemptID, attemptedMonotonic: attemptedMonotonic)
-        let needsOwnLog = trainingLogQueue.sync { trainingLogFileHandle == nil }
-        if needsOwnLog {
-            startTrainingStructuredLog(trigger: "stop_observation_unavailable")
-        }
         unavailableStopAttempt = UnavailableStopAttempt(
             id: attemptID,
             source: source,
             attemptedAt: attemptedAt,
-            ownsTrainingLog: needsOwnLog,
             commandSentAt: nil
         )
         let transportCanSend = isConnected && commandCharacteristic != nil && buildTreadmillStopPacket() != nil
-        var fields = unavailableStopAttemptFields(
-            attemptID: attemptID,
-            source: source,
-            attemptedAt: attemptedAt,
-            commandSentAt: nil
-        )
-        fields["stop_command_status"] = transportCanSend ? "queued" : "not_sent"
-        fields["stop_final_result"] = ""
-        fields["stop_unconfirmed_reason"] = transportCanSend
-            ? "confirmation_context_unavailable"
-            : "stop_command_not_sent_transport_unavailable"
-        logTrainingEvent("stop_attempt_started", fields: fields)
+
         let telemetryEvidence = treadmillTelemetryConnectionEpoch.map {
             TreadmillStopTruthEvidence(
                 stopAttemptID: attemptID,
@@ -4611,56 +3814,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
-    private func unavailableStopAttemptFields(
-        attemptID: UUID,
-        source: String,
-        attemptedAt: Date,
-        commandSentAt: Date?
-    ) -> [String: Any] {
-        [
-            "stop_attempt_id": attemptID.uuidString,
-            "stop_attempt_at": trainingLogIsoFormatter.string(from: attemptedAt),
-            "stop_attempt_source": source,
-            "stop_command_sent_at": commandSentAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
-            "stop_confirmed_ever": false,
-            "stop_currently_confirmed": false,
-            "stop_invalidation_reason": "",
-            "stop_observation_sequence": 0,
-            "stop_observation_count": 0,
-            "stop_observation_age_s": -1,
-            "stop_device_speed_raw_tenths": -1,
-            "stop_device_state": -1,
-            "stop_fe01_checksum_valid": false,
-            "stop_fresh": false,
-            "stop_confirmation_predicate": "fresh_raw_speed_zero_and_accepted_non_running_state",
-            "stop_confirmation_result": StopObservationResult.missingObservation.rawValue,
-            "stop_freshness_limit_s": StopObservationPolicy.freshnessInterval,
-            "stop_observation_window_s": StopObservationPolicy.observationWindow
-        ]
-    }
-
     private func finalizeUnavailableStopAttempt(attemptID: UUID) {
-        guard let attempt = unavailableStopAttempt, attempt.id == attemptID else { return }
-        var fields = unavailableStopAttemptFields(
-            attemptID: attempt.id,
-            source: attempt.source,
-            attemptedAt: attempt.attemptedAt,
-            commandSentAt: attempt.commandSentAt
-        )
-        fields["stop_command_status"] = attempt.commandSentAt == nil ? "not_sent" : "sent"
-        fields["stop_final_result"] = StopObservationFinalResult.unconfirmed.rawValue
-        fields["stop_unconfirmed_reason"] = attempt.commandSentAt == nil
-            ? "stop_command_not_sent_transport_unavailable"
-            : "confirmation_context_unavailable"
-        logTrainingEvent("stop_observation_finished", fields: fields)
+        guard unavailableStopAttempt?.id == attemptID else { return }
+
         unavailableStopAttempt = nil
-        if attempt.ownsTrainingLog {
-            stopTrainingStructuredLog(
-                reason: attempt.commandSentAt == nil
-                    ? "stop_command_not_sent_transport_unavailable"
-                    : "stop_confirmation_unavailable"
-            )
-        }
     }
 
     private func scheduleStopObservationCheckpoints(attemptID: UUID) {
@@ -4678,13 +3835,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 let now = Date()
                 let evaluation = lifecycle.currentEvaluation(at: now)
                 self.refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
-                var fields = self.stopObservationTelemetryFields(
-                    lifecycle: lifecycle,
-                    evaluation: evaluation,
-                    now: now
-                )
-                fields["stop_checkpoint_delay_s"] = delay
-                self.logTrainingEvent("stop_observation_checkpoint", fields: fields)
 
                 if delay == StopObservationPolicy.observationWindow {
                     _ = lifecycle.finalizeTimeout(at: now)
@@ -4722,14 +3872,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         stopObservationLifecycle = lifecycle
         refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
-        logTrainingEvent(
-            "stop_observation",
-            fields: stopObservationTelemetryFields(
-                lifecycle: lifecycle,
-                evaluation: evaluation,
-                now: Date()
-            )
-        )
+
         scheduleStopObservationFreshnessRefresh(
             attemptID: lifecycle.attemptID,
             observationSequence: lifecycle.observations.last?.sequence
@@ -4752,14 +3895,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             let evaluation = lifecycle.currentEvaluation(at: now)
             self.refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
             if evaluation.result == .stale, lifecycle.finalResult == nil {
-                self.logTrainingEvent(
-                    "stop_observation_freshness_expired",
-                    fields: self.stopObservationTelemetryFields(
-                        lifecycle: lifecycle,
-                        evaluation: evaluation,
-                        now: now
-                    )
-                )
+
             }
             self.updateTreadmillStatus()
         }
@@ -4779,63 +3915,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 && latestTreadmillObservationEvidence?.receivedAt == lifecycle.observations.last?.observedAt)
     }
 
-    private func stopObservationTelemetryFields(
-        lifecycle: StopObservationLifecycle,
-        evaluation: StopObservationEvaluation,
-        now: Date
-    ) -> [String: Any] {
-        let latest = lifecycle.observations.last
-        let firstConfirmedElapsed = lifecycle.firstConfirmedAt.map {
-            max(0, $0.timeIntervalSince(lifecycle.attemptedAt))
-        }
-        let confirmedEver = lifecycle.firstConfirmedAt != nil
-        return [
-            "stop_attempt_id": lifecycle.attemptID.uuidString,
-            "stop_attempt_at": trainingLogIsoFormatter.string(from: lifecycle.attemptedAt),
-            "stop_attempt_source": lifecycle.source,
-            "stop_command_sent_at": lifecycle.commandSentAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
-            "stop_command_status": lifecycle.commandStatus,
-            "stop_confirmed_ever": confirmedEver,
-            "stop_currently_confirmed": evaluation.isConfirmed,
-            "stop_invalidation_reason": confirmedEver && !evaluation.isConfirmed
-                ? evaluation.reason
-                : "",
-            "stop_peripheral_id": lifecycle.context.peripheralID.uuidString,
-            "stop_connection_epoch": lifecycle.context.connectionEpoch.uuidString,
-            "stop_notification_stream_id": lifecycle.context.notificationStreamID?.uuidString ?? "",
-            "stop_observation_sequence": latest?.sequence ?? 0,
-            "stop_observation_count": lifecycle.observations.count,
-            "stop_observation_at": latest.map { trainingLogIsoFormatter.string(from: $0.observedAt) } ?? "",
-            "stop_observation_age_s": evaluation.ageSeconds ?? -1,
-            "stop_device_speed_raw_tenths": latest?.speedRawTenths ?? -1,
-            "stop_device_state": latest?.state ?? -1,
-            "stop_fe01_checksum_valid": latest?.checksumValid ?? false,
-            "stop_fresh": evaluation.isFresh,
-            "stop_confirmation_predicate": "fresh_raw_speed_zero_and_accepted_non_running_state",
-            "stop_confirmation_result": evaluation.result.rawValue,
-            "stop_first_confirmed_at": lifecycle.firstConfirmedAt.map { trainingLogIsoFormatter.string(from: $0) } ?? "",
-            "stop_first_confirmed_elapsed_s": firstConfirmedElapsed ?? -1,
-            "stop_final_result": lifecycle.finalResult?.rawValue ?? "",
-            "stop_unconfirmed_reason": evaluation.isConfirmed
-                ? ""
-                : (lifecycle.finalReason ?? evaluation.reason),
-            "stop_freshness_limit_s": StopObservationPolicy.freshnessInterval,
-            "stop_observation_window_s": StopObservationPolicy.observationWindow,
-            "stop_accepted_non_running_states": StopObservationPolicy.acceptedNonRunningStates.sorted(),
-            "stop_evaluated_at": trainingLogIsoFormatter.string(from: now)
-        ]
-    }
-
     private func completeScheduledStopEffect(attemptID: UUID?, cancelled: Bool) {
         guard let attemptID, var lifecycle = stopObservationLifecycle,
               lifecycle.attemptID == attemptID, lifecycle.finalResult == nil else { return }
         lifecycle.completeScheduledStopEffect()
         stopObservationLifecycle = lifecycle
-        logTrainingEvent("stop_scheduled_effect_finished", fields: [
-            "stop_attempt_id": attemptID.uuidString,
-            "cancelled": cancelled,
-            "remaining_count": lifecycle.scheduledStopEffectsRemaining ?? -1
-        ])
+
         finalizeCompletedStopIfReady()
     }
 
@@ -4862,14 +3947,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             stopObservationFreshnessWorkItem = nil
         }
         refreshStopTruthStatus(lifecycle: lifecycle, evaluation: evaluation)
-        logTrainingEvent(
-            "stop_observation_finished",
-            fields: stopObservationTelemetryFields(
-                lifecycle: lifecycle,
-                evaluation: evaluation,
-                now: now
-            )
-        )
 
         switch lifecycle.finalResult {
         case .confirmed:
@@ -4897,10 +3974,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
-        if stopObservationOwnsTrainingLog {
-            stopTrainingStructuredLog(reason: lifecycle.finalResult?.rawValue ?? "stop_observation_finished")
-            stopObservationOwnsTrainingLog = false
-        }
         observeCurrentStopTruth(
             lifecycle: lifecycle,
             evaluation: evaluation,
@@ -5333,30 +4406,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return isTreadmillControlReady ? .connected : .degraded
         }()
 
-        var legacyFields: [String: Any] = [
-            "app_state_previous": previousState.rawValue,
-            "app_state": currentState.rawValue,
-            "workout_lifecycle_stage": stage.rawValue,
-            "workout_committed": hasCommittedWorkout,
-            "background_policy_action": decision.action.rawValue,
-            "background_policy_reason": decision.reason,
-            "background_control_loop_permitted": decision.permitsControlLoop,
-            "native_hr_provider_state": iPhoneHealthKitHeartRateProvider.state.rawValue,
-            "treadmill_connection_state": connectionState.rawValue,
-            "treadmill_control_ready": isTreadmillControlReady,
-            "treadmill_protocol": treadmillProtocol.rawValue,
-        ]
-        if let lastFactualAt {
-            legacyFields["hr_last_factual_at"] = trainingLogIsoFormatter.string(from: lastFactualAt)
-        }
-        if let lastReceivedAt {
-            legacyFields["hr_last_received_at"] = trainingLogIsoFormatter.string(from: lastReceivedAt)
-        }
-        if let lastAgeSeconds {
-            legacyFields["hr_last_age_s"] = lastAgeSeconds
-        }
-        logTrainingEvent("app_lifecycle", fields: legacyFields)
-
         guard activeTelemetryV2SessionID != nil,
               let telemetryState = AppLifecycleState(rawValue: currentState.rawValue),
               let telemetryPreviousState = AppLifecycleState(rawValue: previousState.rawValue),
@@ -5400,16 +4449,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 .controlledWorkoutStartedAt,
               activeNativeWorkoutRecoveryRecord?.legacySessionID != nil else {
             if !unitsDecision.allowed {
-                persistBlockedControllerUnitsStart(decision: unitsDecision)
                 retryControllerUnitsQueryAfterBlockedStart()
             }
             abortNativeHeartRateFlow(reason: .superseded)
             return
         }
 
-        // Reset all per-session counters before writing session_start telemetry snapshot.
+        // Reset per-session counters before starting the V2 session.
         resetSessionStats()
-        let legacySessionID = startTrainingStructuredLog(trigger: "start_hr")
+        let legacySessionID = activeNativeWorkoutRecoveryRecord?.legacySessionID
         isHrControlRunning = true
         hrStatusLine = "HR‑контроль запущен"
         hrSessionTotalSeconds = max(60, hrDurationMinutes * 60)
@@ -5426,21 +4474,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrControlFailed = false
         clearCooldownRuntimeState()
         hrControlStartedBelt = false
-        let adaptiveLevels: [Double] = [0.1, 0.2, 0.3, 0.4]
-        logTrainingEvent("hr_control_started", fields: [
-            "target_bpm": hrTargetBPM,
-            "duration_s": hrSessionTotalSeconds,
-            "decision_interval_s": hrDecisionIntervalSeconds,
-            "adaptive_step_enabled": hrAdaptiveStepEnabled,
-            "max_step_kmh": hrSpeedStepKmh,
-            "adaptive_levels_kmh": adaptiveLevels,
-            "start_speed_kmh": speedKmh,
-            "device_target_kmh": deviceTargetSpeedKmh,
-            "native_hr_preflight_latency_s": preflightLatencySeconds,
-            "native_hr_acquisition_started_at": nativePreflightCommitTimestamps?.acquisitionStartedAt.timeIntervalSince1970 ?? -1,
-            "native_hr_first_measured_at": nativePreflightCommitTimestamps?.measuredAt?.timeIntervalSince1970 ?? -1,
-            "native_hr_first_received_at": nativePreflightCommitTimestamps?.receivedAt.timeIntervalSince1970 ?? -1
-        ].merging(controllerUnitsTelemetryFields(action: "hr_control_start")) { current, _ in current })
+
         nativePreflightCommitTimestamps = nil
         beginTelemetryV2Session(legacySessionID: legacySessionID)
         if treadmillProtocol == .walkingPad,
@@ -5693,10 +4727,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         isNativeHeartRateCurrent = hrStreamingActive
         let normalization = normalizeHeartRateDelivery(observation, recordedAt: now)
-        logTrainingEvent("hr_sample", fields: [
-            "hr_bpm": observation.beatsPerMinute,
-            "source": "healthkit_selected"
-        ])
 
         let preflightObservation = NativeHeartRatePreflightEngine.Observation(
             source: .nativeHealthKit,
@@ -5873,13 +4903,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-        logTrainingEvent("hr_control_stop_requested", fields: [
-            "reason": "manual_stop",
-            "elapsed_s": elapsed ?? 0,
-            "speed_kmh": speedKmh,
-            "device_speed_kmh": deviceReportedSpeedKmh
-        ])
-        stopTrainingStructuredLog(reason: "manual_stop")
+
         isHrControlRunning = false
         hrStatusLine = "HR‑контроль завершён • остановка дорожки запрошена"
         hrNextDecisionSeconds = 0
@@ -6084,11 +5108,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     self.isNativeHeartRateCurrent = active
                 }
                 if active != wasActive {
-                    self.logTrainingEvent("hr_stream_state", fields: [
-                        "active": active,
-                        "hr_bpm": self.heartRateBPM,
-                        "last_age_s": hasLast ? secs : -1
-                    ])
+
                 }
                 self.recomputeHrStartAllowed()
                 if active != wasActive && !self.nativeHeartRateFlowOwnsController {
@@ -6131,7 +5151,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if metersPerSec > 0.2 {
             distKm += metersPerSec / 1000.0
             timeSec += 1
-            stepsCount += Int.random(in: 1...3)
         }
 
         // Simple averages
@@ -6198,11 +5217,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
                     guard isTreadmillControlReady else {
                         let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-                        logTrainingEvent("hr_control_failed", fields: [
-                            "reason": "control_not_ready",
-                            "elapsed_s": elapsed ?? 0
-                        ])
-                        stopTrainingStructuredLog(reason: "hr_control_not_ready")
+
                         hrControlFailed = true
                         infoToastMessage = "HR‑контроль остановлен — дорожка не готова к управлению. Остановка запрошена, но ещё не подтверждена."
                         isHrControlRunning = false
@@ -6243,12 +5258,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             return
                         }
                         let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-                        logTrainingEvent("hr_control_failed", fields: [
-                            "reason": "no_hr_signal",
-                            "elapsed_s": elapsed ?? 0,
-                            "missing_s": missingSeconds
-                        ])
-                        stopTrainingStructuredLog(reason: "hr_no_signal")
+
                         hrControlFailed = true
                         infoToastMessage = "HR‑контроль остановлен — нет данных пульса. Остановка дорожки запрошена, но ещё не подтверждена."
                         isHrControlRunning = false
@@ -6321,20 +5331,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_hold")
                         hrStatusLine = "HR‑контроль: цель удерживается"
                         hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDirectionLabel)-\(holdModeLabel) \(String(format: "%.1f", step)) км/ч · deadband ±\(deadbandBpm)bpm (\(String(format: "%.1f", adaptiveThresholds.deadband))%) · скорость \(String(format: "%.1f", currentTarget)) → без изменений"
-                        logTrainingEvent("hr_decision", fields: [
-                            "decision": "hold",
-                            "target_bpm": hrTargetBPM,
-                            "hr_bpm": heartRateBPM,
-                            "predicted_bpm": predictedBpm ?? -1,
-                            "diff_bpm": diff,
-                            "diff_percent": absDiffPercent,
-                            "deadband_bpm": deadbandBpm,
-                            "deadband_percent": adaptiveThresholds.deadband,
-                            "step_kmh": step,
-                            "step_tag": "\(stepDirectionLabel)-\(holdModeLabel)",
-                            "speed_before_kmh": currentTarget,
-                            "speed_after_kmh": currentTarget
-                        ])
+
                         observeSemanticHeartRateDecision(
                             action: .noCommand,
                             reason: .withinTarget,
@@ -6350,19 +5347,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             hrStatusLine = "HR‑контроль: инерция"
                             let trendPerMin = trend * 60.0
                             hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · тренд \(String(format: "%+.1f", trendPerMin)) bpm/мин · прогноз \(Int(round(predictedValue))) → без повышения"
-                            logTrainingEvent("hr_decision", fields: [
-                                "decision": "inertia_hold",
-                                "target_bpm": hrTargetBPM,
-                                "hr_bpm": heartRateBPM,
-                                "predicted_bpm": Int(round(predictedValue)),
-                                "trend_bpm_per_s": trend,
-                                "diff_bpm": diff,
-                                "diff_percent": absDiffPercent,
-                                "step_kmh": step,
-                                "step_tag": stepDebugLabel,
-                                "speed_before_kmh": currentTarget,
-                                "speed_after_kmh": currentTarget
-                            ])
+
                             observeSemanticHeartRateDecision(
                                 action: .noCommand,
                                 reason: .heartRateInertiaHold,
@@ -6394,18 +5379,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                         hrStatusLine = diff > 0 ? "HR‑контроль: уменьшаем скорость" : "HR‑контроль: увеличиваем скорость"
                         hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → \(String(format: "%+.1f", nextSpeed - currentTarget)) км/ч"
-                        logTrainingEvent("hr_decision", fields: [
-                            "decision": "set",
-                            "target_bpm": hrTargetBPM,
-                            "hr_bpm": heartRateBPM,
-                            "predicted_bpm": predictedBpm ?? -1,
-                            "diff_bpm": diff,
-                            "diff_percent": absDiffPercent,
-                            "step_kmh": step,
-                            "step_tag": stepDebugLabel,
-                            "speed_before_kmh": currentTarget,
-                            "speed_after_kmh": nextSpeed
-                        ])
+
                         observeSemanticHeartRateDecision(
                             action: .enqueueSpeed(
                                 DesiredSpeedKilometresPerHour(value: nextSpeed)
@@ -6417,18 +5391,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     } else {
                         hrStatusLine = "HR‑контроль: предел скорости"
                         hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → предел скорости"
-                        logTrainingEvent("hr_decision", fields: [
-                            "decision": "limit",
-                            "target_bpm": hrTargetBPM,
-                            "hr_bpm": heartRateBPM,
-                            "predicted_bpm": predictedBpm ?? -1,
-                            "diff_bpm": diff,
-                            "diff_percent": absDiffPercent,
-                            "step_kmh": step,
-                            "step_tag": stepDebugLabel,
-                            "speed_before_kmh": currentTarget,
-                            "speed_after_kmh": currentTarget
-                        ])
+
                         observeSemanticHeartRateDecision(
                             action: .noCommand,
                             reason: .heartRateSpeedLimit,
@@ -6519,10 +5482,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 lastCommandTimeouts += 1
                 lastCommandTimeoutsCount = lastCommandTimeouts
                 observedLegacyCommandTimeout = true
-                logTrainingEvent("command_ack_timeout", fields: [
-                    "last_command": lastCommandLine,
-                    "timeouts_count": lastCommandTimeouts
-                ])
+
             }
         }
         if let sentAt = lastCommandSentAt {
@@ -6581,14 +5541,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         reason: String,
         observeTelemetryImmediately: Bool = true
     ) -> [TreadmillCommandTelemetrySidecar.Entry] {
-        let dropped = CommandQueueService.clear(queue: &commandQueue)
+        _ = CommandQueueService.clear(queue: &commandQueue)
         commandQueueEpoch += 1
         isCommandQueueProcessing = false
         nextCommandAllowedAt = .distantPast
-        logTrainingEvent("command_queue_reset", fields: [
-            "reason": reason,
-            "dropped_count": dropped
-        ])
+
         let cancelledTelemetry = treadmillCommandTelemetrySidecar.clear()
         if observeTelemetryImmediately {
             observeCancelledTreadmillCommands(
@@ -6659,11 +5616,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             )
         }
         if result.coalescedSpeedCount > 0 {
-            logTrainingEvent("command_speed_coalesced", fields: [
-                "new_label": label,
-                "dropped_count": result.coalescedSpeedCount,
-                "queue_size_after": commandQueue.count
-            ])
+
         }
         processCommandQueue()
         observeSupersededTreadmillCommands(superseded)
@@ -6718,11 +5671,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let now = Date()
         let delay = max(0, nextCommandAllowedAt.timeIntervalSince(now))
         if delay > 0 {
-            logTrainingEvent("command_queued", fields: [
-                "delay_s": delay,
-                "label": commandQueue.first?.label ?? "",
-                "queue_size": commandQueue.count
-            ])
+
         }
         let epoch = commandQueueEpoch
         // A cancelled query wakeup does not own the replacement queue or its Stop.
@@ -6896,15 +5845,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         lastCommandAwaitingAck = (type == .withResponse)
         lastCommandAckedAt = (type == .withResponse) ? nil : lastCommandSentAt
-        logTrainingEvent("command_write", fields: [
-            "label": label,
-            "hex": hex(data),
-            "char_uuid": ch.uuid.uuidString,
-            "write_type": type == .withoutResponse ? "without_response" : "with_response",
-            "ack_expected": type == .withResponse,
-            "queue_size": commandQueue.count
-        ])
-        trackExpectedSpeedIfNeeded(label: label)
+
         p.writeValue(data, for: ch, type: type)
         if label != "QUERY STATUS", label != "QUERY PARAMS",
            var lifecycle = stopObservationLifecycle, lifecycle.finalResult == nil {
@@ -6971,28 +5912,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
            lifecycle.commandSentAt == nil {
             lifecycle.markCommandSent(at: sentAt)
             stopObservationLifecycle = lifecycle
-            logTrainingEvent(
-                "stop_command_sent",
-                fields: stopObservationTelemetryFields(
-                    lifecycle: lifecycle,
-                    evaluation: lifecycle.currentEvaluation(at: sentAt),
-                    now: sentAt
-                )
-            )
+
         }
         if var attempt = unavailableStopAttempt, attempt.commandSentAt == nil {
             attempt.commandSentAt = sentAt
             unavailableStopAttempt = attempt
-            var fields = unavailableStopAttemptFields(
-                attemptID: attempt.id,
-                source: attempt.source,
-                attemptedAt: attempt.attemptedAt,
-                commandSentAt: sentAt
-            )
-            fields["stop_command_status"] = "sent"
-            fields["stop_final_result"] = ""
-            fields["stop_unconfirmed_reason"] = "confirmation_context_unavailable"
-            logTrainingEvent("stop_command_sent", fields: fields)
+
         }
     }
 
@@ -7010,33 +5935,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if let pendingAttemptID = unavailableStopAttempt?.id {
             finalizeUnavailableStopAttempt(attemptID: pendingAttemptID)
         }
-    }
-
-    private func trackExpectedSpeedIfNeeded(label: String) {
-        let lower = label.lowercased()
-        if lower.contains("speed") {
-            if lower.contains("stop") {
-                expectedSpeedKmh = 0
-                expectedSpeedSetAt = Date()
-                expectedSpeedSource = label
-                return
-            }
-            if let value = extractSpeedFromLabel(label) {
-                expectedSpeedKmh = value
-                expectedSpeedSetAt = Date()
-                expectedSpeedSource = label
-            }
-        }
-    }
-
-    private func extractSpeedFromLabel(_ label: String) -> Double? {
-        let parts = label.split(separator: " ")
-        for part in parts {
-            if let v = Double(part) { return v }
-            let cleaned = part.trimmingCharacters(in: CharacterSet(charactersIn: "0123456789.").inverted)
-            if let v = Double(cleaned) { return v }
-        }
-        return nil
     }
 
     private func clampSpeedTenths(_ kmh: Double) -> Int {
@@ -7085,7 +5983,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         rememberedValidatedTreadmillConnection = nil
         characteristicConnections.removeAll()
         extraNotifyCharacteristics.removeAll()
-        lastLoggedActualSpeedKmh = nil
         treadmillMinSpeedKmh = 0.5
         treadmillMaxSpeedKmh = 12.0
         treadmillSpeedIncrementKmh = 0.1
@@ -7097,7 +5994,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopObservationFreshnessWorkItem?.cancel()
         stopObservationFreshnessWorkItem = nil
         stopObservationLifecycle = nil
-        stopObservationOwnsTrainingLog = false
         unavailableStopAttempt = nil
         stopTruthStatusText = ""
         controllerUnitsTruthTracker.disconnect()
@@ -7291,49 +6187,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
-    private func controllerUnitsTelemetryFields(
-        action: String,
-        now: Date = Date(),
-        decision: ControllerUnitsGateDecision? = nil
-    ) -> [String: Any] {
-        let gateDecision = decision ?? controllerUnitsGateDecision(now: now)
-        let age = controllerUnitsTruth.age(at: now)
-        let queryAge = lastControllerUnitsQueryAt.map { max(0, now.timeIntervalSince($0)) }
-        let fresh = controllerUnitsTruth.status == .valid
-            && controllerUnitsTruth.connectionEpoch == controllerUnitsConnectionEpoch
-            && (age.map { $0 <= ControllerUnitsSafetyPolicy.freshnessInterval } ?? false)
-        return [
-            "controller_units_action": action,
-            "controller_units_motion_path": gateDecision.path.rawValue,
-            "controller_units_query_requested": lastControllerUnitsQueryAt != nil,
-            "controller_units_query_trigger": lastControllerUnitsQueryTrigger ?? "",
-            "controller_units_query_age_s": queryAge ?? -1,
-            "controller_units": controllerUnitsTruth.units.rawValue,
-            "controller_units_status": controllerUnitsTruth.status.rawValue,
-            "controller_units_checksum_ok": controllerUnitsTruth.status == .valid,
-            "controller_units_fresh": fresh,
-            "controller_units_age_s": age ?? -1,
-            "controller_units_freshness_limit_s": ControllerUnitsSafetyPolicy.freshnessInterval,
-            "controller_units_gate_allowed": gateDecision.allowed,
-            "controller_units_block_reason": gateDecision.blockReason?.rawValue ?? ""
-        ]
-    }
-
-    private func recordControllerUnitsGate(action: String, decision: ControllerUnitsGateDecision) {
-        let fields = controllerUnitsTelemetryFields(action: action, decision: decision)
-        logTrainingEvent("controller_units_gate", fields: fields)
-    }
-
-    private func persistBlockedControllerUnitsStart(decision: ControllerUnitsGateDecision) {
-        guard !isHrControlRunning else {
-            recordControllerUnitsGate(action: "hr_control_start", decision: decision)
-            return
-        }
-        startTrainingStructuredLog(trigger: "start_hr_units_blocked")
-        recordControllerUnitsGate(action: "hr_control_start", decision: decision)
-        stopTrainingStructuredLog(reason: decision.blockReason?.rawValue ?? "controller_units_blocked")
-    }
-
     private func requestControllerUnitsTruth(trigger: String, now: Date = Date()) {
         guard controllerUnitsQueryTransportReady,
               ControllerUnitsRefreshPolicy.throttleAllowsQuery(
@@ -7344,12 +6197,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         lastControllerUnitsQueryAt = now
         lastControllerUnitsQueryTrigger = trigger
-        logTrainingEvent("controller_units_query_requested", fields: [
-            "trigger": trigger,
-            "command_family": "A6",
-            "key": 0,
-            "read_only": true
-        ])
+
         writeCommand(
             BLETransportCodec.buildWalkingPadQueryParamsPacket(), label: "QUERY PARAMS",
             telemetryRequest: treadmillCommandRequest(kind: .walkingPadControllerUnitsQuery)
@@ -7434,12 +6282,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func requestWalkingPadStatusRefresh() {
         guard controllerUnitsQueryTransportReady else { return }
-        logTrainingEvent("walkingpad_status_query_requested", fields: [
-            "command_family": "A2",
-            "key": 0,
-            "read_only": true,
-            "query_interval_s": WalkingPadStatusRefreshPolicy.preferredStatusQueryInterval
-        ])
+
         writeCommand(
             BLETransportCodec.buildWalkingPadQueryStatusPacket(),
             label: "QUERY STATUS",
@@ -7737,12 +6580,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                     }
                 }
-                logActualSpeedChangeIfNeeded(speedKmh, source: "fitshow_notify")
-                logTrainingEvent("notify_fitshow_speed", fields: [
-                    "speed_kmh": speedKmh,
-                    "incline": incline,
-                    "checksum_ok": frame.checksumOk
-                ])
+
                 return
             }
         }
@@ -7799,20 +6637,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     )
                 }
             }
-            logTrainingEvent("notify_fitshow_status", fields: [
-                "state": state,
-                "speed_kmh": speedKmh ?? -1,
-                "checksum_ok": frame.checksumOk
-            ])
+
             return
         }
 
-        logTrainingEvent("notify_fitshow_frame", fields: [
-            "cmd": Int(frame.cmd),
-            "subcmd": frame.subcmd.map(Int.init) ?? -1,
-            "len": frame.payload.count,
-            "checksum_ok": frame.checksumOk
-        ])
     }
 
     private typealias AdaptiveStepSelection = HRDomainService.AdaptiveStepSelection
@@ -7873,26 +6701,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let delta = new - old
         lastSpeedDeltaKmh = abs(delta) < 0.01 ? 0 : delta
         guard abs(delta) >= 0.01 else { return }
-        logTrainingEvent("speed_target_changed", fields: [
-            "reason": reason,
-            "speed_before_kmh": old,
-            "speed_after_kmh": new,
-            "speed_delta_kmh": delta
-        ])
-    }
 
-    private func logActualSpeedChangeIfNeeded(_ newSpeedKmh: Double, source: String) {
-        if let previous = lastLoggedActualSpeedKmh, abs(newSpeedKmh - previous) < 0.05 {
-            return
-        }
-        let previous = lastLoggedActualSpeedKmh
-        lastLoggedActualSpeedKmh = newSpeedKmh
-        logTrainingEvent("speed_actual_changed", fields: [
-            "source": source,
-            "speed_before_kmh": previous ?? newSpeedKmh,
-            "speed_after_kmh": newSpeedKmh,
-            "speed_delta_kmh": (previous != nil) ? (newSpeedKmh - (previous ?? newSpeedKmh)) : 0.0
-        ])
     }
 
     private func recordHrSample(_ bpm: Int, at date: Date = Date()) {
@@ -8158,8 +6967,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             healthKitStoppedAt: healthKitStoppedAt,
             profileID: record.profileID,
             telemetrySessionID: record.telemetrySessionID,
-            linksLegacyWorkout: record.legacyWorkoutID != nil,
-            legacyWorkoutID: record.legacyWorkoutID,
+            linksLegacyWorkout: false,
+            legacyWorkoutID: nil,
             recoveryAppWorkoutID: record.appWorkoutID,
             healthKitWorkoutID: healthKitWorkoutID
         )
@@ -8369,63 +7178,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         uuid: UUID,
         linkage: DeferredNativeHealthKitLinkage
     ) async -> Bool {
-        let telemetrySessionID = linkage.telemetrySessionID.map {
-            SessionID(rawValue: $0)
-        }
+        // Old recovery records retain their legacy fields for decoding. Only a
+        // proven V2 session can satisfy linkage; never rewrite legacy sources.
         return await NativeWorkoutRequiredLinkagePolicy.complete(
-            legacyRequired: linkage.linksLegacyWorkout,
-            persistLegacy: { [self] in
-                persistExactLegacyWorkoutLink(uuid: uuid, linkage: linkage)
-            },
-            telemetryRequired: telemetrySessionID != nil,
-            persistTelemetry: { [self] in
-                guard let telemetrySessionID else { return false }
-                return await persistHealthKitWorkoutAssociationWithTelemetryV2(
-                    sessionID: telemetrySessionID,
-                    workoutIdentifier: uuid
+            telemetrySessionID: linkage.telemetrySessionID,
+            persistTelemetry: { [self] sessionUUID in
+                await persistHealthKitWorkoutAssociationWithTelemetryV2(
+                    sessionID: SessionID(rawValue: sessionUUID), workoutIdentifier: uuid
                 )
             }
         )
-    }
-
-    private func persistExactLegacyWorkoutLink(
-        uuid: UUID,
-        linkage: DeferredNativeHealthKitLinkage
-    ) -> Bool {
-        guard let profileID = linkage.profileID,
-              let legacyWorkoutID = linkage.legacyWorkoutID else {
-            return false
-        }
-        var entries = loadLegacyShadowWorkoutHistory(profileID: profileID)
-        guard let index = entries.firstIndex(where: { $0.id == legacyWorkoutID }) else {
-            return false
-        }
-        let entry = entries[index]
-        guard NativeWorkoutLegacyLinkPolicy.canLink(
-            existingWorkoutUUID: entry.healthkitWorkoutUUID,
-            expectedWorkoutUUID: uuid
-        ) else {
-            return false
-        }
-        guard entry.healthkitWorkoutUUID == nil else { return true }
-        entries[index] = LegacyShadowWorkoutEntry(
-            id: entry.id,
-            date: entry.date,
-            beatsPerMeter: entry.beatsPerMeter,
-            targetBpm: entry.targetBpm,
-            durationSeconds: entry.durationSeconds,
-            avgBpm: entry.avgBpm,
-            avgSpeedKmh: entry.avgSpeedKmh,
-            healthkitWorkoutUUID: uuid.uuidString,
-            zoneSeconds: entry.zoneSeconds
-        )
-        guard saveLegacyShadowWorkoutHistory(entries, profileID: profileID) else {
-            return false
-        }
-        if activeUserProfileID == profileID {
-            legacyShadowWorkoutHistory = entries
-        }
-        return true
     }
 
     private func completeRecoveredFinishIfProven(
@@ -8800,130 +7562,39 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func recordHrWorkoutIfNeeded(durationOverride: Int?, failed: Bool?) {
         guard !hrWorkoutRecorded else { return }
         let actualDuration: Int = {
-            if let override = durationOverride { return max(0, override) }
+            if let durationOverride { return max(0, durationOverride) }
             if let start = hrControlStartedAt {
                 return max(0, Int(Date().timeIntervalSince(start)))
             }
             let elapsed = max(0, hrSessionTotalSeconds - hrRemainingSeconds)
             return elapsed > 0 ? elapsed : timeSec
         }()
-        if failed ?? hrControlFailed {
-            logTrainingEvent("workout_not_saved", fields: [
-                "reason": "failed",
-                "duration_s": actualDuration
-            ])
-            return
-        }
-        let minDuration = max(0, workoutMinSaveMinutes * 60)
-        guard actualDuration >= minDuration else {
-            logTrainingEvent("workout_not_saved", fields: [
-                "reason": "min_duration",
-                "duration_s": actualDuration,
-                "min_duration_s": minDuration
-            ])
-            return
-        }
-        let averageSpeed = (avgSpeedActive && avgSpeedKmh > 0.05) ? avgSpeedKmh : nil
-        let workoutProfileID = activeUserProfileID
-        let attachedHealthkitWorkoutUUID = pendingHealthkitWorkoutUUID
-        let telemetryV2SessionID = activeTelemetryV2SessionID
-        let entry = LegacyShadowWorkoutEntry(
-            id: UUID(),
-            date: Date(),
-            beatsPerMeter: beatsPerMeter,
-            targetBpm: hrTargetBPM,
-            durationSeconds: actualDuration,
-            avgBpm: hrAverageBPM,
-            avgSpeedKmh: averageSpeed,
-            healthkitWorkoutUUID: attachedHealthkitWorkoutUUID,
-            zoneSeconds: hrZoneSeconds
-        )
-        if nativeHealthKitWorkoutCommitted,
-           let recoveryRecord = activeNativeWorkoutRecoveryRecord,
-           !persistNativeWorkoutRecoveryRecord(
-                recoveryRecord.linkingLegacyWorkout(id: entry.id)
-           ) {
-            return
-        }
-        legacyShadowWorkoutHistory.insert(entry, at: 0)
+        guard !(failed ?? hrControlFailed),
+              actualDuration >= max(0, workoutMinSaveMinutes * 60) else { return }
+        let attachedWorkoutUUID = pendingHealthkitWorkoutUUID
         pendingHealthkitWorkoutUUID = nil
-        pendingHealthkitWorkoutProfileID = attachedHealthkitWorkoutUUID == nil ? workoutProfileID : nil
-        pendingHealthkitTelemetryV2SessionID = attachedHealthkitWorkoutUUID == nil
-            ? telemetryV2SessionID
-            : nil
+        pendingHealthkitTelemetryV2SessionID = attachedWorkoutUUID == nil
+            ? activeTelemetryV2SessionID : nil
         hrWorkoutRecorded = true
-        saveLegacyShadowWorkoutHistory()
-        if let attachedHealthkitWorkoutUUID,
-           let workoutIdentifier = UUID(uuidString: attachedHealthkitWorkoutUUID),
-           let telemetryV2SessionID {
+        if let attachedWorkoutUUID,
+           let workoutIdentifier = UUID(uuidString: attachedWorkoutUUID),
+           let sessionID = activeTelemetryV2SessionID {
             associateHealthKitWorkoutWithTelemetryV2(
-                sessionID: telemetryV2SessionID,
-                workoutIdentifier: workoutIdentifier
+                sessionID: sessionID, workoutIdentifier: workoutIdentifier
             )
         }
-        logTrainingEvent("workout_saved", fields: [
-            "workout_id": entry.id.uuidString,
-            "duration_s": actualDuration,
-            "target_bpm": hrTargetBPM,
-            "avg_bpm": hrAverageBPM,
-            "avg_speed_kmh": entry.avgSpeedKmh ?? -1,
-            "distance_km": distKm,
-            "beats_per_meter": beatsPerMeter ?? -1
-        ])
-        scheduleTrainingLogsInventoryRefresh()
     }
 
     private func attachHealthkitWorkoutUUID(_ uuid: String, endedAt: Date?) {
-        if let workoutIdentifier = UUID(uuidString: uuid),
-           let telemetryV2SessionID = pendingHealthkitTelemetryV2SessionID
-                ?? activeTelemetryV2SessionID {
+        guard let workoutIdentifier = UUID(uuidString: uuid) else { return }
+        if let sessionID = pendingHealthkitTelemetryV2SessionID ?? activeTelemetryV2SessionID {
             pendingHealthkitTelemetryV2SessionID = nil
             associateHealthKitWorkoutWithTelemetryV2(
-                sessionID: telemetryV2SessionID,
-                workoutIdentifier: workoutIdentifier
+                sessionID: sessionID, workoutIdentifier: workoutIdentifier
             )
-        }
-        let matchWindow: TimeInterval = 15 * 60
-        let targetProfileID = pendingHealthkitWorkoutProfileID ?? activeUserProfileID
-        guard let targetProfileID else {
+        } else {
             pendingHealthkitWorkoutUUID = uuid
-            return
         }
-
-        var entries = loadLegacyShadowWorkoutHistory(profileID: targetProfileID)
-
-        let attachUUID: (Int) -> Void = { index in
-            let entry = entries[index]
-            entries[index] = LegacyShadowWorkoutEntry(
-                id: entry.id,
-                date: entry.date,
-                beatsPerMeter: entry.beatsPerMeter,
-                targetBpm: entry.targetBpm,
-                durationSeconds: entry.durationSeconds,
-                avgBpm: entry.avgBpm,
-                avgSpeedKmh: entry.avgSpeedKmh,
-                healthkitWorkoutUUID: uuid,
-                zoneSeconds: entry.zoneSeconds
-            )
-            self.saveLegacyShadowWorkoutHistory(entries, profileID: targetProfileID)
-            if self.activeUserProfileID == targetProfileID {
-                self.legacyShadowWorkoutHistory = entries
-            }
-            self.pendingHealthkitWorkoutProfileID = nil
-        }
-
-        if let endDate = endedAt,
-           let idx = entries.firstIndex(where: { $0.healthkitWorkoutUUID == nil && abs($0.date.timeIntervalSince(endDate)) <= matchWindow }) {
-            attachUUID(idx)
-            return
-        }
-        if let idx = entries.firstIndex(where: { $0.healthkitWorkoutUUID == nil }) {
-            attachUUID(idx)
-            return
-        }
-
-        pendingHealthkitWorkoutUUID = uuid
-        pendingHealthkitWorkoutProfileID = targetProfileID
     }
 
     private func associateHealthKitWorkoutWithTelemetryV2(
@@ -8963,30 +7634,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let crc = (UInt16(0xA2) + UInt16(cmd) + UInt16(value)) & 0xFF
         bytes[4] = UInt8(crc)
         return Data(bytes)
-    }
-
-    private func validateExpectedSpeed(with status: BLETransportCodec.WalkingPadStatus) {
-        guard let expected = expectedSpeedKmh, let setAt = expectedSpeedSetAt else { return }
-        let age = Date().timeIntervalSince(setAt)
-        guard age >= 1.5 else { return }
-        let speedDiff = abs(status.speedKmh - expected)
-        let appDiff = abs(status.appSpeedKmh - expected)
-        let source = expectedSpeedSource ?? "SPEED"
-        let matched = speedDiff <= 0.2 || appDiff <= 0.2
-        if speedDiff <= 0.2 || appDiff <= 0.2 {
-        } else {
-        }
-        logTrainingEvent("speed_validation", fields: [
-            "source": source,
-            "expected_kmh": expected,
-            "speed_kmh": status.speedKmh,
-            "app_speed_kmh": status.appSpeedKmh,
-            "matched": matched,
-            "age_s": age
-        ])
-        expectedSpeedKmh = nil
-        expectedSpeedSetAt = nil
-        expectedSpeedSource = nil
     }
 
     private func scheduleWrite(
@@ -9049,7 +7696,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               peripheral.identifier == connectedPeripheralId else {
             return
         }
-        if let error {
+        if error != nil {
             invalidateTreadmillControlReadinessEvidence(includingProtocol: true)
             return
         }
@@ -9070,10 +7717,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillProtocolConnection = currentTreadmillControlConnection
         if treadmillProtocol != selected {
             treadmillProtocol = selected
-            logTrainingEvent("treadmill_protocol_selected", fields: [
-                "protocol": selected.rawValue,
-                "services": services.map { $0.uuid.uuidString }
-            ])
+
             recomputeHrStartAllowed()
         }
         recomputeTreadmillControlReadiness()
@@ -9091,15 +7735,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         telemetryV2Coordinator.invalidateStopTail()
-        if let error {
+        if error != nil {
             invalidateTreadmillControlReadinessEvidence()
             return
         }
         guard let chars = service.characteristics else {
             invalidateTreadmillControlReadinessEvidence()
             return
-        }
-        for c in chars {
         }
         commandCharacteristic = nil
         commandCharacteristicConnection = nil
@@ -9181,7 +7823,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     let status = buildFitShowFrame(cmd: 0x51, subcmd: nil, payload: Data())
                     scheduleWrite(status, label: "FitShow STATUS", after: 0.6)
                 }
-            } else {
             }
 
         case .unknown:
@@ -9207,7 +7848,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if error != nil || !characteristic.isNotifying {
             telemetryV2Coordinator.invalidateStopTail()
         }
-        if let error {
+        if error != nil {
             if isRequiredTelemetry { notifyCharacteristicConnection = nil }
             if isFtmsControlPoint { commandCharacteristicConnection = nil }
             recomputeTreadmillControlReadiness()
@@ -9237,11 +7878,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               isCurrentCharacteristicCallback(characteristic) else {
             return
         }
-        if let error {
-            logTrainingEvent("notify_update_error", fields: [
-                "char_uuid": characteristic.uuid.uuidString,
-                "error": error.localizedDescription
-            ])
+        if error != nil {
+
             return
         }
         guard let data = characteristic.value else { return }
@@ -9341,19 +7979,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     }
                     self.controllerUnitsTruth = self.controllerUnitsTruthTracker.state
                     self.recomputeHrStartAllowed()
-                    let decision = self.controllerUnitsGateDecision(now: observedAt)
-                    let freshness = self.controllerUnitsTelemetryFields(
-                        action: "query_response",
-                        now: observedAt,
-                        decision: decision
-                    )["controller_units_fresh"] ?? false
-                    self.logTrainingEvent(
-                        "controller_units_response",
-                        fields: self.controllerUnitsTelemetryFields(action: "query_response", now: observedAt, decision: decision).merging([
-                            "max_speed_raw_tenths": params?.maxSpeedRawTenths ?? -1,
-                            "start_speed_raw_tenths": params?.startSpeedRawTenths ?? -1
-                        ]) { current, _ in current }
-                    )
                     if let truth = self.treadmillUnitsTruthEvidence() {
                         self.observeTreadmillTelemetry(
                             .unitsTruth(
@@ -9423,19 +8048,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         self.finalizeCompletedStopIfReady()
                     }
                 }
-                logActualSpeedChangeIfNeeded(status.speedKmh, source: "fe01_notify")
-                logTrainingEvent("notify_fe01", fields: [
-                    "state": status.beltState,
-                    "speed_kmh": status.speedKmh,
-                    "app_speed_kmh": status.appSpeedKmh,
-                    "mode": status.manualMode,
-                    "time_s": status.timeSeconds,
-                    "distance_m": status.distance10m * 10,
-                    "steps": status.steps,
-                    "button": status.lastButton,
-                    "checksum_ok": status.checksumOk
-                ])
-                validateExpectedSpeed(with: status)
+
             } else {
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
                 if data.count >= 2,
@@ -9468,11 +8081,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     if self.desiredSpeedKmh > maxSpeed { self.desiredSpeedKmh = maxSpeed }
                     if self.deviceTargetSpeedKmh > maxSpeed { self.deviceTargetSpeedKmh = maxSpeed }
                 }
-                logTrainingEvent("ftms_supported_speed_range", fields: [
-                    "min_kmh": range.minSpeedKmh,
-                    "max_kmh": range.maxSpeedKmh,
-                    "inc_kmh": range.minIncrementKmh
-                ])
+
             } else if characteristic.uuid == ftmsCharTreadmillData, let parsed = parseFtmsTreadmillData(data) {
                 DispatchQueue.main.async {
                     self.deviceReportedSpeedKmh = parsed.instantaneousSpeedKmh
@@ -9496,11 +8105,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                     }
                 }
-                logActualSpeedChangeIfNeeded(parsed.instantaneousSpeedKmh, source: "ftms_treadmill_data")
-                logTrainingEvent("notify_ftms_treadmill_data", fields: [
-                    "speed_kmh": parsed.instantaneousSpeedKmh,
-                    "moving": parsed.isMoving
-                ])
+
             } else if characteristic.uuid == ftmsCharControlPoint, let resp = parseFtmsControlPointResponse(data) {
                 if resp.requestedOpcode == 0x00 {
                     guard ftmsControlRequestInFlight,
@@ -9514,18 +8119,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         ftmsHasControl = true
                     }
                 }
-                logTrainingEvent("notify_ftms_control_point", fields: [
-                    "requested_opcode": resp.requestedOpcode,
-                    "result_code": resp.resultCode
-                ])
-            } else if characteristic.uuid == ftmsCharMachineStatus {
-                let statusCode = data.first.map(Int.init) ?? -1
-                let raw = hex(data)
-                logTrainingEvent("notify_ftms_machine_status", fields: [
-                    "status_code": statusCode,
-                    "raw_hex": raw
-                ])
-            } else {
+
             }
 
         case .fitShow:
@@ -9536,7 +8130,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     characteristic: characteristic,
                     receivedAt: now
                 )
-            } else {
             }
 
         case .unknown:
@@ -9550,18 +8143,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               characteristic === commandCharacteristic,
               isCurrentCharacteristicCallback(characteristic) else {
             return
-        }
-        if let error {
-            logTrainingEvent("command_write_result", fields: [
-                "char_uuid": characteristic.uuid.uuidString,
-                "status": "error",
-                "error": error.localizedDescription
-            ])
-        } else {
-            logTrainingEvent("command_write_result", fields: [
-                "char_uuid": characteristic.uuid.uuidString,
-                "status": "ok"
-            ])
         }
         if peripheral.identifier == connectedPeripheralId,
            let connectionEpoch = treadmillTelemetryConnectionEpoch {
@@ -9662,10 +8243,7 @@ extension BluetoothManager: WCSessionDelegate {
                             recordPredictorInput: { self.recordHrSample($0) }
                         )
                         // hrStreamingActive will be derived by the staleness timer
-                        self.logTrainingEvent("hr_sample", fields: [
-                            "hr_bpm": bpm,
-                            "source": "watch_payload"
-                        ])
+
                     },
                     observe: {
                         self.observeHeartRateDelivery(
@@ -9688,10 +8266,7 @@ extension BluetoothManager: WCSessionDelegate {
                     return
                 }
                 self.attachHealthkitWorkoutUUID(uuid, endedAt: endDate)
-                self.logTrainingEvent("workout_uuid_received", fields: [
-                    "workout_uuid": uuid,
-                    "ended_at": endDate?.timeIntervalSince1970 ?? -1
-                ])
+
             }
         }
         if let status = payload["status"] as? String {
@@ -9701,17 +8276,17 @@ extension BluetoothManager: WCSessionDelegate {
                 switch status.lowercased() {
                 case "hr_started":
                     self.hrPermissionGranted = true
-                    self.logTrainingEvent("watch_status", fields: ["status": "hr_started"])
+
                     lifecycleTransition = .started
                 case "hr_stopped":
                     // Keep permission as last-known; clear last timestamp to mark no data
                     self.hrLastValueAt = nil
                     self.heartRateBPM = 0
-                    self.logTrainingEvent("watch_status", fields: ["status": "hr_stopped"])
+
                     lifecycleTransition = .stopped
                 case "watch_ok":
                     self.watchReachable = true
-                    self.logTrainingEvent("watch_status", fields: ["status": "watch_ok"])
+
                 default:
                     break
                 }

@@ -144,10 +144,6 @@ final class CooldownRuntimeEngineTests: XCTestCase {
                 XCTAssertEqual(values.1, factual ?? 4.7, name)
                 XCTAssertEqual(values.2, 4.7, name)
                 XCTAssertEqual(values.3, factual, name)
-                let fields = TrainingTelemetryWriter.cooldownSpeedProvenanceFields(factualSpeedKmh: values.3)
-                XCTAssertEqual(fields["cooldown_speed_source"] as? String,
-                               factual == nil ? "controller_fallback" : "factual", name)
-                XCTAssertEqual(fields["cooldown_factual_speed_kmh"] as? Double, factual, name)
             }
             XCTAssertEqual(events, ["state", "analysis", "complete", "insufficient"], name)
             XCTAssertEqual(output.state.finishReason, "timeout", name)
@@ -164,9 +160,6 @@ final class CooldownRuntimeEngineTests: XCTestCase {
                 from: NativeTreadmillSpeed(value: invalid, unit: .kilometresPerHour),
                 provenance: .decodedDeviceReport)
             XCTAssertNil(factual)
-            let fields = TrainingTelemetryWriter.cooldownSpeedProvenanceFields(factualSpeedKmh: factual?.value)
-            XCTAssertEqual(fields["cooldown_speed_source"] as? String, "controller_fallback")
-            XCTAssertNil(fields["cooldown_factual_speed_kmh"])
         }
     }
 

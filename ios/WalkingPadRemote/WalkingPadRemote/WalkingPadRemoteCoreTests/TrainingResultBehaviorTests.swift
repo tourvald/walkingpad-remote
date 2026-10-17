@@ -468,7 +468,7 @@ final class TrainingResultBehaviorTests: XCTestCase {
          owner.completeScheduledStopEffect(attemptID: scenario == "old-callback" ? UUID() : lifecycle.attemptID, cancelled: true)
          if scenario == "confirmed" {
           precondition(owner.stopObservationLifecycle?.finalResult == .confirmed, "Confirmed owner did not finalize")
-          precondition(owner.telemetryV2Coordinator.events == ["stop_scheduled_effect_finished", "stop_observation_finished", "owner-final", "close"], "Unexpected order: \(owner.telemetryV2Coordinator.events)")
+          precondition(owner.telemetryV2Coordinator.events == ["owner-final", "close"], "Unexpected order: \(owner.telemetryV2Coordinator.events)")
           owner.finalizeCompletedStopIfReady()
           precondition(owner.telemetryV2Coordinator.finishes == 1)
          } else {

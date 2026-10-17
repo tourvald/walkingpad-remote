@@ -246,22 +246,13 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
 
     func testCommittedIdentityDrivesStructuredLogAndTelemetryV2Session() throws {
         let manager = try source("WalkingPadRemote/BluetoothManager.swift")
-        let structuredLog = try functionBody(
-            "private func startTrainingStructuredLog(",
-            in: manager
-        )
         let commit = try functionBody(
             "private func commitExistingHrControl(",
             in: manager
         )
 
-        XCTAssertTrue(structuredLog.contains("return resolvedSessionID"))
-        XCTAssertEqual(
-            structuredLog.components(separatedBy: "return resolvedSessionID").count - 1,
-            3
-        )
         assertOrdered([
-            "let legacySessionID = startTrainingStructuredLog(trigger: \"start_hr\")",
+            "let legacySessionID = activeNativeWorkoutRecoveryRecord?.legacySessionID",
             "beginTelemetryV2Session(legacySessionID: legacySessionID)",
         ], in: commit)
     }
@@ -419,8 +410,7 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
             "hrSessionTotalSeconds = newTotalSeconds",
         ], in: extend)
         assertOrdered([
-            "recoveryRecord.linkingLegacyWorkout(id: entry.id)",
-            "legacyShadowWorkoutHistory.insert(entry, at: 0)",
+            "pendingHealthkitTelemetryV2SessionID = attachedWorkoutUUID == nil",
             "hrWorkoutRecorded = true",
         ], in: legacy)
     }
@@ -472,17 +462,6 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         )
         XCTAssertTrue(link.contains("NativeWorkoutRequiredLinkagePolicy.complete("))
         XCTAssertTrue(link.contains("persistHealthKitWorkoutAssociationWithTelemetryV2("))
-
-        let exactLegacy = try functionBody(
-            "private func persistExactLegacyWorkoutLink(",
-            in: manager
-        )
-        assertOrdered([
-            "guard let index = entries.firstIndex",
-            "NativeWorkoutLegacyLinkPolicy.canLink(",
-            "guard saveLegacyShadowWorkoutHistory",
-            "return false",
-        ], in: exactLegacy)
 
         let durableWrite = try functionBody(
             "private func persistDeferredNativeHealthKitLinkages()",
