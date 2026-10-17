@@ -314,3 +314,43 @@ Simulator QA: 124 > 115 stays primary without “Выше цели”; 115 == 11
 - Disposable BPM/speed/time buttons and their state/arguments were excluded from production. Existing preview fixtures and transport guards are retained. Existing Stop/extend callbacks and confirmation are unchanged; missing-HR and recovery warnings remain.
 - Simulator: production-source main state inspected in light/dark; cooldown with missing HR inspected at maximum accessibility text, with pinned Stop and scrollable content. Prior interactive preview verified both metric menus independently. Full VoiceOver runtime inspection remains unavailable on the local simulator runtime; no runtime VoiceOver pass or battery improvement is claimed. Default lower area remains empty for PiP.
 - Owner requested commits and an in-place iPhone test installation including #231/#233/#235. This does not mark the PR Ready or merge it. GitHub CI remains disabled by the owner's earlier instruction; final combined build/test evidence is reported separately.
+## Issue #232 — native workout Live Activity
+
+Scope: owner-approved widget extension and app presentation adapter, from base
+`1bd1bc1c29b322516b4f9798ac3ae13bacef3560`. Existing interactive-design changes
+are separate. No manager, transport, controller, HR/cooldown policy, telemetry,
+history persistence, app screen layout, or background modes change.
+
+- Native compact/expanded Dynamic Island: main `11:18`, extension to `16:18`,
+  cooldown `02:14` with “До лимита заминки”; observed in the iOS simulator.
+- Lock Screen: native phase label and countdown observed; accessibility tree
+  exposes both the phase label and timer value. Light/dark system presentations
+  inspected. Local evidence: `/tmp/wp232-main-compact.png`,
+  `/tmp/wp232-extended.png`, `/tmp/wp232-cooldown-expanded.png`,
+  `/tmp/wp232-lock-light.png`.
+- Termination: SDK inspection reported `count=0 phase=none` after the QA driver's
+  end input. New-session identity and deadline reset are covered by focused tests.
+- Permission denial: exercised the system “Don't Allow” prompt; Settings showed
+  Live Activities disabled and SDK inspection showed zero activities. No control
+  callback is reachable from the optional presentation adapter.
+- The simulator driver lives only in a disposable copy. It calls the same native
+  controller with synthetic snapshots and never starts manager/HealthKit/BLE.
+  It is not shipped. The browser stream required reconnecting after lock/reboot;
+  this is not a physical-device result or a product responsiveness measurement.
+- Deterministic load check: 3,600 normal one-second inputs resolve one initial
+  deadline, zero subsequent content changes. No added timer, polling, push/network,
+  database, persisted state, or heart-rate content. Deadline jitter up to two
+  seconds is ignored; larger observed drift is corrected.
+- Seven new lifecycle/deadline tests pass. An initial full run found an extra
+  preview-guard source-contract assertion; removing that guard and subscribing
+  outside view rendering corrected it. All 474 core tests then passed; other
+  Swift test modules passed in the full run. Hosted CI passed on the original
+  source head 323e0a5 before the owner temporarily disabled GitHub CI. Under that
+  owner override, current combined validation uses local exact-source checks;
+  disabled/cancelled CI is never represented as a passing current-head run.
+- Project configuration reuses the app's existing signing team and automatic
+  signing; widget minimum iOS 26 matches the app. No migration is needed. Removing
+  this extension and its app hook rolls back the feature without changing data.
+- Physical battery cost, real background execution/termination, and device
+  installation are unmeasured/not performed. iOS owns visibility and permissions;
+  uncertain recovery sessions suppress the optional countdown.
