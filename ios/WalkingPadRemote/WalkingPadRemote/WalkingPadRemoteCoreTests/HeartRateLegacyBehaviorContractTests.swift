@@ -715,7 +715,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(shell.contains("presentation.primaryValue"))
         XCTAssertTrue(shell.contains("TrainingZoneScale("))
         XCTAssertTrue(shell.contains("presentation.statusTitle"))
-        XCTAssertTrue(shell.contains("Button(\"+5 мин\")"))
+        XCTAssertTrue(shell.contains("Text(\"+5 мин\")"))
         XCTAssertTrue(shell.contains(".controlSize(.large)"))
         XCTAssertTrue(shell.contains(".frame(minHeight: 48)"))
         XCTAssertTrue(shell.contains("Label(\"Стоп\""))
@@ -727,14 +727,8 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertFalse(shell.contains(".safeAreaInset(edge: .bottom"))
         XCTAssertFalse(shell.lowercased().contains("picture in picture"))
         XCTAssertFalse(shell.lowercased().contains("pip"))
-        assertOrdered(
-            [
-                "secondaryMetrics",
-                "stopControl",
-                "extendControl",
-            ],
-            in: shell
-        )
+        let actions = try functionBody("private var actionRow: some View", in: shell)
+        assertOrdered(["stopControl", "extendControl"], in: actions)
         XCTAssertFalse(shell.contains("BluetoothManager"))
         for removedFocusDetail in [
             "Решение алгоритма", "След. решение", "Прогноз", "Удары/м",

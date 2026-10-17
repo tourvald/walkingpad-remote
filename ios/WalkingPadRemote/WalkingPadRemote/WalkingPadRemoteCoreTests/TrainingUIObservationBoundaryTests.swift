@@ -120,6 +120,7 @@ final class TrainingUIObservationBoundaryTests: XCTestCase {
             "$isNativeHeartRatePreflightActive",
             "$isHrControlRunning",
             "$hrRemainingSeconds",
+            "$hrCooldownRemainingSeconds",
             "$hrCooldownTargetBpm",
             "$timeSec",
             "$isNativeWorkoutRecoveryActive",

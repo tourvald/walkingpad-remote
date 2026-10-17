@@ -4,6 +4,59 @@ import XCTest
 
 /// Executes the production methods verbatim with dependency fixtures, without extracting a production layer.
 final class TrainingResultBehaviorTests: XCTestCase {
+    func testWorkoutCountdownUsesPhaseFactsWithoutOwningAClock() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("ContentView.swift"), encoding: .utf8)
+        let model = try declaration("private struct TrainingWorkoutCountdown", in: source)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = directory.appendingPathComponent("Countdown.swift")
+        try (model + #"""
+
+        private func snapshot(_ main: Int, _ cooldown: Int = 134, _ progress: Double = 0.6,
+                      _ cooldownProgress: Double = 0.4, running: Bool = true,
+                      recovering: Bool = false) -> TrainingWorkoutCountdown? {
+            TrainingWorkoutCountdown(isRunning: running, isRecovering: recovering,
+                mainRemainingSeconds: main, cooldownRemainingSeconds: cooldown,
+                mainProgress: progress, cooldownProgress: cooldownProgress)
+        }
+        private let main = snapshot(678)!
+        precondition(main.remainingSeconds == 678 && main.progress == 0.6 && main.title == "До заминки")
+        private let extended = snapshot(978, 134, 1 - 978.0 / 2100)!
+        precondition(extended.remainingSeconds == 978 && extended.progress < main.progress)
+        private let cooldown = snapshot(0)!
+        precondition(cooldown.remainingSeconds == 134 && cooldown.progress == 0.4)
+        precondition(cooldown.title == "До лимита заминки")
+        precondition(snapshot(0, 0, 1, 1)!.remainingSeconds == 0)
+        precondition(snapshot(-1, -8, 1, 2)!.remainingSeconds == 0)
+        precondition(snapshot(-1, -8, 1, 2)!.progress == 1)
+        precondition(snapshot(7200, 134, 0)!.remainingSeconds == 7200)
+        precondition(snapshot(1, 134, -0.2)!.progress == 0)
+        precondition(snapshot(1, 134, .nan)!.progress == 0)
+        precondition(snapshot(0, 134, 0, .infinity)!.progress == 0)
+        precondition(snapshot(678, running: false) == nil)
+        precondition(snapshot(678, recovering: true) == nil)
+        precondition(snapshot(0, recovering: true) == nil)
+        // Repeated reads never advance the countdown or infer physical Stop.
+        for _ in 0..<3600 { precondition(snapshot(678)!.remainingSeconds == 678) }
+        """#).write(to: script, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/swift"), arguments: [script.path], directory: directory)
+        let adapter = try declaration("private func makeProductionActiveWorkoutPresentation(", in: source)
+        for fact in ["manager.isHrControlRunning", "manager.isNativeWorkoutRecoveryActive",
+                     "manager.hrRemainingSeconds", "manager.hrCooldownRemainingSeconds",
+                     "manager.hrProgress", "manager.hrCooldownProgress"] {
+            XCTAssertTrue(adapter.contains(fact), fact)
+        }
+        let shell = try declaration("private struct ActiveWorkoutShell: View", in: source)
+        for forbidden in ["Timer", "TimelineView", "Task", "Date()", ".repeatForever(", "sendTreadmill"] {
+            XCTAssertFalse(shell.contains(forbidden), forbidden)
+        }
+        XCTAssertTrue(shell.contains("countdownBar(countdown)"))
+        XCTAssertTrue(shell.contains(".accessibilityValue("))
+    }
+
     func testHealthKitStopRequestedBeforeRunningIsDeliveredOnStateTransition() throws {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
