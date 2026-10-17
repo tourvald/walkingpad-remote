@@ -165,6 +165,27 @@ final class WorkoutAnalysisExportTests: XCTestCase {
         }
     }
 
+    func testCoverageSemanticsRemainVersionedForHistoricalAndCurrentAnalyses() async throws {
+        for version in ["workout-analyzer-v1.4", "workout-analyzer-v1.5"] {
+            let store = try TelemetryStoreFactory.make(.inMemory)
+            let session = semanticsSession()
+            try await store.insertSession(session)
+            let base = try WorkoutAnalyzerV1.analyze(
+                WorkoutAnalysisInput(session: session, heartRate: [], treadmill: [], events: [], frames: []),
+                generatedAt: session.startedAt
+            )
+            try await store.insertAnalysis(copyAnalysis(base, version: version,
+                payload: base.versionedDetailPayload))
+            let artifact = try await store.exportWorkoutAnalysis(.init(sessionID: session.sessionID,
+                exactProfileLocalIdentifier: session.profileLocalIdentifier))
+            defer { try? FileManager.default.removeItem(at: artifact.fileURL.deletingLastPathComponent()) }
+            let metadata = metadataRows(try parseCSV(artifact.fileURL))
+            let label = version.replacingOccurrences(of: "workout-analyzer-", with: "")
+            XCTAssertEqual(metadata["stored_analysis_coverage_semantics"],
+                "\(label):hr-effective-time-holds;speed-bounded-frame-ledger-or-no-frame-native-holds;not-frame-population")
+        }
+    }
+
     func testStoredDetailProjectionPreservesNullAndSanitizesPrivateStrings() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = semanticsSession()

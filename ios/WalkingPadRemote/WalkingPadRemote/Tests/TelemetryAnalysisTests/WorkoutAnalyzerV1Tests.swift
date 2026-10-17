@@ -51,15 +51,15 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         )
         let result = try WorkoutAnalyzerV1.analyze(input, generatedAt: fixture.baseDate)
         let detail = try decodeDetail(result)
-        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.4")
+        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.5")
         XCTAssertEqual(detail.quality.phases.map(\.phase), ["main", "cooldown"])
         XCTAssertFalse(detail.quality.issues.contains {
             $0.code == "invalid-workout-phase-transition-evidence"
         })
         XCTAssertEqual(detail.control.zoneDurations.map(\.seconds), [0, 40, 0, 0, 0])
         XCTAssertEqual(detail.control.cooldown.durationSeconds, 20)
-        // Target selection remains the existing policy at the exact phase boundary.
-        XCTAssertEqual(detail.control.cooldown.targetHeartRate.value, 100)
+        // The delayed typed start supplies the cooldown target, independently of main.
+        XCTAssertEqual(detail.control.cooldown.targetHeartRate.value, 110)
         XCTAssertEqual(detail.control.cooldown.heartRateBelowTargetSeconds.value, 20)
         XCTAssertEqual(detail.control.cooldown.finishReason.value, "completed")
         XCTAssertEqual(input.events, events)
@@ -1648,6 +1648,69 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertEqual(detail.control.speedDeltaKilometresPerHour.value?.maximum, 1)
         XCTAssertGreaterThan(detail.control.overshoot.value!.durationSeconds, 0)
         XCTAssertGreaterThan(detail.control.undershoot.value!.durationSeconds, 0)
+    }
+
+    func testCooldownTargetNeverInheritsMainTargetAtPhaseBoundary() throws {
+        let configuration = Data(#"{"targetHeartRate":152,"heartRateZones":[134,146,158,170],"cooldownTargetHeartRate":120,"cooldownMinimumSpeedKilometresPerHour":2}"#.utf8)
+        let cases: [(target: UInt16?, start: Double, configured: Bool, expected: Double?)] = [
+            (nil, 10, true, 120),
+            (125, 10.001, true, 125),
+            (110, 10.001, true, 110),
+            (125, 10.001, false, 125),
+            (nil, 10, false, nil),
+            (0, 10, true, 120),
+            (125, 9, true, 120),
+            (125, 30, true, 120),
+        ]
+        for item in cases {
+            let fixture = AnalysisFixture(sessionSeconds: 30,
+                configurationPayload: item.configured ? configuration : Data())
+            let events = [
+                fixture.event(ordinal: 1, seconds: 0,
+                    payload: .workoutPhase(.init(previous: nil, current: .main))),
+                fixture.event(ordinal: 2, seconds: 10,
+                    payload: .workoutPhase(.init(previous: .main, current: .cooldown))),
+                fixture.event(ordinal: 3, seconds: item.start,
+                    payload: .cooldown(.init(lifecycle: .started, targetHeartRate: item.target))),
+                // An end-only target must not become authority for the whole cooldown.
+                fixture.event(ordinal: 4, seconds: 29.9,
+                    payload: .cooldown(.init(lifecycle: .completed, targetHeartRate: 152))),
+                fixture.event(ordinal: 5, seconds: 30,
+                    payload: .workoutPhase(.init(previous: .cooldown, current: .finished))),
+            ]
+            let heartRate = stride(from: 0, to: 30, by: 5).enumerated().map {
+                fixture.heartRate(ordinal: $0.offset + 1, seconds: Double($0.element),
+                                  bpm: $0.element < 20 ? 130 : 115)
+            }
+            let treadmill = stride(from: 0, to: 30, by: 5).enumerated().map {
+                fixture.treadmill(ordinal: $0.offset + 1, seconds: Double($0.element),
+                                  speed: 2, factual: true)
+            }
+            let input = fixture.input(heartRate: heartRate, treadmill: treadmill, events: events)
+            let detail = try decodeDetail(WorkoutAnalyzerV1.analyze(input, generatedAt: fixture.baseDate))
+            let cooldown = detail.control.cooldown
+            XCTAssertEqual(cooldown.targetHeartRate.value, item.expected)
+            XCTAssertEqual(cooldown.durationSeconds, 20)
+            XCTAssertEqual(cooldown.minimumFactualSpeedSeconds.value, item.configured ? 20 : nil)
+            if let target = item.expected {
+                let reachesTarget = target >= 115
+                XCTAssertEqual(cooldown.targetHitElapsedSeconds.value, reachesTarget ? 10 : nil)
+                XCTAssertEqual(cooldown.heartRateBelowTargetSeconds.value, reachesTarget ? 10 : 0)
+                XCTAssertEqual(cooldown.targetAndMinimumSpeedSeconds.value, item.configured ? (reachesTarget ? 10 : 0) : nil)
+                XCTAssertEqual(cooldown.targetAndMinimumSpeedMaximumStreakSeconds.value, item.configured ? (reachesTarget ? 10 : 0) : nil)
+            } else {
+                XCTAssertNil(cooldown.targetHitElapsedSeconds.value)
+                XCTAssertNil(cooldown.heartRateBelowTargetSeconds.value)
+                XCTAssertNil(cooldown.targetAndMinimumSpeedSeconds.value)
+                XCTAssertNil(cooldown.targetAndMinimumSpeedMaximumStreakSeconds.value)
+            }
+            XCTAssertEqual(input.events, events)
+            let reversed = try decodeDetail(WorkoutAnalyzerV1.analyze(
+                fixture.input(heartRate: heartRate, treadmill: treadmill, events: events.reversed()),
+                generatedAt: fixture.baseDate
+            ))
+            XCTAssertEqual(reversed.control.cooldown, cooldown)
+        }
     }
 
     func testCooldownRecoveryUsesNamedTimestampWindowsAndReportsMissingCoverage() throws {
