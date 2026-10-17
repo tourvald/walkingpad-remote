@@ -166,7 +166,7 @@ final class WorkoutAnalysisExportTests: XCTestCase {
     }
 
     func testCoverageSemanticsRemainVersionedForHistoricalAndCurrentAnalyses() async throws {
-        for version in ["workout-analyzer-v1.4", "workout-analyzer-v1.5"] {
+        for version in ["workout-analyzer-v1.4", "workout-analyzer-v1.5", "workout-analyzer-v1.6"] {
             let store = try TelemetryStoreFactory.make(.inMemory)
             let session = semanticsSession()
             try await store.insertSession(session)
@@ -174,15 +174,21 @@ final class WorkoutAnalysisExportTests: XCTestCase {
                 WorkoutAnalysisInput(session: session, heartRate: [], treadmill: [], events: [], frames: []),
                 generatedAt: session.startedAt
             )
+            var detail = try XCTUnwrap(JSONSerialization.jsonObject(with: base.versionedDetailPayload) as? [String: Any])
+            detail["metricDefinitionVersion"] = version == "workout-analyzer-v1.6"
+                ? "timestamp-hold-metrics-v3" : "timestamp-hold-metrics-v2"
             try await store.insertAnalysis(copyAnalysis(base, version: version,
-                payload: base.versionedDetailPayload))
+                payload: try JSONSerialization.data(withJSONObject: detail)))
             let artifact = try await store.exportWorkoutAnalysis(.init(sessionID: session.sessionID,
                 exactProfileLocalIdentifier: session.profileLocalIdentifier))
             defer { try? FileManager.default.removeItem(at: artifact.fileURL.deletingLastPathComponent()) }
             let metadata = metadataRows(try parseCSV(artifact.fileURL))
             let label = version.replacingOccurrences(of: "workout-analyzer-", with: "")
+            let speedSemantics = version == "workout-analyzer-v1.6"
+                ? "speed-witnessed-native-holds-in-validated-frame-cells-or-no-frame-native-holds"
+                : "speed-bounded-frame-ledger-or-no-frame-native-holds"
             XCTAssertEqual(metadata["stored_analysis_coverage_semantics"],
-                "\(label):hr-effective-time-holds;speed-bounded-frame-ledger-or-no-frame-native-holds;not-frame-population")
+                "\(label):hr-effective-time-holds;\(speedSemantics);not-frame-population")
         }
     }
 

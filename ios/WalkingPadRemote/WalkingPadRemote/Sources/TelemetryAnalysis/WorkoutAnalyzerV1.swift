@@ -10,8 +10,8 @@ public enum WorkoutAnalyzerError: Error, Equatable, Sendable {
 }
 
 public enum WorkoutAnalyzerV1 {
-    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.5")
-    public static let metricDefinitionVersion = "timestamp-hold-metrics-v2"
+    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.6")
+    public static let metricDefinitionVersion = "timestamp-hold-metrics-v3"
     public static let minimumAverageFactualSpeedCoverageRatio = 0.9
 
     static func secondsDetail(_ seconds: Double) -> String {
@@ -615,7 +615,8 @@ private extension WorkoutAnalyzerV1 {
                 holds[observation.recordID] = start..<end
             }
             var seenSeconds: Set<Int64> = []
-            var built: [SpeedSegment] = []
+            var admittedSeconds: [Int64] = []
+            var witnessedRecords: Set<RecordID> = []
             for frame in frames.sorted(by: frameEvidenceOrder) {
                 guard seenSeconds.insert(frame.canonicalElapsedSecond).inserted,
                       frame.canonicalElapsedSecond >= 0,
@@ -632,23 +633,40 @@ private extension WorkoutAnalyzerV1 {
                       observation.provenance == evidence.provenance,
                       observation.timestamp.measuredAt == evidence.measuredAt,
                       observation.timestamp.receivedAt == evidence.receivedAt,
-                      let factual = observation.factualSpeed,
+                      observation.factualSpeed != nil,
                       let hold = holds[observation.recordID],
                       hold.contains(seconds(frame.materializedAt.elapsed)),
                       frame.materializedAt.elapsed.microseconds / 1_000_000
                         == frame.canonicalElapsedSecond else {
                     continue
                 }
-                let second = Double(frame.canonicalElapsedSecond)
-                let start = max(second, hold.lowerBound)
-                let end = min(second + 1, hold.upperBound)
-                guard end > start else { continue }
-                built.append(SpeedSegment(
-                    start: start,
-                    end: end,
-                    speed: factual.value,
-                    phase: phaseTimeline.phase(at: start)
-                ))
+                admittedSeconds.append(frame.canonicalElapsedSecond)
+                witnessedRecords.insert(observation.recordID)
+            }
+            // A validated next observation may supply the remainder of an admitted second.
+            // Missing/invalid frame cells and native observations without a frame witness stay excluded.
+            let witnessed = ordered.compactMap { observation -> (range: Range<Double>, speed: Double)? in
+                guard witnessedRecords.contains(observation.recordID),
+                      let range = holds[observation.recordID],
+                      let speed = observation.factualSpeed?.value else { return nil }
+                return (range, speed)
+            }
+            var built: [SpeedSegment] = []
+            var first = 0
+            for cell in admittedSeconds {
+                let second = Double(cell)
+                while first < witnessed.count, witnessed[first].range.upperBound <= second { first += 1 }
+                var index = first
+                while index < witnessed.count, witnessed[index].range.lowerBound < second + 1 {
+                    let interval = witnessed[index]
+                    let start = max(second, interval.range.lowerBound)
+                    let end = min(second + 1, interval.range.upperBound)
+                    if end > start {
+                        built.append(SpeedSegment(start: start, end: end, speed: interval.speed,
+                                                  phase: phaseTimeline.phase(at: start)))
+                    }
+                    index += 1
+                }
             }
             segments = built
         }
