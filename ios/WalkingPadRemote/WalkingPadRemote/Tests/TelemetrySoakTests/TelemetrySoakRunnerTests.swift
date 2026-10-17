@@ -385,7 +385,8 @@ final class TelemetrySoakRunnerTests: XCTestCase {
                 XCTAssertNil(result.keyMetrics.averageFactualSpeedKilometresPerHour)
             }
             if scenario == "silence" { XCTAssertGreaterThan(stalePopulatedFrames, 100) }
-            if scenario == "baseline" { XCTAssertEqual(coverage, 0.8601010752688172, accuracy: 0.00001) }
+            // The legacy reply trace is unchanged; v1.6 counts witnessed fractional holds in valid cells.
+            if scenario == "baseline" { XCTAssertEqual(coverage, 0.8738344086021505, accuracy: 0.00001) }
             let history = try await store.fetchWorkoutHistoryPage(filter: .init(profileScope: .exact(fixture.sessionHeader.profileLocalIdentifier)), after: nil, limit: 10)
             XCTAssertEqual(history.items.first?.durationSeconds, 1860)
             XCTAssertEqual(history.items.first?.averageSpeed != nil, scenario == "candidate")
