@@ -3,7 +3,7 @@
 Status: implemented Analyzer V1 contract.
 
 This document owns the concrete metric definitions and lifecycle for
-`workout-analyzer-v1.4`. The canonical evidence, causal, and safety rules remain
+`workout-analyzer-v1.5`. The canonical evidence, causal, and safety rules remain
 owned by the [data contract](data-contract.md),
 [treadmill truth contract](treadmill-truth-and-command-lifecycle.md), and
 [safety boundary](safety-boundary.md).
@@ -38,8 +38,8 @@ v1.2 uses persisted monotonic `recordedElapsed`. Old producer `occurredElapsed`
 used wall-clock deltas and is retained unchanged as historical provenance.
 Phase predecessor, repeated-phase, and monotonic out-of-session validation stays
 strict; there is no tolerance, clipping, frame reconstruction, or session exception.
-Cooldown lifecycle outcomes use that phase's monotonic interval. Existing
-cooldown target-selection priority is unchanged. Command, ACK, response, and
+Cooldown lifecycle outcomes use that phase's monotonic interval. Cooldown
+target selection follows the v1.5 rule below. Command, ACK, response, and
 control-decision causal coordinates are unchanged.
 
 New runtime phase/lifecycle events use the recorder's monotonic coordinate.
@@ -192,6 +192,17 @@ covered HR at or below target; HR-below-target duration; factual time at or
 below configured minimum speed; overlap duration and maximum continuous streak;
 and the last typed cooldown lifecycle outcome.
 
+Since analyzer v1.5, the cooldown target comes from the first positive typed
+`started` cooldown target within the phase's half-open recorded-elapsed interval
+(ties use record ID), including a start captured just after the phase boundary.
+If absent, use the immutable session configuration's cooldown target. Main-phase
+and control-decision targets, targetless/end-only events, and events outside the
+phase never supply this value. Missing target evidence remains unavailable.
+The selected target is used for target-hit, HR-below-target, and combined
+HR/minimum-speed metrics. Coverage/freshness, main metrics, raw evidence, detail
+schema, and runtime control are unchanged. Historical v1.4 results retain their
+original semantics; v1.5 is an additive analysis, not a rewrite.
+
 HRR10/30/60/120 is `HR at cooldown start - HR at the named elapsed timestamp`.
 The value is unavailable if the cooldown ended first or either exact timestamp
 is not covered by a valid hold. It never selects the Nth sample. The recovery
@@ -204,7 +215,7 @@ unavailable because V1 has no typed persisted blocker evidence.
 
 Analyzer metadata includes:
 
-- analyzer version `workout-analyzer-v1.4`;
+- analyzer version `workout-analyzer-v1.5`;
 - detail schema version `1`;
 - metric definition `timestamp-hold-metrics-v2`;
 - accepted telemetry schema range `1.0.0...1.0.0`;
@@ -221,8 +232,8 @@ overwriting evidence or the prior result.
 
 On store preparation, terminal sessions are scanned in deterministic session
 order and results missing the current analyzer identity are recomputed. The
-version bump adds a v1.4 result while preserving v1.1/v1.2/v1.3 analyses and all raw evidence;
-current read projections select v1.4. No destructive migration is performed. Completed, incomplete, and cancelled
+version bump adds a v1.5 result while preserving v1.1/v1.2/v1.3/v1.4 analyses and all raw evidence;
+current read projections select v1.5. No destructive migration is performed. Completed, incomplete, and cancelled
 sessions are eligible; created, running, and paused sessions are not. Analyzer
 failure is contained as an analysis failure and cannot change recorder
 finalization or product session completion.

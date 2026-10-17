@@ -10,7 +10,7 @@ public enum WorkoutAnalyzerError: Error, Equatable, Sendable {
 }
 
 public enum WorkoutAnalyzerV1 {
-    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.4")
+    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.5")
     public static let metricDefinitionVersion = "timestamp-hold-metrics-v2"
     public static let minimumAverageFactualSpeedCoverageRatio = 0.9
 
@@ -1624,7 +1624,6 @@ private extension WorkoutAnalyzerV1 {
         let cooldown = cooldownMetrics(
             configuration: configuration,
             phases: phases,
-            targets: targets,
             heartRate: heartRate,
             treadmill: treadmill,
             events: events
@@ -1867,7 +1866,6 @@ private extension WorkoutAnalyzerV1 {
     static func cooldownMetrics(
         configuration: AnalysisConfiguration?,
         phases: PhaseTimeline,
-        targets: TargetTimeline,
         heartRate: HeartRateTimeline,
         treadmill: TreadmillTimeline,
         events: [WorkoutEvent]
@@ -1911,8 +1909,19 @@ private extension WorkoutAnalyzerV1 {
         let peakMetric: AnalysisMetric<Double> = hrSegments.map(\.beatsPerMinute).max().map {
             AnalysisMetric(value: $0, confidence: .high)
         } ?? .unavailable(["cooldown-heart-rate-uncovered"])
-        let targetValue = targets.target(at: range.lowerBound)
-            ?? configuration?.cooldownTargetHeartRate
+        // A delayed start event must not inherit the main-phase target at the boundary.
+        let typedTarget = events.compactMap { event -> (time: Double, recordID: String, target: Double)? in
+            let time = seconds(event.timestamp.recordedElapsed)
+            guard range.contains(time),
+                  case let .cooldown(cooldown) = event.payload.payload,
+                  cooldown.lifecycle == .started,
+                  let target = cooldown.targetHeartRate, target > 0 else { return nil }
+            return (time, event.recordID.description, Double(target))
+        }.min { lhs, rhs in
+            if lhs.time != rhs.time { return lhs.time < rhs.time }
+            return lhs.recordID < rhs.recordID
+        }?.target
+        let targetValue = typedTarget ?? configuration?.cooldownTargetHeartRate
         let targetMetric: AnalysisMetric<Double> = targetValue.map {
             AnalysisMetric(value: $0, confidence: .high)
         } ?? .unavailable(["cooldown-target-unavailable"])
