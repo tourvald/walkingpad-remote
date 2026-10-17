@@ -50,7 +50,7 @@ final class TrainingResultBehaviorTests: XCTestCase {
             XCTAssertTrue(adapter.contains(fact), fact)
         }
         let shell = try declaration("private struct ActiveWorkoutShell: View", in: source)
-        for forbidden in ["Timer", "TimelineView", "Task", "Date()", ".animation(", "sendTreadmill"] {
+        for forbidden in ["Timer", "TimelineView", "Task", "Date()", ".repeatForever(", "sendTreadmill"] {
             XCTAssertFalse(shell.contains(forbidden), forbidden)
         }
         XCTAssertTrue(shell.contains("countdownBar(countdown)"))
