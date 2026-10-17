@@ -1734,9 +1734,8 @@ private struct ActiveWorkoutShell: View {
     }
 
     private var showsRelationStatus: Bool {
-        if presentation.targetThresholdBPM != nil {
-            return presentation.liveMarkerBPM == nil
-        }
+        guard presentation.statusSystemImage != "waveform.path.ecg.slash" else { return false }
+        if presentation.targetThresholdBPM != nil { return false }
         return !presentation.isHeartRateOnTarget
     }
 
