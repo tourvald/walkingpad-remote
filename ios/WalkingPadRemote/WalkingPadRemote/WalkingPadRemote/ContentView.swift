@@ -197,6 +197,7 @@ private struct TrainingHubPresentation {
     let liveMarkerBPM: Int?
     let targetThresholdBPM: Int?
     let showsExtendAction: Bool
+    let isInTargetZone: Bool
     let countdown: TrainingWorkoutCountdown?
 
     init(
@@ -222,6 +223,7 @@ private struct TrainingHubPresentation {
         liveMarkerBPM: Int? = nil,
         targetThresholdBPM: Int? = nil,
         showsExtendAction: Bool = false,
+        isInTargetZone: Bool = false,
         countdown: TrainingWorkoutCountdown? = nil
     ) {
         self.modeTitle = modeTitle
@@ -245,6 +247,7 @@ private struct TrainingHubPresentation {
         self.statusTint = statusTint
         self.liveMarkerBPM = liveMarkerBPM
         self.targetThresholdBPM = targetThresholdBPM
+        self.isInTargetZone = isInTargetZone
         self.showsExtendAction = showsExtendAction
         self.countdown = countdown
     }
@@ -524,7 +527,7 @@ private func makeHRControlActivePresentation(
         startBlocker: nil,
         isPreparing: false,
         isPreview: isPreview,
-        phaseTitle: phaseTitleOverride ?? (isCooldown ? "ЗАМИНКА" : "ТРЕНИРОВКА"),
+        phaseTitle: phaseTitleOverride ?? (isCooldown ? "ЗАМИНКА" : nil),
         primaryValue: presentedHeartRate.map(String.init) ?? "—",
         primaryUnit: presentedHeartRate == nil ? nil : "bpm",
         statusTitle: status.title,
@@ -533,6 +536,7 @@ private func makeHRControlActivePresentation(
         liveMarkerBPM: presentedHeartRate,
         targetThresholdBPM: isCooldown ? cooldownTargetBPM : nil,
         showsExtendAction: !isCooldown && canExtend,
+        isInTargetZone: !isCooldown && presentedHeartRate.map { selectedRange.contains($0) } == true,
         countdown: countdown
     )
 }
@@ -1669,6 +1673,7 @@ private struct ActiveWorkoutShell: View {
     var stopEnabled = true
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .headline) private var countdownHeight: CGFloat = 48
     @State private var showExtendConfirm = false
 
@@ -1731,18 +1736,27 @@ private struct ActiveWorkoutShell: View {
         .padding(.bottom, 20)
     }
 
+    private var targetTitleColor: Color {
+        guard presentation.isInTargetZone else { return .primary }
+        return colorScheme == .dark ? .green : Color(red: 0.1, green: 0.45, blue: 0.2)
+    }
+
     private var liveHero: some View {
         let headerLayout = usesAccessibilityControlInset
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
             : AnyLayout(HStackLayout(spacing: 8))
         return VStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                headerLayout {
-                    Text(presentation.phaseTitle ?? "ТРЕНИРОВКА")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    if !usesAccessibilityControlInset { Spacer(minLength: 0) }
-                    relationStatus
+                if presentation.phaseTitle != nil || !presentation.isInTargetZone {
+                    headerLayout {
+                        if let phaseTitle = presentation.phaseTitle {
+                            Text(phaseTitle)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        if !usesAccessibilityControlInset { Spacer(minLength: 0) }
+                        if !presentation.isInTargetZone { relationStatus }
+                    }
                 }
                 headerLayout {
                     Label(presentation.modeTitle, systemImage: presentation.modeSystemImage)
@@ -1763,13 +1777,16 @@ private struct ActiveWorkoutShell: View {
             VStack(spacing: 4) {
                 Text(presentation.targetTitle)
                     .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .foregroundStyle(targetTitleColor)
                     .multilineTextAlignment(.center)
                 Text(presentation.targetValue)
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(presentation.targetTitle), \(presentation.targetValue)")
+            .accessibilityValue(presentation.statusTitle ?? "Статус недоступен")
             TrainingZoneScale(
                 segments: presentation.targetSegments,
                 selectedSegmentID: presentation.selectedSegmentID,
