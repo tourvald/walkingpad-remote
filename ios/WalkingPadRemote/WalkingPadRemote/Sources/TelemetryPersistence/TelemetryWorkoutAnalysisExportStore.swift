@@ -827,8 +827,8 @@ private extension TelemetryStore {
                         ["timestamp-hold-metrics-v1", "timestamp-hold-metrics-v2"].contains(detail.metricDefinitionVersion)
                         ? detail.metricDefinitionVersion : "opaque-metric-definition"
                     values["stored_analysis_coverage_semantics"] =
-                        analysis.analyzerVersion == "workout-analyzer-v1.4" && detail.metricDefinitionVersion == "timestamp-hold-metrics-v2"
-                        ? "v1.4:hr-effective-time-holds;speed-bounded-frame-ledger-or-no-frame-native-holds;not-frame-population"
+                        ["workout-analyzer-v1.4", "workout-analyzer-v1.5"].contains(analysis.analyzerVersion) && detail.metricDefinitionVersion == "timestamp-hold-metrics-v2"
+                        ? "\(analysis.analyzerVersion.replacingOccurrences(of: "workout-analyzer-", with: "")):hr-effective-time-holds;speed-bounded-frame-ledger-or-no-frame-native-holds;not-frame-population"
                         : "stored-analyzer-and-metric-definition-version-dependent;not-frame-population"
                 } catch {
                     values["stored_analysis_detail_status"] = "unavailable-malformed"
