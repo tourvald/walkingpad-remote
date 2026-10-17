@@ -81,3 +81,47 @@ across unlock/lock/suspend/reopen; backup/restore exclusion; device transaction
 and accumulated-store query performance; Instruments memory/lifecycle pressure.
 Known historical pre-fix defects stay attributed to their recorded versions.
 No treadmill/phone operation is part of this verification.
+
+## Final-source package/build and long soaks
+
+Implementation source `67e964d310bd22cad56efc0f8e2495dcf30637db` passed
+`swift test` across ten modules: 804 tests, one existing opt-in full-profile
+skip, zero failures, exit 0. The 1000-hour fixture is a separate run, so this
+skip is not counted as scale completion. Unsigned generic iOS build, project
+metadata, governance and diff checks passed. Existing actor/capture warnings
+remain; no new warning-free-build claim. Hosted CI stays owner-disabled.
+
+Both fresh independent source reviews returned code GO, with overall readiness
+explicitly pending completion of the full-scale fixture.
+
+The new structural test reproduced the legacy paths before retirement. An
+initial full invocation failed obsolete source-string assertions and was
+interrupted; an intermediate core run also exposed stale assertions. Those
+checks were updated to retained typed V2/control semantics, and the subsequent
+complete invocation above passed. Neither failed run is counted as a pass.
+
+Long-soak commands use the release `telemetry-soak` executable, `--minutes N`,
+`--flush-every-seconds 60`, with/without `--instrumentation-off`. For each
+duration `--control-only` independently replays without constructing a recorder
+or store. All six recording runs match this checksum. The off column disables
+instrumentation, not the recorder; only the control-only baseline has no writer.
+
+| Minutes | Instrumentation | Critical/native/frames | Queue peak | Wall seconds | Transaction p95 ms | Sampled RSS range MiB | Store MiB |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 30 | on | 4/5488/1800 | 244 | 42.092 | 990.267 | 17.7–41.8 | 8.07 |
+| 30 | off | 4/5488/1800 | 156 | 27.387 | 746.016 | 18.0–43.8 | 8.07 |
+| 60 | on | 4/11008/3600 | 244 | 106.053 | 1536.088 | 17.8–66.5 | 12.63 |
+| 60 | off | 4/11008/3600 | 244 | 113.898 | 1394.438 | 18.0–61.6 | 12.63 |
+| 120 | on | 4/22048/7200 | 199 | 310.076 | 2223.994 | 18.0–107.3 | 25.07 |
+| 120 | off | 4/22048/7200 | 244 | 270.281 | 1884.068 | 18.0–106.2 | 23.57 |
+
+Every run reports complete, produced=persisted, zero critical/native loss, zero
+coalesced/dropped frames, final queue zero. Checksums: 30 `2937697cf7ae596d`,
+60 `dd9f00210dfaa7f2`, 120 `961fa7a19d1ffc32`. Configuration is unchanged:
+2048/256/512 buffer/reserves; batch128/5000ms; one retry after250ms.
+
+These hosted runs overlapped the full-scale fixture and some package/build
+checks. Timings are contention-affected observations, not an isolated speed
+comparison against #31 and not a new device threshold. RSS grows with workload;
+this is not proof of a real-device plateau or lifecycle-pressure behavior.
+Private synthetic artifacts/logs remain outside Git.
