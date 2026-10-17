@@ -1727,9 +1727,12 @@ private struct ActiveWorkoutShell: View {
     }
 
     private var showsRelationStatus: Bool {
-        guard presentation.statusSystemImage != "waveform.path.ecg.slash" else { return false }
-        if presentation.targetThresholdBPM != nil { return false }
-        return !presentation.isHeartRateOnTarget
+        switch presentation.statusSystemImage {
+        case "waveform.path.ecg.slash", "arrow.up.circle.fill", "arrow.down.circle.fill":
+            return false
+        default:
+            return presentation.targetThresholdBPM == nil && !presentation.isHeartRateOnTarget
+        }
     }
 
     private var targetTitleColor: Color {
