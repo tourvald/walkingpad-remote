@@ -125,6 +125,28 @@ struct ContentView: View {
     }
 }
 
+private struct TrainingWorkoutCountdown {
+    let remainingSeconds: Int
+    let progress: Double
+    let title: String
+
+    init?(
+        isRunning: Bool,
+        isRecovering: Bool,
+        mainRemainingSeconds: Int,
+        cooldownRemainingSeconds: Int,
+        mainProgress: Double,
+        cooldownProgress: Double
+    ) {
+        guard isRunning && !isRecovering else { return nil }
+        let isCooldown = mainRemainingSeconds <= 0
+        let phaseProgress = isCooldown ? cooldownProgress : mainProgress
+        remainingSeconds = max(0, isCooldown ? cooldownRemainingSeconds : mainRemainingSeconds)
+        progress = phaseProgress.isFinite ? min(1, max(0, phaseProgress)) : 0
+        title = isCooldown ? "До лимита заминки" : "До заминки"
+    }
+}
+
 private struct TrainingHubPresentation {
     struct Readiness: Identifiable {
         let id: String
@@ -175,6 +197,7 @@ private struct TrainingHubPresentation {
     let liveMarkerBPM: Int?
     let targetThresholdBPM: Int?
     let showsExtendAction: Bool
+    let countdown: TrainingWorkoutCountdown?
 
     init(
         modeTitle: String,
@@ -198,7 +221,8 @@ private struct TrainingHubPresentation {
         statusTint: Color = .secondary,
         liveMarkerBPM: Int? = nil,
         targetThresholdBPM: Int? = nil,
-        showsExtendAction: Bool = false
+        showsExtendAction: Bool = false,
+        countdown: TrainingWorkoutCountdown? = nil
     ) {
         self.modeTitle = modeTitle
         self.modeSystemImage = modeSystemImage
@@ -222,6 +246,7 @@ private struct TrainingHubPresentation {
         self.liveMarkerBPM = liveMarkerBPM
         self.targetThresholdBPM = targetThresholdBPM
         self.showsExtendAction = showsExtendAction
+        self.countdown = countdown
     }
 }
 
@@ -417,6 +442,7 @@ private func makeHRControlActivePresentation(
     isCooldown: Bool,
     cooldownTargetBPM: Int,
     canExtend: Bool,
+    countdown: TrainingWorkoutCountdown? = nil,
     phaseTitleOverride: String? = nil,
     isPreview: Bool = false
 ) -> TrainingHubPresentation {
@@ -506,7 +532,8 @@ private func makeHRControlActivePresentation(
         statusTint: status.tint,
         liveMarkerBPM: presentedHeartRate,
         targetThresholdBPM: isCooldown ? cooldownTargetBPM : nil,
-        showsExtendAction: !isCooldown && canExtend
+        showsExtendAction: !isCooldown && canExtend,
+        countdown: countdown
     )
 }
 
@@ -551,6 +578,14 @@ private func makeProductionActiveWorkoutPresentation(
         isCooldown: manager.isHrControlRunning && manager.hrRemainingSeconds <= 0,
         cooldownTargetBPM: manager.hrCooldownTargetBpm,
         canExtend: manager.canExtendHrSession,
+        countdown: TrainingWorkoutCountdown(
+            isRunning: manager.isHrControlRunning,
+            isRecovering: manager.isNativeWorkoutRecoveryActive,
+            mainRemainingSeconds: manager.hrRemainingSeconds,
+            cooldownRemainingSeconds: manager.hrCooldownRemainingSeconds,
+            mainProgress: manager.hrProgress,
+            cooldownProgress: manager.hrCooldownProgress
+        ),
         phaseTitleOverride: manager.presentedWorkoutPhaseTitle
     )
 }
@@ -573,6 +608,7 @@ private extension TrainingUIObservationBoundary {
             manager.$isNativeHeartRatePreflightActive.map { _ in () }.eraseToAnyPublisher(),
             manager.$isHrControlRunning.map { _ in () }.eraseToAnyPublisher(),
             manager.$hrRemainingSeconds.map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrCooldownRemainingSeconds.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             manager.$hrCooldownTargetBpm.map { _ in () }.eraseToAnyPublisher(),
             manager.$timeSec.map { _ in () }.eraseToAnyPublisher(),
             manager.$isNativeWorkoutRecoveryActive.map { _ in () }.eraseToAnyPublisher(),
@@ -898,10 +934,18 @@ private func activeWorkoutPreviewPresentation(named name: String) -> TrainingHub
             targetZoneIndex: 2,
             zoneRanges: ranges,
             factualSpeedKmh: speed,
-            elapsedSeconds: 18 * 60 + 42,
+            elapsedSeconds: cooldown ? 31 * 60 + 46 : 18 * 60 + 42,
             isCooldown: cooldown,
             cooldownTargetBPM: cooldownTarget,
             canExtend: !cooldown,
+            countdown: TrainingWorkoutCountdown(
+                isRunning: true,
+                isRecovering: false,
+                mainRemainingSeconds: cooldown ? 0 : 678,
+                cooldownRemainingSeconds: 134,
+                mainProgress: 1 - 678.0 / 1800,
+                cooldownProgress: 1 - 134.0 / 240
+            ),
             isPreview: true
         )
     }
@@ -1625,28 +1669,12 @@ private struct ActiveWorkoutShell: View {
     var stopEnabled = true
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ScaledMetric(relativeTo: .largeTitle) private var primaryValueSize: CGFloat = 86
+    @ScaledMetric(relativeTo: .headline) private var countdownHeight: CGFloat = 48
     @State private var showExtendConfirm = false
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 12) {
-                phaseRow
-                TrainingReadinessStrip(
-                    items: presentation.readiness,
-                    treadmillInteractive: false,
-                    onTreadmillTap: {}
-                )
-                liveHero
-                if !usesAccessibilityControlInset {
-                    secondaryMetrics
-                    stopControl
-                }
-                extendControl
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 20)
+            activeContent
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if usesAccessibilityControlInset {
@@ -1671,90 +1699,143 @@ private struct ActiveWorkoutShell: View {
         }
     }
 
-    private var phaseRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: presentation.modeSystemImage)
-                .foregroundStyle(Color.accentColor)
-            Text(presentation.phaseTitle ?? presentation.modeTitle)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer()
-        }
-        .accessibilityElement(children: .combine)
-    }
-
     private var usesAccessibilityControlInset: Bool {
         dynamicTypeSize.isAccessibilitySize
     }
 
-    private var liveHero: some View {
-        VStack(spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(presentation.primaryValue ?? "—")
-                    .font(.system(size: primaryValueSize, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.55)
-                    .contentTransition(.numericText())
-                if let unit = presentation.primaryUnit {
-                    Text(unit)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Текущий пульс")
-            .accessibilityValue(
-                [presentation.primaryValue, presentation.primaryUnit]
-                    .compactMap { $0 }
-                    .joined(separator: " ")
+    private var activeContent: some View {
+        VStack(spacing: 14) {
+            TrainingReadinessStrip(
+                items: presentation.readiness,
+                treadmillInteractive: false,
+                onTreadmillTap: {}
             )
-
-            if !presentation.targetSegments.isEmpty {
-                TrainingZoneScale(
-                    segments: presentation.targetSegments,
-                    selectedSegmentID: presentation.selectedSegmentID,
-                    liveMarkerBPM: presentation.liveMarkerBPM,
-                    targetThresholdBPM: presentation.targetThresholdBPM,
-                    interactive: false,
-                    reservesMarkerSpace: true,
-                    onSegmentTap: { _ in }
-                )
+            liveHero
+            if !usesAccessibilityControlInset {
+                stopControl.padding(.top, 6)
             }
-
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 10) {
-                    targetSummary
-                    Spacer(minLength: 8)
-                    relationStatus
+                HStack(spacing: 12) {
+                    if !usesAccessibilityControlInset { secondaryMetrics }
+                    Spacer(minLength: 0)
+                    extendControl
                 }
                 VStack(spacing: 8) {
-                    targetSummary
+                    if !usesAccessibilityControlInset { secondaryMetrics }
+                    extendControl
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 20)
+    }
+
+    private var liveHero: some View {
+        let headerLayout = usesAccessibilityControlInset
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return VStack(spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                headerLayout {
+                    Text(presentation.phaseTitle ?? "ТРЕНИРОВКА")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if !usesAccessibilityControlInset { Spacer(minLength: 0) }
                     relationStatus
                 }
+                headerLayout {
+                    Label(presentation.modeTitle, systemImage: presentation.modeSystemImage)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    if !usesAccessibilityControlInset { Spacer(minLength: 4) }
+                    Text([presentation.primaryValue, presentation.primaryUnit].compactMap { $0 }.joined(separator: " "))
+                        .font(.headline)
+                        .monospacedDigit()
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityLabel("Текущий пульс")
+                        .accessibilityValue([presentation.primaryValue, presentation.primaryUnit].compactMap { $0 }.joined(separator: " "))
+                }
+                .padding(12)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14))
+            }
+            VStack(spacing: 4) {
+                Text(presentation.targetTitle)
+                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .multilineTextAlignment(.center)
+                Text(presentation.targetValue)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .accessibilityElement(children: .combine)
+            TrainingZoneScale(
+                segments: presentation.targetSegments,
+                selectedSegmentID: presentation.selectedSegmentID,
+                liveMarkerBPM: presentation.liveMarkerBPM,
+                targetThresholdBPM: presentation.targetThresholdBPM,
+                interactive: false,
+                reservesMarkerSpace: true,
+                onSegmentTap: { _ in }
+            )
+            if let countdown = presentation.countdown {
+                countdownBar(countdown)
             }
         }
         .padding(18)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(.regularMaterial)
+                .overlay {
+                    LinearGradient(
+                        colors: [Color.accentColor.opacity(0.13), .clear,
+                            hrZoneColor((presentation.selectedSegmentID ?? 0) + 1).opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(presentation.statusTint.opacity(0.22), lineWidth: 1)
+                .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
         }
     }
 
-    private var targetSummary: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(presentation.targetTitle)
-                .font(.subheadline.weight(.semibold))
-            Text(presentation.targetValue)
-                .font(.headline.weight(.bold))
-                .monospacedDigit()
-                .foregroundStyle(.primary)
+    private func countdownBar(_ countdown: TrainingWorkoutCountdown) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(countdown.title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.clear)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(alignment: .leading) {
+                    GeometryReader { geometry in
+                        Rectangle()
+                            .fill(Color.accentColor.opacity(0.24))
+                            .frame(width: geometry.size.width * countdown.progress)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .accessibilityHidden(true)
+                }
+                .overlay {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 7) {
+                            Text(formattedTrainingElapsed(countdown.remainingSeconds)).monospacedDigit()
+                            Text("осталось").foregroundStyle(.secondary)
+                        }
+                        Text(formattedTrainingElapsed(countdown.remainingSeconds)).monospacedDigit()
+                    }
+                    .font(.headline)
+                    .padding(.horizontal, 8)
+                }
+                .frame(height: countdownHeight)
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Цель")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(countdown.title)
+        .accessibilityValue("\(countdown.remainingSeconds / 60) минут \(countdown.remainingSeconds % 60) секунд")
     }
 
     private var relationStatus: some View {
@@ -1771,35 +1852,14 @@ private struct ActiveWorkoutShell: View {
     }
 
     private var secondaryMetrics: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { metricItems }
-            VStack(spacing: 8) { metricItems }
-        }
-    }
-
-    @ViewBuilder
-    private var metricItems: some View {
-        ForEach(presentation.metrics) { metric in
-            HStack(spacing: 10) {
-                Image(systemName: metric.systemImage)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(metric.title)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(metric.value)
-                        .font(.title3.weight(.semibold))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                }
-                Spacer(minLength: 0)
+        HStack(spacing: 12) {
+            ForEach(presentation.metrics) { metric in
+                Label(metric.value, systemImage: metric.systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .accessibilityLabel("\(metric.title): \(metric.value)")
             }
-            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-            .padding(.horizontal, 12)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .accessibilityElement(children: .combine)
         }
     }
 
@@ -2345,6 +2405,7 @@ private struct ControlSwipeView: View, Equatable {
 
     private var usesCompactNavigationTitle: Bool {
         flowTransitionID != "hub"
+            && flowTransitionID != "active"
             && flowTransitionID != "summary"
             && flowTransitionID != "preview-summary"
     }
