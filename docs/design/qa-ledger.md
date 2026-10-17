@@ -344,8 +344,10 @@ history persistence, app screen layout, or background modes change.
 - Seven new lifecycle/deadline tests pass. An initial full run found an extra
   preview-guard source-contract assertion; removing that guard and subscribing
   outside view rendering corrected it. All 474 core tests then passed; other
-  Swift test modules passed in the full run. Exact-head hosted CI remains the
-  final integrated gate.
+  Swift test modules passed in the full run. Hosted CI passed on the original
+  source head 323e0a5 before the owner temporarily disabled GitHub CI. Under that
+  owner override, current combined validation uses local exact-source checks;
+  disabled/cancelled CI is never represented as a passing current-head run.
 - Project configuration reuses the app's existing signing team and automatic
   signing; widget minimum iOS 26 matches the app. No migration is needed. Removing
   this extension and its app hook rolls back the feature without changing data.
