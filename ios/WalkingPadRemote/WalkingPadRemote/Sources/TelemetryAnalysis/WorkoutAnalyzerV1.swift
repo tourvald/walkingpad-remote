@@ -10,8 +10,8 @@ public enum WorkoutAnalyzerError: Error, Equatable, Sendable {
 }
 
 public enum WorkoutAnalyzerV1 {
-    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.4")
-    public static let metricDefinitionVersion = "timestamp-hold-metrics-v2"
+    public static let analyzerVersion = AnalyzerVersion(rawValue: "workout-analyzer-v1.6")
+    public static let metricDefinitionVersion = "timestamp-hold-metrics-v3"
     public static let minimumAverageFactualSpeedCoverageRatio = 0.9
 
     static func secondsDetail(_ seconds: Double) -> String {
@@ -615,7 +615,8 @@ private extension WorkoutAnalyzerV1 {
                 holds[observation.recordID] = start..<end
             }
             var seenSeconds: Set<Int64> = []
-            var built: [SpeedSegment] = []
+            var admittedSeconds: [Int64] = []
+            var witnessedRecords: Set<RecordID> = []
             for frame in frames.sorted(by: frameEvidenceOrder) {
                 guard seenSeconds.insert(frame.canonicalElapsedSecond).inserted,
                       frame.canonicalElapsedSecond >= 0,
@@ -632,23 +633,40 @@ private extension WorkoutAnalyzerV1 {
                       observation.provenance == evidence.provenance,
                       observation.timestamp.measuredAt == evidence.measuredAt,
                       observation.timestamp.receivedAt == evidence.receivedAt,
-                      let factual = observation.factualSpeed,
+                      observation.factualSpeed != nil,
                       let hold = holds[observation.recordID],
                       hold.contains(seconds(frame.materializedAt.elapsed)),
                       frame.materializedAt.elapsed.microseconds / 1_000_000
                         == frame.canonicalElapsedSecond else {
                     continue
                 }
-                let second = Double(frame.canonicalElapsedSecond)
-                let start = max(second, hold.lowerBound)
-                let end = min(second + 1, hold.upperBound)
-                guard end > start else { continue }
-                built.append(SpeedSegment(
-                    start: start,
-                    end: end,
-                    speed: factual.value,
-                    phase: phaseTimeline.phase(at: start)
-                ))
+                admittedSeconds.append(frame.canonicalElapsedSecond)
+                witnessedRecords.insert(observation.recordID)
+            }
+            // A validated next observation may supply the remainder of an admitted second.
+            // Missing/invalid frame cells and native observations without a frame witness stay excluded.
+            let witnessed = ordered.compactMap { observation -> (range: Range<Double>, speed: Double)? in
+                guard witnessedRecords.contains(observation.recordID),
+                      let range = holds[observation.recordID],
+                      let speed = observation.factualSpeed?.value else { return nil }
+                return (range, speed)
+            }
+            var built: [SpeedSegment] = []
+            var first = 0
+            for cell in admittedSeconds {
+                let second = Double(cell)
+                while first < witnessed.count, witnessed[first].range.upperBound <= second { first += 1 }
+                var index = first
+                while index < witnessed.count, witnessed[index].range.lowerBound < second + 1 {
+                    let interval = witnessed[index]
+                    let start = max(second, interval.range.lowerBound)
+                    let end = min(second + 1, interval.range.upperBound)
+                    if end > start {
+                        built.append(SpeedSegment(start: start, end: end, speed: interval.speed,
+                                                  phase: phaseTimeline.phase(at: start)))
+                    }
+                    index += 1
+                }
             }
             segments = built
         }
@@ -1624,7 +1642,6 @@ private extension WorkoutAnalyzerV1 {
         let cooldown = cooldownMetrics(
             configuration: configuration,
             phases: phases,
-            targets: targets,
             heartRate: heartRate,
             treadmill: treadmill,
             events: events
@@ -1867,7 +1884,6 @@ private extension WorkoutAnalyzerV1 {
     static func cooldownMetrics(
         configuration: AnalysisConfiguration?,
         phases: PhaseTimeline,
-        targets: TargetTimeline,
         heartRate: HeartRateTimeline,
         treadmill: TreadmillTimeline,
         events: [WorkoutEvent]
@@ -1911,8 +1927,19 @@ private extension WorkoutAnalyzerV1 {
         let peakMetric: AnalysisMetric<Double> = hrSegments.map(\.beatsPerMinute).max().map {
             AnalysisMetric(value: $0, confidence: .high)
         } ?? .unavailable(["cooldown-heart-rate-uncovered"])
-        let targetValue = targets.target(at: range.lowerBound)
-            ?? configuration?.cooldownTargetHeartRate
+        // A delayed start event must not inherit the main-phase target at the boundary.
+        let typedTarget = events.compactMap { event -> (time: Double, recordID: String, target: Double)? in
+            let time = seconds(event.timestamp.recordedElapsed)
+            guard range.contains(time),
+                  case let .cooldown(cooldown) = event.payload.payload,
+                  cooldown.lifecycle == .started,
+                  let target = cooldown.targetHeartRate, target > 0 else { return nil }
+            return (time, event.recordID.description, Double(target))
+        }.min { lhs, rhs in
+            if lhs.time != rhs.time { return lhs.time < rhs.time }
+            return lhs.recordID < rhs.recordID
+        }?.target
+        let targetValue = typedTarget ?? configuration?.cooldownTargetHeartRate
         let targetMetric: AnalysisMetric<Double> = targetValue.map {
             AnalysisMetric(value: $0, confidence: .high)
         } ?? .unavailable(["cooldown-target-unavailable"])
