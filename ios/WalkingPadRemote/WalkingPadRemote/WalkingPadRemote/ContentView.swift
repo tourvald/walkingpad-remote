@@ -2174,16 +2174,19 @@ private struct TrainingWorkoutSummaryView: View {
     }
 
     private var actions: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             Button("Готово", action: onDone)
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .frame(maxWidth: .infinity)
+                .tint(Color(red: 0.28, green: 0.22, blue: 0.65))
             Button("Открыть статистику", action: onOpenStatistics)
                 .buttonStyle(.bordered)
-                .controlSize(.large)
-                .frame(maxWidth: .infinity)
+                .foregroundStyle(.primary)
         }
+        .font(.headline)
+        .controlSize(.large)
+        .buttonSizing(.flexible)
+        .buttonBorderShape(.roundedRectangle(radius: 16))
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 8)
@@ -2342,6 +2345,8 @@ private struct ControlSwipeView: View, Equatable {
 
     private var usesCompactNavigationTitle: Bool {
         flowTransitionID != "hub"
+            && flowTransitionID != "summary"
+            && flowTransitionID != "preview-summary"
     }
 
     @ViewBuilder
