@@ -197,7 +197,7 @@ private struct TrainingHubPresentation {
     let liveMarkerBPM: Int?
     let targetThresholdBPM: Int?
     let showsExtendAction: Bool
-    let isInTargetZone: Bool
+    let isHeartRateOnTarget: Bool
     let countdown: TrainingWorkoutCountdown?
 
     init(
@@ -223,7 +223,7 @@ private struct TrainingHubPresentation {
         liveMarkerBPM: Int? = nil,
         targetThresholdBPM: Int? = nil,
         showsExtendAction: Bool = false,
-        isInTargetZone: Bool = false,
+        isHeartRateOnTarget: Bool = false,
         countdown: TrainingWorkoutCountdown? = nil
     ) {
         self.modeTitle = modeTitle
@@ -247,7 +247,7 @@ private struct TrainingHubPresentation {
         self.statusTint = statusTint
         self.liveMarkerBPM = liveMarkerBPM
         self.targetThresholdBPM = targetThresholdBPM
-        self.isInTargetZone = isInTargetZone
+        self.isHeartRateOnTarget = isHeartRateOnTarget
         self.showsExtendAction = showsExtendAction
         self.countdown = countdown
     }
@@ -527,7 +527,7 @@ private func makeHRControlActivePresentation(
         startBlocker: nil,
         isPreparing: false,
         isPreview: isPreview,
-        phaseTitle: phaseTitleOverride ?? (isCooldown ? "ЗАМИНКА" : nil),
+        phaseTitle: phaseTitleOverride,
         primaryValue: presentedHeartRate.map(String.init) ?? "—",
         primaryUnit: presentedHeartRate == nil ? nil : "bpm",
         statusTitle: status.title,
@@ -536,7 +536,9 @@ private func makeHRControlActivePresentation(
         liveMarkerBPM: presentedHeartRate,
         targetThresholdBPM: isCooldown ? cooldownTargetBPM : nil,
         showsExtendAction: !isCooldown && canExtend,
-        isInTargetZone: !isCooldown && presentedHeartRate.map { selectedRange.contains($0) } == true,
+        isHeartRateOnTarget: presentedHeartRate.map {
+            isCooldown ? $0 <= cooldownTargetBPM : selectedRange.contains($0)
+        } == true,
         countdown: countdown
     )
 }
@@ -973,6 +975,10 @@ private func activeWorkoutPreviewPresentation(named name: String) -> TrainingHub
         return hrControl(true, true, 124, nil, 3.0, true, 115)
     case "cooldown-reached":
         return hrControl(true, true, 110, nil, 2.0, true, 115)
+    case "cooldown-at-target":
+        return hrControl(true, true, 115, nil, 2.0, true, 115)
+    case "cooldown-no-hr":
+        return hrControl(true, false, nil, nil, 2.0, true, 115)
     case "active-intervals":
         return TrainingHubPresentation(
             modeTitle: "Интервалы",
@@ -1736,8 +1742,15 @@ private struct ActiveWorkoutShell: View {
         .padding(.bottom, 20)
     }
 
+    private var showsRelationStatus: Bool {
+        if presentation.targetThresholdBPM != nil {
+            return presentation.liveMarkerBPM == nil
+        }
+        return !presentation.isHeartRateOnTarget
+    }
+
     private var targetTitleColor: Color {
-        guard presentation.isInTargetZone else { return .primary }
+        guard presentation.isHeartRateOnTarget else { return .primary }
         return colorScheme == .dark ? .green : Color(red: 0.1, green: 0.45, blue: 0.2)
     }
 
@@ -1747,7 +1760,7 @@ private struct ActiveWorkoutShell: View {
             : AnyLayout(HStackLayout(spacing: 8))
         return VStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                if presentation.phaseTitle != nil || !presentation.isInTargetZone {
+                if presentation.phaseTitle != nil || showsRelationStatus {
                     headerLayout {
                         if let phaseTitle = presentation.phaseTitle {
                             Text(phaseTitle)
@@ -1755,7 +1768,7 @@ private struct ActiveWorkoutShell: View {
                                 .foregroundStyle(.secondary)
                         }
                         if !usesAccessibilityControlInset { Spacer(minLength: 0) }
-                        if !presentation.isInTargetZone { relationStatus }
+                        if showsRelationStatus { relationStatus }
                     }
                 }
                 headerLayout {
