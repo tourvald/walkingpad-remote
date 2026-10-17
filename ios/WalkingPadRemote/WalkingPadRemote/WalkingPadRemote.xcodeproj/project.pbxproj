@@ -6,6 +6,131 @@
 	objectVersion = 77;
 	objects = {
 
+/* Workout Live Activity extension */
+		D195168A3B424BE2B27B1ACD = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "WorkoutLiveActivityWidget.swift";
+			sourceTree = "<group>";
+		};
+		571B386857064D1786CCA6E4 = {
+			isa = "PBXBuildFile";
+			fileRef = "D195168A3B424BE2B27B1ACD";
+		};
+		505F2AB01C45498F973206AF = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "../WalkingPadRemote/WorkoutActivityAttributes.swift";
+			sourceTree = "<group>";
+		};
+		598034D62C814CD6BFF82F05 = {
+			isa = "PBXBuildFile";
+			fileRef = "505F2AB01C45498F973206AF";
+		};
+		01F74F30DDDA4D37B04FF165 = {
+			isa = "PBXGroup";
+			path = "WorkoutLiveActivity";
+			sourceTree = "<group>";
+			children = ("D195168A3B424BE2B27B1ACD", "505F2AB01C45498F973206AF");
+		};
+		0DF38B43E5AC4D59A314601E = {
+			isa = "PBXSourcesBuildPhase";
+			buildActionMask = 2147483647;
+			files = ("571B386857064D1786CCA6E4", "598034D62C814CD6BFF82F05");
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D5F36A2AA2744718B3730563 = {
+			isa = "XCBuildConfiguration";
+			name = "Debug";
+			buildSettings = {
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "sw.WalkingPadRemote.WorkoutLiveActivity";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
+				SWIFT_VERSION = "5.0";
+				IPHONEOS_DEPLOYMENT_TARGET = "26.0";
+				SDKROOT = "iphoneos";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				APPLICATION_EXTENSION_API_ONLY = "YES";
+				SKIP_INSTALL = "YES";
+				GENERATE_INFOPLIST_FILE = "YES";
+				INFOPLIST_FILE = "WorkoutLiveActivity/Info.plist";
+				MARKETING_VERSION = "1.0";
+				CURRENT_PROJECT_VERSION = "1";
+			};
+		};
+		4BBCC529BA954E37A1F8C8EB = {
+			isa = "XCBuildConfiguration";
+			name = "Release";
+			buildSettings = {
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = "sw.WalkingPadRemote.WorkoutLiveActivity";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
+				SWIFT_VERSION = "5.0";
+				IPHONEOS_DEPLOYMENT_TARGET = "26.0";
+				SDKROOT = "iphoneos";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				APPLICATION_EXTENSION_API_ONLY = "YES";
+				SKIP_INSTALL = "YES";
+				GENERATE_INFOPLIST_FILE = "YES";
+				INFOPLIST_FILE = "WorkoutLiveActivity/Info.plist";
+				MARKETING_VERSION = "1.0";
+				CURRENT_PROJECT_VERSION = "1";
+			};
+		};
+		7067188757344D47895C61E3 = {
+			isa = "XCConfigurationList";
+			buildConfigurations = ("D5F36A2AA2744718B3730563", "4BBCC529BA954E37A1F8C8EB");
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = "Release";
+		};
+		7E0C78291C42449295B049F5 = {
+			isa = "PBXFileReference";
+			explicitFileType = "wrapper.app-extension";
+			path = "WorkoutLiveActivity.appex";
+			sourceTree = "BUILT_PRODUCTS_DIR";
+		};
+		43C0944E0C4E4381BEE3AA0A = {
+			isa = "PBXNativeTarget";
+			name = "WorkoutLiveActivity";
+			productName = "WorkoutLiveActivity";
+			productType = "com.apple.product-type.app-extension";
+			productReference = "7E0C78291C42449295B049F5";
+			buildConfigurationList = "7067188757344D47895C61E3";
+			buildPhases = ("0DF38B43E5AC4D59A314601E");
+			buildRules = ();
+			dependencies = ();
+		};
+		C4BB5EBE4C5A452D8721F9E9 = {
+			isa = "PBXContainerItemProxy";
+			containerPortal = "E370516E2F22AB0C00D2FA22";
+			proxyType = 1;
+			remoteGlobalIDString = "43C0944E0C4E4381BEE3AA0A";
+			remoteInfo = "WorkoutLiveActivity";
+		};
+		E66389E9ACE64C6C8B11CBED = {
+			isa = "PBXTargetDependency";
+			target = "43C0944E0C4E4381BEE3AA0A";
+			targetProxy = "C4BB5EBE4C5A452D8721F9E9";
+		};
+		CC51A52265224358A0354D00 = {
+			isa = "PBXBuildFile";
+			fileRef = "7E0C78291C42449295B049F5";
+			settings = {
+				ATTRIBUTES = ("RemoveHeadersOnCopy");
+			};
+		};
+		344C718DF88E45C4B2D7CB43 = {
+			isa = "PBXCopyFilesBuildPhase";
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = ("CC51A52265224358A0354D00");
+			name = "Embed Workout Live Activity";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+
 /* Begin PBXBuildFile section */
 		C30000012FA0000000000001 /* TelemetryDomain in Frameworks */ = {isa = PBXBuildFile; productRef = C30000022FA0000000000002 /* TelemetryDomain */; };
 		C30100012FA0000000000001 /* TelemetryPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = C30100022FA0000000000002 /* TelemetryPersistence */; };
@@ -97,6 +222,7 @@
 			isa = PBXGroup;
 			children = (
 				E37051782F22AB0C00D2FA22 /* WalkingPadRemote */,
+				01F74F30DDDA4D37B04FF165 /* WorkoutLiveActivity */,
 				E37051B92F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */,
 				E37051772F22AB0C00D2FA22 /* Products */,
 				E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */,
@@ -108,6 +234,7 @@
 			isa = PBXGroup;
 			children = (
 				E37051762F22AB0C00D2FA22 /* WalkingPadRemote.app */,
+				7E0C78291C42449295B049F5 /* WorkoutLiveActivity.appex */,
 				E37051B82F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App.app */,
 			);
 			name = Products;
@@ -124,11 +251,13 @@
 				E37051732F22AB0C00D2FA22 /* Frameworks */,
 				E37051742F22AB0C00D2FA22 /* Resources */,
 				E37051C62F233FC100D2FA22 /* Embed Watch Content */,
+				344C718DF88E45C4B2D7CB43 /* Embed Workout Live Activity */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				E37051C12F233FC100D2FA22 /* PBXTargetDependency */,
+				E66389E9ACE64C6C8B11CBED /* Workout Live Activity */,
 			);
 			fileSystemSynchronizedGroups = (
 				E37051782F22AB0C00D2FA22 /* WalkingPadRemote */,
@@ -206,6 +335,7 @@
 			projectRoot = "";
 			targets = (
 				E37051752F22AB0C00D2FA22 /* WalkingPadRemote */,
+				43C0944E0C4E4381BEE3AA0A /* WorkoutLiveActivity */,
 				E37051B72F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */,
 			);
 		};
