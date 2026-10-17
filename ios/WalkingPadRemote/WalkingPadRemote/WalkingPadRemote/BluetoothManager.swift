@@ -2420,11 +2420,41 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard didStartApplicationRuntime,
               let result = pendingActiveWorkoutRecoveryResult else { return }
         pendingActiveWorkoutRecoveryResult = nil
+        if result.1 == nil, result.0 == nil,
+           case .record(let record) = nativeWorkoutRecoveryLoadResult,
+           record.isStructurallyValid, record.phase == .finishing,
+           record.healthKitStopActivityAt == nil,
+           let nativeWorkoutRecoveryStore {
+            do {
+                try nativeWorkoutRecoveryStore.archiveInterrupted(record)
+                nativeWorkoutRecoveryLoadResult = .missing
+                activeNativeWorkoutRecoveryRecord = nil
+                completeNativeWorkoutRecoveryToIdle()
+                infoToastMessage = "Незавершённая попытка сохранена для диагностики. Можно начать новую тренировку."
+                nativeHeartRateLogger.info("interrupted_finishing_attempt_archived")
+            } catch {
+                handleUnavailableActiveWorkoutRecovery(error: error)
+            }
+            return
+        }
         guard result.1 == nil, let recoveredSession = result.0 else {
             handleUnavailableActiveWorkoutRecovery(error: result.1)
             return
         }
 
+        // A newly probed session must match the stranded attempt before taking ownership.
+        if case .record(let record) = nativeWorkoutRecoveryLoadResult,
+           record.phase == .finishing, record.healthKitStopActivityAt == nil {
+            let configuration = recoveredSession.workoutConfiguration
+            guard let startedAt = recoveredSession.startDate,
+                  abs(startedAt.timeIntervalSince(record.acquisitionStartedAt))
+                    <= NativeWorkoutRecoveryPolicy.sessionStartTolerance,
+                  configuration.activityType == .walking,
+                  configuration.locationType == .indoor else {
+                handleUnavailableActiveWorkoutRecovery(error: nil)
+                return
+            }
+        }
         isNativeWorkoutRecoveryActive = true
         isNativeHeartRatePreflightActive = false
         nativeWorkoutRecoveryStatusText = "Восстанавливаем тренировку…"
@@ -2479,6 +2509,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               !nativeHealthKitWorkoutCommitted,
               !nativeHeartRateFlowOwnsController,
               !nativeHealthKitWorkoutFinishInFlight else { return }
+        if case .record(let record) = nativeWorkoutRecoveryLoadResult,
+           record.isStructurallyValid, record.phase == .finishing,
+           record.healthKitStopActivityAt == nil {
+            // A scene flag is not proof of absence: ask HealthKit exactly once.
+            handleActiveWorkoutRecoveryRequest()
+            healthStore.recoverActiveWorkoutSession { [weak self] session, error in
+                DispatchQueue.main.async {
+                    self?.handleActiveWorkoutRecovery(session: session, error: error)
+                }
+            }
+            return
+        }
         let resolution = NativeWorkoutRecoveryPolicy
             .resolveWithoutActiveRecoveryRequest(
                 loadResult: nativeWorkoutRecoveryLoadResult
