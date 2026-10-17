@@ -824,12 +824,18 @@ private extension TelemetryStore {
                     for (key, value) in projections { values[key] = value }
                     values["stored_analysis_detail_status"] = "available"
                     values["stored_analysis_metric_definition_version"] =
-                        ["timestamp-hold-metrics-v1", "timestamp-hold-metrics-v2"].contains(detail.metricDefinitionVersion)
+                        ["timestamp-hold-metrics-v1", "timestamp-hold-metrics-v2", "timestamp-hold-metrics-v3"].contains(detail.metricDefinitionVersion)
                         ? detail.metricDefinitionVersion : "opaque-metric-definition"
-                    values["stored_analysis_coverage_semantics"] =
-                        ["workout-analyzer-v1.4", "workout-analyzer-v1.5"].contains(analysis.analyzerVersion) && detail.metricDefinitionVersion == "timestamp-hold-metrics-v2"
-                        ? "\(analysis.analyzerVersion.replacingOccurrences(of: "workout-analyzer-", with: "")):hr-effective-time-holds;speed-bounded-frame-ledger-or-no-frame-native-holds;not-frame-population"
-                        : "stored-analyzer-and-metric-definition-version-dependent;not-frame-population"
+                    if analysis.analyzerVersion == "workout-analyzer-v1.6",
+                       detail.metricDefinitionVersion == "timestamp-hold-metrics-v3" {
+                        values["stored_analysis_coverage_semantics"] =
+                            "v1.6:hr-effective-time-holds;speed-witnessed-native-holds-in-validated-frame-cells-or-no-frame-native-holds;not-frame-population"
+                    } else {
+                        values["stored_analysis_coverage_semantics"] =
+                            ["workout-analyzer-v1.4", "workout-analyzer-v1.5"].contains(analysis.analyzerVersion) && detail.metricDefinitionVersion == "timestamp-hold-metrics-v2"
+                            ? "\(analysis.analyzerVersion.replacingOccurrences(of: "workout-analyzer-", with: "")):hr-effective-time-holds;speed-bounded-frame-ledger-or-no-frame-native-holds;not-frame-population"
+                            : "stored-analyzer-and-metric-definition-version-dependent;not-frame-population"
+                    }
                 } catch {
                     values["stored_analysis_detail_status"] = "unavailable-malformed"
                 }

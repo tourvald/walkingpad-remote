@@ -171,7 +171,7 @@ final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
             filter: WorkoutReadFilter(profileScope: .exact(session.profileLocalIdentifier)),
             after: nil, limit: 10
         )
-        XCTAssertEqual(page.items.first?.analyzerVersion, "workout-analyzer-v1.5")
+        XCTAssertEqual(page.items.first?.analyzerVersion, "workout-analyzer-v1.6")
         XCTAssertEqual(page.items.first?.zoneSeconds, [0, 55, 0, 0, 0])
         let counts = try await store.counts()
         XCTAssertEqual(counts.analyses, 5)

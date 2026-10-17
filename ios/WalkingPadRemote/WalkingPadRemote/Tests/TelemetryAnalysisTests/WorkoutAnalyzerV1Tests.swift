@@ -51,7 +51,7 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         )
         let result = try WorkoutAnalyzerV1.analyze(input, generatedAt: fixture.baseDate)
         let detail = try decodeDetail(result)
-        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.5")
+        XCTAssertEqual(result.analyzerVersion.rawValue, "workout-analyzer-v1.6")
         XCTAssertEqual(detail.quality.phases.map(\.phase), ["main", "cooldown"])
         XCTAssertFalse(detail.quality.issues.contains {
             $0.code == "invalid-workout-phase-transition-evidence"
@@ -378,6 +378,58 @@ final class WorkoutAnalyzerV1Tests: XCTestCase {
         XCTAssertTrue(detail.quality.issues.contains {
             $0.code == "average-factual-speed-insufficient-coverage"
         })
+    }
+
+    func testFractionalNativeUpdatesCoverAdmittedSecondsWithoutArtificialGaps() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 100)
+        let times = [0.0] + stride(from: 4.25, through: 96.25, by: 4).map { $0 }
+        let observations = times.enumerated().map {
+            fixture.treadmill(ordinal: $0.offset + 1, seconds: $0.element, speed: 4.2, factual: true)
+        }
+        let frames = (0..<100).map { second in
+            let index = times.lastIndex { $0 <= Double(second) }!
+            return fixture.treadmillFrame(observation: observations[index],
+                                           second: Int64(second), freshness: .fresh)
+        }
+        let result = try WorkoutAnalyzerV1.analyze(fixture.input(treadmill: observations,
+            events: fixture.phaseEvents(mainAt: 0, finishedAt: 100), frames: frames),
+            generatedAt: fixture.baseDate)
+        XCTAssertEqual(try decodeDetail(result).quality.treadmillFactualCoverage.coveredSeconds,
+                       100, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(result.keyMetrics.averageFactualSpeedKilometresPerHour),
+                       4.2, accuracy: 0.000_001)
+    }
+
+    func testFractionalCoverageKeepsWeightedSpeedAndRejectsMissingInvalidAndUnwitnessedCells() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 5)
+        let first = fixture.treadmill(ordinal: 1, seconds: 0, speed: 4, factual: true)
+        let next = fixture.treadmill(ordinal: 2, seconds: 2.25, speed: 8, factual: true)
+        let frames = (0..<5).map {
+            fixture.treadmillFrame(observation: $0 < 3 ? first : next,
+                                   second: Int64($0), freshness: .fresh)
+        }
+        let events = fixture.phaseEvents(mainAt: 0, finishedAt: 5)
+        for (inputFrames, coverage, average) in [
+            (frames, 5.0, Optional(6.2)),
+            (Array(frames.reversed()), 5.0, Optional(6.2)),
+            (frames + frames, 5.0, Optional(6.2)),
+            (frames.filter { $0.canonicalElapsedSecond != 2 }, 4.0, nil),
+            (Array(frames.prefix(3)), 2.25, nil),
+            (Array(frames.prefix(3)) + [3, 4].map {
+                fixture.treadmillFrame(observation: next, second: Int64($0), freshness: .stale)
+            }, 2.25, nil),
+        ] {
+            let result = try WorkoutAnalyzerV1.analyze(fixture.input(treadmill: [next, first],
+                events: events, frames: inputFrames), generatedAt: fixture.baseDate)
+            XCTAssertEqual(try decodeDetail(result).quality.treadmillFactualCoverage.coveredSeconds,
+                           coverage, accuracy: 0.000_001)
+            if let average {
+                XCTAssertEqual(try XCTUnwrap(result.keyMetrics.averageFactualSpeedKilometresPerHour),
+                               average, accuracy: 0.000_001)
+            } else {
+                XCTAssertNil(result.keyMetrics.averageFactualSpeedKilometresPerHour)
+            }
+        }
     }
 
     func testFrameCoverageRequiresUniqueMatchingUsableNativeIdentity() throws {
