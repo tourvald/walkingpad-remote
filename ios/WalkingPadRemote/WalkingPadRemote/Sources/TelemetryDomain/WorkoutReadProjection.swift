@@ -513,3 +513,9 @@ public protocol TelemetryHealthKitWorkoutLinkageCapability: Sendable {
         workoutIdentifier: UUID
     ) async throws
 }
+
+/// Optional local-only erasure capability. Never deletes Apple Health records.
+public protocol TelemetryProfileErasureCapability: Sendable {
+    func eraseProfile(_ identifier: String, legacyFallback: String?, logsDirectory: URL?, temporaryDirectory: URL) async throws
+    func erasedProfileIdentifiers() async throws -> Set<String>
+}

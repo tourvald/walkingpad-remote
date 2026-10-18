@@ -30,13 +30,14 @@ enum TelemetryPersistenceFixtures {
         seed: UInt8,
         profile: String = "profile-a",
         configuration: ImmutableConfigurationSnapshot? = nil,
-        startedOffset: TimeInterval = 0
+        startedOffset: TimeInterval = 0,
+        lifecycleState: SessionLifecycleState = .completed
     ) -> WorkoutSessionRecord {
         WorkoutSessionRecord(
             recordID: RecordID(rawValue: uuid(seed &+ 40)),
             sessionID: SessionID(rawValue: uuid(seed)),
             profileLocalIdentifier: profile,
-            lifecycleState: .completed,
+            lifecycleState: lifecycleState,
             workoutMode: .heartRateControlled,
             startedAt: baseDate.addingTimeInterval(startedOffset),
             endedAt: baseDate.addingTimeInterval(startedOffset + 600),
