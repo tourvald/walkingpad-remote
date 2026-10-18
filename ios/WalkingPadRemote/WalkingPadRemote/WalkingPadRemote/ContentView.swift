@@ -3618,45 +3618,12 @@ private struct HRParametersFormView: View {
                 }
             }
 
-            Section(
-                header: Text("Кардио‑зоны"),
-                footer: Text("Границы задаются верхней границей зоны. Зона 5 начинается выше границы зоны 4.")
-            ) {
-                Stepper(value: Binding(
-                    get: { manager.hrZone1Max },
-                    set: { manager.hrZone1Max = max(80, min(200, $0)) }
-                ), in: 80...200, step: 1) {
-                    Text("Зона 1: ≤ \(manager.hrZone1Max) bpm")
-                        .monospacedDigit()
+            Section("Пульсовые зоны") {
+                NavigationLink {
+                    HeartRateZoneSettingsView()
+                } label: {
+                    Label("Пульсовые зоны", systemImage: "heart.text.clipboard")
                 }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone2Max },
-                    set: { manager.hrZone2Max = max(81, min(210, $0)) }
-                ), in: 81...210, step: 1) {
-                    Text("Зона 2: ≤ \(manager.hrZone2Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone3Max },
-                    set: { manager.hrZone3Max = max(82, min(220, $0)) }
-                ), in: 82...220, step: 1) {
-                    Text("Зона 3: ≤ \(manager.hrZone3Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone4Max },
-                    set: { manager.hrZone4Max = max(83, min(230, $0)) }
-                ), in: 83...230, step: 1) {
-                    Text("Зона 4: ≤ \(manager.hrZone4Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Text("Зона 5: ≥ \(manager.hrZone4Max + 1) bpm")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
             }
 
             Section(

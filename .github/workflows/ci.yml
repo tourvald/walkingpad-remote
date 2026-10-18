@@ -173,9 +173,9 @@ jobs:
             }'
           }
 
-          if ! version_at_least "$ios_sdk_version" "26.2" ||
+          if ! version_at_least "$ios_sdk_version" "27.0" ||
              ! version_at_least "$watchos_sdk_version" "26.2"; then
-            echo "::error title=Hosted runner toolchain limitation::The app requires iOS/watchOS 26.2 or newer SDKs, but this runner provides iOS $ios_sdk_version and watchOS $watchos_sdk_version; the app-build gate fails closed."
+            echo "::error title=Hosted runner toolchain limitation::The app requires iOS 27.0 and watchOS 26.2 or newer SDKs, but this runner provides iOS $ios_sdk_version and watchOS $watchos_sdk_version; the app-build gate fails closed."
             exit 1
           fi
 
