@@ -241,16 +241,32 @@ private extension WorkoutAnalyzerV1 {
             }
             var current: WorkoutPhase?
             var seen: Set<WorkoutPhase> = []
+            var lastIntervalContext: IntervalWorkoutContext?
             var validChanges: [(Double, WorkoutPhase, String)] = []
             var invalid = 0
             for change in changes {
                 let time = change.0
                 let transition = change.1
+                let validIntervalRepeat: Bool = {
+                    guard let context = transition.intervalContext,
+                          let previous = lastIntervalContext,
+                          context.maximumHeartRate == previous.maximumHeartRate,
+                          context.plannedCycles == previous.plannedCycles,
+                          (1...4).contains(context.plannedCycles),
+                          (1...context.plannedCycles).contains(context.cycle) else { return false }
+                    if transition.current == .main {
+                        return current == .other("interval_recovery") && context.phase == "work"
+                            && previous.phase == "recovery" && context.cycle == previous.cycle + 1
+                    }
+                    return transition.current == .other("interval_recovery") && current == .main
+                        && context.phase == "recovery" && previous.phase == "work"
+                        && context.cycle == previous.cycle && context.cycle < context.plannedCycles
+                }()
                 guard time.isFinite,
                       0 <= time,
                       time <= sessionEnd,
                       transition.previous == current,
-                      !seen.contains(transition.current),
+                      (!seen.contains(transition.current) || validIntervalRepeat),
                       current != .finished else {
                     invalid += 1
                     continue
@@ -258,6 +274,7 @@ private extension WorkoutAnalyzerV1 {
                 validChanges.append((time, transition.current, change.2))
                 current = transition.current
                 seen.insert(transition.current)
+                lastIntervalContext = transition.intervalContext
             }
             invalidEvidenceCount = invalid
             guard invalid == 0 else {
@@ -1544,10 +1561,15 @@ private extension WorkoutAnalyzerV1 {
         events: [WorkoutEvent],
         policy: AnalyzerV1Policy
     ) -> WorkoutControlMetricsV1 {
-        let mainRange = phases.range(for: .main)
-        let mainSegments = mainRange.map {
-            heartRate.clippedSegments(in: $0)
-        } ?? []
+        let hasIntervals = events.contains {
+            guard case let .workoutPhase(transition) = $0.payload.payload else { return false }
+            return transition.intervalContext != nil
+        }
+        // Continuous-stage metrics do not describe separated work intervals.
+        let mainRange = hasIntervals ? nil : phases.range(for: .main)
+        let mainSegments = phases.intervals.filter { $0.phase == .main }.flatMap {
+            heartRate.clippedSegments(in: $0.start..<$0.end)
+        }
         let zoneDurations: [ZoneDurationV1]
         if let configuration, !mainSegments.isEmpty {
             var zoneSeconds = Array(repeating: 0.0, count: 5)
@@ -1661,7 +1683,7 @@ private extension WorkoutAnalyzerV1 {
             eventAlignedHeartRateResponse: eventResponse,
             retryAttemptLatencySeconds: retryLatency,
             cooldown: cooldown,
-            futureIntervals: IntervalMetricFrameworkV1()
+            futureIntervals: IntervalMetricFrameworkV1(intervalEngineImplemented: hasIntervals)
         )
     }
 

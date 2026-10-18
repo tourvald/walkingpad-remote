@@ -23,6 +23,8 @@ private struct WorkoutAnalysisEventProjection {
     let commandedSpeedNativeUnit: String?
     let commandAttemptNumber: Int?
     let endReason: String?
+    var heartRatePrediction: HeartRatePredictionSnapshot? = nil
+    var intervalContext: IntervalWorkoutContext? = nil
 }
 
 private final class WorkoutAnalysisCSVStream {
@@ -39,6 +41,15 @@ private final class WorkoutAnalysisCSVStream {
         "desired_speed_kmh", "commanded_speed_native_value",
         "commanded_speed_native_unit", "command_attempt_number",
         "metadata_key", "metadata_value", "quality_flags",
+        "prediction_evaluated_at", "prediction_current_bpm",
+        "prediction_controller_input_at", "prediction_controller_input_age_s",
+        "prediction_trend_bpm_per_s", "prediction_trend_window_s",
+        "prediction_smoothing_alpha", "prediction_trend_limit_bpm_per_s",
+        "prediction_horizon_s", "prediction_bpm", "prediction_effective_bpm",
+        "prediction_phase",
+        "interval_hrmax", "interval_planned_cycles", "interval_cycle", "interval_phase",
+        "interval_phase_remaining_s", "interval_work_elapsed_s", "interval_work_covered_s",
+        "interval_in_range_s", "interval_above_range_s", "interval_finish_reason",
     ]
 
     let fileURL: URL
@@ -195,6 +206,7 @@ public extension TelemetryStore {
             var maximumBufferedRows = 0
             var frameRows = 0
             var eventRows = 0
+            var containsPrediction = false
             var heartRateFrameRows = 0
             var factualSpeedFrameRows = 0
             var gapBoundaryRows = 0
@@ -272,6 +284,7 @@ public extension TelemetryStore {
                         targetHeartRate: targetHeartRate
                     )
                     eventRows += 1
+                    containsPrediction = containsPrediction || event.heartRatePrediction != nil || event.intervalContext != nil
                     eventIndex += 1
                 } else if let frame {
                     try stream.writeAnalysisFrame(
@@ -350,7 +363,7 @@ public extension TelemetryStore {
                     maximumStoreFetchLimit: batchSize,
                     maximumBufferedTimelineRows: maximumBufferedRows
                 ),
-                containsHealthData: frameRows > 0
+                containsHealthData: frameRows > 0 || containsPrediction
             )
         } catch is CancellationError {
             try? FileManager.default.removeItem(at: directoryURL)
@@ -512,7 +525,7 @@ private extension TelemetryStore {
                 commandReference: nil, attemptReference: nil, configurationReference: nil,
                 decisionAction: nil, decisionReason: nil,
                 desiredSpeedKilometresPerHour: nil, commandedSpeedNativeValue: nil,
-                commandedSpeedNativeUnit: nil, commandAttemptNumber: nil, endReason: nil
+                commandedSpeedNativeUnit: nil, commandAttemptNumber: nil, endReason: nil, intervalContext: value.intervalContext
             )
         case let .sourceTransition(value):
             let previous = value.previousSourceID == nil ? "unavailable" : "available"
@@ -544,7 +557,9 @@ private extension TelemetryStore {
                 decisionReason: controlReason(value.reason),
                 desiredSpeedKilometresPerHour: action.desiredSpeed,
                 commandedSpeedNativeValue: nil, commandedSpeedNativeUnit: nil,
-                commandAttemptNumber: nil, endReason: nil
+                commandAttemptNumber: nil, endReason: nil,
+                heartRatePrediction: value.heartRatePrediction,
+                intervalContext: value.heartRatePrediction?.intervalContext
             )
         case let .commandLifecycle(value):
             let lifecycle = commandLifecycle(value.lifecycle)
@@ -875,6 +890,7 @@ private extension TelemetryStore {
         case .cooldown: "cooldown"
         case .finished: "finished"
         case .unknown: "unknown"
+        case .other("interval_recovery"): "interval_recovery"
         case .other: "other"
         }
     }
@@ -1135,6 +1151,15 @@ private extension WorkoutAnalysisCSVStream {
         phase: String,
         targetHeartRate: Int?
     ) throws {
+        let prediction = event.heartRatePrediction
+        let interval = event.intervalContext
+        let intervalPhase = interval.flatMap { context in
+            ["warmup", "work", "recovery", "cooldown"].contains(context.phase) ? context.phase : nil
+        }
+        let intervalReason = interval?.finishReason.map { reason in
+            ["cycles_completed", "above_95_percent", "heart_rate_unavailable_at_transition",
+             "recovery_target_not_reached"].contains(reason) ? reason : "session_ended"
+        }
         try writeTimeline(
             elapsedMicroseconds: event.elapsedMicroseconds,
             timestamp: event.occurredAt,
@@ -1155,6 +1180,28 @@ private extension WorkoutAnalysisCSVStream {
                 "commanded_speed_native_value": Self.number(event.commandedSpeedNativeValue),
                 "commanded_speed_native_unit": event.commandedSpeedNativeUnit ?? "",
                 "command_attempt_number": event.commandAttemptNumber.map(String.init) ?? "",
+                "prediction_evaluated_at": Self.date(prediction?.evaluatedAt),
+                "prediction_current_bpm": prediction.map { String($0.currentBeatsPerMinute) } ?? "",
+                "prediction_controller_input_at": Self.date(prediction?.controllerInputAt),
+                "prediction_controller_input_age_s": Self.number(prediction?.controllerInputAgeSeconds),
+                "prediction_trend_bpm_per_s": Self.number(prediction?.trendBeatsPerMinutePerSecond),
+                "prediction_trend_window_s": Self.number(prediction?.trendWindowSeconds),
+                "prediction_smoothing_alpha": Self.number(prediction?.smoothingAlpha),
+                "prediction_trend_limit_bpm_per_s": Self.number(prediction?.trendLimitBeatsPerMinutePerSecond),
+                "prediction_horizon_s": Self.number(prediction?.horizonSeconds),
+                "prediction_bpm": prediction?.predictedBeatsPerMinute.map(String.init) ?? "",
+                "prediction_effective_bpm": prediction.map { String($0.effectiveBeatsPerMinute) } ?? "",
+                "prediction_phase": prediction.map { TelemetryStore.phaseString($0.phase) } ?? "",
+                "interval_hrmax": interval.map { String($0.maximumHeartRate) } ?? "",
+                "interval_planned_cycles": interval.map { String($0.plannedCycles) } ?? "",
+                "interval_cycle": interval.map { String($0.cycle) } ?? "",
+                "interval_phase": intervalPhase ?? "",
+                "interval_phase_remaining_s": interval.map { String($0.phaseRemainingSeconds) } ?? "",
+                "interval_work_elapsed_s": Self.number(interval?.workElapsedSeconds),
+                "interval_work_covered_s": Self.number(interval?.coveredWorkSeconds),
+                "interval_in_range_s": Self.number(interval?.inRangeSeconds),
+                "interval_above_range_s": Self.number(interval?.aboveRangeSeconds),
+                "interval_finish_reason": intervalReason ?? "",
             ]
         )
     }

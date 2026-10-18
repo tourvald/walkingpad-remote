@@ -128,3 +128,37 @@ recorder/persistence adapter, persist delivery and control-use evidence using
 the established contracts, and restore canonical bindings from persisted
 stable-native identities. It must preserve this failure-isolated observation
 order and must not fabricate a session or provider identity.
+
+## Passive prediction snapshots
+
+The HR speed-decision event optionally carries `heartRatePrediction`. It copies
+values already calculated by the existing controller: input BPM, controller
+input timestamp/age, trend, actual trend window, EMA alpha, slope limit, forecast
+horizon, rounded prediction, effective BPM, evaluation time, and workout phase.
+The current producer emits it only for main-stage decisions after the existing
+HR/device gates, including hold, inertia hold, speed change, and speed limit.
+A missing trend/prediction remains absent; it is never exported as zero.
+
+This is observational evidence under the existing algorithm/version, not a new
+predictor. Settings, control branches, commands, safety gates and timing cadence
+are unchanged. No extra timer, live comparison, adaptation, migration, or new
+SwiftData model is introduced. The optional event-payload field is absent from
+historical decisions; those records continue to decode. Old readers may ignore
+the additive field. Raw JSONL retains the typed snapshot; analysis CSV appends
+`prediction_*` columns, blank for historical/unrelated rows.
+
+`controllerInputAt` is the timestamp actually held by control, not a claim that
+the provider supplied a measurement timestamp. Use the decision's existing
+observation references to retrieve original measured/received timestamps,
+source, freshness and quality. Missing measurement time stays unknown. The
+snapshot's evaluation time is separate from event emission time and is encoded
+as numeric Unix seconds to retain subsecond precision in portable JSONL. The event
+retains its existing wall/elapsed envelope. Correlate evaluation with that
+session clock before comparing at evaluation plus `horizonSeconds`.
+
+Future accuracy analysis must explicitly choose a bounded measurement-matching
+policy, exclude missing/incompatible evidence, and report coverage. Predictions
+remain estimates, not factual HR. Existing factual treadmill observations and
+command lifecycle records supply speed context without inventing a causal
+command-response edge. The existing controller may change speed during the
+forecast horizon, so forecast accuracy alone does not prove control benefit.

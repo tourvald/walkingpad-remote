@@ -379,6 +379,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         let action: ControlAction
         let reason: ControlDecisionReason
         let heartRateInputs: [HeartRateCausalReference]
+        let prediction: HeartRatePredictionSnapshot?
         let occurredAt: Date
     }
 
@@ -389,7 +390,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         case heartRateControlDecision(PendingHeartRateControlDecision)
         case treadmill(TreadmillTelemetryEvidence, currentConnectionEpoch: TreadmillConnectionEpoch?)
         case event(WorkoutEventPayload, Date, RecordTimestamp? = nil)
-        case workoutPhase(WorkoutPhase, Date, RecordTimestamp? = nil)
+        case workoutPhase(WorkoutPhase, Date, RecordTimestamp? = nil, IntervalWorkoutContext? = nil)
 
         var lostRecordCounts: (critical: UInt64, native: UInt64) {
             switch self {
@@ -1001,6 +1002,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         action: ControlAction,
         reason: ControlDecisionReason,
         heartRateInputs: [HeartRateCausalReference],
+        prediction: HeartRatePredictionSnapshot? = nil,
         occurredAt: Date
     ) -> TelemetryYieldDisposition? {
         let evidence = PendingHeartRateControlDecision(
@@ -1009,6 +1011,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             action: action,
             reason: reason,
             heartRateInputs: heartRateInputs,
+            prediction: prediction,
             occurredAt: occurredAt
         )
         guard let disposition = withActiveSession({ session in session.observeHeartRateControlDecision(evidence) }) else {
@@ -1080,10 +1083,11 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
     @discardableResult
     public func observeWorkoutPhase(
         _ phase: WorkoutPhase,
-        occurredAt: Date
+        occurredAt: Date,
+        intervalContext: IntervalWorkoutContext? = nil
     ) -> TelemetryYieldDisposition? {
-        guard let disposition = withActiveSession({ session in session.observeWorkoutPhase(phase, occurredAt: occurredAt) }) else {
-            return bufferDisposition(.workoutPhase(phase, occurredAt))
+        guard let disposition = withActiveSession({ session in session.observeWorkoutPhase(phase, occurredAt: occurredAt, intervalContext: intervalContext) }) else {
+            return bufferDisposition(.workoutPhase(phase, occurredAt, nil, intervalContext))
         }
         return disposition
     }
@@ -1320,8 +1324,8 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
                 default:
                     buffered = evidence
                 }
-            case let .workoutPhase(phase, occurredAt, _):
-                buffered = .workoutPhase(phase, occurredAt, timestamp)
+            case let .workoutPhase(phase, occurredAt, _, context):
+                buffered = .workoutPhase(phase, occurredAt, timestamp, context)
             default:
                 buffered = evidence
             }
@@ -1495,7 +1499,9 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             sourceID: nil,
             timestamp: start
         )
-        _ = observeWorkoutPhase(.main, occurredAt: descriptor.startedAt, timestamp: start)
+        let initialPhase: WorkoutPhase = descriptor.configuration.workoutMode == .other("intervals-v1")
+            ? .unknown : .main
+        _ = observeWorkoutPhase(initialPhase, occurredAt: descriptor.startedAt, timestamp: start)
     }
 
     func replay(_ evidence: TelemetryV2RuntimeCoordinator.PendingEvidence) {
@@ -1512,8 +1518,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             _ = observeTreadmill(treadmill, currentConnectionEpoch: currentConnectionEpoch)
         case let .event(payload, occurredAt, timestamp):
             _ = observeEvent(payload, occurredAt: occurredAt, timestamp: timestamp)
-        case let .workoutPhase(phase, occurredAt, timestamp):
-            _ = observeWorkoutPhase(phase, occurredAt: occurredAt, timestamp: timestamp)
+        case let .workoutPhase(phase, occurredAt, timestamp, context):
+            _ = observeWorkoutPhase(phase, occurredAt: occurredAt, timestamp: timestamp, intervalContext: context)
         }
     }
 
@@ -1778,7 +1784,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             action: evidence.action,
             reason: evidence.reason,
             versions: descriptor.versions,
-            configurationSnapshotID: configurationSnapshotID
+            configurationSnapshotID: configurationSnapshotID,
+            heartRatePrediction: evidence.prediction
         )
         return yieldEvent(
             .controlDecision(decision),
@@ -1873,7 +1880,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
     func observeWorkoutPhase(
         _ phase: WorkoutPhase,
         occurredAt: Date,
-        timestamp: RecordTimestamp? = nil
+        timestamp: RecordTimestamp? = nil,
+        intervalContext: IntervalWorkoutContext? = nil
     ) -> TelemetryYieldDisposition {
         let previous: WorkoutPhase? = withLock {
             let previous = currentWorkoutPhase
@@ -1884,7 +1892,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         }
         guard previous != phase else { return .coalescedFrame }
         return yieldEvent(
-            .workoutPhase(WorkoutPhaseTransition(previous: previous, current: phase)),
+            .workoutPhase(WorkoutPhaseTransition(previous: previous, current: phase, intervalContext: intervalContext)),
             occurredAt: occurredAt,
             sourceID: nil,
             timestamp: timestamp

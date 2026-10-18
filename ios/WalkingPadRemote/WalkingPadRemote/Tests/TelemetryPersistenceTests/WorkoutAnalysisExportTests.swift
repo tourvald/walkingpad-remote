@@ -6,6 +6,106 @@ import XCTest
 
 final class WorkoutAnalysisExportTests: XCTestCase {
 
+    func testIntervalOnlyPhaseExportRetainsExposureAndMarksHealthData() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = semanticsSession()
+        try await store.insertSession(session)
+        let context = IntervalWorkoutContext(maximumHeartRate: 200, plannedCycles: 1,
+            cycle: 1, phase: "cooldown", phaseRemainingSeconds: 0,
+            workElapsedSeconds: 240, coveredWorkSeconds: 220,
+            inRangeSeconds: 150, aboveRangeSeconds: 0, finishReason: "cycles_completed")
+        try await store.insertEvent(event(seed: 799, session: session,
+            elapsedMicroseconds: 1_000_000,
+            payload: .workoutPhase(.init(previous: .main, current: .cooldown, intervalContext: context))))
+        let csv = try await store.exportWorkoutAnalysis(.init(sessionID: session.sessionID,
+            exactProfileLocalIdentifier: session.profileLocalIdentifier))
+        defer { try? FileManager.default.removeItem(at: csv.fileURL.deletingLastPathComponent()) }
+        let rows = try parseCSV(csv.fileURL)
+        XCTAssertTrue(csv.containsHealthData)
+        let headers = try XCTUnwrap(rows.first)
+        let row = try XCTUnwrap(rows.dropFirst().first { $0[1] == "event" })
+        func field(_ name: String) throws -> String { row[try XCTUnwrap(headers.firstIndex(of: name))] }
+        XCTAssertEqual(try field("interval_hrmax"), "200")
+        XCTAssertEqual(try field("interval_phase"), "cooldown")
+        XCTAssertEqual(try field("interval_work_elapsed_s"), "240.000000")
+        XCTAssertEqual(try field("interval_work_covered_s"), "220.000000")
+        XCTAssertEqual(try field("interval_in_range_s"), "150.000000")
+        XCTAssertEqual(try field("interval_finish_reason"), "cycles_completed")
+        XCTAssertEqual(try field("prediction_bpm"), "")
+    }
+
+    func testPredictionSurvivesStoreRawAndCSVExportsWithHistoricalBlanks() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = semanticsSession()
+        try await store.insertSession(session)
+        for index in 0..<3 {
+            let prediction: HeartRatePredictionSnapshot? = index == 0 ? nil : .init(
+                evaluatedAt: session.startedAt.addingTimeInterval(Double(index)),
+                currentBeatsPerMinute: 140,
+                controllerInputAt: session.startedAt,
+                controllerInputAgeSeconds: Double(index),
+                trendBeatsPerMinutePerSecond: index == 1 ? nil : 0.2,
+                trendWindowSeconds: 27,
+                smoothingAlpha: 0.3,
+                trendLimitBeatsPerMinutePerSecond: 0.5,
+                horizonSeconds: 15,
+                predictedBeatsPerMinute: index == 1 ? nil : 143,
+                effectiveBeatsPerMinute: index == 1 ? 140 : 143,
+                phase: .main
+            )
+            try await store.insertEvent(event(
+                seed: 700 + index, session: session,
+                elapsedMicroseconds: Int64(index) * 1_000_000,
+                payload: .controlDecision(.init(
+                    decisionID: DecisionID(), observationsUsed: [],
+                    target: .heartRate(beatsPerMinute: 140), action: .noCommand,
+                    reason: .withinTarget, versions: session.versions,
+                    configurationSnapshotID: session.configuration.id,
+                    heartRatePrediction: prediction
+                ))
+            ))
+        }
+        let csv = try await store.exportWorkoutAnalysis(.init(
+            sessionID: session.sessionID,
+            exactProfileLocalIdentifier: session.profileLocalIdentifier
+        ))
+        defer { try? FileManager.default.removeItem(at: csv.fileURL.deletingLastPathComponent()) }
+        let rows = try parseCSV(csv.fileURL)
+        XCTAssertTrue(csv.containsHealthData)
+        let headers = try XCTUnwrap(rows.first)
+        let decisions = rows.dropFirst().filter { $0[1] == "event" }
+        XCTAssertEqual(decisions.count, 3)
+        func field(_ row: [String], _ name: String) throws -> String {
+            row[try XCTUnwrap(headers.firstIndex(of: name))]
+        }
+        for header in headers where header.hasPrefix("prediction_") {
+            XCTAssertEqual(try field(decisions[0], header), "")
+        }
+        XCTAssertEqual(try field(decisions[1], "prediction_bpm"), "")
+        XCTAssertEqual(try field(decisions[1], "prediction_trend_bpm_per_s"), "")
+        XCTAssertEqual(try field(decisions[1], "prediction_effective_bpm"), "140")
+        XCTAssertEqual(try field(decisions[2], "prediction_current_bpm"), "140")
+        XCTAssertEqual(try field(decisions[2], "prediction_bpm"), "143")
+        XCTAssertEqual(try field(decisions[2], "prediction_controller_input_age_s"), "2.000000")
+        XCTAssertEqual(try field(decisions[2], "prediction_trend_window_s"), "27.000000")
+        XCTAssertEqual(try field(decisions[2], "prediction_smoothing_alpha"), "0.300000")
+        XCTAssertEqual(try field(decisions[2], "prediction_trend_limit_bpm_per_s"), "0.500000")
+        XCTAssertEqual(try field(decisions[2], "prediction_horizon_s"), "15.000000")
+        XCTAssertEqual(try field(decisions[2], "prediction_phase"), "main")
+        XCTAssertFalse(try field(decisions[2], "prediction_evaluated_at").isEmpty)
+        XCTAssertFalse(try field(decisions[2], "decision_ref").isEmpty)
+
+        let raw = try await store.exportWorkouts(.init(
+            filter: .init(profileScope: .exact(session.profileLocalIdentifier)), selection: .all
+        ))
+        defer { try? FileManager.default.removeItem(at: raw.directoryURL) }
+        let rawURL = try XCTUnwrap(raw.fileURLs.first { $0.lastPathComponent == "raw_evidence_v1.jsonl" })
+        let text = try String(contentsOf: rawURL, encoding: .utf8)
+        XCTAssertTrue(text.contains("heartRatePrediction"))
+        XCTAssertTrue(text.contains("predictedBeatsPerMinute"))
+        XCTAssertTrue(text.contains("controllerInputAgeSeconds"))
+    }
+
     func testStoredAnalysisMetadataSeparatesReportedPhasesAndPopulatedFrames() async throws {
         for scenario in ["ordinary", "invalid-phase", "stale-hr", "delayed-hr", "custom-policy"] {
             let store = try TelemetryStoreFactory.make(.inMemory)
@@ -131,7 +231,10 @@ final class WorkoutAnalysisExportTests: XCTestCase {
             }
             let after = try await store.counts()
             XCTAssertEqual(before, after)
-            XCTAssertEqual(rows[0].count, 39)
+            XCTAssertEqual(rows[0].count, 61)
+            XCTAssertEqual(rows[0][38], "quality_flags")
+            XCTAssertTrue(rows[0].dropFirst(39).prefix(12).allSatisfy { $0.hasPrefix("prediction_") })
+            XCTAssertTrue(rows[0].dropFirst(51).allSatisfy { $0.hasPrefix("interval_") })
             XCTAssertLessThanOrEqual(artifact.diagnostics.maximumStoreFetchLimit, 2)
             XCTAssertLessThanOrEqual(artifact.diagnostics.maximumBufferedTimelineRows, 4)
             // A legacy consumer sees the same rows without the additive metadata.

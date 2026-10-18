@@ -24,6 +24,26 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         relativePath: "WalkingPadRemote/DeterministicControlReplay.swift"
     )
 
+    func testIntervalExcursionsAreObservedBeforePreflightAndOnlyTickerChangesPhase() throws {
+        let observation = try functionBody("private func handleNativeHeartRateObservation(", in: managerSource)
+        assertOrdered(["nativeHeartRateProviderLifecycle.acceptsObservation(",
+            "HRDomainService.applyHeartRateDelivery(", "observeIntervalHeartRate(",
+            "nativeHeartRatePreflightEngine.receive("], in: observation)
+        let latch = try functionBody("private func observeIntervalHeartRate(", in: managerSource)
+        for forbidden in ["sendTreadmill", "startWithSpeed", "stopBelt", "persist", "finish("] {
+            XCTAssertFalse(latch.contains(forbidden), forbidden)
+        }
+        let commit = try functionBody("private func commitExistingHrControl(", in: managerSource)
+        assertOrdered(["intervalWorkoutState =", "observeIntervalHeartRate(", "startWithSpeed("], in: commit)
+    }
+
+    func testRecoveryPresentationUsesUpperLimitAndGoalStatus() throws {
+        let presentation = try functionBody("private func makeHRControlActivePresentation(", in: contentViewSource)
+        XCTAssertTrue(presentation.contains("if isCooldown || intervalState?.phase == .recovery"))
+        XCTAssertTrue(presentation.contains("return presentedHeartRate <= ceiling"))
+        XCTAssertTrue(presentation.contains("intervalState?.phase == .recovery ? \"≤ \\(selectedRange.upperBound) bpm\""))
+    }
+
     func testLegacyWatchPayloadCarriesHeartRateValue() throws {
         let body = try functionBody(
             "private func sendHeartRate(_ value: Double, callbackObservedAt: Date)",
@@ -161,6 +181,28 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         }
     }
 
+    func testPredictionObservationCopiesComputedValuesWithoutBecomingControlAuthority() throws {
+        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+        assertOrdered([
+            "let predictedValue = trend.map",
+            "let predictedBpm = predictedValue.map",
+            "let effectiveBpm = max(heartRateBPM",
+            "let diff = effectiveBpm - hrTargetBPM",
+            "let prediction = HeartRatePredictionSnapshot(",
+            "predictedBeatsPerMinute: predictedBpm",
+            "effectiveBeatsPerMinute: effectiveBpm",
+            "if absDiff <= deadbandBpm",
+        ], in: tick)
+        XCTAssertEqual(tick.components(separatedBy: "prediction: prediction,").count - 1, 4)
+        XCTAssertFalse(tick.contains("prediction.predictedBeatsPerMinute"))
+        XCTAssertFalse(tick.contains("prediction.effectiveBeatsPerMinute"))
+        let observer = try functionBody("private func observeSemanticHeartRateDecision(", in: managerSource)
+        XCTAssertTrue(observer.contains("prediction: prediction"))
+        for forbidden in ["sendTreadmill", "stopBelt", "startWithSpeed", "JSONEncoder", "FileHandle"] {
+            XCTAssertFalse(observer.contains(forbidden))
+        }
+    }
+
     func testStartAffordanceIsSeparateFromRuntimeAuthorization() throws {
         let recompute = try functionBody(
             "private func recomputeHrStartAllowed()",
@@ -254,8 +296,8 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             in: contentViewSource
         )
 
-        XCTAssertTrue(mapping.contains("targetTitle: \"Зона "))
-        XCTAssertTrue(mapping.contains("targetValue: \"\\(targetRange.lowerBound)–\\(targetRange.upperBound) bpm\""))
+        XCTAssertTrue(mapping.contains("targetTitle: intervalCycles == nil ? \"Зона "))
+        XCTAssertTrue(mapping.contains("targetValue: intervalCycles == nil ? \"\\(targetRange.lowerBound)–\\(targetRange.upperBound) bpm\""))
         XCTAssertTrue(mapping.contains("title: \"Пульс\""))
         XCTAssertTrue(
             mapping.contains("TrainingUIHeartRateReadinessPresentationPolicy.presentation(")
@@ -285,15 +327,15 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         ] {
             XCTAssertTrue(previewFixtures.contains("case \"\(fixture)\""), fixture)
         }
-        XCTAssertTrue(previewFixtures.contains("modeTitle: \"Интервалы\""))
+        XCTAssertTrue(previewFixtures.contains("intervalCycles: 1, intervalRange: 170...190"))
         XCTAssertTrue(previewFixtures.contains("modeTitle: \"Недельные зоны\""))
         XCTAssertTrue(previewFixtures.contains("startEnabled: false"))
         XCTAssertTrue(previewFixtures.contains("isPreview: true"))
         XCTAssertFalse(previewFixtures.contains("startHrControl"))
         XCTAssertFalse(previewFixtures.contains("sendTreadmill"))
 
-        XCTAssertTrue(hubBody.contains("Label(\"Интервалы · Скоро\""))
-        XCTAssertTrue(hubBody.contains(".disabled(true)"))
+        XCTAssertTrue(hubBody.contains("Label(\"Интервалы\""))
+        XCTAssertTrue(hubBody.contains(".disabled(presentation.isPreparing)"))
         XCTAssertTrue(hubBody.contains("guard !presentation.isPreview else { return }"))
         XCTAssertTrue(hubBody.contains("onStart()"))
         XCTAssertFalse(hubBody.contains("BluetoothManager"))
@@ -584,12 +626,12 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(contentViewSource.contains(
             "private let trainingDurationPresets = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]"
         ))
-        XCTAssertTrue(mapping.contains("durationMinutes: durationMinutes"))
+        XCTAssertTrue(mapping.contains("durationMinutes: intervalCycles == nil ? durationMinutes : nil"))
         XCTAssertTrue(mapping.contains("metrics: []"))
         XCTAssertFalse(mapping.contains("cooldownTargetBPM"))
         XCTAssertFalse(mapping.contains("title: \"Заминка\""))
 
-        XCTAssertTrue(selector.contains("trainingDurationPresets.contains(selectedMinutes)"))
+        XCTAssertTrue(selector.contains("presets.contains(selectedMinutes)"))
         XCTAssertTrue(selector.contains("if !hasPresetSelection"))
         XCTAssertTrue(selector.contains("Text(\"Текущее: \\(selectedMinutes) мин\")"))
         XCTAssertTrue(selector.contains("guard interactive else { return }"))
@@ -632,14 +674,14 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             $0.trimmingCharacters(in: .whitespaces)
         }, ["{", "guard interactive else { return }", "onSelect(minutes)", "}"])
         XCTAssertEqual(selector.components(separatedBy: "onSelect(minutes)").count - 1, 1)
-        XCTAssertTrue(selector.contains("ForEach(trainingDurationPresets, id: \\.self)"))
+        XCTAssertTrue(selector.contains("ForEach(presets, id: \\.self)"))
         XCTAssertTrue(selector.contains("let selectedMinutes: Int"))
         XCTAssertTrue(selector.contains("let isSelected = minutes == selectedMinutes"))
-        XCTAssertTrue(selector.contains(".accessibilityLabel(\"\\(minutes) минут\")"))
+        XCTAssertTrue(selector.contains("isCycleSelection ? \"\\(minutes) циклов\" : \"\\(minutes) минут\""))
         XCTAssertTrue(selector.contains(".accessibilityValue(isSelected ? \"Выбрано\" : \"Не выбрано\")"))
         XCTAssertTrue(selector.contains(".accessibilityHidden(!interactive)"))
         XCTAssertTrue(selector.contains("@ScaledMetric(relativeTo: .subheadline)"))
-        XCTAssertTrue(selector.contains("max(minimumCellWidth, (width - 5 * 6) / 6)"))
+        XCTAssertTrue(selector.contains("CGFloat(presets.count == 4 ? 4 : 6)"))
         assertOrdered([
             "guard !didPositionInitially else { return }",
             "didPositionInitially = true",

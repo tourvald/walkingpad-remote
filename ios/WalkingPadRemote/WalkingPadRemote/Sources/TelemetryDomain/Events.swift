@@ -56,6 +56,85 @@ public extension ControlDecisionReason {
     static let heartRateSpeedLimit = Self.other("speedLimit")
 }
 
+/// Passive interval phase and exposure evidence.
+public struct IntervalWorkoutContext: Codable, Hashable, Sendable {
+    public let maximumHeartRate: Int
+    public let plannedCycles: Int
+    public let cycle: Int
+    public let phase: String
+    public let phaseRemainingSeconds: Int
+    public let workElapsedSeconds: Double
+    public let coveredWorkSeconds: Double
+    public let inRangeSeconds: Double
+    public let aboveRangeSeconds: Double
+    public let finishReason: String?
+
+    public init(maximumHeartRate: Int, plannedCycles: Int, cycle: Int, phase: String,
+                phaseRemainingSeconds: Int, workElapsedSeconds: Double,
+                coveredWorkSeconds: Double, inRangeSeconds: Double,
+                aboveRangeSeconds: Double, finishReason: String?) {
+        self.maximumHeartRate = maximumHeartRate
+        self.plannedCycles = plannedCycles
+        self.cycle = cycle
+        self.phase = phase
+        self.phaseRemainingSeconds = phaseRemainingSeconds
+        self.workElapsedSeconds = workElapsedSeconds
+        self.coveredWorkSeconds = coveredWorkSeconds
+        self.inRangeSeconds = inRangeSeconds
+        self.aboveRangeSeconds = aboveRangeSeconds
+        self.finishReason = finishReason
+    }
+}
+
+/// Observes the values already consumed by control; never supplies control inputs.
+public struct HeartRatePredictionSnapshot: Codable, Hashable, Sendable {
+    // Portable JSONL encodes Date to whole seconds; preserve forecast timing here.
+    public let evaluatedAtUnixSeconds: Double
+    public var evaluatedAt: Date { Date(timeIntervalSince1970: evaluatedAtUnixSeconds) }
+    public let currentBeatsPerMinute: Int
+    public let controllerInputAt: Date?
+    public let controllerInputAgeSeconds: Double?
+    public let trendBeatsPerMinutePerSecond: Double?
+    public let trendWindowSeconds: Double
+    public let smoothingAlpha: Double
+    public let trendLimitBeatsPerMinutePerSecond: Double
+    public let horizonSeconds: Double
+    public let predictedBeatsPerMinute: Int?
+    public let effectiveBeatsPerMinute: Int
+    public let phase: WorkoutPhase
+    public let intervalContext: IntervalWorkoutContext?
+
+    public init(
+        evaluatedAt: Date,
+        currentBeatsPerMinute: Int,
+        controllerInputAt: Date?,
+        controllerInputAgeSeconds: Double?,
+        trendBeatsPerMinutePerSecond: Double?,
+        trendWindowSeconds: Double,
+        smoothingAlpha: Double,
+        trendLimitBeatsPerMinutePerSecond: Double,
+        horizonSeconds: Double,
+        predictedBeatsPerMinute: Int?,
+        effectiveBeatsPerMinute: Int,
+        phase: WorkoutPhase,
+        intervalContext: IntervalWorkoutContext? = nil
+    ) {
+        self.evaluatedAtUnixSeconds = evaluatedAt.timeIntervalSince1970
+        self.currentBeatsPerMinute = currentBeatsPerMinute
+        self.controllerInputAt = controllerInputAt
+        self.controllerInputAgeSeconds = controllerInputAgeSeconds
+        self.trendBeatsPerMinutePerSecond = trendBeatsPerMinutePerSecond
+        self.trendWindowSeconds = trendWindowSeconds
+        self.smoothingAlpha = smoothingAlpha
+        self.trendLimitBeatsPerMinutePerSecond = trendLimitBeatsPerMinutePerSecond
+        self.horizonSeconds = horizonSeconds
+        self.predictedBeatsPerMinute = predictedBeatsPerMinute
+        self.effectiveBeatsPerMinute = effectiveBeatsPerMinute
+        self.phase = phase
+        self.intervalContext = intervalContext
+    }
+}
+
 public struct ControlDecision: Codable, Hashable, Sendable {
     public let decisionID: DecisionID
     public let observationsUsed: [ObservationReference]
@@ -64,6 +143,7 @@ public struct ControlDecision: Codable, Hashable, Sendable {
     public let reason: ControlDecisionReason
     public let versions: RuntimeVersionContext
     public let configurationSnapshotID: ConfigurationSnapshotID
+    public let heartRatePrediction: HeartRatePredictionSnapshot?
 
     public init(
         decisionID: DecisionID,
@@ -72,7 +152,8 @@ public struct ControlDecision: Codable, Hashable, Sendable {
         action: ControlAction,
         reason: ControlDecisionReason,
         versions: RuntimeVersionContext,
-        configurationSnapshotID: ConfigurationSnapshotID
+        configurationSnapshotID: ConfigurationSnapshotID,
+        heartRatePrediction: HeartRatePredictionSnapshot? = nil
     ) {
         self.decisionID = decisionID
         self.observationsUsed = observationsUsed
@@ -81,6 +162,7 @@ public struct ControlDecision: Codable, Hashable, Sendable {
         self.reason = reason
         self.versions = versions
         self.configurationSnapshotID = configurationSnapshotID
+        self.heartRatePrediction = heartRatePrediction
     }
 }
 
@@ -168,10 +250,13 @@ public enum HeartRateRuntimeEvidence: Codable, Hashable, Sendable {
 public struct WorkoutPhaseTransition: Codable, Hashable, Sendable {
     public let previous: WorkoutPhase?
     public let current: WorkoutPhase
+    public let intervalContext: IntervalWorkoutContext?
 
-    public init(previous: WorkoutPhase?, current: WorkoutPhase) {
+    public init(previous: WorkoutPhase?, current: WorkoutPhase,
+                intervalContext: IntervalWorkoutContext? = nil) {
         self.previous = previous
         self.current = current
+        self.intervalContext = intervalContext
     }
 }
 

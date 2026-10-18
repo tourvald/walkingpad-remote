@@ -143,14 +143,15 @@ private struct TrainingWorkoutCountdown {
         mainRemainingSeconds: Int,
         cooldownRemainingSeconds: Int,
         mainProgress: Double,
-        cooldownProgress: Double
+        cooldownProgress: Double,
+        intervalRemainingSeconds: Int? = nil
     ) {
         guard isRunning && !isRecovering else { return nil }
         let isCooldown = mainRemainingSeconds <= 0
         let phaseProgress = isCooldown ? cooldownProgress : mainProgress
-        remainingSeconds = max(0, isCooldown ? cooldownRemainingSeconds : mainRemainingSeconds)
+        remainingSeconds = max(0, isCooldown ? cooldownRemainingSeconds : (intervalRemainingSeconds ?? mainRemainingSeconds))
         progress = phaseProgress.isFinite ? min(1, max(0, phaseProgress)) : 0
-        title = isCooldown ? "До лимита заминки" : "До заминки"
+        title = isCooldown ? "До лимита заминки" : (intervalRemainingSeconds == nil ? "До заминки" : "До следующего этапа")
     }
 }
 
@@ -189,6 +190,7 @@ private struct TrainingHubPresentation {
     let targetSegments: [TargetSegment]
     let selectedSegmentID: Int?
     let durationMinutes: Int?
+    let intervalCycles: Int?
     let metrics: [Metric]
     let readiness: [Readiness]
     let startEnabled: Bool
@@ -216,6 +218,7 @@ private struct TrainingHubPresentation {
         targetSegments: [TargetSegment],
         selectedSegmentID: Int?,
         durationMinutes: Int? = nil,
+        intervalCycles: Int? = nil,
         metrics: [Metric],
         readiness: [Readiness],
         startEnabled: Bool,
@@ -241,6 +244,7 @@ private struct TrainingHubPresentation {
         self.targetSegments = targetSegments
         self.selectedSegmentID = selectedSegmentID
         self.durationMinutes = durationMinutes
+        self.intervalCycles = intervalCycles
         self.metrics = metrics
         self.readiness = readiness
         self.startEnabled = startEnabled
@@ -373,7 +377,9 @@ private func makeHRControlTrainingHubPresentation(
     startEnabled: Bool,
     runtimeBlockReason: String?,
     isPreparing: Bool = false,
-    isPreview: Bool = false
+    isPreview: Bool = false,
+    intervalCycles: Int? = nil,
+    intervalRange: ClosedRange<Int>? = nil
 ) -> TrainingHubPresentation {
     let safeZoneIndex = max(0, min(zoneRanges.count - 1, targetZoneIndex))
     let targetRange = zoneRanges[safeZoneIndex]
@@ -397,13 +403,15 @@ private func makeHRControlTrainingHubPresentation(
     }()
 
     return TrainingHubPresentation(
-        modeTitle: "HR‑контроль",
+        modeTitle: intervalCycles == nil ? "HR‑контроль" : "Интервалы",
         modeSystemImage: "heart.text.square.fill",
-        targetTitle: "Зона \(safeZoneIndex + 1)",
-        targetValue: "\(targetRange.lowerBound)–\(targetRange.upperBound) bpm",
+        targetTitle: intervalCycles == nil ? "Зона \(safeZoneIndex + 1)" : "85–95% HRmax",
+        targetValue: intervalCycles == nil ? "\(targetRange.lowerBound)–\(targetRange.upperBound) bpm"
+            : intervalRange.map { "\($0.lowerBound)–\($0.upperBound) bpm" } ?? "Укажите максимальный пульс",
         targetSegments: makeTrainingTargetSegments(zoneRanges: zoneRanges),
-        selectedSegmentID: safeZoneIndex,
-        durationMinutes: durationMinutes,
+        selectedSegmentID: intervalCycles == nil ? safeZoneIndex : nil,
+        durationMinutes: intervalCycles == nil ? durationMinutes : nil,
+        intervalCycles: intervalCycles,
         metrics: [],
         readiness: [
             .init(
@@ -455,23 +463,25 @@ private func makeHRControlActivePresentation(
     canExtend: Bool,
     countdown: TrainingWorkoutCountdown? = nil,
     phaseTitleOverride: String? = nil,
-    isPreview: Bool = false
+    isPreview: Bool = false,
+    intervalState: IntervalWorkoutRuntime.State? = nil
 ) -> TrainingHubPresentation {
     let fallbackRange = 60...220
     let safeZoneIndex = zoneRanges.isEmpty
         ? 0
         : max(0, min(zoneRanges.count - 1, targetZoneIndex))
-    let selectedRange = zoneRanges.indices.contains(safeZoneIndex)
+    let selectedRange = intervalState?.targetRange ?? (zoneRanges.indices.contains(safeZoneIndex)
         ? zoneRanges[safeZoneIndex]
-        : fallbackRange
+        : fallbackRange)
     let presentedHeartRate = heartRatePresentation.currentHeartRateBPM
 
     let status: (title: String, symbol: String, tint: Color) = {
         guard let presentedHeartRate else {
             return ("Пульс недоступен", "waveform.path.ecg.slash", .orange)
         }
-        if isCooldown {
-            return presentedHeartRate <= cooldownTargetBPM
+        if isCooldown || intervalState?.phase == .recovery {
+            let ceiling = isCooldown ? cooldownTargetBPM : selectedRange.upperBound
+            return presentedHeartRate <= ceiling
                 ? ("Цель достигнута", "checkmark.circle.fill", .green)
                 : ("Выше цели", "arrow.up.circle.fill", .orange)
         }
@@ -485,14 +495,15 @@ private func makeHRControlActivePresentation(
     }()
 
     return TrainingHubPresentation(
-        modeTitle: "HR‑контроль",
+        modeTitle: intervalState == nil ? "HR‑контроль" : "Интервалы",
         modeSystemImage: "heart.text.square.fill",
-        targetTitle: isCooldown ? "Заминка" : "Зона \(safeZoneIndex + 1)",
+        targetTitle: isCooldown ? "Заминка" : (intervalState == nil ? "Зона \(safeZoneIndex + 1)" : "Целевой пульс"),
         targetValue: isCooldown
             ? "≤ \(cooldownTargetBPM) bpm"
-            : "\(selectedRange.lowerBound)–\(selectedRange.upperBound) bpm",
+            : (intervalState?.phase == .recovery ? "≤ \(selectedRange.upperBound) bpm"
+                : "\(selectedRange.lowerBound)–\(selectedRange.upperBound) bpm"),
         targetSegments: makeTrainingTargetSegments(zoneRanges: zoneRanges),
-        selectedSegmentID: isCooldown ? nil : safeZoneIndex,
+        selectedSegmentID: isCooldown || intervalState != nil ? nil : safeZoneIndex,
         metrics: [
             .init(
                 id: "speed",
@@ -563,9 +574,14 @@ private func makeProductionTrainingHubPresentation(
         targetZoneIndex: hrZoneIndex(for: manager.hrTargetBPM, manager: manager),
         zoneRanges: hrZoneRanges(for: manager),
         durationMinutes: manager.hrDurationMinutes,
-        startEnabled: manager.isHrControlStartAffordanceAvailable,
-        runtimeBlockReason: manager.hrControlStartBlockReasonText,
-        isPreparing: manager.isNativeHeartRatePreflightActive
+        startEnabled: manager.isHrControlStartAffordanceAvailable && manager.intervalStartBlockReason == nil,
+        runtimeBlockReason: manager.intervalStartBlockReason ?? manager.hrControlStartBlockReasonText,
+        isPreparing: manager.isNativeHeartRatePreflightActive,
+        intervalCycles: manager.intervalWorkoutSelected ? manager.intervalCycleCount : nil,
+        intervalRange: IntervalWorkoutRuntime.Plan(
+            maximumHeartRate: manager.heartRateZoneSettings.maximumHeartRate,
+            cycles: manager.intervalCycleCount
+        )?.workRange
     )
 }
 
@@ -599,15 +615,21 @@ private func makeProductionActiveWorkoutPresentation(
             mainRemainingSeconds: manager.hrRemainingSeconds,
             cooldownRemainingSeconds: manager.hrCooldownRemainingSeconds,
             mainProgress: manager.hrProgress,
-            cooldownProgress: manager.hrCooldownProgress
+            cooldownProgress: manager.hrCooldownProgress,
+            intervalRemainingSeconds: manager.intervalWorkoutState?.remainingSeconds
         ),
-        phaseTitleOverride: manager.presentedWorkoutPhaseTitle
+        phaseTitleOverride: manager.presentedWorkoutPhaseTitle ?? manager.intervalPhaseTitle,
+        intervalState: manager.isHrControlRunning ? manager.intervalWorkoutState : nil
     )
 }
 
 private extension TrainingUIObservationBoundary {
     convenience init(manager: BluetoothManager) {
         self.init(signals: [
+            manager.$intervalWorkoutSelected.map { _ in () }.eraseToAnyPublisher(),
+            manager.$intervalCycleCount.map { _ in () }.eraseToAnyPublisher(),
+            manager.$intervalWorkoutState.map { _ in () }.eraseToAnyPublisher(),
+            manager.$heartRateZoneSettings.map { _ in () }.eraseToAnyPublisher(),
             manager.$isConnected.map { _ in () }.eraseToAnyPublisher(),
             manager.$isTreadmillControlReady.map { _ in () }.eraseToAnyPublisher(),
             manager.$trainingUIHeartRateSnapshot.map { _ in () }.eraseToAnyPublisher(),
@@ -887,22 +909,11 @@ private func trainingHubPreviewPresentation(named name: String) -> TrainingHubPr
     case "duration-60":
         return hrControl(durationMinutes: 60)
     case "intervals":
-        return TrainingHubPresentation(
-            modeTitle: "Интервалы",
-            modeSystemImage: "repeat",
-            targetTitle: "4 раунда",
-            targetValue: "3:00 / 2:00",
-            targetSegments: [],
-            selectedSegmentID: nil,
-            metrics: [
-                .init(id: "work", title: "Работа", value: "3 мин", systemImage: "figure.run"),
-                .init(id: "recovery", title: "Восстановление", value: "2 мин", systemImage: "figure.walk")
-            ],
-            readiness: hrControl(startEnabled: false).readiness,
-            startEnabled: false,
-            startBlocker: "Только предпросмотр",
-            isPreparing: false,
-            isPreview: true
+        return makeHRControlTrainingHubPresentation(
+            treadmillConnected: true, hrFresh: true, heartRateSourceLabel: "Apple Watch",
+            targetZoneIndex: 2, zoneRanges: ranges, durationMinutes: 30,
+            startEnabled: false, runtimeBlockReason: "Только предпросмотр", isPreview: true,
+            intervalCycles: 1, intervalRange: 170...190
         )
     case "weekly-zones":
         return TrainingHubPresentation(
@@ -988,29 +999,28 @@ private func activeWorkoutPreviewPresentation(named name: String) -> TrainingHub
         return hrControl(true, true, 115, nil, 2.0, true, 115)
     case "cooldown-no-hr":
         return hrControl(true, false, nil, nil, 2.0, true, 115)
-    case "active-intervals":
-        return TrainingHubPresentation(
-            modeTitle: "Интервалы",
-            modeSystemImage: "repeat",
-            targetTitle: "Работа 2/4",
-            targetValue: "3:00",
-            targetSegments: [],
-            selectedSegmentID: nil,
-            metrics: [
-                .init(id: "speed", title: "Скорость", value: "5.0 км/ч", systemImage: "speedometer"),
-                .init(id: "elapsed", title: "Прошло", value: "12:30", systemImage: "stopwatch")
-            ],
-            readiness: hrControl(true, true, 152, nil, 5.0, false, 115).readiness,
-            startEnabled: false,
-            startBlocker: nil,
-            isPreparing: false,
-            isPreview: true,
-            phaseTitle: "РАБОТА 2/4",
-            primaryValue: "02:14",
-            primaryUnit: nil,
-            statusTitle: "Работа",
-            statusSystemImage: "figure.run",
-            statusTint: .orange
+    case "active-intervals", "interval-warmup", "interval-recovery", "interval-cooldown":
+        var state = IntervalWorkoutRuntime.State(plan: .init(maximumHeartRate: 200, cycles: 2)!)
+        if name != "interval-warmup" { state.tick(elapsed: 300, heartRate: 130, validForSeconds: 7) }
+        if name == "interval-recovery" || name == "interval-cooldown" {
+            state.tick(elapsed: 540, heartRate: 180, validForSeconds: 7)
+        }
+        if name == "interval-cooldown" { state.finish(reason: "preview") }
+        return makeHRControlActivePresentation(
+            treadmillConnected: true,
+            heartRatePresentation: .init(currentHeartRateBPM: state.targetBPM,
+                sourceLabel: "Apple Watch", isReady: true, isHeld: false),
+            targetZoneIndex: 2, zoneRanges: ranges, factualSpeedKmh: 6,
+            elapsedSeconds: Int(state.elapsedSeconds), isCooldown: state.phase == .cooldown,
+            cooldownTargetBPM: 115, canExtend: false,
+            countdown: TrainingWorkoutCountdown(isRunning: true, isRecovering: false,
+                mainRemainingSeconds: state.mainRemainingSeconds, cooldownRemainingSeconds: 240,
+                mainProgress: state.progress, cooldownProgress: 0,
+                intervalRemainingSeconds: state.remainingSeconds),
+            phaseTitleOverride: state.phase == .warmup ? "РАЗМИНКА" :
+                (state.phase == .work ? "НАГРУЗКА 1/2" :
+                    (state.phase == .recovery ? "ВОССТАНОВЛЕНИЕ 1/2" : "ЗАМИНКА")),
+            isPreview: true, intervalState: state
         )
     case "active-weekly-zones":
         return TrainingHubPresentation(
@@ -1365,18 +1375,21 @@ private struct TrainingDurationPresetSelector: View {
     let selectedMinutes: Int
     let interactive: Bool
     let onSelect: (Int) -> Void
+    var isCycleSelection = false
+
+    private var presets: [Int] { isCycleSelection ? [1, 2, 3, 4] : trainingDurationPresets }
 
     @ScaledMetric(relativeTo: .subheadline) private var minimumCellWidth = 44
     @State private var didPositionInitially = false
 
     private var hasPresetSelection: Bool {
-        trainingDurationPresets.contains(selectedMinutes)
+        presets.contains(selectedMinutes)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("ВРЕМЯ · МИН")
+                Text(isCycleSelection ? "ЦИКЛЫ" : "ВРЕМЯ · МИН")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
 
@@ -1413,7 +1426,7 @@ private struct TrainingDurationPresetSelector: View {
 
     @ViewBuilder
     private var presetButtons: some View {
-        ForEach(trainingDurationPresets, id: \.self) { minutes in
+        ForEach(presets, id: \.self) { minutes in
             let isSelected = minutes == selectedMinutes
             Button {
                 guard interactive else { return }
@@ -1425,7 +1438,7 @@ private struct TrainingDurationPresetSelector: View {
                     .foregroundStyle(Color.primary)
                     .frame(minWidth: 44, maxWidth: .infinity, minHeight: 44)
                     .containerRelativeFrame(.horizontal) { width, _ in
-                        max(minimumCellWidth, (width - 5 * 6) / 6)
+                        max(minimumCellWidth, (width - CGFloat(presets.count == 4 ? 3 : 5) * 6) / CGFloat(presets.count == 4 ? 4 : 6))
                     }
                     .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay {
@@ -1439,7 +1452,7 @@ private struct TrainingDurationPresetSelector: View {
             }
             .buttonStyle(.plain)
             .id(minutes)
-            .accessibilityLabel("\(minutes) минут")
+            .accessibilityLabel(isCycleSelection ? "\(minutes) циклов" : "\(minutes) минут")
             .accessibilityValue(isSelected ? "Выбрано" : "Не выбрано")
             .accessibilityHidden(!interactive)
         }
@@ -1454,6 +1467,8 @@ private struct TrainingHubView: View {
     let onSettingsTap: () -> Void
     let onStart: () -> Void
     let onCancel: () -> Void
+    var onModeSelect: (Bool) -> Void = { _ in }
+    var onCycleSelect: (Int) -> Void = { _ in }
 
     var body: some View {
         ScrollView {
@@ -1492,7 +1507,14 @@ private struct TrainingHubView: View {
                 targetScale
             }
 
-            if let durationMinutes = presentation.durationMinutes {
+            if let cycles = presentation.intervalCycles {
+                TrainingDurationPresetSelector(
+                    selectedMinutes: cycles,
+                    interactive: !presentation.isPreview && !presentation.isPreparing,
+                    onSelect: onCycleSelect,
+                    isCycleSelection: true
+                )
+            } else if let durationMinutes = presentation.durationMinutes {
                 TrainingDurationPresetSelector(
                     selectedMinutes: durationMinutes,
                     interactive: !presentation.isPreview && !presentation.isPreparing,
@@ -1552,18 +1574,17 @@ private struct TrainingHubView: View {
                 modeSelectorLabel
             } else {
                 Menu {
-                    Button(action: {}) {
-                        Label("HR‑контроль", systemImage: "checkmark")
+                    Button { onModeSelect(false) } label: {
+                        Label("HR‑контроль", systemImage: presentation.intervalCycles == nil ? "checkmark" : "heart")
                     }
-                    Button(action: {}) {
-                        Label("Интервалы · Скоро", systemImage: "hourglass")
+                    Button { onModeSelect(true) } label: {
+                        Label("Интервалы", systemImage: presentation.intervalCycles == nil ? "repeat" : "checkmark")
                     }
-                    .disabled(true)
                 } label: {
                     modeSelectorLabel
                 }
-                .accessibilityLabel("Режим тренировки, HR-контроль")
-                .accessibilityHint("Интервальные тренировки появятся позже")
+                .disabled(presentation.isPreparing)
+                .accessibilityLabel("Режим тренировки, \(presentation.modeTitle)")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2048,6 +2069,7 @@ private struct TrainingWorkoutSummaryView: View {
     let result: ResolvedTrainingResult
     let onDone: () -> Void
     let onOpenStatistics: () -> Void
+    var intervalOutcomeMessage: String? = nil
 
     @ScaledMetric(relativeTo: .largeTitle) private var heroValueSize: CGFloat = 62
     @AccessibilityFocusState private var headingFocused: Bool
@@ -2153,6 +2175,12 @@ private struct TrainingWorkoutSummaryView: View {
                     }
                 }
 
+                if let intervalOutcomeMessage {
+                    Label(intervalOutcomeMessage, systemImage: "info.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 hero
 
                 if isPartial {
@@ -2520,7 +2548,8 @@ private struct ControlSwipeView: View, Equatable {
             TrainingWorkoutSummaryView(
                 result: resolvedTrainingResult,
                 onDone: clearTrainingResultPresentation,
-                onOpenStatistics: openStatistics
+                onOpenStatistics: openStatistics,
+                intervalOutcomeMessage: manager.intervalOutcomeMessage
             )
         } else if let trainingResultError {
             TrainingWorkoutUnavailableView(
@@ -2544,6 +2573,7 @@ private struct ControlSwipeView: View, Equatable {
             presentation: trainingHubPresentation,
             onTreadmillTap: { showDevicePicker = true },
             onZoneTap: { zoneIndex in
+                guard !manager.intervalWorkoutSelected else { return }
                 let ranges = hrZoneRanges(for: manager)
                 guard ranges.indices.contains(zoneIndex) else { return }
                 manager.hrTargetBPM = hrZoneTargetBpm(
@@ -2554,7 +2584,9 @@ private struct ControlSwipeView: View, Equatable {
             onDurationSelect: { manager.hrDurationMinutes = $0 },
             onSettingsTap: { showParameters = true },
             onStart: { manager.startHrControl() },
-            onCancel: { manager.cancelNativeHeartRatePreflight() }
+            onCancel: { manager.cancelNativeHeartRatePreflight() },
+            onModeSelect: { manager.selectIntervalWorkout($0) },
+            onCycleSelect: { manager.selectIntervalCycles($0) }
         )
         .onAppear { manager.trainingHubDidAppear() }
         .onDisappear { manager.trainingHubDidDisappear() }
@@ -3618,45 +3650,12 @@ private struct HRParametersFormView: View {
                 }
             }
 
-            Section(
-                header: Text("Кардио‑зоны"),
-                footer: Text("Границы задаются верхней границей зоны. Зона 5 начинается выше границы зоны 4.")
-            ) {
-                Stepper(value: Binding(
-                    get: { manager.hrZone1Max },
-                    set: { manager.hrZone1Max = max(80, min(200, $0)) }
-                ), in: 80...200, step: 1) {
-                    Text("Зона 1: ≤ \(manager.hrZone1Max) bpm")
-                        .monospacedDigit()
+            Section("Пульсовые зоны") {
+                NavigationLink {
+                    HeartRateZoneSettingsView()
+                } label: {
+                    Label("Пульсовые зоны", systemImage: "heart.text.clipboard")
                 }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone2Max },
-                    set: { manager.hrZone2Max = max(81, min(210, $0)) }
-                ), in: 81...210, step: 1) {
-                    Text("Зона 2: ≤ \(manager.hrZone2Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone3Max },
-                    set: { manager.hrZone3Max = max(82, min(220, $0)) }
-                ), in: 82...220, step: 1) {
-                    Text("Зона 3: ≤ \(manager.hrZone3Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Stepper(value: Binding(
-                    get: { manager.hrZone4Max },
-                    set: { manager.hrZone4Max = max(83, min(230, $0)) }
-                ), in: 83...230, step: 1) {
-                    Text("Зона 4: ≤ \(manager.hrZone4Max) bpm")
-                        .monospacedDigit()
-                }
-
-                Text("Зона 5: ≥ \(manager.hrZone4Max + 1) bpm")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
             }
 
             Section(

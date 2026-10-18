@@ -9,6 +9,9 @@ This folder contains the included Xcode project for the iOS/watchOS WalkingPad a
 
 ## Setup (Xcode)
 
+Build with Xcode 27 or newer (iOS 27 SDK for HealthKit workout zones). The app
+continues to support iOS/watchOS 26.2; zone entry is manual on iOS 26.
+
 1. Open `WalkingPadRemote/WalkingPadRemote.xcodeproj` in Xcode.
 2. Select your own signing team for the iOS and watchOS targets.
 3. Run on a real iPhone paired with Apple Watch if you need HR control.
@@ -18,6 +21,7 @@ This folder contains the included Xcode project for the iOS/watchOS WalkingPad a
 
 - Manual WalkingPad control and HR-driven speed adaptation.
 - Apple Watch heart-rate integration.
+- Profile-scoped heart-rate zones: manual entry on iOS 26, optional Apple Health import on iOS 27, and optional manual maximum heart rate.
 - Workout statistics and telemetry export.
 - Plank timer tab with progression settings.
 
