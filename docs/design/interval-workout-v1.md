@@ -48,6 +48,12 @@ independent review and one Draft PR, without merge or physical installation.
   a write or new pacing slot. HR target bookkeeping commits only on speed-write
   invocation. Auto-starts accompanying HR speed commands use the same guard;
   manual, recovery, cooldown and Stop retain their established paths.
+- Paired HR auto-start/speed commands share one transient context with fixed
+  target/sample and an actual-auto-start-write marker. Successful speed invocation
+  resolves it. Cancelling, superseding or failing that speed after auto-start
+  consumes compensation once, terminates HR as failed and requests existing Stop
+  before more motion. Stop confirmation still requires factual device evidence.
+  Invalidated queue callbacks cannot change the replacement Stop queue's ownership.
 - Freeze a valid manually entered HRmax and cycle count at Start. Snapshot
   phase targets separately; never save them as ordinary HR settings. Missing
   HRmax blocks interval Start only. Ordinary workouts retain their behavior.

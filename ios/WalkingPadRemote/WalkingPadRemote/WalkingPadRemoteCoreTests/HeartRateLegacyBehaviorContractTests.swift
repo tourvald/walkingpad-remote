@@ -2,6 +2,24 @@ import Foundation
 import XCTest
 
 final class HeartRateLegacyBehaviorContractTests: XCTestCase {
+    func testPartialAutoStartEndsHrAndRequestsExistingFactualStopBeforeMoreMotion() throws {
+        let queue = try functionBody("private func processCommandQueue()", in: managerSource)
+        assertOrdered(["self.performWrite(", "let needsCompensatingStop", "self.isCommandQueueProcessing = false",
+            "if needsCompensatingStop", "self.stopHrControlAfterAutoStartFailure()", "return",
+            "self.processCommandQueue()"], in: queue)
+        let write = try functionBody("private func performWrite(", in: managerSource)
+        assertOrdered(["p.writeValue(", "if let heartRateSpeed", "heartRateSpeed.recordSpeedWrite()",
+            "} else {", "heartRateSpeed.recordAutoStartWrite()"], in: write)
+        let stop = try functionBody("private func stopHrControlAfterAutoStartFailure()", in: managerSource)
+        assertOrdered(["hrControlFailed = true", "isHrControlRunning = false", "recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)",
+            "stopBeltWithToggle(reason: \"hr_auto_start_speed_cancelled\")", "endTelemetryV2Session("], in: stop)
+        XCTAssertTrue(stop.contains("но ещё не подтверждена"))
+        XCTAssertFalse(stop.contains("markCommandSent"))
+        let enqueue = try functionBody("private func enqueueCommand(", in: managerSource)
+        XCTAssertTrue(enqueue.contains("result.coalescedSpeedCommands.contains"))
+        XCTAssertTrue(enqueue.contains("stopHrControlAfterAutoStartFailure()"))
+    }
+
     func testMainHeartRateUnitsAreCheckedBeforeCadenceAndQueuedTargetsCommitOnlyAfterWrite() throws {
         let decision = try functionBody("private func evaluateHeartRateControlDecision()", in: managerSource)
         assertOrdered(["controllerUnitsGateDecision()", "guard unitsDecision.allowed", "hrLastDecisionAt = instant"], in: decision)

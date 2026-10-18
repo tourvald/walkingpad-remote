@@ -2,9 +2,25 @@ import Foundation
 import TelemetryDomain
 
 enum HRDomainService {
-    struct SpeedCommand: Equatable {
+    final class SpeedCommand: Equatable {
         let targetKmh: Double
         let increaseSampleAt: Date?
+        private var autoStartWritten = false
+
+        init(targetKmh: Double, increaseSampleAt: Date?) {
+            self.targetKmh = targetKmh
+            self.increaseSampleAt = increaseSampleAt
+        }
+
+        nonisolated static func == (lhs: SpeedCommand, rhs: SpeedCommand) -> Bool { lhs === rhs }
+
+        func recordAutoStartWrite() { autoStartWritten = true }
+        func recordSpeedWrite() { autoStartWritten = false }
+
+        func consumeAutoStartCompensation() -> Bool {
+            defer { autoStartWritten = false }
+            return autoStartWritten
+        }
     }
 
     static func speedCommandBlockReason(

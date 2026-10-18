@@ -3,6 +3,41 @@ import TelemetryDomain
 @testable import WalkingPadCoreLogic
 
 final class HRDomainServiceTests: XCTestCase {
+    func testAutoStartThenStaleSpeedRequiresStopExactlyOnce() {
+        let measuredAt = Date(timeIntervalSince1970: 1000)
+        let command = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: measuredAt)
+        XCTAssertFalse(command.consumeAutoStartCompensation())
+        XCTAssertNil(HRDomainService.speedCommandBlockReason(command, isRunning: true,
+            unitsAllowed: true, now: measuredAt.addingTimeInterval(6.90)))
+        command.recordAutoStartWrite()
+        XCTAssertEqual(HRDomainService.speedCommandBlockReason(command, isRunning: true,
+            unitsAllowed: true, now: measuredAt.addingTimeInterval(7.15)), "hr_increase_sample_stale_before_write")
+        XCTAssertTrue(command.consumeAutoStartCompensation())
+        XCTAssertFalse(command.consumeAutoStartCompensation())
+    }
+
+    func testSuccessfulSpeedCompletesAutoStartAndLaterCancellationDoesNotStop() {
+        let command = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+        command.recordAutoStartWrite()
+        command.recordSpeedWrite()
+        XCTAssertFalse(command.consumeAutoStartCompensation())
+        let other = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+        XCTAssertFalse(other.consumeAutoStartCompensation())
+    }
+
+    func testUnitsLossEndedStageOrTransportFailureAfterAutoStartRequireStop() {
+        for (running, units) in [(true, false), (false, true), (true, true)] {
+            let command = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+            command.recordAutoStartWrite()
+            let reason = HRDomainService.speedCommandBlockReason(command,
+                isRunning: running, unitsAllowed: units, now: Date())
+            if !running || !units { XCTAssertNotNil(reason) }
+            // No recordSpeedWrite: either the guard cancelled or transport never invoked the write.
+            XCTAssertTrue(command.consumeAutoStartCompensation())
+            XCTAssertFalse(command.consumeAutoStartCompensation())
+        }
+    }
+
     func testPacedIncreaseRetainsOriginalSampleAndCannotAdvanceTargetWhenCancelled() throws {
         let measuredAt = Date(timeIntervalSince1970: 1000)
         let decidedAt = measuredAt.addingTimeInterval(6.99)

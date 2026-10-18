@@ -4,6 +4,49 @@ import XCTest
 
 /// Executes the production methods verbatim with dependency fixtures, without extracting a production layer.
 final class TrainingResultBehaviorTests: XCTestCase {
+    func testAutoStartCompensationExecutesFailedUnconfirmedStopTermination() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let method = try declaration("private func stopHrControlAfterAutoStartFailure()", in: source)
+        let program = """
+        import Foundation
+        final class Owner {
+            var hrControlStartedAt: Date? = Date()
+            var hrControlFailed = false, isHrControlRunning = true, hrControlStartedBelt = true
+            var hrStatusLine = "", infoToastMessage = "", hrDecisionDetails = "", hrPredictorStatusLine = ""
+            var hrNextDecisionSeconds = 9, hrRemainingSeconds = 60, hrNoDataSeconds = 0
+            var hrProgress = 0.5
+            var events: [String] = []
+            func clearCooldownRuntimeState() { events.append("clear") }
+            func recordHrWorkoutIfNeeded(durationOverride: Int?, failed: Bool) {
+                precondition(failed); events.append("failed")
+            }
+            func stopLegacyWatchHeartRateIfNeeded() { events.append("watch") }
+            func stopBeltWithToggle(reason: String) {
+                precondition(reason == "hr_auto_start_speed_cancelled"); events.append("stop_requested")
+            }
+            func endTelemetryV2Session(reason: String) { events.append("end") }
+            \(method)
+            func run() { stopHrControlAfterAutoStartFailure() }
+        }
+        let owner = Owner(); owner.run()
+        precondition(owner.hrControlFailed && !owner.isHrControlRunning)
+        precondition(owner.hrControlStartedAt == nil && !owner.hrControlStartedBelt)
+        precondition(owner.hrRemainingSeconds == 0 && owner.hrNextDecisionSeconds == 0)
+        precondition(owner.infoToastMessage.contains("но ещё не подтверждена"))
+        precondition(owner.events == ["clear", "failed", "watch", "stop_requested", "end"])
+        """
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("AutoStartStop.swift")
+        let binary = directory.appendingPathComponent("auto-start-stop")
+        try program.write(to: file, atomically: true, encoding: .utf8)
+        try execute(URL(fileURLWithPath: "/usr/bin/xcrun"), arguments: ["swiftc", file.path, "-o", binary.path], directory: directory)
+        try execute(binary, arguments: [], directory: directory)
+    }
+
     func testWorkoutCountdownUsesPhaseFactsWithoutOwningAClock() throws {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
@@ -540,7 +583,7 @@ final class TrainingResultBehaviorTests: XCTestCase {
         try execute(binary, arguments: [], directory: directory)
     }
 
-    func testCancelledReadOnlyEpochCannotFailReplacementStopOrUnlockItsQueue() throws {
+    func testCancelledCallbackEpochCannotFailReplacementStopOrUnlockItsQueue() throws {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
         let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
@@ -564,7 +607,7 @@ final class TrainingResultBehaviorTests: XCTestCase {
         let oldQuery = Owner(); oldQuery.callback(epoch: 1, queuedReadOnlyQuery: true)
         precondition(oldQuery.isCommandQueueProcessing && oldQuery.failures == 0 && oldQuery.continued == 0)
         let oldMotion = Owner(); oldMotion.callback(epoch: 1, queuedReadOnlyQuery: false)
-        precondition(!oldMotion.isCommandQueueProcessing && oldMotion.failures == 1 && oldMotion.continued == 0)
+        precondition(oldMotion.isCommandQueueProcessing && oldMotion.failures == 0 && oldMotion.continued == 0)
         let current = Owner(); current.callback(epoch: 2, queuedReadOnlyQuery: true)
         precondition(current.isCommandQueueProcessing && current.failures == 0 && current.continued == 1)
         """

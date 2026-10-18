@@ -5173,6 +5173,27 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopBeltWithToggle(reason: "recovered_hr_manual_stop")
     }
 
+    private func stopHrControlAfterAutoStartFailure() {
+        let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
+        hrControlFailed = true
+        isHrControlRunning = false
+        hrStatusLine = "HR‑контроль остановлен — скорость после запуска не задана"
+        infoToastMessage = "Скорость после запуска не задана. Остановка дорожки запрошена, но ещё не подтверждена."
+        hrNextDecisionSeconds = 0
+        hrRemainingSeconds = 0
+        hrProgress = 0
+        hrDecisionDetails = ""
+        hrPredictorStatusLine = ""
+        clearCooldownRuntimeState()
+        hrNoDataSeconds = 0
+        recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
+        hrControlStartedAt = nil
+        hrControlStartedBelt = false
+        stopLegacyWatchHeartRateIfNeeded()
+        stopBeltWithToggle(reason: "hr_auto_start_speed_cancelled")
+        endTelemetryV2Session(reason: "hr_auto_start_speed_cancelled")
+    }
+
     private func beginNativeWorkoutStopTerminalRequestIfNeeded() {
         guard pendingNativeWorkoutStopTerminalRequest == nil,
               let record = activeNativeWorkoutRecoveryRecord,
@@ -6004,14 +6025,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 isSpeedLabel: isSpeedCommandLabel
             )
         }
-        if result.coalescedSpeedCount > 0 {
-
-        }
-        processCommandQueue()
         observeSupersededTreadmillCommands(superseded)
         if let publication = enqueue.publication {
             observeTreadmillTelemetry(.commandEnqueued(publication), sessionID: request.sessionID)
         }
+        if result.coalescedSpeedCommands.contains(where: {
+            $0.heartRateSpeed?.consumeAutoStartCompensation() == true
+        }) {
+            stopHrControlAfterAutoStartFailure()
+            return
+        }
+        processCommandQueue()
     }
 
     private func observeCancelledTreadmillCommands(
@@ -6063,19 +6087,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         }
         let epoch = commandQueueEpoch
-        // A cancelled query wakeup does not own the replacement queue or its Stop.
-        let queuedReadOnlyQuery = commandQueue.first.map {
-            CommandQueueService.isReadOnlyQueryLabel($0.label)
-        } ?? false
+        // An invalidated callback never owns the replacement queue or its Stop.
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             guard self.commandQueueEpoch == epoch else {
-                if !queuedReadOnlyQuery {
-                    self.isCommandQueueProcessing = false
-                    self.nativeWorkoutStopTransportInvocationFailedIfNeeded(
-                        reason: "Очередь Stop была сброшена"
-                    )
-                }
                 return
             }
             let discardedQueries = CommandQueueService.discardReadOnlyQueries(
@@ -6171,16 +6186,22 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 )
                 self.nextCommandAllowedAt = Date().addingTimeInterval(self.commandMinIntervalSecondsForCurrentProtocol())
             }
+            let needsCompensatingStop = self.isSpeedCommandLabel(next.label)
+                && next.heartRateSpeed?.consumeAutoStartCompensation() == true
             self.isCommandQueueProcessing = false
-            if !self.commandQueue.isEmpty {
-                self.processCommandQueue()
-            }
             for evidence in postWriteTelemetry {
                 self.observeTreadmillTelemetry(evidence, sessionID: queuedSessionID)
             }
             self.observeCancelledTreadmillCommands(
                 lostEntries, reason: .other("telemetry_sidecar_order_mismatch")
             )
+            if needsCompensatingStop {
+                self.stopHrControlAfterAutoStartFailure()
+                return
+            }
+            if !self.commandQueue.isEmpty {
+                self.processCommandQueue()
+            }
             self.finalizeCompletedStopIfReady()
             if let lifecycle = self.stopObservationLifecycle, lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true {
                 self.telemetryV2Coordinator.stopAttemptFinalized(attemptID: lifecycle.attemptID)
@@ -6263,11 +6284,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         lastCommandAckedAt = (type == .withResponse) ? nil : lastCommandSentAt
 
         p.writeValue(data, for: ch, type: type)
-        if let heartRateSpeed, isSpeedCommandLabel(label) {
-            let old = deviceTargetSpeedKmh
-            desiredSpeedKmh = heartRateSpeed.targetKmh
-            deviceTargetSpeedKmh = heartRateSpeed.targetKmh
-            recordSpeedChange(from: old, to: heartRateSpeed.targetKmh, reason: "hr_decision_set")
+        if let heartRateSpeed {
+            if isSpeedCommandLabel(label) {
+                heartRateSpeed.recordSpeedWrite()
+                let old = deviceTargetSpeedKmh
+                desiredSpeedKmh = heartRateSpeed.targetKmh
+                deviceTargetSpeedKmh = heartRateSpeed.targetKmh
+                recordSpeedChange(from: old, to: heartRateSpeed.targetKmh, reason: "hr_decision_set")
+            } else {
+                // Only the paired FTMS/FitShow auto-starts carry this context here.
+                heartRateSpeed.recordAutoStartWrite()
+            }
         }
         if label != "QUERY STATUS", label != "QUERY PARAMS",
            var lifecycle = stopObservationLifecycle, lifecycle.finalResult == nil {

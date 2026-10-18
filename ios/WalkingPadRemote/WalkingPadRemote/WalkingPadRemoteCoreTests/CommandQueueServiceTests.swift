@@ -4,6 +4,37 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class CommandQueueServiceTests: XCTestCase {
+    func testCoalescingAfterActualAutoStartReturnsContextNeedingStop() {
+        let context = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+        var queue = [CommandQueueService.Command(data: Data([1]), label: "SPEED HR", heartRateSpeed: context)]
+        context.recordAutoStartWrite()
+        let replacement = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+        XCTAssertNotEqual(context, replacement)
+        let result = CommandQueueService.enqueueRegular(queue: &queue,
+            command: .init(data: Data([2]), label: "SPEED replacement", heartRateSpeed: replacement), isSpeedLabel: isSpeed)
+        XCTAssertEqual(result.coalescedSpeedCount, 1)
+        XCTAssertTrue(result.coalescedSpeedCommands.first?.heartRateSpeed?.consumeAutoStartCompensation() == true)
+        XCTAssertFalse(context.consumeAutoStartCompensation())
+        XCTAssertFalse(replacement.consumeAutoStartCompensation())
+        CommandQueueService.replaceWithHighPriority(queue: &queue, command: .init(data: Data([0]), label: "STOP"))
+        XCTAssertEqual(queue.map(\.label), ["STOP"])
+    }
+
+    func testUserStopReleasesSharedAutoStartContextWithoutAnotherCompensation() {
+        weak var retained: HRDomainService.SpeedCommand?
+        var queue: [CommandQueueService.Command] = []
+        do {
+            let context = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+            retained = context
+            context.recordAutoStartWrite()
+            queue = [.init(data: Data([1]), label: "SPEED HR", heartRateSpeed: context)]
+        }
+        XCTAssertNotNil(retained)
+        CommandQueueService.replaceWithHighPriority(queue: &queue, command: .init(data: Data([0]), label: "STOP"))
+        XCTAssertNil(retained)
+        XCTAssertNil(queue.first?.heartRateSpeed)
+    }
+
     func testCoalescingReplacesHeartRateContextAndStopCarriesNoHeartRateGuard() {
         let at = Date(timeIntervalSince1970: 1000)
         let old = HRDomainService.SpeedCommand(targetKmh: 6.1, increaseSampleAt: at)
