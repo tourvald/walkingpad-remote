@@ -1,0 +1,7 @@
+html { color-scheme: light dark; font: 1.05rem/1.65 system-ui, sans-serif; }
+body { max-width: 48rem; margin: auto; padding: 1.25rem; overflow-wrap: anywhere; }
+nav { padding-bottom: 1rem; border-bottom: 1px solid #888; }
+nav a { display: inline-block; padding: .4rem .2rem; }
+h1 { font-size: clamp(1.5rem, 5vw, 2rem); line-height: 1.2; } h2 { line-height: 1.35; margin-top: 2rem; }
+a { color: light-dark(#0658ac, #8ac4ff); text-underline-offset: .15em; }
+a:focus-visible { outline: 3px solid currentColor; outline-offset: 3px; }

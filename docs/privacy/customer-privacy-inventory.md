@@ -4,18 +4,26 @@ Source baseline: `f99cd2f97c59050c9d0d298f85c6137cf2276ad8` (accepted #239).
 Reviewed 2026-10-18. This is an engineering inventory, not a published policy,
 App Store Connect submission, legal compliance verdict or release approval.
 
-## Owner facts and unresolved decisions
+## Owner facts and publication authorization
 
-- Operator supplied by the owner: Кожушкевич Дмитрий Александрович.
-- Customer support supplied by the owner: `sw.newgeneration@icloud.com`.
-- The owner has no website yet. No privacy/support URL or hosting destination is
-  approved. Moscow is not a publication destination.
-- Publication is not authorized. A repository document does not substitute for
-  a customer-facing public page or installed-app entry.
-- Before publication, confirm support-mail handling: purposes, recipients,
-  access, retention/deletion policy, and any applicable operator particulars.
-  No support response deadline, postal address, legal status or jurisdiction is
-  inferred from the name, mailbox or city.
+- Operator: Кожушкевич Дмитрий Александрович.
+- Support: `sw.newgeneration@icloud.com`, https://t.me/HJDmitry. The username
+  contact was checked publicly; the supplied phone number is not needed/stored.
+- On 2026-10-18 the owner explicitly authorized GitHub Pages publication and
+  continuing #238. Earlier local-draft-only restrictions are superseded for
+  the reviewed final pages; historical drafts remain local and unpublished.
+- The owner approved exclusive operator access to support messages/attachments,
+  use for responding/investigating issues, no additional support recipients,
+  and erasure of working copies within 30 days after closure, earlier on request.
+  This does not promise deletion of providers' system backups or sender copies.
+- Delivery/storage providers (iCloud Mail / the sender's mail provider / Telegram)
+  remain separate from operator access. GitHub Pages logs visitors' IP addresses
+  for security; the static pages add no scripts, forms, analytics or ads.
+- Publication destinations: `https://tourvald.github.io/walkingpad-remote/privacy.html`
+  and `https://tourvald.github.io/walkingpad-remote/support.html`. Exact public
+  deployment bytes must be checked before completion; intended URLs alone are
+  not proof of publication. No postal address, legal status or response deadline
+  is inferred. An unapproved jurisdiction or additional operator record is not invented.
 
 ## Source-backed data flow
 
@@ -77,14 +85,15 @@ backups and explicit sharing are separate paths.
 See [the erasure contract](profile-deletion-contract.md) for tests and explicit
 installed-device gaps. This inventory does not upgrade those gaps to PASS.
 
-## Permission wording assessment (not applied)
+## Permission wording applied in #238
 
-Project `INFOPLIST_KEY_*UsageDescription` values currently use English, generic
-strings in Debug/Release. Watch update wording mentions measuring heart rate
-but omits saving distance/steps/energy. A future in-scope UX implementation
-should supply Russian purpose strings without widening requested types:
+The existing Debug/Release `INFOPLIST_KEY_*UsageDescription` values now use
+Russian purpose strings, consistent with the current Russian app UI. Previously
+generic watch write wording omitted distance/steps/energy. No authorization type,
+entitlement or capability is widened. Built iPhone/watch Info.plist values are
+checked separately from source configuration:
 
-| Target / permission | Proposed customer-facing text |
+| Target / permission | Customer-facing text |
 | --- | --- |
 | iPhone Bluetooth | «Bluetooth нужен для подключения к дорожке, чтения её состояния и управления тренировкой.» |
 | iPhone Health read | «Пульс из Apple Здоровья используется для контроля нагрузки и подстройки скорости во время тренировки.» |
@@ -92,32 +101,40 @@ should supply Russian purpose strings without widening requested types:
 | Watch Health read | «Пульс, активная энергия, дистанция и шаги используются во время тренировки. Пульс передаётся на связанный iPhone для контроля нагрузки.» |
 | Watch Health write | «Приложение сохраняет тренировку, активную энергию, дистанцию и шаги в Apple Здоровье.» |
 
-Future offline About/Privacy/Support navigation must work without equipment or
-HealthKit consent. Explain permission recovery through system settings, that
-denial/revocation can make heart-rate control unavailable, and that a missing
-sample is not proof of consent or a safe workout state. Do not alter the
-existing safety guards or promise continued HR control after denial.
+The parameters Form now opens `AboutPrivacyView`, without an HR/equipment gate.
+Its local summary/contact/permission information is readable without consent;
+public policy/support links require network access. It explains system permission
+recovery, unavailable HR control after denial/lack of fresh pulse, and unchanged
+local history after revocation. Existing runtime safety guards are untouched.
 
-## App Store Connect decision worksheet (not submitted)
+## App Store Connect answers prepared for release (not submitted)
 
-Apple distinguishes local processing from developer/partner collection. The
-absence of an upload SDK alone does not settle the complete service practice:
+For the approved customer-support practice, conservatively disclose received
+support material rather than assuming the optional-feedback exemption. On-device
+processing alone is distinct from developer collection; no automatic upload is
+added. The current export/share interface does not establish every optional
+feedback-exemption condition, so “Data Not Collected” is not the prepared answer.
 
-| Path | Provisional classification / required decision |
+| App Privacy field / type | Prepared answer for support material |
 | --- | --- |
-| Local pulse/workout/profile processing | On-device processing alone is not collection under Apple's definition |
-| Paired watch, Apple Health, ActivityKit and OS services | Describe actual destinations; Apple says its own collection is not the developer's disclosure responsibility. Recheck shipped targets, SDKs and any developer access before submission |
-| User sends diagnostic files or messages to support | Operator may receive health/fitness data, diagnostics, contact information and identifiers. Do not automatically apply the optional-feedback exemption: every criterion must hold, including the submission-interface/name-display condition. Current export/share flow does not establish that condition |
-| Other share recipients | User-selected service/person may receive the selected health/workout/technical file; its practices are not established by source inspection |
-| Tracking / ads | No such implementation found; no tracking permission added |
+| Does the developer collect data? | Yes: only when the user chooses to send support messages/files |
+| Health & Fitness: Health / Fitness | Pulse, workout and activity information present in submitted diagnostics |
+| Contact Info: Name / Email Address | Sender identity/profile name when available and support email sender address |
+| Identifiers: User ID | Telegram account/handle accompanying the support conversation |
+| User Content: Customer Support | Message contents and selected support attachments |
+| Diagnostics: Other Diagnostic Data | App/OS versions, failure/state/timing and connection evidence in submitted diagnostics |
+| Purpose for these types | App Functionality (customer support and issue investigation) |
+| Linked to the user's identity? | Yes: support account/email identity can be associated with the file, even when export fields are redacted |
+| Used for tracking? | No: no advertising, cross-app tracking or data-broker sharing implemented/approved |
 
-Do not submit a blanket “Data Not Collected” answer until the owner confirms
-actual support processing and any optional-disclosure analysis. For received
-support material, assess Health/Fitness, Diagnostics, Identifiers, Contact Info
-and User Content as applicable, app-functionality/customer-support purpose,
-and linkage to identity. File redaction does not prove unlinkability when
-email/account identity and timestamps are available. Hosting/access logs,
-third-party recipients and retention must be reassessed once a site is chosen.
+Do not declare device hardware IDs or crash dumps merely from the presence of
+opaque workout/source/session IDs; no automatic crash-report SDK was found.
+Retain the broader local-data inventory above even where a type is not collected.
+Re-audit the actual received format if support later adds other upload/analytics
+channels; Apple/system-service collection is distinct from developer access.
+These prepared answers cover iPhone, watch and Live Activity flows, not only the
+main UI. The operator has approved support processing; account-side App Store
+Connect entry/submission remains an explicit release step, not performed here.
 
 ## Official requirements affecting this work
 
@@ -126,10 +143,26 @@ Checked 2026-10-18:
 - [App Review Guidelines 1.5 and 5.1.1](https://developer.apple.com/app-store/review/guidelines/): accessible developer support and privacy information, accurate data-use/retention/deletion explanation and in-app policy access are release requirements. A local draft alone does not satisfy them.
 - [App Privacy details](https://developer.apple.com/app-store/app-privacy-details/): on-device processing differs from collection; optional feedback disclosure has cumulative conditions. Developer-accessible retained diagnostics need a separate decision.
 
-## Open acceptance and verification
+## Publication, verification and release boundary
 
-Public unauthenticated URLs, approved final customer copy, native navigation,
-purpose-string changes, actual target bundle checks, App Privacy account-side
-submission and installed-device permission/navigation checks remain open.
-No publication, mail sending, App Store submission, phone installation or real
-data deletion is performed by this document. #238 must remain open.
+`website/` contains only canonical static customer HTML/CSS and `.nojekyll`.
+Publish that subtree to a dedicated `gh-pages` branch and configure Pages legacy
+branch publishing at `/`; never publish the whole engineering `docs` directory.
+GitHub's platform-managed Pages deployment run is required even for branch
+publishing. Existing `CI` stays `disabled_manually`; no CI workflow is enabled or
+added. No custom domain or dependency is required.
+
+Checks: `python3 scripts/check_customer_pages.py`, then the same command with
+`--site-url https://tourvald.github.io/walkingpad-remote/` for HTTP status and
+exact canonical-byte comparisons. Use an expected-head guard for PR merge.
+Update Pages by publishing reviewed `website/` contents. Roll back a page by
+reverting its source and redeploying the reviewed subtree; disabling Pages is a
+separate owner decision. App rollback uses a normal code revert; no migration.
+
+Release-only UNVERIFIED checks: signed archive/Organizer, installed iPhone
+navigation and denied-permission behavior without equipment, and actual App
+Store Connect entry/submission. An isolated simulator fixture displays the real
+About view without BluetoothManager/HealthKit; it does not prove installed-app
+runtime or denied-permission behavior. No phone install/launch, real data erasure,
+HealthKit deletion or App Store submission is performed. Public deployment and
+engineering merge are distinct from those deferred release gates.
