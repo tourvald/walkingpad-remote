@@ -83,6 +83,19 @@ final class IntervalWorkoutRuntimeTests: XCTestCase {
         }
     }
 
+    func testRecoveryIncludesExactIntegerSeventyPercentBoundaries() {
+        for (maximum, ceiling) in [(90, 63), (170, 119), (180, 126)] {
+            for (bpm, expectedPhase) in [(ceiling, IntervalWorkoutRuntime.Phase.work), (ceiling + 1, .cooldown)] {
+                var value = IntervalWorkoutRuntime.State(plan: .init(maximumHeartRate: maximum, cycles: 2)!)
+                value.tick(elapsed: 300, heartRate: maximum / 2, validForSeconds: 7)
+                value.tick(elapsed: 540, heartRate: maximum * 90 / 100, validForSeconds: 7)
+                XCTAssertEqual(value.targetBPM, ceiling)
+                value.tick(elapsed: 720, heartRate: bpm, validForSeconds: 7)
+                XCTAssertEqual(value.phase, expectedPhase)
+            }
+        }
+    }
+
     func testAcceptedExcursionSurvivesNewerBelowLimitSampleUntilTick() {
         var value = state()
         value.tick(elapsed: 300, heartRate: 180, validForSeconds: 7)

@@ -24,7 +24,7 @@ enum IntervalWorkoutRuntime {
         var workRange: ClosedRange<Int> {
             Int(ceil(Double(maximumHeartRate) * 0.85))...Int(floor(Double(maximumHeartRate) * 0.95))
         }
-        var recoveryCeilingBPM: Int { Int(floor(Double(maximumHeartRate) * 0.70)) }
+        var recoveryCeilingBPM: Int { maximumHeartRate * 70 / 100 }
         var warmupRange: ClosedRange<Int> { bpm(0.60)...bpm(0.70) }
         var totalSeconds: Int {
             Self.warmupSeconds + cycles * Self.workSeconds + (cycles - 1) * Self.recoverySeconds

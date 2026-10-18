@@ -77,7 +77,7 @@ The independent internal critique of the first implementation identified three
 contract defects: a fresh above-limit observation could be overwritten before
 the ticker, recovery admission rounded 70% upward, and recovery presented the
 warm-up range. The correction retains an accepted excursion in session-local
-runtime state until the existing ticker consumes it, uses a floored recovery
+runtime state until the existing ticker consumes it, uses an exact integer recovery
 ceiling, and presents recovery as an upper-limit goal. The native observation
 callback performs no motion or persistence; the initial commit observation is
 also checked. Regression coverage includes intervening callbacks, freshness,
@@ -95,3 +95,11 @@ After the three review corrections: 187 selected Swift tests passed and the
 unsigned generic iOS build passed. The fractional recovery-ceiling regression
 was first reproduced as a failing test before its correction. These results
 replace the initial 181-test verification for the corrected runtime.
+
+A second review caught binary floating-point underflow at exact 70% integer
+boundaries (HRmax 90, 170 and 180). Recovery now uses integer `HRmax * 70 / 100`;
+regressions check inclusivity and rejection of the next BPM at all three cases.
+
+Final integer-boundary correction: 188 selected Swift tests and the unsigned
+generic iOS build passed. Visual/external-review/CI and long-pause policy gates
+remain open; the corrected Draft is not approved for release or installation.
