@@ -660,6 +660,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     temporaryDirectory: FileManager.default.temporaryDirectory
                 )
                 erasedProfiles.insert(id.uuidString.lowercased())
+                guard let nativeWorkoutRecoveryStore else { throw NativeWorkoutRecoveryStoreError.invalidRecord }
+                try nativeWorkoutRecoveryStore.eraseInterruptedArchives(for: id)
                 deferredNativeHealthKitLinkages = linkages.filter { $0.profileID != id }
                 guard persistDeferredNativeHealthKitLinkages() else {
                     throw CocoaError(.fileWriteUnknown)

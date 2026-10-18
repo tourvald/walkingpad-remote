@@ -148,3 +148,18 @@ exactly retained pending result, and successful processing after readiness. Its
 first run needed the new readiness field in the fixture; the failed run was
 stopped and the fixture updated. This exercises production recovery code without
 starting the app/BLE, rather than merely checking a source string.
+
+## Interrupted recovery archive owner
+
+`NativeWorkoutRecoveryStore` also owns persistent
+`Application Support/<bundle>/interrupted_native_workout_<UUID>.json` files,
+retained after interrupted finishing attempts. The next critique found this
+additional owner. After the telemetry purge and before final preference/profile
+removal, its existing owner erases only structurally valid archives explicitly
+bound to the confirmed UUID. Archives of B remain byte-identical; unknown,
+corrupt or symlinked archives cause an incomplete outcome. An outstanding active
+recovery marker also blocks this cleanup. No HealthKit record is deleted.
+`ProfileErasurePolicyTests.testActualRecoveryArchivesEraseOnlyConfirmedProfileAfterReopenAndRetry`
+uses the real save/archive/erase methods, disk reopen, A/B isolation and corrupt
+archive failure/retry. File errors leave the profile for retry under the earlier
+erasure journal, without a complete-success message.
