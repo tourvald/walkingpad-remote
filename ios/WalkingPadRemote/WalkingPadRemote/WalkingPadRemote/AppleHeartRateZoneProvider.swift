@@ -23,7 +23,6 @@ enum AppleHeartRateZoneProvider {
         // Some runtimes pass the OS check but lack the SDK's weak-linked zone symbols.
         // Keep their metadata out of this entry point, including before authorization.
         if #_hasSymbol(HKWorkoutZoneConfiguration.self),
-           #_hasSymbol(HKWorkoutZoneConfiguration.ConfigurationType.self),
            #_hasSymbol(HKWorkoutZoneConfiguration.Source.self),
            #_hasSymbol(HKWorkoutZone.self),
            #_hasSymbol(store.preferredWorkoutZoneConfiguration(for:)) {
@@ -45,7 +44,6 @@ enum AppleHeartRateZoneProvider {
         let zones = configuration.zones.sorted { $0.index < $1.index }
         let unit = HKUnit.count().unitDivided(by: .minute())
         guard configuration.quantityType == type,
-              configuration.configurationType == .automatic || configuration.configurationType == .manual,
               zones.count == 5,
               zones.map(\.index) == Array(0..<5),
               zones.first?.minimum == nil, zones.last?.maximum == nil else { throw ReadError.incompatible }
@@ -59,15 +57,20 @@ enum AppleHeartRateZoneProvider {
             thresholds.append(maximum)
         }
         let origin: String
+        let calculation: String
         switch configuration.source {
-        case .system: origin = "system"
-        case .user: origin = "user"
+        case .system:
+            origin = "system"
+            calculation = "automatic"
+        case .user:
+            origin = "user"
+            calculation = "manual"
         case .app: throw ReadError.incompatible
         @unknown default: throw ReadError.incompatible
         }
         let snapshot = HeartRateZoneSettings.AppleSnapshot(
             thresholds: thresholds, origin: origin,
-            configuration: configuration.configurationType.rawValue, fetchedAt: Date()
+            configuration: calculation, fetchedAt: Date()
         )
         guard snapshot.upperBounds != nil else { throw ReadError.incompatible }
         return snapshot

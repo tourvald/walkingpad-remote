@@ -25,7 +25,6 @@ import HealthKit
         }
         let store = HKHealthStore()
         if #_hasSymbol(HKWorkoutZoneConfiguration.self),
-           #_hasSymbol(HKWorkoutZoneConfiguration.ConfigurationType.self),
            #_hasSymbol(HKWorkoutZoneConfiguration.Source.self),
            #_hasSymbol(HKWorkoutZone.self),
            #_hasSymbol(store.preferredWorkoutZoneConfiguration(for:)) {

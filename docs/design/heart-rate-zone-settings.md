@@ -86,3 +86,12 @@ iOS 27 SDK, without enabling the repository workflow or changing signing.
 
 PR #245 is the single verification/review evidence packet. Device HealthKit/Watch
 boundary parity and required exact-head CI remain separate acceptance gates.
+
+## Current HealthKit SDK compatibility
+
+The initial Xcode 27 beta exposed `ConfigurationType`, which is absent from the
+Xcode 27.2 beta 3 SDK and the observed iOS 27.2 runtime. The adapter uses the
+documented `source` instead: `system` means automatic zones, `user` means manual
+zones, and `app`/unknown sources remain unsupported. Existing snapshot strings
+and persisted settings retain their format. Runtime symbol checks run before
+authorization and before entering the typed API implementation.
