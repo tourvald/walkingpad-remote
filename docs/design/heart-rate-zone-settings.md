@@ -67,7 +67,10 @@ with the Watch display at a threshold remains a device acceptance check.
 New-profile copying uses the stored manual bounds in both nested and legacy DTO
 fields; imported effective Apple values, cache and HRmax are never copied.
 The existing DTO is now pure/testable without BluetoothManager or hardware.
-Closing the form or backgrounding invalidates read ownership; cancelled tasks
+HRmax uses a profile-bound edit draft: loading/synchronization alone cannot save
+or clear a value, and a late load refreshes an untouched field.
+Closing the form, backgrounding, entering diagnostic export or Stop ownership
+invalidates read ownership; cancelled tasks
 cannot apply successes or errors. Temporary inactivity is allowed for system
 HealthKit authorization UI. Invalid HRmax is shown while editing, before departure.
 
@@ -77,6 +80,9 @@ in `ContentView.hrZoneRanges`, which truncates every range and zone-5 target at
 persistence up to 230 do not establish support in that training selector. Broader
 training targets require a separate runtime/UI contract; this task rejects the
 unsupported configuration visibly and preserves the previous successful settings.
+
+The app-build CI job selects the official `xcode-27` runner image for the required
+iOS 27 SDK, without enabling the repository workflow or changing signing.
 
 PR #245 is the single verification/review evidence packet. Device HealthKit/Watch
 boundary parity and required exact-head CI remain separate acceptance gates.

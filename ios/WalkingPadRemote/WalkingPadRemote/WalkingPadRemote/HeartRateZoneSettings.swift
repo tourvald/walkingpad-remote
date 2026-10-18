@@ -16,6 +16,36 @@ struct HeartRateZoneSettings: Codable, Equatable {
         }
     }
 
+    struct MaximumHeartRateDraft {
+        private(set) var text = ""
+        private(set) var profileID: UUID?
+        private(set) var isEdited = false
+
+        var value: Int? { Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        var isValid: Bool {
+            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (value != nil && HeartRateZoneSettings.validMaximum(value))
+        }
+
+        mutating func synchronize(value: Int?, profileID: UUID?) {
+            guard !isEdited || self.profileID != profileID else { return }
+            self.profileID = profileID
+            text = value.map(String.init) ?? ""
+            isEdited = false
+        }
+
+        mutating func edit(_ text: String) {
+            self.text = text
+            isEdited = true
+        }
+
+        func canSave(activeProfileID: UUID?, settingsEditable: Bool) -> Bool {
+            isEdited && profileID != nil && profileID == activeProfileID && settingsEditable && isValid
+        }
+
+        mutating func markSaved() { isEdited = false }
+    }
+
     struct AppleSnapshot: Codable, Equatable {
         let thresholds: [Double]
         let origin: String

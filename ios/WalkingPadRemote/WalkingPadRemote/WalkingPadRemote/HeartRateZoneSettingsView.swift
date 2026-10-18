@@ -3,8 +3,7 @@ import SwiftUI
 struct HeartRateZoneSettingsView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @Environment(\.scenePhase) private var scenePhase
-    @State private var maximumText = ""
-    @State private var maximumProfileID: UUID?
+    @State private var maximumDraft = HeartRateZoneSettings.MaximumHeartRateDraft()
     @FocusState private var maximumFocused: Bool
 
     private let colors: [Color] = [.cyan, .green, .yellow, .orange, .red]
@@ -12,11 +11,7 @@ struct HeartRateZoneSettingsView: View {
     private var isEditable: Bool { manager.canEditHeartRateZoneSettings && !manager.heartRateZoneReadInFlight }
     private var bounds: [Int] { manager.heartRateZoneSettings.effectiveUpperBounds }
     private var maximumError: String? {
-        let text = maximumText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.isEmpty || (Int(text) != nil && HeartRateZoneSettings.validMaximum(Int(text))) else {
-            return "Введите целое число от 80 до 250 или оставьте поле пустым."
-        }
-        return nil
+        maximumDraft.isValid ? nil : "Введите целое число от 80 до 250 или оставьте поле пустым."
     }
 
     var body: some View {
@@ -98,7 +93,9 @@ struct HeartRateZoneSettingsView: View {
                 HStack {
                     Text("Максимальный пульс")
                     Spacer()
-                    TextField("Не указан", text: $maximumText)
+                    TextField("Не указан", text: Binding(
+                        get: { maximumDraft.text }, set: { maximumDraft.edit($0) }
+                    ))
                         .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
                         .frame(width: 95)
@@ -143,6 +140,10 @@ struct HeartRateZoneSettingsView: View {
             if !focused { saveMaximum() }
         }
         .onChange(of: manager.activeUserProfileID) { _, _ in reloadMaximum() }
+        .onChange(of: manager.heartRateZoneSettings.maximumHeartRate) { _, _ in reloadMaximum() }
+        .onChange(of: manager.canEditHeartRateZoneSettings) { _, editable in
+            if editable { reloadMaximum() }
+        }
         .onDisappear {
             saveMaximum()
             manager.cancelAppleHeartRateZoneRead()
@@ -166,16 +167,13 @@ struct HeartRateZoneSettingsView: View {
     }
 
     private func reloadMaximum() {
-        maximumProfileID = manager.activeUserProfileID
-        maximumText = manager.heartRateZoneSettings.maximumHeartRate.map(String.init) ?? ""
+        maximumDraft.synchronize(value: manager.heartRateZoneSettings.maximumHeartRate,
+                                 profileID: manager.activeUserProfileID)
     }
 
     private func saveMaximum() {
-        guard maximumProfileID == manager.activeUserProfileID,
-              manager.canEditHeartRateZoneSettings else { reloadMaximum(); return }
-        let trimmed = maximumText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = Int(trimmed)
-        guard maximumError == nil else { return }
-        manager.updateMaximumHeartRate(trimmed.isEmpty ? nil : value)
+        guard maximumDraft.canSave(activeProfileID: manager.activeUserProfileID,
+                                   settingsEditable: manager.canEditHeartRateZoneSettings) else { return }
+        if manager.updateMaximumHeartRate(maximumDraft.value) { maximumDraft.markSaved() }
     }
 }

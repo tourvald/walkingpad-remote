@@ -1541,6 +1541,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard !profileErasureInFlight, let profileID = activeUserProfileID else {
             throw TelemetryWorkoutReadError.unavailable("profile-export-unavailable")
         }
+        cancelAppleHeartRateZoneRead()
         profileExportOperations += 1
         defer { profileExportOperations -= 1 }
         let supportSnapshot = diagnosticSupportSnapshot()
@@ -3897,6 +3898,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         attemptID: UUID = UUID(),
         now: Date = Date()
     ) {
+        cancelAppleHeartRateZoneRead()
         let attemptedMonotonic = telemetryV2Coordinator.stopAttemptMonotonicTime
         stopObservationFreshnessWorkItem?.cancel()
         stopObservationFreshnessWorkItem = nil

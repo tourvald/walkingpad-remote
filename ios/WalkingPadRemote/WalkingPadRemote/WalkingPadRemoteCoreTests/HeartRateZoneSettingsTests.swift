@@ -119,6 +119,45 @@ final class HeartRateZoneSettingsTests: XCTestCase {
         XCTAssertEqual(snapshot([130, 155, 180, 220]).upperBounds, [129, 154, 179, 219])
     }
 
+    func testUntouchedMaximumDraftCannotEraseLateLoadedValue() {
+        let profile = UUID()
+        var draft = HeartRateZoneSettings.MaximumHeartRateDraft()
+        draft.synchronize(value: nil, profileID: profile)
+        XCTAssertFalse(draft.canSave(activeProfileID: profile, settingsEditable: true))
+        draft.synchronize(value: 192, profileID: profile)
+        XCTAssertEqual(draft.text, "192")
+        XCTAssertFalse(draft.canSave(activeProfileID: profile, settingsEditable: true))
+    }
+
+    func testMaximumDraftPreservesEditsAndRejectsWrongProfileOrLockedSettings() {
+        let profile = UUID()
+        var draft = HeartRateZoneSettings.MaximumHeartRateDraft()
+        draft.synchronize(value: 190, profileID: profile)
+        draft.edit("192")
+        draft.synchronize(value: 185, profileID: profile)
+        XCTAssertEqual(draft.value, 192)
+        XCTAssertTrue(draft.canSave(activeProfileID: profile, settingsEditable: true))
+        XCTAssertFalse(draft.canSave(activeProfileID: UUID(), settingsEditable: true))
+        XCTAssertFalse(draft.canSave(activeProfileID: profile, settingsEditable: false))
+        draft.synchronize(value: 180, profileID: UUID())
+        XCTAssertEqual(draft.value, 180)
+        XCTAssertFalse(draft.isEdited)
+    }
+
+    func testMaximumDraftAllowsExplicitClearingButNeverSavesInvalidInput() {
+        let profile = UUID()
+        var draft = HeartRateZoneSettings.MaximumHeartRateDraft()
+        draft.synchronize(value: 192, profileID: profile)
+        draft.edit("251")
+        XCTAssertFalse(draft.isValid)
+        XCTAssertFalse(draft.canSave(activeProfileID: profile, settingsEditable: true))
+        draft.edit("")
+        XCTAssertTrue(draft.canSave(activeProfileID: profile, settingsEditable: true))
+        XCTAssertNil(draft.value)
+        draft.markSaved()
+        XCTAssertFalse(draft.canSave(activeProfileID: profile, settingsEditable: true))
+    }
+
     private func legacyDTO() throws -> HRSettingsDTO {
         let json = #"{"targetBpm":132,"durationMinutes":25,"adaptiveStepEnabled":true,"decisionIntervalSeconds":10,"speedStepKmh":0.5,"zone1Max":125,"zone2Max":145,"zone3Max":165,"zone4Max":185,"cooldownTargetBpm":112}"#
         return try JSONDecoder().decode(HRSettingsDTO.self, from: Data(json.utf8))
