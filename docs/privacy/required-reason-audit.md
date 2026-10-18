@@ -26,9 +26,15 @@ Each target has its own `PrivacyInfo.xcprivacy`. Synchronized iOS/watch groups
 include resources automatically. The explicit Live Activity group has a focused
 resource build phase. SwiftPM core tests exclude the iOS app manifest; no new
 package resource bundle or runtime owner is necessary. All manifests declare
-tracking false and no tracking domains/collected data types: there is no app
-backend, tracking or analytics SDK. Optional user-directed diagnostic sharing and
-Apple Health/device-to-device flows still require accurate policy disclosure.
+tracking false and no tracking domains. #238 subsequently approved retained
+customer-support receipt of user-selected diagnostics/messages. The iPhone app
+manifest now declares Health, Fitness, Name, EmailAddress, UserID, CustomerSupport
+and OtherDiagnosticData, linked to identity, for AppFunctionality and not tracking.
+This matches the prepared App Privacy worksheet; absence of an automatic uploader
+is not an exemption. The watch and Live Activity bundles have no support/share
+entry or independent developer-collection path and retain empty collected-type
+arrays; watch-origin health data in phone-submitted files is covered by the
+iPhone disclosure. No SDK, collection mechanism or requested permission changes.
 
 ## Verification and release gates
 
@@ -48,3 +54,5 @@ Checked 2026-10-18: [required-reason API categories and approved reasons](https:
 [manifest placement and resource membership](https://developer.apple.com/documentation/bundleresources/adding-a-privacy-manifest-to-your-app-or-third-party-sdk).
 Apple requires a declaration in the bundle containing each executable using a
 covered API; declarations must describe actual usage rather than a generic list.
+
+#238 correction reference: [TN3184](https://developer.apple.com/documentation/technotes/tn3184-adding-data-collection-details-to-your-privacy-manifest) and [describing data use](https://developer.apple.com/documentation/bundleresources/describing-data-use-in-privacy-manifests), checked 2026-10-18. Declare every collected type using Apple-defined values; the checker verifies bundle-specific type/link/purpose/tracking declarations, not merely the required-reason list.

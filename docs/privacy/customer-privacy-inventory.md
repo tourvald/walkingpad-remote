@@ -132,6 +132,11 @@ opaque workout/source/session IDs; no automatic crash-report SDK was found.
 Retain the broader local-data inventory above even where a type is not collected.
 Re-audit the actual received format if support later adds other upload/analytics
 channels; Apple/system-service collection is distinct from developer access.
+The iPhone privacy manifest declares these same seven collected types, linked
+for AppFunctionality without tracking. Watch/Live Activity have no independent
+support submission path; watch-origin data in phone diagnostics is covered by
+the iPhone declaration. Required-reason API declarations are unchanged.
+
 These prepared answers cover iPhone, watch and Live Activity flows, not only the
 main UI. The operator has approved support processing; account-side App Store
 Connect entry/submission remains an explicit release step, not performed here.
