@@ -4,6 +4,21 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class CommandQueueServiceTests: XCTestCase {
+    func testCoalescingReplacesHeartRateContextAndStopCarriesNoHeartRateGuard() {
+        let at = Date(timeIntervalSince1970: 1000)
+        let old = HRDomainService.SpeedCommand(targetKmh: 6.1, increaseSampleAt: at)
+        let fresh = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: at.addingTimeInterval(9))
+        var queue = [CommandQueueService.Command(data: Data([1]), label: "SPEED old", heartRateSpeed: old)]
+        _ = CommandQueueService.enqueueRegular(queue: &queue,
+            command: .init(data: Data([2]), label: "SPEED new", heartRateSpeed: fresh), isSpeedLabel: isSpeed)
+        XCTAssertEqual(queue.count, 1)
+        XCTAssertEqual(queue.first?.heartRateSpeed, fresh)
+        CommandQueueService.replaceWithHighPriority(queue: &queue, command: .init(data: Data([0]), label: "STOP"))
+        XCTAssertEqual(queue.map(\.label), ["STOP"])
+        XCTAssertNil(queue.first?.heartRateSpeed)
+        XCTAssertNil(CommandQueueService.Command(data: Data([3]), label: "QUERY STATUS").heartRateSpeed)
+    }
+
     func testTelemetrySidecarKeepsOriginalSessionAcrossCancellationAndSameEpochDequeue() {
         let epoch = TreadmillConnectionEpoch(rawValue: UUID())
         let oldSession = SessionID()

@@ -3,6 +3,76 @@ import TelemetryDomain
 @testable import WalkingPadCoreLogic
 
 final class HRDomainServiceTests: XCTestCase {
+    func testPacedIncreaseRetainsOriginalSampleAndCannotAdvanceTargetWhenCancelled() throws {
+        let measuredAt = Date(timeIntervalSince1970: 1000)
+        let decidedAt = measuredAt.addingTimeInterval(6.99)
+        let sentAt = decidedAt.addingTimeInterval(1.99)
+        XCTAssertTrue(HRDomainService.heartRateDecisionIsDue(sampleAgeSeconds: 6.99,
+            elapsedSinceLastDecision: .seconds(9), intervalSeconds: 9))
+        let context = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: measuredAt)
+        var queue = [CommandQueueService.Command(data: Data([1]), label: "SPEED HR", heartRateSpeed: context)]
+        let next = queue.removeFirst()
+        let pending = try XCTUnwrap(next.heartRateSpeed)
+        var targetKmh = 6.0
+        var writes = 0
+        var nextAllowedAt = sentAt
+        let blocked = HRDomainService.speedCommandBlockReason(pending, isRunning: true, unitsAllowed: true, now: sentAt)
+        if blocked == nil {
+            writes += 1
+            targetKmh = pending.targetKmh
+            nextAllowedAt = sentAt.addingTimeInterval(2)
+        }
+        XCTAssertEqual(blocked, "hr_increase_sample_stale_before_write")
+        XCTAssertEqual(writes, 0)
+        XCTAssertEqual(targetKmh, 6.0)
+        XCTAssertEqual(nextAllowedAt, sentAt)
+        // A separately arrived sample cannot renew the queued command's original timestamp.
+        let newer = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: sentAt)
+        XCTAssertNil(HRDomainService.speedCommandBlockReason(newer, isRunning: true, unitsAllowed: true, now: sentAt))
+        XCTAssertEqual(pending.increaseSampleAt, measuredAt)
+    }
+
+    func testWriteGuardRejectsInvalidAgesAndProtectsUnitsAndSessionForBothDirections() {
+        let now = Date(timeIntervalSince1970: 1000)
+        for age in [-0.001, 0, 7, 7.001, Double.nan, .infinity] {
+            let command = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: now.addingTimeInterval(-age))
+            let reason = HRDomainService.speedCommandBlockReason(command, isRunning: true, unitsAllowed: true, now: now)
+            XCTAssertEqual(reason == nil, age.isFinite && (0...7).contains(age))
+        }
+        for sampleAt in [now, nil] as [Date?] {
+            let command = HRDomainService.SpeedCommand(targetKmh: 5.8, increaseSampleAt: sampleAt)
+            XCTAssertEqual(HRDomainService.speedCommandBlockReason(command, isRunning: true, unitsAllowed: false, now: now),
+                "hr_units_blocked_before_write")
+            XCTAssertEqual(HRDomainService.speedCommandBlockReason(command, isRunning: false, unitsAllowed: true, now: now),
+                "hr_session_ended_before_write")
+        }
+        let decrease = HRDomainService.SpeedCommand(targetKmh: 5.8, increaseSampleAt: nil)
+        XCTAssertNil(HRDomainService.speedCommandBlockReason(decrease, isRunning: true, unitsAllowed: true, now: now))
+    }
+
+    func testRunningWriteGuardRespectsEveryControllerUnitsFailureAndProtocolExemption() {
+        let epoch = UUID(), at = Date(timeIntervalSince1970: 1000)
+        let command = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: at)
+        for (units, status, observedAt, truthEpoch) in [
+            (ControllerUnits.metric, ControllerUnitsTruthStatus.valid, at.addingTimeInterval(-31), epoch),
+            (.imperial, .valid, at, epoch), (.unknown, .valid, at, epoch),
+            (.metric, .invalidChecksum, at, epoch), (.metric, .malformed, at, epoch),
+            (.metric, .valid, at, UUID())
+        ] {
+            let truth = ControllerUnitsTruth(connectionEpoch: truthEpoch, units: units,
+                status: status, observedAt: observedAt, rawHex: nil)
+            let gate = ControllerUnitsSafetyPolicy.evaluate(path: .hrControl, state: truth,
+                currentConnectionEpoch: epoch, now: at, requiresFreshMetricTruth: true)
+            XCTAssertFalse(gate.allowed)
+            XCTAssertEqual(HRDomainService.speedCommandBlockReason(command, isRunning: true,
+                unitsAllowed: gate.allowed, now: at), "hr_units_blocked_before_write")
+        }
+        let exempt = ControllerUnitsSafetyPolicy.evaluate(path: .hrControl, state: .disconnected,
+            currentConnectionEpoch: nil, now: at, requiresFreshMetricTruth: false)
+        XCTAssertNil(HRDomainService.speedCommandBlockReason(command, isRunning: true,
+            unitsAllowed: exempt.allowed, now: at))
+    }
+
     func testDecisionRequiresFreshMeasurementAndInclusiveMonotonicInterval() {
         func due(age: Double = 0, elapsed: Duration = .seconds(9), interval: Int = 9) -> Bool {
             HRDomainService.heartRateDecisionIsDue(sampleAgeSeconds: age,

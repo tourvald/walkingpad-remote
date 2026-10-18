@@ -2,6 +2,26 @@ import Foundation
 import XCTest
 
 final class HeartRateLegacyBehaviorContractTests: XCTestCase {
+    func testMainHeartRateUnitsAreCheckedBeforeCadenceAndQueuedTargetsCommitOnlyAfterWrite() throws {
+        let decision = try functionBody("private func evaluateHeartRateControlDecision()", in: managerSource)
+        assertOrdered(["controllerUnitsGateDecision()", "guard unitsDecision.allowed", "hrLastDecisionAt = instant"], in: decision)
+        XCTAssertFalse(decision.contains("deviceTargetSpeedKmh = nextSpeed"))
+        XCTAssertTrue(decision.contains("increaseSampleAt: nextSpeed > currentTarget ? measuredAt : nil"))
+        let queue = try functionBody("private func processCommandQueue()", in: managerSource)
+        assertOrdered(["treadmillCommandTelemetrySidecar.dequeue(", "HRDomainService.speedCommandBlockReason(",
+            "if let hrBlockReason", ".commandCancelled(", "} else {", "self.performWrite("], in: queue)
+        let write = try functionBody("private func performWrite(", in: managerSource)
+        assertOrdered(["p.writeValue(", "if let heartRateSpeed", "deviceTargetSpeedKmh = heartRateSpeed.targetKmh",
+            "recordSpeedChange("], in: write)
+        XCTAssertTrue(write.contains("isSpeedCommandLabel(label)"))
+        let send = try functionBody("private func sendTreadmillSetSpeed(", in: managerSource)
+        XCTAssertEqual(send.components(separatedBy: "heartRateSpeed: heartRateSpeed").count - 1, 5)
+        let cancellation = try XCTUnwrap(queue.range(of: "if let hrBlockReason"))
+        let actualWrite = try XCTUnwrap(queue.range(of: "contentsOf: self.performWrite("))
+        XCTAssertFalse(queue[cancellation.lowerBound..<actualWrite.lowerBound].contains("nextCommandAllowedAt ="))
+        XCTAssertTrue(queue.contains("isRunning: self.isHrControlRunning && self.hrRemainingSeconds > 0"))
+    }
+
     private lazy var managerSource = source(
         relativePath: "WalkingPadRemote/BluetoothManager.swift"
     )

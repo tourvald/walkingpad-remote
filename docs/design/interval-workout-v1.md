@@ -41,6 +41,13 @@ independent review and one Draft PR, without merge or physical installation.
   deadline is released: read-only status/units polling continues until the next phase boundary.
   Positive motion leads and phase boundaries retain protection; pending queries
   still yield to queued motion and Stop. Write pacing and Stop priority are unchanged.
+- Main HR decisions revalidate controller units before consuming cadence or
+  changing the speed target. Queued HR adjustments carry immutable target and
+  original increase-sample time; dequeue revalidates active main stage and units,
+  plus finite 0-7 second age for increases. Invalid commands are cancelled without
+  a write or new pacing slot. HR target bookkeeping commits only on speed-write
+  invocation. Auto-starts accompanying HR speed commands use the same guard;
+  manual, recovery, cooldown and Stop retain their established paths.
 - Freeze a valid manually entered HRmax and cycle count at Start. Snapshot
   phase targets separately; never save them as ordinary HR settings. Missing
   HRmax blocks interval Start only. Ordinary workouts retain their behavior.

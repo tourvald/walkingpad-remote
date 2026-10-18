@@ -5537,6 +5537,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard let startedAt = intervalWorkoutStartedAt,
                   state.permitsHeartRateDecision(at: startedAt.duration(to: instant)) else { return }
         }
+        let unitsDecision = controllerUnitsGateDecision()
+        guard unitsDecision.allowed else {
+            hrStatusLine = "HR‑контроль: ожидание подтверждения единиц скорости"
+            hrDecisionDetails = unitsDecision.blockReason?.userMessage ?? "Единицы скорости не подтверждены"
+            return
+        }
         hrLastDecisionAt = instant
         hrNextDecisionSeconds = max(HRDomainService.minimumDecisionIntervalSeconds, hrDecisionIntervalSeconds)
         let hrTargetBPM = activeHRControlTargetBPM
@@ -5644,10 +5650,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)
         if nextSpeed != currentTarget {
-            let old = deviceTargetSpeedKmh
-            desiredSpeedKmh = nextSpeed
-            deviceTargetSpeedKmh = nextSpeed
-            recordSpeedChange(from: old, to: nextSpeed, reason: "hr_decision_set")
             lastCommandLine = "CMD HR adjust -> \(String(format: "%.1f", nextSpeed))"
             let telemetryDecision = makeTreadmillDecision(
                 source: .heartRateControl,
@@ -5660,7 +5662,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             sendTreadmillSetSpeed(
                 nextSpeed,
                 label: String(format: "SPEED %.1f km/h (HR)", nextSpeed),
-                decision: telemetryDecision
+                decision: telemetryDecision,
+                heartRateSpeed: HRDomainService.SpeedCommand(
+                    targetKmh: nextSpeed, increaseSampleAt: nextSpeed > currentTarget ? measuredAt : nil
+                )
             )
             hrStatusLine = diff > 0 ? "HR‑контроль: уменьшаем скорость" : "HR‑контроль: увеличиваем скорость"
             hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → \(String(format: "%+.1f", nextSpeed - currentTarget)) км/ч"
@@ -5896,7 +5901,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         label: String,
         highPriority: Bool = false,
         requiresControlReadiness: Bool = false,
-        telemetryRequest: TreadmillCommandTelemetryRequest? = nil
+        telemetryRequest: TreadmillCommandTelemetryRequest? = nil,
+        heartRateSpeed: HRDomainService.SpeedCommand? = nil
     ) {
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
         guard stopTruthExperimentController?.isActive != true else {
@@ -5908,7 +5914,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             label: label,
             highPriority: highPriority,
             requiresControlReadiness: requiresControlReadiness,
-            telemetryRequest: telemetryRequest
+            telemetryRequest: telemetryRequest,
+            heartRateSpeed: heartRateSpeed
         )
     }
 
@@ -5941,12 +5948,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         label: String,
         highPriority: Bool,
         requiresControlReadiness: Bool,
-        telemetryRequest: TreadmillCommandTelemetryRequest?
+        telemetryRequest: TreadmillCommandTelemetryRequest?,
+        heartRateSpeed: HRDomainService.SpeedCommand? = nil
     ) {
         let command = CommandQueueService.Command(
             data: data,
             label: label,
-            requiresControlReadiness: requiresControlReadiness
+            requiresControlReadiness: requiresControlReadiness,
+            heartRateSpeed: heartRateSpeed
         )
         let request = telemetryRequest ?? treadmillCommandRequest(kind: .other(label))
         let enqueue = request.prepareEnqueue(
@@ -6127,15 +6136,41 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryEvidence = nil
                 queuedSessionID = self.activeTelemetryV2SessionID
             }
-            postWriteTelemetry.append(
-                contentsOf: self.performWrite(
-                    next.data,
-                    label: next.label,
-                    requiresControlReadiness: next.requiresControlReadiness,
-                    telemetryEvidence: telemetryEvidence
+            let hrBlockReason = next.heartRateSpeed.flatMap {
+                HRDomainService.speedCommandBlockReason(
+                    $0, isRunning: self.isHrControlRunning && self.hrRemainingSeconds > 0,
+                    unitsAllowed: self.controllerUnitsGateDecision().allowed, now: Date()
                 )
-            )
-            self.nextCommandAllowedAt = Date().addingTimeInterval(self.commandMinIntervalSecondsForCurrentProtocol())
+            }
+            if let hrBlockReason {
+                if let telemetryEvidence {
+                    postWriteTelemetry.append(.commandCancelled(
+                        TreadmillCommandCancellationObservation(
+                            commandID: telemetryEvidence.commandID,
+                            decisionID: telemetryEvidence.decisionID,
+                            connectionEpoch: telemetryEvidence.connectionEpoch,
+                            occurredAt: Date(), reason: .other(hrBlockReason)
+                        )
+                    ))
+                }
+                if self.isHrControlRunning && self.hrRemainingSeconds > 0 {
+                    self.hrStatusLine = "HR‑контроль: изменение скорости отменено"
+                    self.hrDecisionDetails = hrBlockReason == "hr_units_blocked_before_write"
+                        ? "Дождитесь подтверждения единиц скорости"
+                        : "Дождитесь свежего измерения пульса"
+                }
+            } else {
+                postWriteTelemetry.append(
+                    contentsOf: self.performWrite(
+                        next.data,
+                        label: next.label,
+                        requiresControlReadiness: next.requiresControlReadiness,
+                        telemetryEvidence: telemetryEvidence,
+                        heartRateSpeed: next.heartRateSpeed
+                    )
+                )
+                self.nextCommandAllowedAt = Date().addingTimeInterval(self.commandMinIntervalSecondsForCurrentProtocol())
+            }
             self.isCommandQueueProcessing = false
             if !self.commandQueue.isEmpty {
                 self.processCommandQueue()
@@ -6157,7 +6192,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ data: Data,
         label: String,
         requiresControlReadiness: Bool,
-        telemetryEvidence: TreadmillCommandEnqueuedEvidence?
+        telemetryEvidence: TreadmillCommandEnqueuedEvidence?,
+        heartRateSpeed: HRDomainService.SpeedCommand? = nil
     ) -> [TreadmillTelemetryEvidence] {
         if requiresControlReadiness && !isTreadmillControlReady {
             if label == "STOP" {
@@ -6227,6 +6263,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         lastCommandAckedAt = (type == .withResponse) ? nil : lastCommandSentAt
 
         p.writeValue(data, for: ch, type: type)
+        if let heartRateSpeed, isSpeedCommandLabel(label) {
+            let old = deviceTargetSpeedKmh
+            desiredSpeedKmh = heartRateSpeed.targetKmh
+            deviceTargetSpeedKmh = heartRateSpeed.targetKmh
+            recordSpeedChange(from: old, to: heartRateSpeed.targetKmh, reason: "hr_decision_set")
+        }
         if label != "QUERY STATUS", label != "QUERY PARAMS",
            var lifecycle = stopObservationLifecycle, lifecycle.finalResult == nil {
             lifecycle.markMotionWrite(at: lastCommandSentAt ?? Date(), requiresResponse: type == .withResponse)
@@ -6780,7 +6822,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func sendTreadmillSetSpeed(
         _ kmh: Double,
         label: String,
-        decision: TreadmillControlDecisionEvidence? = nil
+        decision: TreadmillControlDecisionEvidence? = nil,
+        heartRateSpeed: HRDomainService.SpeedCommand? = nil
     ) {
         guard !blocksNonStopTreadmillMotion else {
             return
@@ -6800,7 +6843,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
-                )
+                ),
+                heartRateSpeed: heartRateSpeed
             )
         case .ftms:
             enqueueFtmsRequestControlIfNeeded(decision: decision)
@@ -6812,7 +6856,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("auto_start"),
                         decision: decision
-                    )
+                    ),
+                    heartRateSpeed: heartRateSpeed
                 )
             }
             writeCommand(
@@ -6822,7 +6867,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
-                )
+                ),
+                heartRateSpeed: heartRateSpeed
             )
         case .fitShow:
             if shouldAutoStartForSpeedChange(kmh: kmh) {
@@ -6833,7 +6879,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("auto_start"),
                         decision: decision
-                    )
+                    ),
+                    heartRateSpeed: heartRateSpeed
                 )
             }
             writeCommand(
@@ -6843,7 +6890,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
-                )
+                ),
+                heartRateSpeed: heartRateSpeed
             )
         case .unknown:
             break

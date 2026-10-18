@@ -5,11 +5,14 @@ enum CommandQueueService {
         let data: Data
         let label: String
         let requiresControlReadiness: Bool
+        let heartRateSpeed: HRDomainService.SpeedCommand?
 
-        init(data: Data, label: String, requiresControlReadiness: Bool = false) {
+        init(data: Data, label: String, requiresControlReadiness: Bool = false,
+             heartRateSpeed: HRDomainService.SpeedCommand? = nil) {
             self.data = data
             self.label = label
             self.requiresControlReadiness = requiresControlReadiness
+            self.heartRateSpeed = heartRateSpeed
         }
     }
 

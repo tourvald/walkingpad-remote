@@ -2,6 +2,23 @@ import Foundation
 import TelemetryDomain
 
 enum HRDomainService {
+    struct SpeedCommand: Equatable {
+        let targetKmh: Double
+        let increaseSampleAt: Date?
+    }
+
+    static func speedCommandBlockReason(
+        _ command: SpeedCommand, isRunning: Bool, unitsAllowed: Bool, now: Date
+    ) -> String? {
+        guard isRunning else { return "hr_session_ended_before_write" }
+        guard unitsAllowed else { return "hr_units_blocked_before_write" }
+        if let sampleAt = command.increaseSampleAt {
+            let age = now.timeIntervalSince(sampleAt)
+            guard age.isFinite, (0...7).contains(age) else { return "hr_increase_sample_stale_before_write" }
+        }
+        return nil
+    }
+
     static let minimumDecisionIntervalSeconds = 9
 
     static func heartRateDecisionIsDue(
