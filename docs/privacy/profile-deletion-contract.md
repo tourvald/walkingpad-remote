@@ -140,3 +140,11 @@ exercises the production ordering seam with a disk store and disposable preferen
 normalization callback, asserting legacy target/cooldown/zone payload preservation.
 The app manager itself is reviewed/built without starting its BLE adapter; this
 fixture does not claim a running-app startup smoke.
+
+The existing `TrainingResultBehaviorTests.testInterruptedRecoveryRequiresExplicitNilHealthKitResultBeforeArchiving`
+source-extraction fixture now also executes the actual recovery handlers while
+profile preferences are unresolved, then ready: no early HealthKit probe/archive,
+exactly retained pending result, and successful processing after readiness. Its
+first run needed the new readiness field in the fixture; the failed run was
+stopped and the fixture updated. This exercises production recovery code without
+starting the app/BLE, rather than merely checking a source string.
