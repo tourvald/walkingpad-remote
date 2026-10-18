@@ -242,6 +242,14 @@ public enum ProfileErasureFiles {
 public enum ProfileErasureSettings {
     private static let keys = ["hr_settings_v1", "zone_plan_v1", "workout_history_v1"]
 
+    /// The load/normalization callback may persist defaults, so it must run last.
+    public static func loadAfterLegacyMigration(userDefaults: UserDefaults, profileID: String,
+        legacyFallback: String?, erasedProfiles: Set<String>, load: () -> Void) {
+        migrateLegacySettings(userDefaults: userDefaults, profileID: profileID,
+            legacyFallback: legacyFallback, erasedProfiles: erasedProfiles)
+        load()
+    }
+
     @discardableResult
     public static func migrateLegacySettings(userDefaults: UserDefaults, profileID: String, legacyFallback: String?, erasedProfiles: Set<String>) -> Bool {
         let profile = profileID.lowercased()

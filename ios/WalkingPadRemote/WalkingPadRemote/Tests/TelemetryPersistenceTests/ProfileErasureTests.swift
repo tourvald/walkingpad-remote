@@ -271,6 +271,28 @@ final class ProfileErasureTests: XCTestCase {
         XCTAssertNil(defaults.data(forKey: "hr_settings_v1_profile_profile-b"))
     }
 
+    func testStartupNormalizingLoaderCannotOverwriteLegacySettingsBeforeMigration() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "ProfileErasure-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let legacy = Data(#"{"targetBpm":152,"cooldownTargetBpm":120,"zone1Max":135}"#.utf8)
+        defaults.set(legacy, forKey: "hr_settings_v1")
+        let store = try TelemetryStoreFactory.make(.onDisk(root.appendingPathComponent("test.store")))
+        let erased = try await store.erasedProfileIdentifiers()
+        var loaded: Data?
+        ProfileErasureSettings.loadAfterLegacyMigration(userDefaults: defaults, profileID: "profile-a",
+            legacyFallback: "profile-a", erasedProfiles: erased, load: {
+                let scoped = "hr_settings_v1_profile_profile-a"
+                // The app's normalization callback persists whichever value was loaded.
+                loaded = defaults.data(forKey: scoped) ?? Data("defaults".utf8)
+                defaults.set(loaded, forKey: scoped)
+            })
+        XCTAssertEqual(loaded, legacy)
+        XCTAssertEqual(defaults.data(forKey: "hr_settings_v1_profile_profile-a"), legacy)
+    }
+
     func testNewExportAfterDeletionContainsOnlyRetainedProfile() async throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }

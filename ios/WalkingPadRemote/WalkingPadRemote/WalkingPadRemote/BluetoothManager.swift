@@ -503,11 +503,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func saveHrSettings(profileID: UUID) {
+        guard !erasedProfiles.contains(profileID.uuidString.lowercased()) else { return }
         guard let data = try? JSONEncoder().encode(makeHrSettingsDTO()) else { return }
         UserDefaults.standard.set(data, forKey: profileScopedStoreKey(hrSettingsStoreKey, profileID: profileID))
     }
 
     private func saveZonePlan(profileID: UUID) {
+        guard !erasedProfiles.contains(profileID.uuidString.lowercased()) else { return }
         let normalized = normalizeZonePlan(zonePlanMinutes)
         guard let data = try? JSONEncoder().encode(normalized) else { return }
         UserDefaults.standard.set(data, forKey: profileScopedStoreKey(zonePlanStoreKey, profileID: profileID))
@@ -520,7 +522,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let legacyFallbackProfileStoreKey = "legacy_fallback_profile_v1"
 
     var canDeleteUserProfile: Bool {
-        ProfileErasurePolicy.permitsDeletion(
+        profileErasureStateLoaded && ProfileErasurePolicy.permitsDeletion(
             workoutActive: isHrControlRunning || nativeHealthKitWorkoutCommitted || nativeHealthKitWorkoutFinishInFlight,
             recoveryOutstanding: hasOutstandingNativeWorkoutRecovery,
             preflightActive: nativeHeartRatePreflightEngine.hasStartIntent,
@@ -544,13 +546,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard let self else { return }
             do {
                 erasedProfiles = try await telemetryV2Coordinator.erasedProfileIdentifiers()
-                if let profileID = activeUserProfileID,
-                   ProfileErasureSettings.migrateLegacySettings(
-                    userDefaults: .standard, profileID: profileID.uuidString,
-                    legacyFallback: UserDefaults.standard.string(forKey: legacyFallbackProfileStoreKey),
-                    erasedProfiles: erasedProfiles
-                   ) { loadActiveProfileScopedData() }
+                if let profileID = activeUserProfileID {
+                    ProfileErasureSettings.loadAfterLegacyMigration(
+                        userDefaults: .standard, profileID: profileID.uuidString,
+                        legacyFallback: UserDefaults.standard.string(forKey: legacyFallbackProfileStoreKey),
+                        erasedProfiles: erasedProfiles,
+                        load: { self.loadActiveProfileScopedData() }
+                    )
+                }
                 profileErasureStateLoaded = true
+                processNoActiveWorkoutRecoveryIfPossible()
+                processPendingActiveWorkoutRecoveryIfPossible()
                 resolveDeferredNativeHealthKitLinkageIfPossible()
                 if !profileDataAvailable {
                     infoToastMessage = "Удаление профиля не завершено. Повторите удаление в параметрах."
@@ -569,7 +575,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func selectUserProfile(id: UUID) {
         guard userProfiles.contains(where: { $0.id == id }) else { return }
-        guard !profileErasureInFlight, !shouldPresentActiveWorkout else {
+        guard profileErasureStateLoaded, !profileErasureInFlight, !shouldPresentActiveWorkout else {
             infoToastMessage = "Во время активной тренировки профиль переключать нельзя."
             return
         }
@@ -586,7 +592,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func createUserProfile(named rawLabel: String) {
-        guard !profileErasureInFlight, !shouldPresentActiveWorkout else {
+        guard profileErasureStateLoaded, !profileErasureInFlight, !shouldPresentActiveWorkout else {
             infoToastMessage = "Во время активной тренировки профиль менять нельзя."
             return
         }
@@ -612,7 +618,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func renameActiveUserProfile(to rawLabel: String) {
-        guard !profileErasureInFlight, !shouldPresentActiveWorkout else {
+        guard profileErasureStateLoaded, !profileErasureInFlight, !shouldPresentActiveWorkout else {
             infoToastMessage = "Во время активной тренировки профиль менять нельзя."
             return
         }
@@ -1750,7 +1756,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func processPendingActiveWorkoutRecoveryIfPossible() {
-        guard didStartApplicationRuntime,
+        guard didStartApplicationRuntime, profileErasureStateLoaded,
               let result = pendingActiveWorkoutRecoveryResult else { return }
         pendingActiveWorkoutRecoveryResult = nil
         if result.1 == nil, result.0 == nil,
@@ -1835,7 +1841,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func processNoActiveWorkoutRecoveryIfPossible() {
-        guard didStartApplicationRuntime,
+        guard didStartApplicationRuntime, profileErasureStateLoaded,
               activeWorkoutRecoveryAvailability == false,
               !activeWorkoutRecoveryRequestPending,
               !didHandleActiveWorkoutRecoveryCallback,
@@ -2034,8 +2040,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
            let original = sortedProfiles(userProfiles).first?.id {
             UserDefaults.standard.set(original.uuidString.lowercased(), forKey: legacyFallbackProfileStoreKey)
         }
-        loadHrSettings()
-        loadZonePlan()
         loadNativeWorkoutRecoveryState()
         refreshWorkoutHistoryFromV2(reset: true)
         setHeartRateTelemetrySink(telemetryV2Coordinator)

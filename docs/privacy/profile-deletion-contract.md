@@ -130,3 +130,13 @@ An initial full suite exposed a CSV-export directory-count assumption after the
 new hidden internal sidecar. Its assertion now counts public files while all
 CSV privacy/content/determinism checks remain; the sidecar is not a share URL or
 ZIP entry. Focused correction tests cover that existing regression as well.
+
+The second critique caught ordinary first-upgrade settings loss: an early
+`loadHrSettings` normalization could persist defaults before deferred migration.
+Startup now performs its single initial settings load inside
+`ProfileErasureSettings.loadAfterLegacyMigration` after journal resolution; profile
+mutations stay unavailable before that resolution. `testStartupNormalizingLoaderCannotOverwriteLegacySettingsBeforeMigration`
+exercises the production ordering seam with a disk store and disposable preference
+normalization callback, asserting legacy target/cooldown/zone payload preservation.
+The app manager itself is reviewed/built without starting its BLE adapter; this
+fixture does not claim a running-app startup smoke.
