@@ -148,6 +148,7 @@ let package = Package(
                 "DiscoveryUIPublicationPolicy.swift",
                 "HRDomainService.swift",
                 "HRSettingsDefaults.swift",
+                "HRSettingsDTO.swift",
                 "HeartRateZoneSettings.swift",
                 "IPhoneHealthKitHeartRateProviderCore.swift",
                 "NativeHeartRatePreflightEngine.swift",

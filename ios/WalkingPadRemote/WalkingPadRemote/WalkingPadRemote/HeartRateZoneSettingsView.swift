@@ -4,7 +4,6 @@ struct HeartRateZoneSettingsView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @Environment(\.scenePhase) private var scenePhase
     @State private var maximumText = ""
-    @State private var maximumError: String?
     @State private var maximumProfileID: UUID?
     @FocusState private var maximumFocused: Bool
 
@@ -12,6 +11,13 @@ struct HeartRateZoneSettingsView: View {
     private var isManual: Bool { manager.heartRateZoneSettings.source == .manual }
     private var isEditable: Bool { manager.canEditHeartRateZoneSettings && !manager.heartRateZoneReadInFlight }
     private var bounds: [Int] { manager.heartRateZoneSettings.effectiveUpperBounds }
+    private var maximumError: String? {
+        let text = maximumText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.isEmpty || (Int(text) != nil && HeartRateZoneSettings.validMaximum(Int(text))) else {
+            return "Введите целое число от 80 до 250 или оставьте поле пустым."
+        }
+        return nil
+    }
 
     var body: some View {
         Form {
@@ -129,13 +135,18 @@ struct HeartRateZoneSettingsView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 Task { await manager.readAppleHeartRateZones(requestAuthorization: false) }
+            } else if phase == .background {
+                manager.cancelAppleHeartRateZoneRead()
             }
         }
         .onChange(of: maximumFocused) { _, focused in
             if !focused { saveMaximum() }
         }
         .onChange(of: manager.activeUserProfileID) { _, _ in reloadMaximum() }
-        .onDisappear { saveMaximum() }
+        .onDisappear {
+            saveMaximum()
+            manager.cancelAppleHeartRateZoneRead()
+        }
     }
 
     private func zoneLabel(_ index: Int) -> some View {
@@ -157,7 +168,6 @@ struct HeartRateZoneSettingsView: View {
     private func reloadMaximum() {
         maximumProfileID = manager.activeUserProfileID
         maximumText = manager.heartRateZoneSettings.maximumHeartRate.map(String.init) ?? ""
-        maximumError = nil
     }
 
     private func saveMaximum() {
@@ -165,11 +175,7 @@ struct HeartRateZoneSettingsView: View {
               manager.canEditHeartRateZoneSettings else { reloadMaximum(); return }
         let trimmed = maximumText.trimmingCharacters(in: .whitespacesAndNewlines)
         let value = Int(trimmed)
-        guard trimmed.isEmpty || value != nil,
-              manager.updateMaximumHeartRate(trimmed.isEmpty ? nil : value) else {
-            maximumError = "Введите целое число от 80 до 250 или оставьте поле пустым."
-            return
-        }
-        maximumError = nil
+        guard maximumError == nil else { return }
+        manager.updateMaximumHeartRate(trimmed.isEmpty ? nil : value)
     }
 }

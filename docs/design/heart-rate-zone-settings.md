@@ -31,7 +31,7 @@ after privacy PR #243 merged; native privacy entry and package exclusion retaine
 ## Write set and verification
 
 SwiftUI: `HeartRateZoneSettingsView.swift`, the settings entry in `ContentView.swift`.
-Domain: `HeartRateZoneSettings.swift`. Platform: `AppleHeartRateZoneProvider.swift`.
+Domain: `HeartRateZoneSettings.swift`, `HRSettingsDTO.swift`. Platform: `AppleHeartRateZoneProvider.swift`.
 Profile adapter: the existing settings DTO/load/save and bounded update methods in
 `BluetoothManager.swift`. Add these files to the existing Swift package source/exclude
 lists, with focused `HeartRateZoneSettingsTests.swift` regression coverage.
@@ -62,19 +62,21 @@ upper bound using `ceil(threshold) - 1`. Thus 140 maps to 139, while 140.4 maps 
 non-five-zone, app/custom-source, or unrepresentable configurations. Exact parity
 with the Watch display at a threshold remains a device acceptance check.
 
-## Local verification
+## Review corrections
 
-- `swift test --filter HeartRateZoneSettingsTests`: 7 passed.
-- `swift test`: 819 tests passed across all package suites on the initial base;
-  466 in the core module. After the base refresh, the 466 core tests and unsigned
-  generic iOS build passed again. Privacy-manifest and customer-page checks passed.
-- Unsigned generic iOS and iOS Simulator builds passed with the iOS 27 SDK.
-- `git diff --check` and governance validation passed.
-- `python3 -m unittest scripts/test_code_growth_report.py scripts/test_codex_governance.py`: 7 passed.
-- UI-only scope checker rejects `BluetoothManager.swift` and `Package.swift` by
-  design; this task explicitly authorizes settings persistence/platform integration.
-  The checker was left unchanged. All production edits match the write set above.
-- Working-diff code-growth inspection includes untracked files; the standard
-  base/head report is empty because no commit was requested or created.
-- No personal HealthKit reads, install, launch, or BLE interaction was performed.
-  Real HealthKit/device acceptance and external safety/final review are outstanding.
+New-profile copying uses the stored manual bounds in both nested and legacy DTO
+fields; imported effective Apple values, cache and HRmax are never copied.
+The existing DTO is now pure/testable without BluetoothManager or hardware.
+Closing the form or backgrounding invalidates read ownership; cancelled tasks
+cannot apply successes or errors. Temporary inactivity is allowed for system
+HealthKit authorization UI. Invalid HRmax is shown while editing, before departure.
+
+The 220 BPM import ceiling intentionally preserves the existing training selector
+in `ContentView.hrZoneRanges`, which truncates every range and zone-5 target at
+220. Imported zone 5 must remain representable there. Values supported by manual
+persistence up to 230 do not establish support in that training selector. Broader
+training targets require a separate runtime/UI contract; this task rejects the
+unsupported configuration visibly and preserves the previous successful settings.
+
+PR #245 is the single verification/review evidence packet. Device HealthKit/Watch
+boundary parity and required exact-head CI remain separate acceptance gates.

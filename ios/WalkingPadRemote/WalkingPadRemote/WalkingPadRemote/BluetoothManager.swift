@@ -475,8 +475,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrCooldownMaxMinutes = 5
     }
 
-    private func makeHrSettingsDTO() -> HrSettingsDTO {
-        HrSettingsDTO(
+    private func makeHRSettingsDTO() -> HRSettingsDTO {
+        HRSettingsDTO(
             targetBpm: hrTargetBPM,
             durationMinutes: hrDurationMinutes,
             adaptiveStepEnabled: hrAdaptiveStepEnabled,
@@ -505,9 +505,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func saveHrSettings(profileID: UUID) {
         guard !erasedProfiles.contains(profileID.uuidString.lowercased()) else { return }
-        var dto = makeHrSettingsDTO()
+        var dto = makeHRSettingsDTO()
         if profileID != activeUserProfileID {
-            dto.heartRateZones = heartRateZoneSettings.copiedForNewProfile()
+            dto = dto.copiedForNewProfile()
         }
         guard let data = try? JSONEncoder().encode(dto) else { return }
         UserDefaults.standard.set(data, forKey: profileScopedStoreKey(hrSettingsStoreKey, profileID: profileID))
@@ -646,7 +646,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             infoToastMessage = "Удаление недоступно: дождитесь завершения тренировки, восстановления и экспорта."
             return
         }
-        invalidateHeartRateZoneRead()
+        cancelAppleHeartRateZoneRead()
         profileErasureInFlight = true
         recomputeHrStartAllowed()
         let fallback = UserDefaults.standard.string(forKey: legacyFallbackProfileStoreKey)
@@ -694,34 +694,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
-    private struct HrSettingsDTO: Codable {
-        let targetBpm: Int
-        let durationMinutes: Int
-        let adaptiveStepEnabled: Bool
-        let decisionIntervalSeconds: Int
-        let speedStepKmh: Double
-        let adaptiveDeadbandPercent: Double?
-        let adaptiveDownLevel2StartPercent: Double?
-        let adaptiveDownLevel3StartPercent: Double?
-        let adaptiveDownLevel4StartPercent: Double?
-        let adaptiveUpLevel2StartPercent: Double?
-        let adaptiveUpLevel3StartPercent: Double?
-        let adaptiveUpLevel4StartPercent: Double?
-        let trendWindowSeconds: Double?
-        let trendEmaAlpha: Double?
-        let trendSlopeMaxBpmPerSecond: Double?
-        let zone1Max: Int?
-        let zone2Max: Int?
-        let zone3Max: Int?
-        let zone4Max: Int?
-        let cooldownTargetBpm: Int?
-        let cooldownMinSpeed: Double?
-        let cooldownMaxMinutes: Int?
-        var heartRateZones: HeartRateZoneSettings?
-    }
-
     private func loadHrSettings() {
-        invalidateHeartRateZoneRead()
+        cancelAppleHeartRateZoneRead()
         var loadedHeartRateZones: HeartRateZoneSettings?
         heartRateZoneSettings = HeartRateZoneSettings()
         isLoadingHrSettings = true
@@ -741,7 +715,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard let activeUserProfileID else { return }
         let key = profileScopedStoreKey(hrSettingsStoreKey, profileID: activeUserProfileID)
         guard let data = UserDefaults.standard.data(forKey: key),
-              let dto = try? JSONDecoder().decode(HrSettingsDTO.self, from: data) else {
+              let dto = try? JSONDecoder().decode(HRSettingsDTO.self, from: data) else {
             return
         }
 
@@ -800,7 +774,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published private(set) var heartRateZoneSettings = HeartRateZoneSettings()
     @Published private(set) var heartRateZoneReadInFlight = false
     @Published private(set) var heartRateZoneReadError: String?
-    private var heartRateZoneReadID = UUID()
+    private var heartRateZoneReadRequest: HeartRateZoneSettings.AppleReadRequest?
 
     // Reuse the existing idle-profile safety gate, including Stop/recovery/storage ownership.
     var canEditHeartRateZoneSettings: Bool { profileDataAvailable && canDeleteUserProfile }
@@ -809,8 +783,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         [hrZone1Max, hrZone2Max, hrZone3Max, hrZone4Max]
     }
 
-    private func invalidateHeartRateZoneRead() {
-        heartRateZoneReadID = UUID()
+    func cancelAppleHeartRateZoneRead() {
+        heartRateZoneReadRequest = nil
         heartRateZoneReadInFlight = false
         heartRateZoneReadError = nil
     }
@@ -828,7 +802,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     func useManualHeartRateZones() {
         guard canEditHeartRateZoneSettings else { return }
-        invalidateHeartRateZoneRead()
+        cancelAppleHeartRateZoneRead()
         heartRateZoneSettings.source = .manual
         applyHeartRateZoneBounds(heartRateZoneSettings.manualUpperBounds)
     }
@@ -855,25 +829,29 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard #available(iOS 27.0, *), canEditHeartRateZoneSettings,
               !heartRateZoneReadInFlight, let profileID = activeUserProfileID,
               requestAuthorization || heartRateZoneSettings.source == .appleHealth else { return }
-        let requestID = UUID()
-        heartRateZoneReadID = requestID
+        let request = HeartRateZoneSettings.AppleReadRequest(profileID: profileID)
+        heartRateZoneReadRequest = request
         heartRateZoneReadInFlight = true
         heartRateZoneReadError = nil
         defer {
-            if heartRateZoneReadID == requestID { heartRateZoneReadInFlight = false }
+            if heartRateZoneReadRequest == request {
+                heartRateZoneReadRequest = nil
+                heartRateZoneReadInFlight = false
+            }
         }
         do {
             let snapshot = try await AppleHeartRateZoneProvider.read(
                 from: healthStore, requestAuthorization: requestAuthorization
             )
-            guard heartRateZoneReadID == requestID, activeUserProfileID == profileID,
-                  canEditHeartRateZoneSettings, let bounds = snapshot.upperBounds else { return }
+            guard request.canApply(current: heartRateZoneReadRequest, activeProfileID: activeUserProfileID,
+                                   settingsEditable: canEditHeartRateZoneSettings, taskCancelled: Task.isCancelled),
+                  let bounds = snapshot.upperBounds else { return }
             heartRateZoneSettings.appleSnapshot = snapshot
             heartRateZoneSettings.source = .appleHealth
             applyHeartRateZoneBounds(bounds)
         } catch {
-            guard heartRateZoneReadID == requestID, activeUserProfileID == profileID,
-                  canEditHeartRateZoneSettings else { return }
+            guard request.canApply(current: heartRateZoneReadRequest, activeProfileID: activeUserProfileID,
+                                   settingsEditable: canEditHeartRateZoneSettings, taskCancelled: Task.isCancelled) else { return }
             heartRateZoneReadError = (error as? AppleHeartRateZoneProvider.ReadError)?.errorDescription
                 ?? "Не удалось обновить зоны Apple Health. Проверьте доступ и повторите попытку. Сохранённые границы не изменены."
         }
@@ -3162,7 +3140,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func startTreadmillTestRun() {
-        invalidateHeartRateZoneRead()
+        cancelAppleHeartRateZoneRead()
         guard canStartTreadmillTestRun,
               let context = currentTreadmillTestRunContext() else {
             treadmillTestRunStatusText = treadmillTestRunDisplayText
@@ -4300,7 +4278,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func startHrControl() {
-        invalidateHeartRateZoneRead()
+        cancelAppleHeartRateZoneRead()
         guard profileDataAvailable,
               !isHrControlRunning,
               !hasOutstandingNativeWorkoutRecovery,

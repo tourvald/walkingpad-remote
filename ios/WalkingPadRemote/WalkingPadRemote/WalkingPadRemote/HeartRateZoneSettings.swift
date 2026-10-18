@@ -6,6 +6,16 @@ struct HeartRateZoneSettings: Codable, Equatable {
         case appleHealth
     }
 
+    // Ephemeral request ownership; never encoded with profile settings.
+    struct AppleReadRequest: Equatable {
+        let id = UUID()
+        let profileID: UUID
+
+        func canApply(current: Self?, activeProfileID: UUID?, settingsEditable: Bool, taskCancelled: Bool) -> Bool {
+            self == current && profileID == activeProfileID && settingsEditable && !taskCancelled
+        }
+    }
+
     struct AppleSnapshot: Codable, Equatable {
         let thresholds: [Double]
         let origin: String
@@ -18,6 +28,8 @@ struct HeartRateZoneSettings: Codable, Equatable {
             guard thresholds.count == 4,
                   thresholds.allSatisfy({ $0.isFinite && $0 >= 80 && $0 <= 220 }) else { return nil }
             let bounds = thresholds.map { Int(ceil($0)) - 1 }
+            // The existing training selector ends at 220 BPM (hrZoneRanges).
+            // A higher zone-5 lower bound would be silently truncated there.
             guard HeartRateZoneSettings.validBounds(bounds), bounds[3] < 220,
                   zip(thresholds, thresholds.dropFirst()).allSatisfy({ $0 < $1 }) else { return nil }
             return bounds
@@ -57,7 +69,7 @@ struct HeartRateZoneSettings: Codable, Equatable {
 
     func copiedForNewProfile() -> Self {
         var copy = Self()
-        copy.manualUpperBounds = effectiveUpperBounds
+        copy.manualUpperBounds = manualUpperBounds
         return copy
     }
 }
