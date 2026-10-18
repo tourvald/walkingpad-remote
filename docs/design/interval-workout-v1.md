@@ -37,8 +37,8 @@ independent review and one Draft PR, without merge or physical installation.
   presentation; it cannot make ordinary/work/recovery HR decisions. Expired
   phases and latched upper-limit excursions block delivery-triggered decisions
   until the phase ticker handles them.
-- While waiting for a new HR sample after the decision interval, no motion
-  deadline is reserved: existing read-only status/units polling continues.
+- While waiting for a new HR sample after the decision interval, only the HR
+  deadline is released: read-only status/units polling continues until the next phase boundary.
   Positive motion leads and phase boundaries retain protection; pending queries
   still yield to queued motion and Stop. Write pacing and Stop priority are unchanged.
 - Freeze a valid manually entered HRmax and cycle count at Start. Snapshot

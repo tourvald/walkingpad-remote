@@ -5,13 +5,29 @@ import XCTest
 final class WalkingPadStatusRefreshPolicyTests: XCTestCase {
     private let start = Date(timeIntervalSince1970: 1_780_000_000)
 
+    func testDueHeartRateCannotConsumePhaseBoundaryMotionWindow() {
+        for (decision, phase, expected) in [(0, 40, 40), (0, 1, 1), (0, 0, 0), (9, 1, 1), (9, 40, 9)] {
+            let lead = WalkingPadStatusRefreshPolicy.motionLeadSeconds(
+                decisionRemainingSeconds: decision, phaseRemainingSeconds: phase)
+            XCTAssertEqual(lead, expected)
+            if phase <= 1 {
+                for delay in [0.0, 1.0] {
+                    XCTAssertFalse(WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
+                        isWorkoutOrCooldownActive: true, transportReady: true, motionQueueIdle: true,
+                        secondsUntilNextScheduledMotion: lead, lastStatusQueryAt: nil,
+                        lastControllerUnitsQueryAt: nil, earliestWriteDelaySeconds: delay, now: start).shouldRequest)
+                }
+            }
+        }
+    }
+
     func testWaitingForHeartRateAllowsStatusAndUnitsButNotBusyOrInvalidTransport() {
         for (statusAge, expected) in [(5.0, WalkingPadReadOnlyRefreshKind.status), (2.0, .controllerUnits)] {
-            XCTAssertEqual(refresh(active: true, transport: true, idle: true, lead: nil,
+            XCTAssertEqual(refresh(active: true, transport: true, idle: true, lead: 40,
                 status: start.addingTimeInterval(-statusAge), units: start.addingTimeInterval(-20)).kind, expected)
         }
         for (active, transport, idle) in [(false, true, true), (true, false, true), (true, true, false)] {
-            XCTAssertFalse(refresh(active: active, transport: transport, idle: idle, lead: nil,
+            XCTAssertFalse(refresh(active: active, transport: transport, idle: idle, lead: 40,
                 status: nil, units: nil).shouldRequest)
         }
         for lead in [-1, 0, 1, 2] {
@@ -21,7 +37,7 @@ final class WalkingPadStatusRefreshPolicyTests: XCTestCase {
         for delay in [-1.0, .infinity, .nan] {
             XCTAssertFalse(WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
                 isWorkoutOrCooldownActive: true, transportReady: true, motionQueueIdle: true,
-                secondsUntilNextScheduledMotion: nil, lastStatusQueryAt: nil, lastControllerUnitsQueryAt: nil,
+                secondsUntilNextScheduledMotion: 40, lastStatusQueryAt: nil, lastControllerUnitsQueryAt: nil,
                 earliestWriteDelaySeconds: delay, now: start).shouldRequest)
         }
     }
@@ -52,7 +68,8 @@ final class WalkingPadStatusRefreshPolicyTests: XCTestCase {
             let decision = WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
                 isWorkoutOrCooldownActive: true, transportReady: true,
                 motionQueueIdle: second >= nextWriteSecond,
-                secondsUntilNextScheduledMotion: remaining > 0 ? remaining : nil,
+                secondsUntilNextScheduledMotion: WalkingPadStatusRefreshPolicy.motionLeadSeconds(
+                    decisionRemainingSeconds: remaining, phaseRemainingSeconds: 121 - second),
                 lastStatusQueryAt: lastStatus, lastControllerUnitsQueryAt: lastUnits, now: now)
             switch decision.kind {
             case .status:
@@ -206,7 +223,7 @@ final class WalkingPadStatusRefreshPolicyTests: XCTestCase {
         active: Bool,
         transport: Bool,
         idle: Bool,
-        lead: Int?,
+        lead: Int,
         status: Date?,
         units: Date?
     ) -> WalkingPadReadOnlyRefreshDecision {

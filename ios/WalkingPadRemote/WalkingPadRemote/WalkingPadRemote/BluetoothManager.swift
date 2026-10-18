@@ -6072,9 +6072,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             let discardedQueries = CommandQueueService.discardReadOnlyQueries(
                 queue: &self.commandQueue,
                 motionWindowIsProtected: self.isHrControlRunning
-                    && (self.controllerUnitsNextScheduledMotionLeadSeconds.map {
-                        $0 <= ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds
-                    } ?? false)
+                    && self.controllerUnitsNextScheduledMotionLeadSeconds <= ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds
             )
             if !discardedQueries.isEmpty {
                 if discardedQueries.contains(where: { $0.label == "QUERY PARAMS" }) {
@@ -6672,16 +6670,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
     }
 
-    private var controllerUnitsNextScheduledMotionLeadSeconds: Int? {
+    private var controllerUnitsNextScheduledMotionLeadSeconds: Int {
         if let cooldownState = cooldownRuntimeState {
             let interval = max(1, cooldownState.stepIntervalSeconds)
             let remainder = cooldownState.elapsedSeconds % interval
             return remainder == 0 ? interval : interval - remainder
         }
-        if hrRemainingSeconds <= 0 { return 0 }
-        // Once eligible, motion waits for a new HR sample and has no reserved deadline.
-        guard hrNextDecisionSeconds > 0 else { return nil }
-        return min(hrNextDecisionSeconds, hrRemainingSeconds)
+        return WalkingPadStatusRefreshPolicy.motionLeadSeconds(
+            decisionRemainingSeconds: hrNextDecisionSeconds,
+            phaseRemainingSeconds: intervalWorkoutState?.remainingSeconds ?? hrRemainingSeconds
+        )
     }
 
     private func controllerUnitsResponseContext(

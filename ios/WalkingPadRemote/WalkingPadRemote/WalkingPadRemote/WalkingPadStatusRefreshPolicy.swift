@@ -11,17 +11,23 @@ struct WalkingPadReadOnlyRefreshDecision: Equatable {
     var shouldRequest: Bool { kind != nil }
 }
 
-/// Coordinates read-only polling; a nil motion lead means no deadline is reserved.
+/// Coordinates read-only WalkingPad polling without occupying a motion command window.
 enum WalkingPadStatusRefreshPolicy {
     // Preserve the pre-motion slot without redundant mid-window status writes.
     static let preferredStatusQueryInterval: TimeInterval = 4
     static let maximumStatusQueryInterval: TimeInterval = 5
 
+    static func motionLeadSeconds(decisionRemainingSeconds: Int, phaseRemainingSeconds: Int) -> Int {
+        // Waiting for HR releases only its deadline; the phase boundary still reserves motion.
+        decisionRemainingSeconds > 0
+            ? min(decisionRemainingSeconds, phaseRemainingSeconds) : phaseRemainingSeconds
+    }
+
     static func activeWorkoutRefresh(
         isWorkoutOrCooldownActive: Bool,
         transportReady: Bool,
         motionQueueIdle: Bool,
-        secondsUntilNextScheduledMotion: Int?,
+        secondsUntilNextScheduledMotion: Int,
         lastStatusQueryAt: Date?,
         lastControllerUnitsQueryAt: Date?,
         earliestWriteDelaySeconds: TimeInterval = 0,
@@ -33,10 +39,8 @@ enum WalkingPadStatusRefreshPolicy {
               motionQueueIdle,
               earliestWriteDelaySeconds.isFinite, earliestWriteDelaySeconds >= 0,
               writeSpacingSeconds.isFinite, writeSpacingSeconds > 0,
-            secondsUntilNextScheduledMotion.map({
-                Double($0) - earliestWriteDelaySeconds
-                    > Double(ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds)
-            }) ?? true else {
+              Double(secondsUntilNextScheduledMotion) - earliestWriteDelaySeconds
+                > Double(ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds) else {
             return WalkingPadReadOnlyRefreshDecision(kind: nil)
         }
 
@@ -62,10 +66,8 @@ enum WalkingPadStatusRefreshPolicy {
         // A units query must leave a paced slot for the next factual status reply.
         if unitsAreDue,
            statusAge.map({ $0 < maximumStatusQueryInterval - writeSpacingSeconds }) == true,
-           secondsUntilNextScheduledMotion.map({
-                Double($0) - earliestWriteDelaySeconds
-                    > Double(ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds) + writeSpacingSeconds
-           }) ?? true {
+           Double(secondsUntilNextScheduledMotion) - earliestWriteDelaySeconds
+                > Double(ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds) + writeSpacingSeconds {
             return WalkingPadReadOnlyRefreshDecision(kind: .controllerUnits)
         }
         if statusIsDue {

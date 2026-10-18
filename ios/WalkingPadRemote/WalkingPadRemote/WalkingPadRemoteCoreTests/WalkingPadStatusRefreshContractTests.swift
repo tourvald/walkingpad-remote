@@ -3,15 +3,14 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class WalkingPadStatusRefreshContractTests: XCTestCase {
-    func testWaitingForHeartRateHasNoReservedMotionDeadline() throws {
-        let manager = try managerSource()
-        XCTAssertTrue(manager.contains("private var controllerUnitsNextScheduledMotionLeadSeconds: Int?"))
-        let lead = try functionBody("private var controllerUnitsNextScheduledMotionLeadSeconds:", in: manager)
-        XCTAssertTrue(lead.contains("guard hrNextDecisionSeconds > 0 else { return nil }"))
+    func testWaitingForHeartRateRetainsPhaseBoundaryProtection() throws {
+        let lead = try functionBody("private var controllerUnitsNextScheduledMotionLeadSeconds:", in: managerSource())
+        XCTAssertTrue(lead.contains("WalkingPadStatusRefreshPolicy.motionLeadSeconds("))
+        XCTAssertTrue(lead.contains("decisionRemainingSeconds: hrNextDecisionSeconds"))
+        XCTAssertTrue(lead.contains("phaseRemainingSeconds: intervalWorkoutState?.remainingSeconds ?? hrRemainingSeconds"))
         let cooldown = try XCTUnwrap(lead.range(of: "if let cooldownState"))
-        let waiting = try XCTUnwrap(lead.range(of: "guard hrNextDecisionSeconds > 0"))
+        let waiting = try XCTUnwrap(lead.range(of: "WalkingPadStatusRefreshPolicy.motionLeadSeconds("))
         XCTAssertLessThan(cooldown.lowerBound, waiting.lowerBound)
-        XCTAssertTrue(lead.contains("if hrRemainingSeconds <= 0 { return 0 }"))
     }
 
     func testRequestCannotPublishOrInferFactualSpeed() throws {
@@ -76,9 +75,7 @@ final class WalkingPadStatusRefreshContractTests: XCTestCase {
         let prune = try XCTUnwrap(queue.range(of: "CommandQueueService.discardReadOnlyQueries"))
         let send = try XCTUnwrap(queue.range(of: "self.performWrite"))
         XCTAssertLessThan(prune.lowerBound, send.lowerBound)
-        XCTAssertTrue(queue.contains("self.controllerUnitsNextScheduledMotionLeadSeconds.map"))
-        XCTAssertTrue(queue.contains("$0 <= ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds"))
-        XCTAssertTrue(queue.contains("} ?? false)"))
+        XCTAssertTrue(queue.contains("self.controllerUnitsNextScheduledMotionLeadSeconds <= ControllerUnitsRefreshPolicy.requiredMotionLeadSeconds"))
     }
 
     private func managerSource() throws -> String {
