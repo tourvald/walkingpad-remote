@@ -101,6 +101,7 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
 
     static let currentSchemaVersion = 1
 
+    var isIntervalWorkout: Bool? = nil
     let schemaVersion: Int
     let appWorkoutID: UUID
     let phase: Phase
@@ -121,9 +122,11 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
         targetBPM: Int,
         durationMinutes: Int,
         acquisitionStartedAt: Date,
-        profileID: UUID?
+        profileID: UUID?,
+        isIntervalWorkout: Bool? = nil
     ) -> Self {
         Self(
+            isIntervalWorkout: isIntervalWorkout,
             schemaVersion: currentSchemaVersion,
             appWorkoutID: appWorkoutID,
             phase: .preflight,
@@ -148,6 +151,7 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
         telemetrySessionID: UUID
     ) -> Self {
         Self(
+            isIntervalWorkout: isIntervalWorkout,
             schemaVersion: schemaVersion,
             appWorkoutID: appWorkoutID,
             phase: .committed,
@@ -167,6 +171,7 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
 
     func finishing(requestedAt: Date) -> Self {
         Self(
+            isIntervalWorkout: isIntervalWorkout,
             schemaVersion: schemaVersion,
             appWorkoutID: appWorkoutID,
             phase: .finishing,
@@ -186,6 +191,7 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
 
     func stopping(requestedAt: Date) -> Self {
         Self(
+            isIntervalWorkout: isIntervalWorkout,
             schemaVersion: schemaVersion,
             appWorkoutID: appWorkoutID,
             phase: .stopping,
@@ -205,11 +211,12 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
 
     func planningDuration(seconds: Int) -> Self {
         Self(
+            isIntervalWorkout: isIntervalWorkout,
             schemaVersion: schemaVersion,
             appWorkoutID: appWorkoutID,
             phase: phase,
             targetBPM: targetBPM,
-            durationMinutes: max(1, (seconds + 59) / 60),
+            durationMinutes: isIntervalWorkout == true ? durationMinutes : max(1, (seconds + 59) / 60),
             plannedDurationSeconds: seconds,
             acquisitionStartedAt: acquisitionStartedAt,
             controlledWorkoutStartedAt: controlledWorkoutStartedAt,
@@ -224,6 +231,7 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
 
     func linkingLegacyWorkout(id: UUID) -> Self {
         Self(
+            isIntervalWorkout: isIntervalWorkout,
             schemaVersion: schemaVersion,
             appWorkoutID: appWorkoutID,
             phase: phase,
@@ -243,6 +251,7 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
 
     func recordingHealthKitStopActivity(at date: Date) -> Self {
         Self(
+            isIntervalWorkout: isIntervalWorkout,
             schemaVersion: schemaVersion,
             appWorkoutID: appWorkoutID,
             phase: phase,

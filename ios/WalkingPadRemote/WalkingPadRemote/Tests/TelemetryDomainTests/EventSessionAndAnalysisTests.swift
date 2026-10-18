@@ -3,6 +3,20 @@ import TelemetryDomain
 import XCTest
 
 final class EventSessionAndAnalysisTests: XCTestCase {
+    func testIntervalPhaseContextRoundTripsAndHistoricalPhaseHasNoContext() throws {
+        let context = IntervalWorkoutContext(maximumHeartRate: 200, plannedCycles: 1,
+            cycle: 1, phase: "cooldown", phaseRemainingSeconds: 0,
+            workElapsedSeconds: 240, coveredWorkSeconds: 220,
+            inRangeSeconds: 150, aboveRangeSeconds: 0, finishReason: "cycles_completed")
+        let transition = WorkoutPhaseTransition(previous: .main, current: .cooldown,
+            intervalContext: context)
+        try assertCodableRoundTrip(transition)
+        let old = WorkoutPhaseTransition(previous: .warmup, current: .main)
+        let decoded = try JSONDecoder().decode(WorkoutPhaseTransition.self,
+            from: JSONEncoder().encode(old))
+        XCTAssertNil(decoded.intervalContext)
+    }
+
     func testAppLifecycleEvidenceIsTypedAndRoundTrips() throws {
         let factualAt = Date(timeIntervalSince1970: 1_000)
         let receivedAt = factualAt.addingTimeInterval(2)

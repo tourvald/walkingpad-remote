@@ -147,6 +147,7 @@ let package = Package(
                 "DeterministicControlReplay.swift",
                 "DiscoveryUIPublicationPolicy.swift",
                 "HRDomainService.swift",
+                "IntervalWorkoutRuntime.swift",
                 "HRSettingsDefaults.swift",
                 "HRSettingsDTO.swift",
                 "HeartRateZoneSettings.swift",

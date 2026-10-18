@@ -4,6 +4,48 @@ import XCTest
 @testable import TelemetryDomain
 
 final class WorkoutAnalyzerV1Tests: XCTestCase {
+    func testIntervalCyclesKeepPhasesValidAndExcludeRecoveryFromWorkZones() throws {
+        let fixture = AnalysisFixture(sessionSeconds: 70)
+        func context(_ phase: String, _ cycle: Int) -> IntervalWorkoutContext {
+            .init(maximumHeartRate: 200, plannedCycles: 3, cycle: cycle, phase: phase,
+                phaseRemainingSeconds: 0, workElapsedSeconds: 0, coveredWorkSeconds: 0,
+                inRangeSeconds: 0, aboveRangeSeconds: 0, finishReason: nil)
+        }
+        let phases: [(WorkoutPhase, IntervalWorkoutContext?)] = [
+            (.warmup, context("warmup", 0)), (.main, context("work", 1)),
+            (.other("interval_recovery"), context("recovery", 1)), (.main, context("work", 2)),
+            (.other("interval_recovery"), context("recovery", 2)), (.main, context("work", 3)),
+            (.cooldown, context("cooldown", 3)), (.finished, nil)
+        ]
+        var previous: WorkoutPhase?
+        let events = phases.enumerated().map { index, value in
+            defer { previous = value.0 }
+            return fixture.event(ordinal: index + 1, seconds: Double(index * 10),
+                recordedSeconds: Double(index * 10), payload: .workoutPhase(.init(
+                    previous: previous, current: value.0, intervalContext: value.1)))
+        }
+        let heartRate = (0..<14).map { fixture.heartRate(ordinal: $0 + 1,
+            seconds: Double($0 * 5), bpm: 180) }
+        let result = try WorkoutAnalyzerV1.analyze(fixture.input(heartRate: heartRate, events: events),
+            generatedAt: fixture.baseDate)
+        let detail = try decodeDetail(result)
+        XCTAssertFalse(detail.quality.issues.contains { $0.code == "invalid-workout-phase-transition-evidence" })
+        XCTAssertTrue(detail.control.futureIntervals.intervalEngineImplemented)
+        XCTAssertEqual(detail.control.zoneDurations.map(\.seconds).reduce(0, +), 30, accuracy: 0.01)
+
+        // Repetition without cycle evidence still fails closed for ordinary workouts.
+        let ordinary = events.map { event -> WorkoutEvent in
+            guard case let .workoutPhase(value) = event.payload.payload else { return event }
+            return fixture.event(ordinal: Int(event.timestamp.recordedElapsed.seconds) + 100,
+                seconds: event.timestamp.recordedElapsed.seconds,
+                recordedSeconds: event.timestamp.recordedElapsed.seconds,
+                payload: .workoutPhase(.init(previous: value.previous, current: value.current)))
+        }
+        let invalid = try decodeDetail(WorkoutAnalyzerV1.analyze(
+            fixture.input(heartRate: heartRate, events: ordinary), generatedAt: fixture.baseDate))
+        XCTAssertTrue(invalid.quality.issues.contains { $0.code == "invalid-workout-phase-transition-evidence" })
+    }
+
     func testPostProductEndTreadmillTailDoesNotExtendV14MetricsOrCoverage() throws {
         let fixture = AnalysisFixture(sessionSeconds: 60)
         let treadmill = (0..<12).map {

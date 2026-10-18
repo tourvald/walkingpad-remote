@@ -1057,6 +1057,55 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var hrNextDecisionSeconds: Int = 0
     @Published var hrRemainingSeconds: Int = 0
     @Published var hrCooldownRemainingSeconds: Int = 0
+    @Published private(set) var intervalWorkoutSelected = false
+    @Published private(set) var intervalCycleCount = 1
+    @Published private(set) var intervalWorkoutState: IntervalWorkoutRuntime.State?
+    private var pendingIntervalPlan: IntervalWorkoutRuntime.Plan?
+    private var intervalWorkoutStartedAt: ContinuousClock.Instant?
+
+    var intervalStartBlockReason: String? {
+        intervalWorkoutSelected && IntervalWorkoutRuntime.Plan(
+            maximumHeartRate: heartRateZoneSettings.maximumHeartRate, cycles: intervalCycleCount
+        ) == nil ? "Укажите максимальный пульс в параметрах пульсовых зон" : nil
+    }
+
+    func selectIntervalWorkout(_ selected: Bool) {
+        guard !shouldPresentActiveWorkout, !isNativeHeartRatePreflightActive else { return }
+        intervalWorkoutSelected = selected
+    }
+
+    func selectIntervalCycles(_ cycles: Int) {
+        guard !shouldPresentActiveWorkout, !isNativeHeartRatePreflightActive,
+              (1...4).contains(cycles) else { return }
+        intervalCycleCount = cycles
+    }
+
+    var activeHRControlTargetBPM: Int {
+        guard isHrControlRunning, let state = intervalWorkoutState else { return hrTargetBPM }
+        return state.phase == .cooldown ? hrCooldownTargetBpm : state.targetBPM
+    }
+
+    var intervalOutcomeMessage: String? {
+        guard let state = intervalWorkoutState else { return nil }
+        switch state.finishReason {
+        case "cycles_completed": return nil
+        case "above_95_percent": return "Интервалы завершены досрочно: пульс выше 95% максимального."
+        case "recovery_target_not_reached": return "Интервалы завершены досрочно: пульс не снизился до цели восстановления."
+        case "heart_rate_unavailable_at_transition": return "Интервалы завершены досрочно: нет свежего пульса для следующего этапа."
+        default: return "Интервалы прерваны."
+        }
+    }
+
+    var intervalPhaseTitle: String? {
+        guard isHrControlRunning, let state = intervalWorkoutState else { return nil }
+        switch state.phase {
+        case .warmup: return "РАЗМИНКА"
+        case .work: return "НАГРУЗКА \(state.cycle)/\(state.plan.cycles)"
+        case .recovery: return "ВОССТАНОВЛЕНИЕ \(state.cycle)/\(state.plan.cycles)"
+        case .cooldown: return "ЗАМИНКА"
+        }
+    }
+
     @Published var hrProgress: Double = 0
     @Published var hrCooldownProgress: Double = 0
     @Published var hrTargetBPM: Int = 130 {
@@ -2068,8 +2117,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ record: NativeWorkoutRecoveryRecord
     ) {
         isRestoringNativeWorkoutRecoveryState = true
-        hrTargetBPM = record.targetBPM
-        hrDurationMinutes = max(1, (record.effectivePlannedDurationSeconds + 59) / 60)
+        if record.isIntervalWorkout != true {
+            hrTargetBPM = record.targetBPM
+            hrDurationMinutes = max(1, (record.effectivePlannedDurationSeconds + 59) / 60)
+        }
         isRestoringNativeWorkoutRecoveryState = false
         hrSessionTotalSeconds = record.effectivePlannedDurationSeconds
         hrControlStartedAt = record.controlledWorkoutStartedAt
@@ -4218,7 +4269,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     // HR control actions
     var canExtendHrSession: Bool {
-        guard isHrControlRunning, hrRemainingSeconds > 0 else { return false }
+        guard isHrControlRunning, hrRemainingSeconds > 0, intervalWorkoutState == nil else { return false }
         return hrSessionTotalSeconds < (hrMaxSessionMinutes * 60)
     }
 
@@ -4259,7 +4310,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     var hrSessionMaxMinutes: Int { hrMaxSessionMinutes }
 
     func extendHrSession(minutes: Int = 5) {
-        guard isHrControlRunning, hrRemainingSeconds > 0 else { return }
+        guard isHrControlRunning, hrRemainingSeconds > 0, intervalWorkoutState == nil else { return }
         let addSeconds = max(0, minutes * 60)
         guard addSeconds > 0 else { return }
         let maxTotalSeconds = hrMaxSessionMinutes * 60
@@ -4286,6 +4337,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               !hasOutstandingNativeWorkoutRecovery,
               !nativeHeartRatePreflightEngine.hasStartIntent,
               !nativeHeartRateProviderLifecycle.cleanupInFlight else { return }
+        if let blocker = intervalStartBlockReason {
+            infoToastMessage = blocker
+            return
+        }
+        pendingIntervalPlan = intervalWorkoutSelected ? IntervalWorkoutRuntime.Plan(
+            maximumHeartRate: heartRateZoneSettings.maximumHeartRate, cycles: intervalCycleCount
+        ) : nil
+        intervalWorkoutState = nil
+        intervalWorkoutStartedAt = nil
         let now = Date()
         let intent = NativeHeartRatePreflightEngine.Intent(
             id: UUID(),
@@ -4623,7 +4683,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         let legacySessionID = activeNativeWorkoutRecoveryRecord?.legacySessionID
         isHrControlRunning = true
         hrStatusLine = "HR‑контроль запущен"
-        hrSessionTotalSeconds = max(60, hrDurationMinutes * 60)
+        intervalWorkoutState = pendingIntervalPlan.map { IntervalWorkoutRuntime.State(plan: $0) }
+        intervalWorkoutStartedAt = pendingIntervalPlan == nil ? nil : ContinuousClock.now
+        hrSessionTotalSeconds = pendingIntervalPlan?.totalSeconds ?? max(60, hrDurationMinutes * 60)
         hrRemainingSeconds = hrSessionTotalSeconds
         hrNextDecisionSeconds = hrDecisionIntervalSeconds
         hrProgress = 0
@@ -4640,6 +4702,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         nativePreflightCommitTimestamps = nil
         beginTelemetryV2Session(legacySessionID: legacySessionID)
+        if let state = intervalWorkoutState {
+            _ = telemetryV2Coordinator.observeWorkoutPhase(
+                state.telemetryPhase, occurredAt: Date(), intervalContext: state.evidence()
+            )
+            sendHrTargetBpm()
+        }
         if treadmillProtocol == .walkingPad,
            let connectionEpoch = treadmillTelemetryConnectionEpoch {
             treadmillObservationNormalizer.commitWorkout(
@@ -4813,13 +4881,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         intent: NativeHeartRatePreflightEngine.Intent,
         acquisitionStartedAt: Date
     ) {
-        let recoveryRecord = NativeWorkoutRecoveryRecord.preflight(
+        var recoveryRecord = NativeWorkoutRecoveryRecord.preflight(
             appWorkoutID: intent.id,
             targetBPM: intent.targetBPM,
             durationMinutes: intent.durationMinutes,
             acquisitionStartedAt: acquisitionStartedAt,
-            profileID: activeUserProfileID
+            profileID: activeUserProfileID,
+            isIntervalWorkout: pendingIntervalPlan == nil ? nil : true
         )
+        if let plan = pendingIntervalPlan {
+            recoveryRecord = recoveryRecord.planningDuration(seconds: plan.totalSeconds)
+        }
         guard persistNativeWorkoutRecoveryRecord(recoveryRecord) else {
             applyNativeHeartRatePreflightEffects(
                 nativeHeartRatePreflightEngine.cancel(reason: .providerFailure)
@@ -4964,8 +5036,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
 
-        hrTargetBPM = intent.targetBPM
-        hrDurationMinutes = intent.durationMinutes
+        if pendingIntervalPlan == nil {
+            hrTargetBPM = intent.targetBPM
+            hrDurationMinutes = intent.durationMinutes
+        }
         nativeHealthKitWorkoutCommitted = true
         nativePreflightCommitTimestamps = (
             acquisitionStartedAt: acquisitionStartedAt,
@@ -5296,6 +5370,70 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrStaleTimer = nil
     }
 
+    private func advanceIntervalWorkout() {
+        guard var state = intervalWorkoutState,
+              let startedAt = intervalWorkoutStartedAt, state.phase != .cooldown else { return }
+        let previousPhase = state.phase
+        let duration = startedAt.duration(to: ContinuousClock.now).components
+        let elapsed = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
+        let age = hrLastValueAt.map { Date().timeIntervalSince($0) }
+        let fresh = hrStreamingActive && heartRateBPM > 0 && (age.map { $0 >= 0 && $0 <= 7 } ?? false)
+        state.tick(elapsed: elapsed, heartRate: fresh ? heartRateBPM : nil,
+                   validForSeconds: fresh ? max(0, 7 - (age ?? 7)) : 0)
+        intervalWorkoutState = state
+        hrRemainingSeconds = state.mainRemainingSeconds
+        hrProgress = state.progress
+        guard previousPhase != state.phase else { return }
+        _ = telemetryV2Coordinator.observeWorkoutPhase(
+            state.telemetryPhase, occurredAt: Date(), intervalContext: state.evidence()
+        )
+        hrNextDecisionSeconds = 0
+        if state.phase != .cooldown {
+            observeSemanticHeartRateDecision(action: .noCommand,
+                reason: .other("interval_phase_target"), heartRateInputs: [], occurredAt: Date())
+        }
+        sendHrTargetBpm()
+        if state.phase == .cooldown, state.finishReason != "cycles_completed" {
+            infoToastMessage = state.finishReason == "above_95_percent"
+                ? "Пульс выше 95% максимального — переходим к заминке"
+                : "Интервалы завершены досрочно — переходим к заминке"
+        }
+    }
+
+    private func reduceIntervalRecoverySpeed() {
+        // Recovery reuses the existing readiness/signal checks and decision cadence.
+        // Lowering the recovery target never authorizes acceleration.
+        guard controllerUnitsGateDecision().allowed, !blocksNonStopTreadmillMotion else { return }
+        let controlUseEvidence = makeHeartRateControlUseEvidence(trendUsed: false, occurredAt: Date())
+        defer { observeHeartRateControlUse(controlUseEvidence) }
+        let current = deviceTargetSpeedKmh
+        let proposed = IntervalWorkoutRuntime.recoverySpeed(
+            current: current, minimum: hrCooldownMinSpeed, step: hrSpeedStepKmh
+        )
+        let next = min(current, clampRunningSpeedKmh(proposed))
+        guard next < current else {
+            hrDecisionDetails = "Восстановление: удерживаем минимальную скорость"
+            observeSemanticHeartRateDecision(action: .noCommand, reason: .other("interval_recovery"),
+                heartRateInputs: controlUseEvidence?.inputs ?? [], occurredAt: Date())
+            return
+        }
+        desiredSpeedKmh = next
+        deviceTargetSpeedKmh = next
+        recordSpeedChange(from: current, to: next, reason: "interval_recovery")
+        let decision = makeTreadmillDecision(
+            source: .heartRateControl,
+            intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: next)),
+            heartRateInputs: controlUseEvidence?.inputs ?? []
+        )
+        defer { observeTreadmillDecision(decision) }
+        sendTreadmillSetSpeed(next, label: "SPEED interval recovery", decision: decision)
+        observeSemanticHeartRateDecision(
+            action: .enqueueSpeed(DesiredSpeedKilometresPerHour(value: next)),
+            reason: .other("interval_recovery"), heartRateInputs: controlUseEvidence?.inputs ?? [],
+            occurredAt: Date())
+        hrDecisionDetails = "Восстановление: снижаем скорость до \(String(format: "%.1f", next)) км/ч"
+    }
+
     private func tickTelemetry() {
         applyNativeHeartRatePreflightEffects(
             nativeHeartRatePreflightEngine.tick(now: Date())
@@ -5344,6 +5482,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
 
         if isHrControlRunning {
+            advanceIntervalWorkout()
+            let hrTargetBPM = activeHRControlTargetBPM
             let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
                 startedAt: hrControlStartedAt,
                 now: Date(),
@@ -5374,8 +5514,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 hrPredictorStatusLine = "Нет данных пульса"
             }
             if hrRemainingSeconds > 0 {
-                hrRemainingSeconds = max(0, hrRemainingSeconds - 1)
-                hrProgress = hrSessionTotalSeconds > 0 ? (1.0 - (Double(hrRemainingSeconds) / Double(hrSessionTotalSeconds))) : 0
+                if intervalWorkoutState == nil {
+                    hrRemainingSeconds = max(0, hrRemainingSeconds - 1)
+                    hrProgress = hrSessionTotalSeconds > 0 ? (1.0 - (Double(hrRemainingSeconds) / Double(hrSessionTotalSeconds))) : 0
+                }
 
                 if hrNextDecisionSeconds > 0 {
                     hrNextDecisionSeconds -= 1
@@ -5405,7 +5547,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         endTelemetryV2Session(reason: "hr_control_not_ready")
                         return
                     }
-                    guard hrStreamingActive, heartRateBPM > 0 else {
+                    let intervalHeartRateIsFresh = intervalWorkoutState == nil || hrLastValueAt.map {
+                        let age = Date().timeIntervalSince($0)
+                        return age >= 0 && age <= 7
+                    } == true
+                    guard hrStreamingActive, heartRateBPM > 0, intervalHeartRateIsFresh else {
                         if withinGrace {
                             hrStatusLine = "HR‑контроль: ожидание пульса"
                             hrDecisionDetails = "Ожидание данных пульса…"
@@ -5447,6 +5593,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         return
                     }
 
+                    if intervalWorkoutState?.phase == .recovery {
+                        reduceIntervalRecoverySpeed()
+                        return
+                    }
                     let trend = currentHrTrendBpmPerSecond()
                     let controlUseEvidence = makeHeartRateControlUseEvidence(
                         trendUsed: trend != nil,
@@ -5479,7 +5629,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         horizonSeconds: hrPredictSeconds,
                         predictedBeatsPerMinute: predictedBpm,
                         effectiveBeatsPerMinute: effectiveBpm,
-                        phase: .main
+                        phase: intervalWorkoutState?.telemetryPhase ?? .main,
+                        intervalContext: intervalWorkoutState?.evidence()
                     )
                     let decisionPrefix: String = {
                         if let predictedBpm, predictedBpm > heartRateBPM {
@@ -6952,9 +7103,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             appContext: currentTelemetryV2AppContext(deviceModel: deviceModel),
             configuration: TelemetryV2ConfigurationInput(
                 profileLocalIdentifier: activeUserProfile?.id.uuidString ?? "unknown",
-                workoutMode: .heartRateControlled,
-                targetHeartRate: hrTargetBPM,
-                durationMinutes: hrDurationMinutes,
+                workoutMode: intervalWorkoutState == nil ? .heartRateControlled : .other("intervals-v1"),
+                targetHeartRate: activeHRControlTargetBPM,
+                durationMinutes: intervalWorkoutState == nil ? hrDurationMinutes : (hrSessionTotalSeconds + 59) / 60,
                 decisionIntervalSeconds: hrDecisionIntervalSeconds,
                 adaptiveStepEnabled: hrAdaptiveStepEnabled,
                 maximumStepKilometresPerHour: hrSpeedStepKmh,
@@ -7001,13 +7152,21 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var currentTelemetryV2RuntimeVersions: RuntimeVersionContext {
         RuntimeVersionContext(
             telemetrySchema: TelemetrySchemaVersion(rawValue: "1.0.0"),
-            algorithm: AlgorithmVersion(rawValue: "legacy-hr-control-2026-08"),
+            algorithm: AlgorithmVersion(rawValue: intervalWorkoutState == nil
+                ? "legacy-hr-control-2026-08" : "interval-hr-control-v1-test"),
             safetyPolicy: SafetyPolicyVersion(rawValue: "walkingpad-runtime-safety-2026-08"),
             workoutProtocol: WorkoutProtocolVersion(rawValue: "hr-workout-v1")
         )
     }
 
     private func endTelemetryV2Session(reason: String) {
+        if let state = intervalWorkoutState {
+            _ = telemetryV2Coordinator.observeWorkoutPhase(
+                .finished, occurredAt: Date(), intervalContext: state.evidence(reason: state.finishReason ?? reason)
+            )
+        }
+        pendingIntervalPlan = nil
+        intervalWorkoutStartedAt = nil
         treadmillObservationNormalizer.endWorkout()
         finishNativeHealthKitWorkoutIfNeeded()
         telemetryV2Coordinator.endSession(reason: reason)
@@ -7709,11 +7868,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         action: ControlAction,
         reason: ControlDecisionReason,
         heartRateInputs: [HeartRateCausalReference],
-        prediction: HeartRatePredictionSnapshot,
+        prediction: HeartRatePredictionSnapshot? = nil,
         occurredAt: Date
     ) {
         _ = telemetryV2Coordinator.observeHeartRateControlDecision(
-            targetBeatsPerMinute: UInt16(clamping: hrTargetBPM),
+            targetBeatsPerMinute: UInt16(clamping: activeHRControlTargetBPM),
             action: action,
             reason: reason,
             heartRateInputs: heartRateInputs,
@@ -7854,7 +8013,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func sendHrTargetBpm() {
 #if canImport(WatchConnectivity)
         guard let session = wcSession, canSendToWatch(session) else { return }
-        let payload: [String: Any] = ["target_bpm": hrTargetBPM]
+        let payload: [String: Any] = ["target_bpm": activeHRControlTargetBPM]
         if session.isReachable {
             session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
         } else {

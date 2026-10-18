@@ -293,9 +293,9 @@ public struct IntervalMetricFrameworkV1: Codable, Hashable, Sendable {
     public let intervalEngineImplemented: Bool
     public let intervalResults: [String]
 
-    public init() {
+    public init(intervalEngineImplemented: Bool = false) {
         schemaVersion = 1
-        intervalEngineImplemented = false
+        self.intervalEngineImplemented = intervalEngineImplemented
         intervalResults = []
     }
 }

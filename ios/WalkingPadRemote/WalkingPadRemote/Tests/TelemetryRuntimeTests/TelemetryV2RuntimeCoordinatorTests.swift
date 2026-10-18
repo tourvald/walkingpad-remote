@@ -7,6 +7,40 @@ import TelemetryRecorder
 import XCTest
 
 final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
+    func testBufferedIntervalPhaseContextSurvivesActivation() async throws {
+        let persistence = RuntimePersistence()
+        let gate = DispatchSemaphore(value: 0)
+        let coordinator = TelemetryV2RuntimeCoordinator(persistenceFactory: {
+            gate.wait()
+            return persistence
+        })
+        let descriptor = Self.descriptor(workoutMode: .other("intervals-v1"))
+        let context = IntervalWorkoutContext(maximumHeartRate: 200, plannedCycles: 1,
+            cycle: 0, phase: "warmup", phaseRemainingSeconds: 300,
+            workElapsedSeconds: 0, coveredWorkSeconds: 0,
+            inRangeSeconds: 0, aboveRangeSeconds: 0, finishReason: nil)
+        coordinator.beginSession(descriptor)
+        XCTAssertEqual(coordinator.observeWorkoutPhase(.warmup,
+            occurredAt: descriptor.startedAt, intervalContext: context), .enqueued)
+        gate.signal()
+        try await eventually { coordinator.activeSessionIDForTesting != nil }
+        coordinator.endSession(reason: "interval-fixture")
+        try await eventually { await persistence.finalizations.count == 1 }
+        let snapshot = await persistence.snapshot()
+        let contexts = snapshot.records.compactMap { record -> IntervalWorkoutContext? in
+            guard case let .event(event) = record,
+                  case let .workoutPhase(value) = event.payload.payload else { return nil }
+            return value.intervalContext
+        }
+        XCTAssertEqual(contexts, [context])
+        let phases = snapshot.records.compactMap { record -> WorkoutPhase? in
+            guard case let .event(event) = record,
+                  case let .workoutPhase(value) = event.payload.payload else { return nil }
+            return value.current
+        }
+        XCTAssertEqual(phases, [.unknown, .warmup, .finished])
+    }
+
     func testStopTailDeadlineFinishesWithoutAnotherCallback() async throws {
         let finalized = expectation(description: "Deadline finalizes without another callback")
         let persistence = RuntimePersistence(finalizationDidPersist: { finalized.fulfill() })
@@ -2370,7 +2404,8 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
         startedAt: Date = Date(timeIntervalSince1970: 1_000),
         heartRateProviderKind: String = "legacyWatchWorkoutStream",
         heartRateProviderStableLocalKey: String = "watch-session",
-        maximumStepKilometresPerHour: Double = 0.4
+        maximumStepKilometresPerHour: Double = 0.4,
+        workoutMode: WorkoutMode = .heartRateControlled
     ) -> TelemetryV2SessionDescriptor {
         TelemetryV2SessionDescriptor(
             sessionID: TelemetryV2SessionDescriptor.sessionID(
@@ -2386,7 +2421,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             ),
             configuration: TelemetryV2ConfigurationInput(
                 profileLocalIdentifier: "profile-30",
-                workoutMode: .heartRateControlled,
+                workoutMode: workoutMode,
                 targetHeartRate: 120,
                 durationMinutes: 30,
                 decisionIntervalSeconds: 10,

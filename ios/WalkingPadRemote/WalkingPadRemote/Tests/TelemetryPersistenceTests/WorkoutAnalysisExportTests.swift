@@ -6,6 +6,34 @@ import XCTest
 
 final class WorkoutAnalysisExportTests: XCTestCase {
 
+    func testIntervalOnlyPhaseExportRetainsExposureAndMarksHealthData() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = semanticsSession()
+        try await store.insertSession(session)
+        let context = IntervalWorkoutContext(maximumHeartRate: 200, plannedCycles: 1,
+            cycle: 1, phase: "cooldown", phaseRemainingSeconds: 0,
+            workElapsedSeconds: 240, coveredWorkSeconds: 220,
+            inRangeSeconds: 150, aboveRangeSeconds: 0, finishReason: "cycles_completed")
+        try await store.insertEvent(event(seed: 799, session: session,
+            elapsedMicroseconds: 1_000_000,
+            payload: .workoutPhase(.init(previous: .main, current: .cooldown, intervalContext: context))))
+        let csv = try await store.exportWorkoutAnalysis(.init(sessionID: session.sessionID,
+            exactProfileLocalIdentifier: session.profileLocalIdentifier))
+        defer { try? FileManager.default.removeItem(at: csv.fileURL.deletingLastPathComponent()) }
+        let rows = try parseCSV(csv.fileURL)
+        XCTAssertTrue(csv.containsHealthData)
+        let headers = try XCTUnwrap(rows.first)
+        let row = try XCTUnwrap(rows.dropFirst().first { $0[1] == "event" })
+        func field(_ name: String) throws -> String { row[try XCTUnwrap(headers.firstIndex(of: name))] }
+        XCTAssertEqual(try field("interval_hrmax"), "200")
+        XCTAssertEqual(try field("interval_phase"), "cooldown")
+        XCTAssertEqual(try field("interval_work_elapsed_s"), "240.000000")
+        XCTAssertEqual(try field("interval_work_covered_s"), "220.000000")
+        XCTAssertEqual(try field("interval_in_range_s"), "150.000000")
+        XCTAssertEqual(try field("interval_finish_reason"), "cycles_completed")
+        XCTAssertEqual(try field("prediction_bpm"), "")
+    }
+
     func testPredictionSurvivesStoreRawAndCSVExportsWithHistoricalBlanks() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = semanticsSession()
@@ -203,9 +231,10 @@ final class WorkoutAnalysisExportTests: XCTestCase {
             }
             let after = try await store.counts()
             XCTAssertEqual(before, after)
-            XCTAssertEqual(rows[0].count, 51)
+            XCTAssertEqual(rows[0].count, 61)
             XCTAssertEqual(rows[0][38], "quality_flags")
-            XCTAssertTrue(rows[0].dropFirst(39).allSatisfy { $0.hasPrefix("prediction_") })
+            XCTAssertTrue(rows[0].dropFirst(39).prefix(12).allSatisfy { $0.hasPrefix("prediction_") })
+            XCTAssertTrue(rows[0].dropFirst(51).allSatisfy { $0.hasPrefix("interval_") })
             XCTAssertLessThanOrEqual(artifact.diagnostics.maximumStoreFetchLimit, 2)
             XCTAssertLessThanOrEqual(artifact.diagnostics.maximumBufferedTimelineRows, 4)
             // A legacy consumer sees the same rows without the additive metadata.
