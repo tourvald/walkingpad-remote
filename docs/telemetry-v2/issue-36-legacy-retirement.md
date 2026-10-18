@@ -125,3 +125,85 @@ checks. Timings are contention-affected observations, not an isolated speed
 comparison against #31 and not a new device threshold. RSS grows with workload;
 this is not proof of a real-device plateau or lifecycle-pressure behavior.
 Private synthetic artifacts/logs remain outside Git.
+
+## Completed full-scale gate
+
+The separate release-profile invocation of
+`TelemetryGateBenchmarkTests/testConfiguredFullProfile` completed successfully:
+one test, zero failures, exit0, 10361.331 test seconds. Invocation uses
+`TELEMETRY_GATE_PROFILE=full`, isolated temporary store/output directories and
+`swift test -c release --filter TelemetryGateBenchmarkTests/testConfiguredFullProfile`.
+Its fixture, domain and persistence dependency sources are unchanged from the
+accepted base. It was compiled before the app-only cleanup was finalized; that
+app/HealthKit/UI code is outside this benchmark dependency closure and was
+separately covered by the final full package/build. No duplicate expensive run
+was required for later documentation-only commits.
+
+The 1000-hour fixture retained exactly 4,522,003 records: 1000 sessions,
+720,000 HR observations, 240,000 treadmill observations, 20,000 events,
+3,540,000 frames, 1000 analyses, two sources and one configuration. All class
+counts equal the generator's expected counts. Deterministic seed164169261094
+and identity hash `e8a131ce8251eb90` match the accepted gate. The expected
+4000 native redelivery rejections remain separate from zero unexpected failures.
+All35319 complete128-record transactions and total36323 transactions completed.
+
+### Historical host comparison
+
+The accepted historical baseline is [the SwiftData gate](swiftdata-gate.md).
+The table records observed deltas, not a controlled before/after optimization
+claim: baseline used the earlier debug toolchain/macOS27.0; this run used a
+release build on macOS27.2 arm64 and initially overlapped package/build/soak
+work. Persistence code/schema was not changed by retirement. Increased latency
+and lower throughput must not be hidden or attributed to the removed writer.
+
+| Metric | Accepted historical full gate | Current full gate | Observed delta |
+| --- | ---: | ---: | ---: |
+| Drain seconds | 7183.637 | 10353.761 | +44.13% |
+| Persisted records/s | 629.500 | 436.750 | -30.62% |
+| 128-row p50 ms | 196.478 | 280.884 | +42.96% |
+| 128-row p95 ms | 298.440 | 446.107 | +49.48% |
+| 128-row p99 ms | 391.737 | 549.856 | +40.36% |
+| Lifetime RSS peak MiB | 524.688 | 406.031 | -22.61% |
+| Store+sidecars MiB | 6822.888 | 6823.998 | +0.02% |
+
+The current retained same-frame-model bins show no rising late insert cliff:
+1.13–2.26m persisted rows have p50/p95 331.873/500.173ms;
+2.26–4.52m have279.366/381.265ms. This is bounded hosted evidence, not proof of
+real-device timing or an isolated performance win. The streamed fixture retains
+one pending128-row batch, not a full in-memory dataset. RSS is a process-lifetime
+`getrusage` high-water, not attributable per-phase live footprint.
+
+### Full-store queries and reopening
+
+| Query shape | Returned rows | p50 ms | p95 ms |
+| --- | ---: | ---: | ---: |
+| recent workout history by profile | 20 | 16.366 | 17.168 |
+| single-session HR time series by arrival order | 720 | 38.366 | 40.531 |
+| single-session treadmill time series by arrival order | 240 | 13.435 | 13.671 |
+| canonical frames for chart and replay | 3540 | 127.090 | 135.446 |
+| all events for a session | 20 | 1.625 | 1.844 |
+| events filtered by event kind | 8 | 1.199 | 1.252 |
+| causal event lookup by decision ID | 4 | 1.060 | 1.255 |
+| causal event lookup by command ID | 3 | 0.970 | 1.141 |
+| causal event lookup by attempt ID | 2 | 0.933 | 1.049 |
+| analyses by session and analyzer version | 1 | 0.993 | 1.046 |
+| last N comparable sessions by profile and decoded mode | 10 | 202.095 | 210.889 |
+| export-style complete session evidence traversal | 4522 | 202.598 | 202.598 |
+
+Each ordinary query uses nine repetitions; export traversal uses one and is not
+a percentile study. The representative package diagnostic/export fixtures and
+additive/idempotent legacy import/analyzer regressions also passed in the full
+package invocation. No inferred control blocking/divergence or causal association
+claim is drawn from these fetch measurements.
+
+After write and after reopen, total store/sidecar bytes remain7,155,480,808;
+no missing class counts or corruption was observed. Directory and every retained
+store/WAL/SHM report excluded-from-backup and the configured protection class,
+yielding `filePolicyHostPass=true`. These are host attribute/reopen checks;
+iPhone lock/suspension and end-to-end backup/restore remain waived UNVERIFIED.
+Fast recovery/migration/file-policy tests passed separately, with preserved
+source bytes and no destructive retirement migration.
+
+Both independent reviewers receive the completed evidence and final docs-only
+delta for an exact-head addendum. Current hosted CI remains absent, not PASS.
+No device, BLE or installation action was performed.
