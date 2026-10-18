@@ -127,29 +127,21 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            tick.components(separatedBy: "logTrainingEvent(\"hr_decision\"").count - 1,
-            4
-        )
-        XCTAssertEqual(
             tick.components(separatedBy: "observeSemanticHeartRateDecision(").count - 1,
             4
         )
         assertOrdered(
             [
                 "if absDiff <= deadbandBpm",
-                "\"decision\": \"hold\"",
                 "reason: .withinTarget",
                 "if direction > 0, let trend, trend > 0, let predictedValue",
-                "\"decision\": \"inertia_hold\"",
                 "reason: .heartRateInertiaHold",
                 "let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)",
                 "if nextSpeed != currentTarget",
                 "let telemetryDecision = makeTreadmillDecision(",
                 "defer { observeTreadmillDecision(telemetryDecision) }",
                 "sendTreadmillSetSpeed(",
-                "\"decision\": \"set\"",
                 "action: .enqueueSpeed(",
-                "\"decision\": \"limit\"",
                 "reason: .heartRateSpeedLimit",
             ],
             in: tick
@@ -231,7 +223,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             [
                 "let unitsDecision = controllerUnitsGateDecision()",
                 "guard nativeHeartRateSafetyFacts().permitsCommit",
-                "let legacySessionID = startTrainingStructuredLog(trigger: \"start_hr\")",
+                "let legacySessionID = activeNativeWorkoutRecoveryRecord?.legacySessionID",
                 "isHrControlRunning = true",
                 "beginTelemetryV2Session(legacySessionID: legacySessionID)",
                 "startWithSpeed",
@@ -434,10 +426,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             "private func currentCooldownSpeedSnapshot()",
             in: managerSource
         )
-        let telemetryPayload = try functionBody(
-            "private func makeTrainingLogPayload(event: String, fields: [String: Any])",
-            in: managerSource
-        )
         let uiPublisher = try functionBody(
             "private func publishTrainingUITreadmillSpeedIfNeeded()",
             in: managerSource
@@ -453,9 +441,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         XCTAssertTrue(cooldownSnapshot.contains("freshnessLimit: StopObservationPolicy.freshnessInterval"))
         XCTAssertFalse(cooldownSnapshot.contains("trainingUITreadmillSpeedKmh"))
         XCTAssertFalse(cooldownSnapshot.contains("currentActualSpeedKmh: speedKmh"))
-        XCTAssertTrue(telemetryPayload.contains("deviceReportedAppSpeedKmh"))
-        XCTAssertTrue(telemetryPayload.contains("deviceReportedSpeedKmh"))
-        XCTAssertFalse(telemetryPayload.contains("trainingUITreadmillSpeedKmh"))
 
         XCTAssertTrue(managerSource.contains("let treadmillFactualObservationPublisher"))
         XCTAssertTrue(managerSource.contains("publishTrainingUITreadmillSpeedIfNeeded()"))
@@ -488,10 +473,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
         let controlDecision = try functionBody(
             "private func tickTelemetry()",
-            in: managerSource
-        )
-        let telemetryPayload = try functionBody(
-            "private func makeTrainingLogPayload(event: String, fields: [String: Any])",
             in: managerSource
         )
         let uiPublisher = try functionBody(
@@ -533,11 +514,10 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             XCTAssertFalse(holdPolicy.contains(forbidden), forbidden)
         }
 
-        for factualConsumer in [controlDecision, telemetryPayload] {
+        for factualConsumer in [controlDecision] {
             XCTAssertTrue(factualConsumer.contains("heartRateBPM"))
             XCTAssertFalse(factualConsumer.contains("trainingUIHeartRateSnapshot"))
         }
-        XCTAssertTrue(telemetryPayload.contains("lastKnownHeartRateBPM"))
 
         XCTAssertTrue(managerSource.contains("let heartRateFactualState"))
         XCTAssertTrue(managerSource.contains("@Published fileprivate(set) var heartRateBPM"))
@@ -558,7 +538,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
                 "hrStreamingActive = HRDomainService.heartRateStreamIsActive(",
                 "isNativeHeartRateCurrent = hrStreamingActive",
                 "let normalization = normalizeHeartRateDelivery",
-                "logTrainingEvent(\"hr_sample\"",
+                "publishHeartRateNormalization(normalization)",
             ],
             in: nativeDelivery
         )
@@ -1113,7 +1093,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         let manual = try functionBody("func stopHrControl()", in: managerSource)
         assertOrdered(
             [
-                "stopTrainingStructuredLog(reason: \"manual_stop\")",
                 "isHrControlRunning = false",
                 "stopBeltWithToggle(reason: \"hr\")",
                 "stopLegacyWatchHeartRateIfNeeded()",
@@ -1128,7 +1107,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
         assertOrdered(
             [
-                "stopTrainingStructuredLog(reason: completionEffect.structuredLogReason)",
                 "stopLegacyWatchHeartRateIfNeeded()",
                 "stopBeltWithToggle(reason: \"hr_cooldown_done\")",
                 "endTelemetryV2Session(reason: completionEffect.structuredLogReason)",
@@ -1142,7 +1120,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
         assertOrdered(
             [
-                "stopTrainingStructuredLog(reason:",
                 "central.cancelPeripheralConnection(p)",
                 "self.stopTelemetry()",
                 "self.isHrControlRunning = false",
@@ -1180,7 +1157,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         }
         assertOrdered(
             [
-                "let legacySessionID = startTrainingStructuredLog(trigger: \"start_hr\")",
+                "let legacySessionID = activeNativeWorkoutRecoveryRecord?.legacySessionID",
                 "isHrControlRunning = true",
                 "beginTelemetryV2Session(legacySessionID: legacySessionID)",
                 "startWithSpeed",
@@ -1189,7 +1166,6 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
         assertOrdered(
             [
-                "stopTrainingStructuredLog(reason: \"manual_stop\")",
                 "isHrControlRunning = false",
                 "stopBeltWithToggle(reason: \"hr\")",
                 "stopLegacyWatchHeartRateIfNeeded()",

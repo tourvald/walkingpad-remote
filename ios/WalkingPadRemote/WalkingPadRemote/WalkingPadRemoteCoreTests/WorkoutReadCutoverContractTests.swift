@@ -41,12 +41,8 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
     }
 
     func testLegacyHistoryIsPrivateShadowEvidenceAndCannotGateStart() throws {
-        XCTAssertTrue(
-            managerSource.contains(
-                "private var legacyShadowWorkoutHistory: [LegacyShadowWorkoutEntry] = []"
-            )
-        )
-        XCTAssertTrue(managerSource.contains("Compatibility-only parity evidence through #37"))
+        XCTAssertFalse(managerSource.contains("legacyShadowWorkoutHistory"))
+        XCTAssertTrue(managerSource.contains("scheduleLegacyMigrationInBackground"))
         XCTAssertFalse(managerSource.contains("@Published var workoutHistory"))
 
         let startGate = try sourceSlice(
@@ -60,48 +56,7 @@ final class WorkoutReadCutoverContractTests: XCTestCase {
         XCTAssertFalse(startGate.contains("legacyShadowWriterStatusText"))
     }
 
-    func testShadowWriteFailureIsDiagnosticOnlyAndDoesNotOwnV2SessionSuccess() throws {
-        let shadowWrite = try sourceSlice(
-            from: "private func saveLegacyShadowWorkoutHistory(",
-            to: "private func removeStoredData(",
-            in: managerSource
-        )
-        XCTAssertTrue(shadowWrite.contains("legacyShadowWriterStatusText"))
-        XCTAssertFalse(shadowWrite.contains("appendLog("))
-        XCTAssertFalse(shadowWrite.contains("throw"))
-        XCTAssertFalse(shadowWrite.contains("telemetryV2Coordinator"))
 
-        let workoutSave = try sourceSlice(
-            from: "private func recordHrWorkoutIfNeeded(",
-            to: "private func attachHealthkitWorkoutUUID(",
-            in: managerSource
-        )
-        XCTAssertTrue(workoutSave.contains("saveLegacyShadowWorkoutHistory()"))
-        XCTAssertFalse(workoutSave.contains("guard saveLegacyShadowWorkoutHistory"))
-        XCTAssertFalse(workoutSave.contains("if saveLegacyShadowWorkoutHistory"))
-    }
-
-    func testLegacySourceEvidenceHasNoAutomaticOrExportCleanupCaller() throws {
-        XCTAssertFalse(managerSource.contains("pruneTrainingLogs(in: "))
-
-        let legacyFinalize = try sourceSlice(
-            from: "func finalizeTrainingLogsCsvExport(",
-            to: "private func hex(",
-            in: managerSource
-        )
-        XCTAssertTrue(legacyFinalize.contains("removeItem(at: export.csvURL)"))
-        XCTAssertFalse(legacyFinalize.contains("cleanupExportedJsonlFiles"))
-        XCTAssertFalse(legacyFinalize.contains("pruneTrainingLogs"))
-
-        let legacyClear = try sourceSlice(
-            from: "func clearTrainingLogsForActiveProfile()",
-            to: "private func availableTrainingJsonlFiles(",
-            in: managerSource
-        )
-        XCTAssertTrue(legacyClear.contains("Legacy source evidence is preserved"))
-        XCTAssertFalse(legacyClear.contains("cleanupExportedJsonlFiles"))
-        XCTAssertFalse(legacyClear.contains("pruneTrainingLogs"))
-    }
 
     func testPostWorkoutProjectionChangeInvalidatesStatisticsAndRekeysQuery() throws {
         XCTAssertTrue(contentSource.contains(

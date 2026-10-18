@@ -245,20 +245,6 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         )
     }
 
-    func testStartupInventoryParsingRunsOffTheFirstFramePath() throws {
-        let refresh = try functionBody("func refreshTrainingLogsInventory()", in: managerSource)
-
-        assertOrdered(
-            [
-                "trainingLogQueue.async",
-                "TrainingTelemetryWriter.trainingLogsInventorySnapshot",
-                "DispatchQueue.main.async",
-                "self.trainingLogsInventory = snapshot.inventory",
-                "self.lastTrainingLogPath = snapshot.latestMatchingProfileFile?.path",
-            ],
-            in: refresh
-        )
-    }
 
     func testConnectionPathPreventsParallelAttemptsAndSchedulesTimeouts() throws {
         let connect = try functionBody(
@@ -269,7 +255,7 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         assertOrdered(
             [
                 "if isConnected",
-                "if let cancellingConnectionPeripheralId",
+                "if cancellingConnectionPeripheralId != nil",
                 "if let inProgress = connectingPeripheralId",
                 "connectingPeripheralId = id",
                 "central.connect(p, options: nil)",
@@ -361,7 +347,6 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
                 "guard self.connectingPeripheralId == peripheralID",
                 "if self.cancellingConnectionPeripheralId != nil || self.autoConnectSuppressed",
                 "central.cancelPeripheralConnection(peripheral)",
-                "self.logTrainingEvent(\"ble_connection_event\"",
                 "self.isConnected = true",
                 "central.stopScan()",
             ],
@@ -371,7 +356,7 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         for signature in ["func connectToKnownPeripheral(id: UUID)",
                           "func connectToDiscovered(", "private func attemptAutoConnectIfNeeded()"] {
             let body = try functionBody(signature, in: managerSource)
-            XCTAssertTrue(body.contains("if let cancellingConnectionPeripheralId {\n            return\n        }"))
+            XCTAssertTrue(body.contains("if cancellingConnectionPeripheralId != nil {\n            return\n        }"))
         }
         XCTAssertEqual(didConnect.components(separatedBy: "central.stopScan()").count - 1, 1)
     }

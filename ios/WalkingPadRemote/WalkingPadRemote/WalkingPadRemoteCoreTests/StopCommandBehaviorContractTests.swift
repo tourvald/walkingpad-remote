@@ -59,14 +59,6 @@ final class StopCommandBehaviorContractTests: XCTestCase {
         XCTAssertTrue(source.contains("private let commandMinIntervalWalkingPadSeconds: TimeInterval = 2.0"))
     }
 
-    func testExistingNotifyFE01SemanticsRemainNormalizedWithoutRawHex() throws {
-        let notifyRange = try XCTUnwrap(source.range(of: "logTrainingEvent(\"notify_fe01\", fields: ["))
-        let suffix = source[notifyRange.lowerBound...]
-        let close = try XCTUnwrap(suffix.range(of: "])"))
-        let event = String(suffix[..<close.upperBound])
-        XCTAssertFalse(event.contains("raw_hex"))
-        XCTAssertTrue(event.contains("checksum_ok"))
-    }
 
     func testDirectStopKeepsHighPriorityAndTwoExistingRetries() throws {
         let body = try functionBody("func stopBelt()")
@@ -137,7 +129,6 @@ final class StopCommandBehaviorContractTests: XCTestCase {
         let stopHrBody = try functionBody("func stopHrControl()")
         assertOrdered(
             [
-                "stopTrainingStructuredLog(reason: \"manual_stop\")",
                 "recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: false)",
                 "stopBeltWithToggle(reason: \"hr\")"
             ],
@@ -177,19 +168,17 @@ final class StopCommandBehaviorContractTests: XCTestCase {
         XCTAssertTrue(beginBody.contains("recordUnavailableStopAttempt(source: source, attemptedAt: now, attemptedMonotonic: attemptedMonotonic)"))
         let unavailableBody = try functionBody("private func recordUnavailableStopAttempt(source: String, attemptedAt: Date, attemptedMonotonic: Duration)")
         XCTAssertTrue(unavailableBody.contains("unavailableStopAttempt = UnavailableStopAttempt"))
-        XCTAssertTrue(unavailableBody.contains("\"stop_command_status\"") && unavailableBody.contains("\"queued\"") && unavailableBody.contains("\"not_sent\""))
+        XCTAssertTrue(unavailableBody.contains(".unconfirmed("))
+        XCTAssertTrue(unavailableBody.contains("observeTreadmillTelemetry(.stopEvidence(telemetryEvidence))"))
         let finalizeBody = try functionBody("private func finalizeUnavailableStopAttempt(attemptID: UUID)")
-        XCTAssertTrue(finalizeBody.contains("StopObservationFinalResult.unconfirmed.rawValue"))
-        XCTAssertTrue(finalizeBody.contains("stop_command_not_sent_transport_unavailable"))
-        XCTAssertTrue(finalizeBody.contains("confirmation_context_unavailable"))
+        XCTAssertTrue(finalizeBody.contains("unavailableStopAttempt = nil"))
         let markBody = try functionBody("private func markInitialStopCommandSent(at sentAt: Date)")
         XCTAssertTrue(markBody.contains("if var attempt = unavailableStopAttempt"))
-        XCTAssertTrue(markBody.contains("logTrainingEvent(\"stop_command_sent\""))
+        XCTAssertTrue(markBody.contains("attempt.commandSentAt = sentAt"))
 
         let skippedBody = try functionBody("private func markInitialStopCommandNotSent(reason: String, at now: Date = Date())")
         XCTAssertTrue(skippedBody.contains("stop_command_not_sent_\\(reason)"))
-        let telemetryBody = try functionBody("private func stopObservationTelemetryFields(")
-        XCTAssertTrue(telemetryBody.contains("\"stop_command_status\": lifecycle.commandStatus"))
+
     }
 
     func testNewMotionIntentAndCurrentFreshnessInvalidateConfirmedStopStatus() throws {

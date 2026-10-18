@@ -15,12 +15,11 @@ final class WorkoutLifecycleIntegrationContractTests: XCTestCase {
         }
         for token in [
             "recordWorkoutLifecycleTransition(",
-            "logTrainingEvent(\"app_lifecycle\"",
             "AppLifecycleEvidencePersistence.payload(for: lifecycleEvent)",
-            "\"hr_last_factual_at\"",
-            "\"hr_last_received_at\"",
-            "\"treadmill_control_ready\"",
-            "\"background_policy_action\"",
+            "lastHeartRateFactualAt: lastFactualAt",
+            "lastHeartRateReceivedAt: lastReceivedAt",
+            "treadmillControlReady: isTreadmillControlReady",
+            "policyAction: telemetryAction",
         ] {
             XCTAssertTrue(manager.contains(token), token)
         }

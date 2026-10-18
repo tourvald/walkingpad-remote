@@ -401,60 +401,26 @@ final class NativeWorkoutRecoveryTests: XCTestCase {
         ))
     }
 
-    func testLegacyWorkoutLinkRequiresExactMissingOrSameUUIDState() {
-        let expected = UUID()
-
-        XCTAssertTrue(NativeWorkoutLegacyLinkPolicy.canLink(
-            existingWorkoutUUID: nil,
-            expectedWorkoutUUID: expected
-        ))
-        XCTAssertTrue(NativeWorkoutLegacyLinkPolicy.canLink(
-            existingWorkoutUUID: expected.uuidString,
-            expectedWorkoutUUID: expected
-        ))
-        XCTAssertFalse(NativeWorkoutLegacyLinkPolicy.canLink(
-            existingWorkoutUUID: UUID().uuidString,
-            expectedWorkoutUUID: expected
-        ))
-    }
-
-    func testRequiredLinkageFailsClosedUntilEveryApplicableWriteSucceeds() async {
-        var telemetryAttempts = 0
-        let legacyFailure = await NativeWorkoutRequiredLinkagePolicy.complete(
-            legacyRequired: true,
-            persistLegacy: { false },
-            telemetryRequired: true,
-            persistTelemetry: {
-                telemetryAttempts += 1
-                return true
-            }
+    func testRequiredLinkageNeedsAnExactV2SessionAndSuccessfulWrite() async {
+        let sessionID = UUID()
+        var attemptedIDs: [UUID] = []
+        let missing = await NativeWorkoutRequiredLinkagePolicy.complete(
+            telemetrySessionID: nil,
+            persistTelemetry: { id in attemptedIDs.append(id); return true }
         )
-        XCTAssertFalse(legacyFailure)
-        XCTAssertEqual(telemetryAttempts, 0)
-
-        let telemetryFailure = await NativeWorkoutRequiredLinkagePolicy.complete(
-            legacyRequired: true,
-            persistLegacy: { true },
-            telemetryRequired: true,
-            persistTelemetry: {
-                telemetryAttempts += 1
-                return false
-            }
+        XCTAssertFalse(missing)
+        XCTAssertTrue(attemptedIDs.isEmpty)
+        let failed = await NativeWorkoutRequiredLinkagePolicy.complete(
+            telemetrySessionID: sessionID,
+            persistTelemetry: { id in attemptedIDs.append(id); return false }
         )
-        XCTAssertFalse(telemetryFailure)
-        XCTAssertEqual(telemetryAttempts, 1)
-
-        let success = await NativeWorkoutRequiredLinkagePolicy.complete(
-            legacyRequired: true,
-            persistLegacy: { true },
-            telemetryRequired: true,
-            persistTelemetry: {
-                telemetryAttempts += 1
-                return true
-            }
+        XCTAssertFalse(failed)
+        let saved = await NativeWorkoutRequiredLinkagePolicy.complete(
+            telemetrySessionID: sessionID,
+            persistTelemetry: { id in attemptedIDs.append(id); return true }
         )
-        XCTAssertTrue(success)
-        XCTAssertEqual(telemetryAttempts, 2)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(attemptedIDs, [sessionID, sessionID])
     }
 
     private func makePreflight() -> NativeWorkoutRecoveryRecord {

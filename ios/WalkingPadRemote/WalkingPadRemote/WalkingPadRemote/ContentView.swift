@@ -4426,7 +4426,7 @@ private struct DebugView: View {
     @State private var diagnosticBundleTask: Task<Void, Never>?
     @State private var isPreparingDiagnosticBundle = false
 
-    private var trainingLogScopeOptions: [TrainingLogCsvExportScope] {
+    private var trainingLogScopeOptions: [WorkoutDiagnosticExportScope] {
         [.all, .lastCompletedWorkouts(3), .lastCompletedWorkouts(5)]
     }
 
@@ -4434,7 +4434,7 @@ private struct DebugView: View {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
-    private func trainingLogsMenuItemTitle(scope: TrainingLogCsvExportScope) -> String {
+    private func trainingLogsMenuItemTitle(scope: WorkoutDiagnosticExportScope) -> String {
         switch scope {
         case .all:
             return "Все доступные тренировки"
@@ -4466,7 +4466,6 @@ private struct DebugView: View {
         guard let duration else {
             return [
                 "Latest flush: —",
-                "Legacy shadow parity writer: \(manager.legacyShadowWriterStatusText)",
             ]
         }
         let components = duration.components
@@ -4474,7 +4473,6 @@ private struct DebugView: View {
             + (Double(components.attoseconds) / 1_000_000_000_000_000)
         return [
             "Latest flush: \(String(format: "%.1f", milliseconds)) ms",
-            "Legacy shadow parity writer: \(manager.legacyShadowWriterStatusText)",
         ]
     }
 
@@ -4972,7 +4970,7 @@ private func presentWorkoutAnalysisExportFailure(_ error: Error) {
 @MainActor
 private func prepareAndPresentDiagnosticBundle(
     manager: BluetoothManager,
-    scope: TrainingLogCsvExportScope
+    scope: WorkoutDiagnosticExportScope
 ) async throws {
     let artifact = try await manager.prepareDiagnosticBundle(
         scope: scope,

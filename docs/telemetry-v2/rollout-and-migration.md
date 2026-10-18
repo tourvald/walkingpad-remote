@@ -27,6 +27,14 @@ closed. No implementation issue runs in parallel.
 
 Issue #36 MUST NOT start merely because #35 merged or automated parity passed.
 
+## Retirement implementation
+
+Issue #36's [owner-approved retirement](issue-36-legacy-retirement.md) removes
+legacy runtime writers and maintenance while preserving user source data and
+the read-only importer. Its named physical evidence waiver is explicit;
+unverified items are not reported as PASS. That document owns exact removed
+paths, supported upgrade formats, final verification and rollback limits.
+
 ## Write and read authority by phase
 
 | Phase | Canonical new evidence | Product reads | Legacy role |

@@ -15,6 +15,18 @@ public enum TelemetrySoakError: Error, Equatable {
 }
 
 public enum TelemetrySoakRunner {
+    /// Deterministic control replay without a recorder or persistence store.
+    public static func controlChecksumWithoutRecording(simulatedMinutes: Int) -> String {
+        DeterministicControlReplay.checksum(
+            durationSeconds: simulatedMinutes * 60,
+            observation: SoakControlCycleObservation(
+                observation: TelemetryV2PerformanceObservation(
+                    instrumentation: TelemetryPerformanceInstrumentation(enabled: false)
+                )
+            )
+        )
+    }
+
     public static func run(
         workload: TelemetrySoakWorkload,
         recorderConfiguration: TelemetrySoakRecorderConfiguration = .provisionalDefault,

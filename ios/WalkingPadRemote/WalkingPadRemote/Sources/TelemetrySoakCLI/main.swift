@@ -44,6 +44,7 @@ enum TelemetrySoakCommand {
             "--compare-batch-count",
             in: &arguments
         )
+        let controlOnly = consume("--control-only", in: &arguments)
         let instrumentationEnabled = !consume("--instrumentation-off", in: &arguments)
         guard arguments.isEmpty else {
             throw CommandError.unknownArguments(arguments)
@@ -85,6 +86,10 @@ enum TelemetrySoakCommand {
                 ),
             flushEverySeconds: flushEvery
         )
+        if controlOnly {
+            print(TelemetrySoakRunner.controlChecksumWithoutRecording(simulatedMinutes: minutes))
+            return
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 
@@ -168,6 +173,7 @@ enum TelemetrySoakCommand {
 
     private static let usage = """
     telemetry-soak [options]
+      --control-only                 Replay control without recorder or persistence
       --minutes N                    Simulated duration (1...120)
       --hr-ms N                      Simulated HR delivery cadence
       --treadmill-ms N               Simulated treadmill cadence

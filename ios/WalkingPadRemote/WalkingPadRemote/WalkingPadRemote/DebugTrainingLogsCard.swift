@@ -12,7 +12,7 @@ struct DebugTrainingLogsCard: View {
         struct DiagnosticScopeOption: Identifiable {
             let id: String
             let title: String
-            let scope: TrainingLogCsvExportScope
+            let scope: WorkoutDiagnosticExportScope
         }
 
         let testRunActive: Bool
@@ -44,7 +44,7 @@ struct DebugTrainingLogsCard: View {
 
     let presentation: Presentation
     let onToggleTestRun: () -> Void
-    let onShareDiagnostics: (TrainingLogCsvExportScope) -> Void
+    let onShareDiagnostics: (WorkoutDiagnosticExportScope) -> Void
     let onCancelDiagnostics: () -> Void
 
     private let metricColumns = [
