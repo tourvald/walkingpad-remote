@@ -558,9 +558,9 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WalkingPadRemote/Info.plist;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to your walking pad via Bluetooth.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Read heart rate to control walking pad workouts.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Start a workout session to measure heart rate.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth нужен для подключения к дорожке, чтения её состояния и управления тренировкой.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Пульс из Apple Здоровья используется для контроля нагрузки и подстройки скорости во время тренировки.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Приложение создаёт и сохраняет тренировку в Apple Здоровье, чтобы получать пульс во время занятия и связать результат с историей.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -595,9 +595,9 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WalkingPadRemote/Info.plist;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app connects to your walking pad via Bluetooth.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Read heart rate to control walking pad workouts.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Start a workout session to measure heart rate.";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Bluetooth нужен для подключения к дорожке, чтения её состояния и управления тренировкой.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Пульс из Apple Здоровья используется для контроля нагрузки и подстройки скорости во время тренировки.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Приложение создаёт и сохраняет тренировку в Apple Здоровье, чтобы получать пульс во время занятия и связать результат с историей.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -632,8 +632,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = WalkingPadRemoteWatch;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Read heart rate during walking pad workouts.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Start a workout session to measure heart rate.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Пульс, активная энергия, дистанция и шаги используются во время тренировки. Пульс передаётся на связанный iPhone для контроля нагрузки.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Приложение сохраняет тренировку, активную энергию, дистанцию и шаги в Apple Здоровье.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = sw.WalkingPadRemote;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -668,8 +668,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = WalkingPadRemoteWatch;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Read heart rate during walking pad workouts.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Start a workout session to measure heart rate.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Пульс, активная энергия, дистанция и шаги используются во время тренировки. Пульс передаётся на связанный iPhone для контроля нагрузки.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Приложение сохраняет тренировку, активную энергию, дистанцию и шаги в Apple Здоровье.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = sw.WalkingPadRemote;
 				LD_RUNPATH_SEARCH_PATHS = (

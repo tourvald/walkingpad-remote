@@ -3278,6 +3278,11 @@ private struct HRParametersFormView: View {
 
     var body: some View {
         Form {
+            Section {
+                NavigationLink("О приложении, данные и поддержка") {
+                    AboutPrivacyView()
+                }
+            }
             Section(
                 header: Text("Профиль"),
                 footer: Text("Профиль разделяет целевой пульс, длительность, заминку, кардио‑зоны, историю тренировок и training export. CSV и session summary теперь выгружаются только по активному профилю, а для объединения логов с разных телефонов дополнительно пишется installation_id.")

@@ -114,6 +114,7 @@ let package = Package(
             dependencies: ["TelemetryDomain"],
             path: "WalkingPadRemote",
             exclude: [
+                "AboutPrivacyView.swift",
                 "Assets.xcassets",
                 "BluetoothManager.swift",
                 "CommonInfoCard.swift",
