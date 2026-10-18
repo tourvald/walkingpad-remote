@@ -24,6 +24,50 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         relativePath: "WalkingPadRemote/DeterministicControlReplay.swift"
     )
 
+    func testOnlyNewHeartRateDeliveriesTriggerControlAfterEvidence() throws {
+        let native = try functionBody("private func handleNativeHeartRateObservation(", in: managerSource)
+        assertOrdered(["nativeHeartRateProviderLifecycle.acceptsObservation(",
+            "HRDomainService.applyHeartRateDelivery(", "normalizeHeartRateDelivery(",
+            "applyNativeHeartRatePreflightEffects(effects)", "evaluateHeartRateControlDecision()"], in: native)
+        let legacy = try functionBody("private func handleWatchPayload(", in: managerSource)
+        assertOrdered(["guard !self.nativeHeartRateFlowOwnsController",
+            "HeartRateObservationalTee.deliver(", "self.observeHeartRateDelivery(",
+            "self.evaluateHeartRateControlDecision()"], in: legacy)
+        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+        XCTAssertFalse(tick.contains("evaluateHeartRateControlDecision()"))
+        XCTAssertFalse(tick.contains("let nextSpeed ="))
+        XCTAssertTrue(tick.contains("maintainHeartRateControlSafety()"))
+        XCTAssertTrue(tick.contains("advanceIntervalWorkout()"))
+        XCTAssertTrue(tick.contains("CooldownRuntimeEngine.tick("))
+    }
+
+    func testDeliveredHeartRateMustPassCadenceAndPhaseGuardsBeforeDecision() throws {
+        let decision = try functionBody("private func evaluateHeartRateControlDecision()", in: managerSource)
+        assertOrdered(["guard isHrControlRunning, hrRemainingSeconds > 0",
+            "!blocksNonStopTreadmillMotion", "HRDomainService.heartRateDecisionIsDue(",
+            "state.permitsHeartRateDecision(at:",
+            "hrLastDecisionAt = instant", "if intervalWorkoutState?.phase == .recovery",
+            "reduceIntervalRecoverySpeed()", "let trend = currentHrTrendBpmPerSecond()",
+            "if absDiff <= deadbandBpm"], in: decision)
+        let phase = try functionBody("private func advanceIntervalWorkout()", in: managerSource)
+        XCTAssertFalse(phase.contains("hrLastDecisionAt ="))
+        XCTAssertFalse(phase.contains("hrNextDecisionSeconds = 0"))
+        let commit = try functionBody("private func commitExistingHrControl(", in: managerSource)
+        XCTAssertTrue(commit.contains("hrLastDecisionAt = ContinuousClock.now"))
+        let end = try functionBody("private func endTelemetryV2Session(", in: managerSource)
+        XCTAssertTrue(end.contains("hrLastDecisionAt = nil"))
+    }
+
+    func testTimerRetainsMissingHeartRateGraceAndSignalLossStopWithoutDecidingSpeed() throws {
+        let safety = try functionBody("private func maintainHeartRateControlSafety()", in: managerSource)
+        XCTAssertFalse(safety.contains("hrLastDecisionAt ="))
+        assertOrdered(["if withinGrace", "return", ".missingHeartRateSignalSeconds(",
+            "!HRDomainService.shouldStopForMissingHeartRateSignal(", "return",
+            "isHrControlRunning = false", "stopBeltWithToggle(reason: \"hr_no_signal\")"], in: safety)
+        XCTAssertFalse(safety.contains("sendTreadmillSetSpeed"))
+        XCTAssertTrue(safety.contains("return age >= 0 && age <= 7"))
+    }
+
     func testIntervalExcursionsAreObservedBeforePreflightAndOnlyTickerChangesPhase() throws {
         let observation = try functionBody("private func handleNativeHeartRateObservation(", in: managerSource)
         assertOrdered(["nativeHeartRateProviderLifecycle.acceptsObservation(",
@@ -96,11 +140,11 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
     }
 
     func testActualControlUseIsObservedAtTheExistingSpeedDecisionBranch() throws {
-        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+        let tick = try functionBody("private func evaluateHeartRateControlDecision()", in: managerSource)
 
         assertOrdered(
             [
-                "guard hrStreamingActive, heartRateBPM > 0",
+                "HRDomainService.heartRateDecisionIsDue(",
                 "let trend = currentHrTrendBpmPerSecond()",
                 "let controlUseEvidence = makeHeartRateControlUseEvidence(",
                 "defer { observeHeartRateControlUse(controlUseEvidence) }",
@@ -140,7 +184,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
     }
 
     func testEveryLegacyHrDecisionEmitsOnePassiveSemanticDecisionInBranchOrder() throws {
-        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+        let tick = try functionBody("private func evaluateHeartRateControlDecision()", in: managerSource)
         let observer = try functionBody(
             "private func observeSemanticHeartRateDecision(",
             in: managerSource
@@ -182,7 +226,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
     }
 
     func testPredictionObservationCopiesComputedValuesWithoutBecomingControlAuthority() throws {
-        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+        let tick = try functionBody("private func evaluateHeartRateControlDecision()", in: managerSource)
         assertOrdered([
             "let predictedValue = trend.map",
             "let predictedBpm = predictedValue.map",
@@ -514,7 +558,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
             in: contentViewSource
         )
         let controlDecision = try functionBody(
-            "private func tickTelemetry()",
+            "private func evaluateHeartRateControlDecision()",
             in: managerSource
         )
         let uiPublisher = try functionBody(
@@ -1232,7 +1276,7 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         )
         XCTAssertTrue(staleTimer.contains("HRDomainService.heartRateStreamIsActive("))
 
-        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+        let tick = try functionBody("private func maintainHeartRateControlSafety()", in: managerSource)
         XCTAssertTrue(tick.contains("HRDomainService.shouldStopForMissingHeartRateSignal("))
         XCTAssertTrue(tick.contains("HRDomainService.isWithinInitialHeartRateGrace("))
         XCTAssertTrue(tick.contains(".missingHeartRateSignalSeconds("))

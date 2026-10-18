@@ -2,6 +2,26 @@ import Foundation
 import TelemetryDomain
 
 enum HRDomainService {
+    static let minimumDecisionIntervalSeconds = 9
+
+    static func heartRateDecisionIsDue(
+        sampleAgeSeconds: TimeInterval,
+        elapsedSinceLastDecision: Duration,
+        intervalSeconds: Int
+    ) -> Bool {
+        sampleAgeSeconds.isFinite && (0...7).contains(sampleAgeSeconds)
+            && elapsedSinceLastDecision >= .seconds(max(minimumDecisionIntervalSeconds, intervalSeconds))
+    }
+
+    static func heartRateDecisionRemainingSeconds(
+        elapsedSinceLastDecision: Duration,
+        intervalSeconds: Int
+    ) -> Int {
+        let remaining = (.seconds(max(minimumDecisionIntervalSeconds, intervalSeconds))
+            - elapsedSinceLastDecision).components
+        return max(0, Int(remaining.seconds) + (remaining.attoseconds > 0 ? 1 : 0))
+    }
+
     // Motion output after the existing native-HR preflight has committed, not admission.
     static func initialMotionTargetSpeedKmh(
         deviceTargetSpeedKmh: Double,

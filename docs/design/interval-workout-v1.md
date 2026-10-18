@@ -18,8 +18,9 @@ independent review and one Draft PR, without merge or physical installation.
   comparison; the stop-on-overshoot policy can yield a zero-duration overshoot
   counter alongside an actual above-limit sample and early-finish reason.
 - Three-minute active recoveries occur only between cycles, target 70% HRmax.
-  Reduce speed immediately using the existing cooldown reduction helper, then
-  on the existing decision cadence. Recovery never increases speed. Start the
+  Reduce speed on the next eligible fresh-HR decision using the existing
+  cooldown reduction helper. Phase changes do not bypass decision spacing.
+  Recovery never increases speed. Start the
   next work phase only with fresh HR at or below 70%; otherwise finish into
   cooldown. After the last work phase go directly to existing final cooldown.
 - Fresh measured HR above 95% HRmax ends the interval portion early into
@@ -28,6 +29,18 @@ independent review and one Draft PR, without merge or physical installation.
 - Use existing adaptive steps, prediction, physical speed limits, units gate,
   preflight, stale-HR grace/timeout, Stop and factual-stop confirmation. No
   transport changes or new packet types. Do not accelerate with stale HR.
+- Owner-approved event-driven follow-up (#249): each newly delivered HR sample
+  checks decision eligibility after normalization. Require finite age 0-7 seconds
+  and a monotonic gap of at least nine seconds (or the longer configured interval).
+  HOLD decisions also restart this gap. Saved/UI intervals below nine normalize
+  to nine. The existing timer retains stages, signal-loss safety, cooldown and
+  presentation; it cannot make ordinary/work/recovery HR decisions. Expired
+  phases and latched upper-limit excursions block delivery-triggered decisions
+  until the phase ticker handles them.
+- While waiting for a new HR sample after the decision interval, no motion
+  deadline is reserved: existing read-only status/units polling continues.
+  Positive motion leads and phase boundaries retain protection; pending queries
+  still yield to queued motion and Stop. Write pacing and Stop priority are unchanged.
 - Freeze a valid manually entered HRmax and cycle count at Start. Snapshot
   phase targets separately; never save them as ordinary HR settings. Missing
   HRmax blocks interval Start only. Ordinary workouts retain their behavior.

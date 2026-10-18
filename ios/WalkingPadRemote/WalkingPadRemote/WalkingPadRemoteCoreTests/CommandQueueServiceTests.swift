@@ -251,6 +251,23 @@ final class CommandQueueServiceTests: XCTestCase {
         }
     }
 
+    func testQueriesAdmittedWhileWaitingForHeartRateYieldToSpeedAndStop() {
+        let query = CommandQueueService.Command(data: Data([0xA2]), label: "QUERY STATUS")
+        let units = CommandQueueService.Command(data: Data([0xA7]), label: "QUERY PARAMS")
+        let speed = CommandQueueService.Command(data: Data([0x01]), label: "SPEED 4.0")
+        let stop = CommandQueueService.Command(data: Data([0xFF]), label: "STOP")
+        var queue = [query, units]
+        XCTAssertTrue(CommandQueueService.discardReadOnlyQueries(queue: &queue,
+            motionWindowIsProtected: false).isEmpty)
+        _ = CommandQueueService.enqueueRegular(queue: &queue, command: speed, isSpeedLabel: isSpeed)
+        XCTAssertEqual(CommandQueueService.discardReadOnlyQueries(queue: &queue,
+            motionWindowIsProtected: false), [query, units])
+        XCTAssertEqual(queue, [speed])
+        _ = CommandQueueService.enqueueRegular(queue: &queue, command: query, isSpeedLabel: isSpeed)
+        CommandQueueService.replaceWithHighPriority(queue: &queue, command: stop)
+        XCTAssertEqual(queue, [stop])
+    }
+
     private func evidence(
         label: String,
         epoch: TreadmillConnectionEpoch

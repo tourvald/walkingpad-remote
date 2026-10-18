@@ -3,6 +3,47 @@ import TelemetryDomain
 @testable import WalkingPadCoreLogic
 
 final class HRDomainServiceTests: XCTestCase {
+    func testDecisionRequiresFreshMeasurementAndInclusiveMonotonicInterval() {
+        func due(age: Double = 0, elapsed: Duration = .seconds(9), interval: Int = 9) -> Bool {
+            HRDomainService.heartRateDecisionIsDue(sampleAgeSeconds: age,
+                elapsedSinceLastDecision: elapsed, intervalSeconds: interval)
+        }
+        XCTAssertTrue(due())
+        XCTAssertTrue(due(age: 7))
+        for age in [-0.001, 7.001, .nan, .infinity] { XCTAssertFalse(due(age: age)) }
+        XCTAssertFalse(due(elapsed: .milliseconds(8_999)))
+        XCTAssertFalse(due(elapsed: .seconds(-1)))
+        XCTAssertFalse(due(elapsed: .seconds(8), interval: 1))
+        XCTAssertTrue(due(interval: 1))
+        XCTAssertFalse(due(interval: 12))
+        XCTAssertTrue(due(elapsed: .seconds(12), interval: 12))
+    }
+
+    func testFrequentAndBatchedSamplesCannotBurstOrConsumeIntervalWhenStale() {
+        let deliveries: [(milliseconds: Int, age: Double)] = [
+            (0, 0), (5_000, 0), (9_000, 7.1), (10_000, 4.4),
+            (10_001, 0), (10_002, 0), (15_000, 0), (19_000, 7), (20_000, 0),
+        ]
+        var lastDecision: Duration = .zero
+        var decisions: [Int] = []
+        for delivery in deliveries {
+            let now = Duration.milliseconds(delivery.milliseconds)
+            if HRDomainService.heartRateDecisionIsDue(sampleAgeSeconds: delivery.age,
+                elapsedSinceLastDecision: now - lastDecision, intervalSeconds: 9) {
+                decisions.append(delivery.milliseconds)
+                lastDecision = now
+            }
+        }
+        XCTAssertEqual(decisions, [10_000, 19_000])
+    }
+
+    func testDecisionCountdownIsPresentationOnlyAndRoundsUp() {
+        for (elapsed, expected) in [(0, 9), (1, 9), (8_999, 1), (9_000, 0), (20_000, 0)] {
+            XCTAssertEqual(HRDomainService.heartRateDecisionRemainingSeconds(
+                elapsedSinceLastDecision: .milliseconds(elapsed), intervalSeconds: 9), expected)
+        }
+    }
+
     func testCooldownEvidenceRequiresFreshCurrentSessionTimestamp() {
         let start = Date(timeIntervalSince1970: 100)
         let now = start.addingTimeInterval(30)

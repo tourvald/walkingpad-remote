@@ -5,6 +5,78 @@ import XCTest
 final class WalkingPadStatusRefreshPolicyTests: XCTestCase {
     private let start = Date(timeIntervalSince1970: 1_780_000_000)
 
+    func testWaitingForHeartRateAllowsStatusAndUnitsButNotBusyOrInvalidTransport() {
+        for (statusAge, expected) in [(5.0, WalkingPadReadOnlyRefreshKind.status), (2.0, .controllerUnits)] {
+            XCTAssertEqual(refresh(active: true, transport: true, idle: true, lead: nil,
+                status: start.addingTimeInterval(-statusAge), units: start.addingTimeInterval(-20)).kind, expected)
+        }
+        for (active, transport, idle) in [(false, true, true), (true, false, true), (true, true, false)] {
+            XCTAssertFalse(refresh(active: active, transport: transport, idle: idle, lead: nil,
+                status: nil, units: nil).shouldRequest)
+        }
+        for lead in [-1, 0, 1, 2] {
+            XCTAssertFalse(refresh(active: true, transport: true, idle: true, lead: lead,
+                status: nil, units: nil).shouldRequest)
+        }
+        for delay in [-1.0, .infinity, .nan] {
+            XCTAssertFalse(WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
+                isWorkoutOrCooldownActive: true, transportReady: true, motionQueueIdle: true,
+                secondsUntilNextScheduledMotion: nil, lastStatusQueryAt: nil, lastControllerUnitsQueryAt: nil,
+                earliestWriteDelaySeconds: delay, now: start).shouldRequest)
+        }
+    }
+
+    func testProlongedHeartRateSilenceKeepsPollingAndResumedDecisionsRespectCadence() {
+        var lastStatus = start
+        var lastUnits = start
+        var nextWriteSecond = 0
+        var lastDecisionSecond = 0
+        var statusSeconds = [0]
+        var unitsSeconds = [0]
+        var decisionSeconds: [Int] = []
+
+        for second in 1...120 {
+            let now = start.addingTimeInterval(Double(second))
+            // Five-second deliveries resume after a forty-second gap.
+            let sampleArrived = second == 5 || (second >= 45 && second % 5 == 0)
+            let elapsed: Duration = .seconds(second - lastDecisionSecond)
+            if sampleArrived && HRDomainService.heartRateDecisionIsDue(
+                sampleAgeSeconds: 0, elapsedSinceLastDecision: elapsed, intervalSeconds: 9
+            ) {
+                lastDecisionSecond = second
+                decisionSeconds.append(second)
+                nextWriteSecond = second + 2
+            }
+            let remaining = HRDomainService.heartRateDecisionRemainingSeconds(
+                elapsedSinceLastDecision: .seconds(second - lastDecisionSecond), intervalSeconds: 9)
+            let decision = WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
+                isWorkoutOrCooldownActive: true, transportReady: true,
+                motionQueueIdle: second >= nextWriteSecond,
+                secondsUntilNextScheduledMotion: remaining > 0 ? remaining : nil,
+                lastStatusQueryAt: lastStatus, lastControllerUnitsQueryAt: lastUnits, now: now)
+            switch decision.kind {
+            case .status:
+                lastStatus = now
+                statusSeconds.append(second)
+                nextWriteSecond = second + 2
+            case .controllerUnits:
+                lastUnits = now
+                unitsSeconds.append(second)
+                nextWriteSecond = second + 2
+            case nil: break
+            }
+        }
+
+        XCTAssertEqual(decisionSeconds, [45, 55, 65, 75, 85, 95, 105, 115])
+        XCTAssertGreaterThan(statusSeconds.filter { (9..<45).contains($0) }.count, 5)
+        XCTAssertTrue(unitsSeconds.contains { (9..<45).contains($0) })
+        let silenceStatusSeconds = statusSeconds.filter { (9..<45).contains($0) }
+        XCTAssertLessThanOrEqual(zip(silenceStatusSeconds, silenceStatusSeconds.dropFirst()).map { $1 - $0 }.max() ?? 0, 5)
+        XCTAssertGreaterThan(statusSeconds.filter { (45...120).contains($0) }.count, 10)
+        XCTAssertLessThanOrEqual(zip(unitsSeconds, unitsSeconds.dropFirst()).map { $1 - $0 }.max() ?? 0, 30)
+        XCTAssertTrue(Set(statusSeconds + unitsSeconds).isDisjoint(with: decisionSeconds))
+    }
+
     func testStatusQueryPacketIsTheProvenReadOnlyCurrentStatusRequest() {
         XCTAssertEqual(
             BLETransportCodec.buildWalkingPadQueryStatusPacket(),
@@ -134,7 +206,7 @@ final class WalkingPadStatusRefreshPolicyTests: XCTestCase {
         active: Bool,
         transport: Bool,
         idle: Bool,
-        lead: Int,
+        lead: Int?,
         status: Date?,
         units: Date?
     ) -> WalkingPadReadOnlyRefreshDecision {
