@@ -83,13 +83,12 @@ callback performs no motion or persistence; the initial commit observation is
 also checked. Regression coverage includes intervening callbacks, freshness,
 new-session reset, fractional ceilings, and presentation/control boundaries.
 
-Unresolved product/safety decision: after a long execution pause, the current
-engine starts the next phase from the callback time instead of skipping phases.
-This prevents command bursts but can start a new full load after a long gap.
-Owner approval is required to define the fail-closed alternative (for example,
-ending into cooldown when an entire following phase was missed). Do not treat
-the current behavior as release-accepted. This question is distinct from the
-three concrete defects corrected above.
+Owner decision after review: do not add special long-pause handling to test V1;
+retain the existing late-callback behavior. The owner will manually stop the
+belt using treadmill controls if the application becomes unresponsive. This
+resolves the product-scope question, not a verified automatic-stop guarantee
+while application execution is suspended. No runtime behavior changes accompany
+this decision; the other acceptance gates remain open.
 
 After the three review corrections: 187 selected Swift tests passed and the
 unsigned generic iOS build passed. The fractional recovery-ceiling regression
@@ -101,5 +100,5 @@ boundaries (HRmax 90, 170 and 180). Recovery now uses integer `HRmax * 70 / 100`
 regressions check inclusivity and rejection of the next BPM at all three cases.
 
 Final integer-boundary correction: 188 selected Swift tests and the unsigned
-generic iOS build passed. Visual/external-review/CI and long-pause policy gates
+generic iOS build passed. Visual/external-review/CI gates
 remain open; the corrected Draft is not approved for release or installation.
