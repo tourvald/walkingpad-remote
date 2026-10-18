@@ -73,6 +73,50 @@ final class IntervalWorkoutRuntimeTests: XCTestCase {
         XCTAssertEqual(value.finishReason, "recovery_target_not_reached")
     }
 
+    func testRecoveryNeverRoundsUpTheSeventyPercentBoundary() {
+        for (bpm, expectedPhase) in [(133, IntervalWorkoutRuntime.Phase.work), (134, .cooldown)] {
+            var value = IntervalWorkoutRuntime.State(plan: .init(maximumHeartRate: 191, cycles: 2)!)
+            value.tick(elapsed: 300, heartRate: 125, validForSeconds: 7)
+            value.tick(elapsed: 540, heartRate: 170, validForSeconds: 7)
+            value.tick(elapsed: 720, heartRate: bpm, validForSeconds: 7)
+            XCTAssertEqual(value.phase, expectedPhase)
+        }
+    }
+
+    func testAcceptedExcursionSurvivesNewerBelowLimitSampleUntilTick() {
+        var value = state()
+        value.tick(elapsed: 300, heartRate: 180, validForSeconds: 7)
+        XCTAssertTrue(value.observeHeartRate(191, sampleAgeSeconds: 0.5))
+        XCTAssertFalse(value.observeHeartRate(180, sampleAgeSeconds: 0.1))
+        XCTAssertEqual(value.phase, .work)
+        value.tick(elapsed: 301, heartRate: 180, validForSeconds: 7)
+        XCTAssertEqual(value.phase, .cooldown)
+        XCTAssertEqual(value.finishReason, "above_95_percent")
+        var nextSession = state()
+        nextSession.tick(elapsed: 1, heartRate: 130, validForSeconds: 7)
+        XCTAssertEqual(nextSession.phase, .warmup)
+    }
+
+    func testStaleFutureAndInvalidAgesDoNotLatchExcursion() {
+        for age in [-0.1, 7.001, Double.nan, .infinity] {
+            var value = state()
+            XCTAssertFalse(value.observeHeartRate(191, sampleAgeSeconds: age))
+            value.tick(elapsed: 1, heartRate: 180, validForSeconds: 7)
+            XCTAssertEqual(value.phase, .warmup)
+        }
+        var value = state()
+        XCTAssertTrue(value.observeHeartRate(191, sampleAgeSeconds: 7))
+    }
+
+    func testRecoveryTargetIncludesEveryLowerPositiveHeartRate() {
+        var value = state(cycles: 2)
+        value.tick(elapsed: 300, heartRate: 130, validForSeconds: 7)
+        value.tick(elapsed: 540, heartRate: 180, validForSeconds: 7)
+        XCTAssertEqual(value.targetBPM, 140)
+        for bpm in [115, 120, 140] { XCTAssertTrue(value.targetRange.contains(bpm)) }
+        XCTAssertFalse(value.targetRange.contains(141))
+    }
+
     func testMissingHeartRateAtBoundaryDoesNotStartNewWork() {
         var value = state()
         value.tick(elapsed: 300, heartRate: nil, validForSeconds: 0)

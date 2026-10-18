@@ -24,6 +24,7 @@ enum IntervalWorkoutRuntime {
         var workRange: ClosedRange<Int> {
             Int(ceil(Double(maximumHeartRate) * 0.85))...Int(floor(Double(maximumHeartRate) * 0.95))
         }
+        var recoveryCeilingBPM: Int { Int(floor(Double(maximumHeartRate) * 0.70)) }
         var warmupRange: ClosedRange<Int> { bpm(0.60)...bpm(0.70) }
         var totalSeconds: Int {
             Self.warmupSeconds + cycles * Self.workSeconds + (cycles - 1) * Self.recoverySeconds
@@ -44,6 +45,7 @@ enum IntervalWorkoutRuntime {
         private(set) var coveredWorkSeconds: Double = 0
         private(set) var inRangeSeconds: Double = 0
         private(set) var aboveRangeSeconds: Double = 0
+        private var upperLimitObserved = false
         private var previousBPM: Int?
         private var previousValidUntil: Double = 0
 
@@ -58,10 +60,15 @@ enum IntervalWorkoutRuntime {
             }
         }
         var targetBPM: Int {
-            plan.bpm(phase == .work ? 0.90 : (phase == .warmup ? 0.65 : 0.70))
+            phase == .recovery ? plan.recoveryCeilingBPM
+                : plan.bpm(phase == .work ? 0.90 : (phase == .warmup ? 0.65 : 0.70))
         }
         var targetRange: ClosedRange<Int> {
-            phase == .work ? plan.workRange : plan.warmupRange
+            switch phase {
+            case .work: plan.workRange
+            case .recovery: 0...plan.recoveryCeilingBPM
+            case .warmup, .cooldown: plan.warmupRange
+            }
         }
         var durationSeconds: Int {
             switch phase {
@@ -83,6 +90,15 @@ enum IntervalWorkoutRuntime {
                 / Double(plan.totalSeconds))
         }
 
+        // Retain accepted excursions across callbacks; only tick may change phase.
+        mutating func observeHeartRate(_ bpm: Int, sampleAgeSeconds: Double) -> Bool {
+            guard !upperLimitObserved, phase != .cooldown,
+                  sampleAgeSeconds.isFinite, (0...7).contains(sampleAgeSeconds),
+                  Double(bpm) > Double(plan.maximumHeartRate) * 0.95 else { return false }
+            upperLimitObserved = true
+            return true
+        }
+
         mutating func tick(elapsed: Double, heartRate: Int?, validForSeconds: Double) {
             guard elapsed.isFinite, elapsed >= elapsedSeconds, phase != .cooldown else { return }
             let phaseEnd = phaseStartedSeconds + Double(durationSeconds)
@@ -102,7 +118,8 @@ enum IntervalWorkoutRuntime {
             previousBPM = heartRate
             previousValidUntil = elapsed + (validForSeconds.isFinite ? max(0, validForSeconds) : 0)
 
-            if let heartRate, Double(heartRate) > Double(plan.maximumHeartRate) * 0.95 {
+            if let heartRate { _ = observeHeartRate(heartRate, sampleAgeSeconds: 0) }
+            if upperLimitObserved {
                 finish(reason: "above_95_percent")
                 return
             }
@@ -121,7 +138,7 @@ enum IntervalWorkoutRuntime {
                 if cycle == plan.cycles { finish(reason: "cycles_completed") }
                 else { phase = .recovery }
             case .recovery:
-                if heartRate <= plan.bpm(0.70) { cycle += 1; phase = .work }
+                if heartRate <= plan.recoveryCeilingBPM { cycle += 1; phase = .work }
                 else { finish(reason: "recovery_target_not_reached") }
             case .cooldown: break
             }

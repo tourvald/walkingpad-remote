@@ -24,6 +24,26 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         relativePath: "WalkingPadRemote/DeterministicControlReplay.swift"
     )
 
+    func testIntervalExcursionsAreObservedBeforePreflightAndOnlyTickerChangesPhase() throws {
+        let observation = try functionBody("private func handleNativeHeartRateObservation(", in: managerSource)
+        assertOrdered(["nativeHeartRateProviderLifecycle.acceptsObservation(",
+            "HRDomainService.applyHeartRateDelivery(", "observeIntervalHeartRate(",
+            "nativeHeartRatePreflightEngine.receive("], in: observation)
+        let latch = try functionBody("private func observeIntervalHeartRate(", in: managerSource)
+        for forbidden in ["sendTreadmill", "startWithSpeed", "stopBelt", "persist", "finish("] {
+            XCTAssertFalse(latch.contains(forbidden), forbidden)
+        }
+        let commit = try functionBody("private func commitExistingHrControl(", in: managerSource)
+        assertOrdered(["intervalWorkoutState =", "observeIntervalHeartRate(", "startWithSpeed("], in: commit)
+    }
+
+    func testRecoveryPresentationUsesUpperLimitAndGoalStatus() throws {
+        let presentation = try functionBody("private func makeHRControlActivePresentation(", in: contentViewSource)
+        XCTAssertTrue(presentation.contains("if isCooldown || intervalState?.phase == .recovery"))
+        XCTAssertTrue(presentation.contains("return presentedHeartRate <= ceiling"))
+        XCTAssertTrue(presentation.contains("intervalState?.phase == .recovery ? \"≤ \\(selectedRange.upperBound) bpm\""))
+    }
+
     func testLegacyWatchPayloadCarriesHeartRateValue() throws {
         let body = try functionBody(
             "private func sendHeartRate(_ value: Double, callbackObservedAt: Date)",

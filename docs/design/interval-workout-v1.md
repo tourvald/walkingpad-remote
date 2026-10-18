@@ -63,10 +63,35 @@ the explicit 85-95% exposure counters are exported separately.
 
 - `swift test --jobs 2 --filter 'IntervalWorkoutRuntimeTests|HeartRateLegacyBehaviorContractTests|HRDomainServiceTests|CooldownRuntimeEngineTests|NativeHeartRatePreflightEngineTests|EventSessionAndAnalysisTests|WorkoutAnalysisExportTests|WorkoutAnalyzerV1Tests|TelemetryV2RuntimeCoordinatorTests.testBufferedIntervalPhaseContextSurvivesActivation|TelemetryV2RuntimeCoordinatorTests.testProductionShapedLegacyAndSemanticHrDecisionsPersistInOccurrenceOrder'`: 181 selected tests passed. After strengthening the initial-phase assertion, reran `swift test --jobs 2 --filter TelemetryV2RuntimeCoordinatorTests.testBufferedIntervalPhaseContextSurvivesActivation`: one test passed.
 - Unsigned generic iOS build passed, including a final incremental build:
-  `xcodebuild -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj -scheme WalkingPadRemote -destination 'generic/platform=iOS' -derivedDataPath <derived-data> -jobs 2 CODE_SIGNING_ALLOWED=NO build`.
+  `xcodebuild -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj -scheme WalkingPadRemote -destination 'generic/platform=iOS' -derivedDataPath /tmp/walkingpad-interval-v1-build -jobs 2 CODE_SIGNING_ALLOWED=NO build`.
 - Unsigned simulator build passed. Visual QA is **not verified**: installation into the isolated simulator stalled, then timed out after its restart. Both task-owned installation processes were stopped; the simulator was returned to its original shutdown state. No physical device was installed or launched.
 - `python3 scripts/check_codex_governance.py` and `git diff --check` passed. The UI-only scope checker exits 1 for `BluetoothManager.swift` and `Package.swift`; those runtime/build changes are separately authorized by this feature contract. It is not a UI-only diff.
 - Used `scripts/code_growth_report.py`'s report engine against HEAD and an isolated temporary index of the uncommitted tree, without changing the real index or creating commits. Combined diff (including the zone/prediction prerequisites): production +1169/-188; tests +612/-15; no narrow-bugfix hard-stop candidates. Added interval state owns frozen preflight intent, ephemeral selection, phase timing and counters. It reuses the existing timer and clears session clock/intent at termination. No new dependency, persistent subsystem or transport owner.
 - Fresh independent safety/scope and final reviews remain pending; this local result does not establish release or physical readiness. Original checkout and both prerequisite worktrees remain untouched; the original implementation was verified before committing for Draft review.
 
 Clock choice: [Apple's ContinuousClock documentation](https://developer.apple.com/documentation/swift/continuousclock) confirms that elapsed time continues while the system sleeps. Only local process-lifetime instants are compared; persisted recovery never resumes this clock or interval motion.
+
+## Review follow-up
+
+The independent internal critique of the first implementation identified three
+contract defects: a fresh above-limit observation could be overwritten before
+the ticker, recovery admission rounded 70% upward, and recovery presented the
+warm-up range. The correction retains an accepted excursion in session-local
+runtime state until the existing ticker consumes it, uses a floored recovery
+ceiling, and presents recovery as an upper-limit goal. The native observation
+callback performs no motion or persistence; the initial commit observation is
+also checked. Regression coverage includes intervening callbacks, freshness,
+new-session reset, fractional ceilings, and presentation/control boundaries.
+
+Unresolved product/safety decision: after a long execution pause, the current
+engine starts the next phase from the callback time instead of skipping phases.
+This prevents command bursts but can start a new full load after a long gap.
+Owner approval is required to define the fail-closed alternative (for example,
+ending into cooldown when an entire following phase was missed). Do not treat
+the current behavior as release-accepted. This question is distinct from the
+three concrete defects corrected above.
+
+After the three review corrections: 187 selected Swift tests passed and the
+unsigned generic iOS build passed. The fractional recovery-ceiling regression
+was first reproduced as a failing test before its correction. These results
+replace the initial 181-test verification for the corrected runtime.

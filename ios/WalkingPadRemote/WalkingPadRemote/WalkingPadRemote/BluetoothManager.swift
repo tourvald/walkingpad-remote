@@ -4684,6 +4684,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         isHrControlRunning = true
         hrStatusLine = "HR‑контроль запущен"
         intervalWorkoutState = pendingIntervalPlan.map { IntervalWorkoutRuntime.State(plan: $0) }
+        if let measuredAt = hrLastValueAt {
+            observeIntervalHeartRate(heartRateBPM, measuredAt: measuredAt, now: Date())
+        }
         intervalWorkoutStartedAt = pendingIntervalPlan == nil ? nil : ContinuousClock.now
         hrSessionTotalSeconds = pendingIntervalPlan?.totalSeconds ?? max(60, hrDurationMinutes * 60)
         hrRemainingSeconds = hrSessionTotalSeconds
@@ -4961,6 +4964,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             staleThresholdSeconds: hrStaleThresholdSeconds
         )
         isNativeHeartRateCurrent = hrStreamingActive
+        observeIntervalHeartRate(observation.beatsPerMinute, measuredAt: factualDate, now: now)
         let normalization = normalizeHeartRateDelivery(observation, recordedAt: now)
 
         let preflightObservation = NativeHeartRatePreflightEngine.Observation(
@@ -5368,6 +5372,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func stopHrStaleTimer() {
         hrStaleTimer?.invalidate()
         hrStaleTimer = nil
+    }
+
+    private func observeIntervalHeartRate(_ bpm: Int, measuredAt: Date, now: Date) {
+        guard isHrControlRunning, var state = intervalWorkoutState,
+              state.observeHeartRate(bpm, sampleAgeSeconds: now.timeIntervalSince(measuredAt)) else { return }
+        intervalWorkoutState = state
     }
 
     private func advanceIntervalWorkout() {

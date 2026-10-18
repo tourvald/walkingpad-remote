@@ -479,8 +479,9 @@ private func makeHRControlActivePresentation(
         guard let presentedHeartRate else {
             return ("Пульс недоступен", "waveform.path.ecg.slash", .orange)
         }
-        if isCooldown {
-            return presentedHeartRate <= cooldownTargetBPM
+        if isCooldown || intervalState?.phase == .recovery {
+            let ceiling = isCooldown ? cooldownTargetBPM : selectedRange.upperBound
+            return presentedHeartRate <= ceiling
                 ? ("Цель достигнута", "checkmark.circle.fill", .green)
                 : ("Выше цели", "arrow.up.circle.fill", .orange)
         }
@@ -499,7 +500,8 @@ private func makeHRControlActivePresentation(
         targetTitle: isCooldown ? "Заминка" : (intervalState == nil ? "Зона \(safeZoneIndex + 1)" : "Целевой пульс"),
         targetValue: isCooldown
             ? "≤ \(cooldownTargetBPM) bpm"
-            : "\(selectedRange.lowerBound)–\(selectedRange.upperBound) bpm",
+            : (intervalState?.phase == .recovery ? "≤ \(selectedRange.upperBound) bpm"
+                : "\(selectedRange.lowerBound)–\(selectedRange.upperBound) bpm"),
         targetSegments: makeTrainingTargetSegments(zoneRanges: zoneRanges),
         selectedSegmentID: isCooldown || intervalState != nil ? nil : safeZoneIndex,
         metrics: [
