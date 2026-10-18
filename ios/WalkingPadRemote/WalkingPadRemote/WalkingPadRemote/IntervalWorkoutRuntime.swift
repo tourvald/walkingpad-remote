@@ -51,6 +51,12 @@ enum IntervalWorkoutRuntime {
 
         init(plan: Plan) { self.plan = plan }
 
+        func permitsHeartRateDecision(at elapsed: Duration) -> Bool {
+            phase != .cooldown && !upperLimitObserved
+                && elapsed >= .seconds(elapsedSeconds)
+                && elapsed < .seconds(phaseStartedSeconds + Double(durationSeconds))
+        }
+
         var telemetryPhase: WorkoutPhase {
             switch phase {
             case .warmup: .warmup

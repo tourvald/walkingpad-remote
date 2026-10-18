@@ -2,6 +2,59 @@ import Foundation
 import TelemetryDomain
 
 enum HRDomainService {
+    final class SpeedCommand: Equatable {
+        let targetKmh: Double
+        let increaseSampleAt: Date?
+        private var autoStartWritten = false
+
+        init(targetKmh: Double, increaseSampleAt: Date?) {
+            self.targetKmh = targetKmh
+            self.increaseSampleAt = increaseSampleAt
+        }
+
+        nonisolated static func == (lhs: SpeedCommand, rhs: SpeedCommand) -> Bool { lhs === rhs }
+
+        func recordAutoStartWrite() { autoStartWritten = true }
+        func recordSpeedWrite() { autoStartWritten = false }
+
+        func consumeAutoStartCompensation() -> Bool {
+            defer { autoStartWritten = false }
+            return autoStartWritten
+        }
+    }
+
+    static func speedCommandBlockReason(
+        _ command: SpeedCommand, isRunning: Bool, unitsAllowed: Bool, now: Date
+    ) -> String? {
+        guard isRunning else { return "hr_session_ended_before_write" }
+        guard unitsAllowed else { return "hr_units_blocked_before_write" }
+        if let sampleAt = command.increaseSampleAt {
+            let age = now.timeIntervalSince(sampleAt)
+            guard age.isFinite, (0...7).contains(age) else { return "hr_increase_sample_stale_before_write" }
+        }
+        return nil
+    }
+
+    static let minimumDecisionIntervalSeconds = 9
+
+    static func heartRateDecisionIsDue(
+        sampleAgeSeconds: TimeInterval,
+        elapsedSinceLastDecision: Duration,
+        intervalSeconds: Int
+    ) -> Bool {
+        sampleAgeSeconds.isFinite && (0...7).contains(sampleAgeSeconds)
+            && elapsedSinceLastDecision >= .seconds(max(minimumDecisionIntervalSeconds, intervalSeconds))
+    }
+
+    static func heartRateDecisionRemainingSeconds(
+        elapsedSinceLastDecision: Duration,
+        intervalSeconds: Int
+    ) -> Int {
+        let remaining = (.seconds(max(minimumDecisionIntervalSeconds, intervalSeconds))
+            - elapsedSinceLastDecision).components
+        return max(0, Int(remaining.seconds) + (remaining.attoseconds > 0 ? 1 : 0))
+    }
+
     // Motion output after the existing native-HR preflight has committed, not admission.
     static func initialMotionTargetSpeedKmh(
         deviceTargetSpeedKmh: Double,

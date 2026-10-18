@@ -4,6 +4,52 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class CommandQueueServiceTests: XCTestCase {
+    func testCoalescingAfterActualAutoStartReturnsContextNeedingStop() {
+        let context = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+        var queue = [CommandQueueService.Command(data: Data([1]), label: "SPEED HR", heartRateSpeed: context)]
+        context.recordAutoStartWrite()
+        let replacement = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+        XCTAssertNotEqual(context, replacement)
+        let result = CommandQueueService.enqueueRegular(queue: &queue,
+            command: .init(data: Data([2]), label: "SPEED replacement", heartRateSpeed: replacement), isSpeedLabel: isSpeed)
+        XCTAssertEqual(result.coalescedSpeedCount, 1)
+        XCTAssertTrue(result.coalescedSpeedCommands.first?.heartRateSpeed?.consumeAutoStartCompensation() == true)
+        XCTAssertFalse(context.consumeAutoStartCompensation())
+        XCTAssertFalse(replacement.consumeAutoStartCompensation())
+        CommandQueueService.replaceWithHighPriority(queue: &queue, command: .init(data: Data([0]), label: "STOP"))
+        XCTAssertEqual(queue.map(\.label), ["STOP"])
+    }
+
+    func testUserStopReleasesSharedAutoStartContextWithoutAnotherCompensation() {
+        weak var retained: HRDomainService.SpeedCommand?
+        var queue: [CommandQueueService.Command] = []
+        do {
+            let context = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: nil)
+            retained = context
+            context.recordAutoStartWrite()
+            queue = [.init(data: Data([1]), label: "SPEED HR", heartRateSpeed: context)]
+        }
+        XCTAssertNotNil(retained)
+        CommandQueueService.replaceWithHighPriority(queue: &queue, command: .init(data: Data([0]), label: "STOP"))
+        XCTAssertNil(retained)
+        XCTAssertNil(queue.first?.heartRateSpeed)
+    }
+
+    func testCoalescingReplacesHeartRateContextAndStopCarriesNoHeartRateGuard() {
+        let at = Date(timeIntervalSince1970: 1000)
+        let old = HRDomainService.SpeedCommand(targetKmh: 6.1, increaseSampleAt: at)
+        let fresh = HRDomainService.SpeedCommand(targetKmh: 6.2, increaseSampleAt: at.addingTimeInterval(9))
+        var queue = [CommandQueueService.Command(data: Data([1]), label: "SPEED old", heartRateSpeed: old)]
+        _ = CommandQueueService.enqueueRegular(queue: &queue,
+            command: .init(data: Data([2]), label: "SPEED new", heartRateSpeed: fresh), isSpeedLabel: isSpeed)
+        XCTAssertEqual(queue.count, 1)
+        XCTAssertEqual(queue.first?.heartRateSpeed, fresh)
+        CommandQueueService.replaceWithHighPriority(queue: &queue, command: .init(data: Data([0]), label: "STOP"))
+        XCTAssertEqual(queue.map(\.label), ["STOP"])
+        XCTAssertNil(queue.first?.heartRateSpeed)
+        XCTAssertNil(CommandQueueService.Command(data: Data([3]), label: "QUERY STATUS").heartRateSpeed)
+    }
+
     func testTelemetrySidecarKeepsOriginalSessionAcrossCancellationAndSameEpochDequeue() {
         let epoch = TreadmillConnectionEpoch(rawValue: UUID())
         let oldSession = SessionID()
@@ -249,6 +295,23 @@ final class CommandQueueServiceTests: XCTestCase {
             XCTAssertEqual(discarded, protected ? [query] : [])
             XCTAssertEqual(queue, protected ? [] : [query])
         }
+    }
+
+    func testQueriesAdmittedWhileWaitingForHeartRateYieldToSpeedAndStop() {
+        let query = CommandQueueService.Command(data: Data([0xA2]), label: "QUERY STATUS")
+        let units = CommandQueueService.Command(data: Data([0xA7]), label: "QUERY PARAMS")
+        let speed = CommandQueueService.Command(data: Data([0x01]), label: "SPEED 4.0")
+        let stop = CommandQueueService.Command(data: Data([0xFF]), label: "STOP")
+        var queue = [query, units]
+        XCTAssertTrue(CommandQueueService.discardReadOnlyQueries(queue: &queue,
+            motionWindowIsProtected: false).isEmpty)
+        _ = CommandQueueService.enqueueRegular(queue: &queue, command: speed, isSpeedLabel: isSpeed)
+        XCTAssertEqual(CommandQueueService.discardReadOnlyQueries(queue: &queue,
+            motionWindowIsProtected: false), [query, units])
+        XCTAssertEqual(queue, [speed])
+        _ = CommandQueueService.enqueueRegular(queue: &queue, command: query, isSpeedLabel: isSpeed)
+        CommandQueueService.replaceWithHighPriority(queue: &queue, command: stop)
+        XCTAssertEqual(queue, [stop])
     }
 
     private func evidence(

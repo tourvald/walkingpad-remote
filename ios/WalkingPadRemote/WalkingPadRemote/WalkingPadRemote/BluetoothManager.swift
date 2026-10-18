@@ -723,7 +723,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrTargetBPM = max(60, min(220, dto.targetBpm))
         hrDurationMinutes = max(1, min(120, dto.durationMinutes))
         hrAdaptiveStepEnabled = dto.adaptiveStepEnabled
-        hrDecisionIntervalSeconds = max(1, min(60, dto.decisionIntervalSeconds))
+        hrDecisionIntervalSeconds = max(HRDomainService.minimumDecisionIntervalSeconds, min(60, dto.decisionIntervalSeconds))
         let step = max(0.1, min(2.0, dto.speedStepKmh))
         hrSpeedStepKmh = (step * 10).rounded() / 10.0
         if let value = dto.adaptiveDeadbandPercent {
@@ -1055,6 +1055,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     @Published var hrNextDecisionSeconds: Int = 0
+    private var hrLastDecisionAt: ContinuousClock.Instant?
     @Published var hrRemainingSeconds: Int = 0
     @Published var hrCooldownRemainingSeconds: Int = 0
     @Published private(set) var intervalWorkoutSelected = false
@@ -4690,7 +4691,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         intervalWorkoutStartedAt = pendingIntervalPlan == nil ? nil : ContinuousClock.now
         hrSessionTotalSeconds = pendingIntervalPlan?.totalSeconds ?? max(60, hrDurationMinutes * 60)
         hrRemainingSeconds = hrSessionTotalSeconds
-        hrNextDecisionSeconds = hrDecisionIntervalSeconds
+        hrLastDecisionAt = ContinuousClock.now
+        hrNextDecisionSeconds = max(HRDomainService.minimumDecisionIntervalSeconds, hrDecisionIntervalSeconds)
         hrProgress = 0
         hrControlStartedAt = controlledWorkoutStartedAt
         hrDecisionDetails = ""
@@ -4990,6 +4992,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             publishHeartRateNormalization(normalization)
         }
         applyNativeHeartRatePreflightEffects(effects)
+        evaluateHeartRateControlDecision()
     }
 
     private func commitNativeHeartRatePreflight(
@@ -5168,6 +5171,27 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         nativeWorkoutRecoveryStopRequested = true
         nativeWorkoutRecoveryStatusText = "Завершаем восстановленную тренировку…"
         stopBeltWithToggle(reason: "recovered_hr_manual_stop")
+    }
+
+    private func stopHrControlAfterAutoStartFailure() {
+        let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
+        hrControlFailed = true
+        isHrControlRunning = false
+        hrStatusLine = "HR‑контроль остановлен — скорость после запуска не задана"
+        infoToastMessage = "Скорость после запуска не задана. Остановка дорожки запрошена, но ещё не подтверждена."
+        hrNextDecisionSeconds = 0
+        hrRemainingSeconds = 0
+        hrProgress = 0
+        hrDecisionDetails = ""
+        hrPredictorStatusLine = ""
+        clearCooldownRuntimeState()
+        hrNoDataSeconds = 0
+        recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
+        hrControlStartedAt = nil
+        hrControlStartedBelt = false
+        stopLegacyWatchHeartRateIfNeeded()
+        stopBeltWithToggle(reason: "hr_auto_start_speed_cancelled")
+        endTelemetryV2Session(reason: "hr_auto_start_speed_cancelled")
     }
 
     private func beginNativeWorkoutStopTerminalRequestIfNeeded() {
@@ -5397,7 +5421,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ = telemetryV2Coordinator.observeWorkoutPhase(
             state.telemetryPhase, occurredAt: Date(), intervalContext: state.evidence()
         )
-        hrNextDecisionSeconds = 0
         if state.phase != .cooldown {
             observeSemanticHeartRateDecision(action: .noCommand,
                 reason: .other("interval_phase_target"), heartRateInputs: [], occurredAt: Date())
@@ -5442,6 +5465,253 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             reason: .other("interval_recovery"), heartRateInputs: controlUseEvidence?.inputs ?? [],
             occurredAt: Date())
         hrDecisionDetails = "Восстановление: снижаем скорость до \(String(format: "%.1f", next)) км/ч"
+    }
+
+    private func maintainHeartRateControlSafety() {
+        guard isHrControlRunning, hrRemainingSeconds > 0 else { return }
+        let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
+            startedAt: hrControlStartedAt, now: Date(), graceSeconds: hrStartGraceSeconds
+        )
+        guard isTreadmillControlReady else {
+            let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
+
+            hrControlFailed = true
+            infoToastMessage = "HR‑контроль остановлен — дорожка не готова к управлению. Остановка запрошена, но ещё не подтверждена."
+            isHrControlRunning = false
+            hrStatusLine = "HR‑контроль остановлен — дорожка не готова"
+            hrNextDecisionSeconds = 0
+            hrRemainingSeconds = 0
+            hrProgress = 0
+            hrDecisionDetails = ""
+            hrPredictorStatusLine = ""
+            clearCooldownRuntimeState()
+            hrNoDataSeconds = 0
+            recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
+            hrControlStartedAt = nil
+            hrControlStartedBelt = false
+            stopLegacyWatchHeartRateIfNeeded()
+            stopBeltWithToggle(reason: "hr_control_not_ready")
+            endTelemetryV2Session(reason: "hr_control_not_ready")
+            return
+        }
+        let intervalHeartRateIsFresh = intervalWorkoutState == nil || hrLastValueAt.map {
+            let age = Date().timeIntervalSince($0)
+            return age >= 0 && age <= 7
+        } == true
+        guard hrStreamingActive, heartRateBPM > 0, intervalHeartRateIsFresh else {
+            if withinGrace {
+                hrStatusLine = "HR‑контроль: ожидание пульса"
+                hrDecisionDetails = "Ожидание данных пульса…"
+                return
+            }
+            let missingSeconds = HRDomainService
+                .missingHeartRateSignalSeconds(
+                    lastReceivedAt: hrLastValueAt,
+                    now: Date(),
+                    noDataMaximumSeconds: hrNoDataMaxSeconds
+                )
+            if !HRDomainService.shouldStopForMissingHeartRateSignal(
+                missingSeconds: missingSeconds,
+                noDataMaximumSeconds: hrNoDataMaxSeconds
+            ) {
+                hrStatusLine = "HR‑контроль: нет сигнала (\(missingSeconds)с)"
+                hrDecisionDetails = "Данные пульса пропали, удерживаем скорость"
+                return
+            }
+            let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
+
+            hrControlFailed = true
+            infoToastMessage = "HR‑контроль остановлен — нет данных пульса. Остановка дорожки запрошена, но ещё не подтверждена."
+            isHrControlRunning = false
+            hrStatusLine = "HR‑контроль остановлен — нет данных пульса"
+            hrNextDecisionSeconds = 0
+            hrRemainingSeconds = 0
+            hrProgress = 0
+            hrDecisionDetails = ""
+            hrPredictorStatusLine = ""
+            clearCooldownRuntimeState()
+            hrNoDataSeconds = 0
+            recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
+            hrControlStartedAt = nil
+            hrControlStartedBelt = false
+            stopLegacyWatchHeartRateIfNeeded()
+            stopBeltWithToggle(reason: "hr_no_signal")
+            endTelemetryV2Session(reason: "hr_no_signal")
+            return
+        }
+
+    }
+
+    private func evaluateHeartRateControlDecision() {
+        guard isHrControlRunning, hrRemainingSeconds > 0,
+              isTreadmillControlReady, !blocksNonStopTreadmillMotion,
+              heartRateBPM > 0,
+              let measuredAt = hrLastValueAt, let lastDecisionAt = hrLastDecisionAt else { return }
+        let now = Date()
+        let instant = ContinuousClock.now
+        guard HRDomainService.heartRateDecisionIsDue(
+            sampleAgeSeconds: now.timeIntervalSince(measuredAt),
+            elapsedSinceLastDecision: lastDecisionAt.duration(to: instant),
+            intervalSeconds: hrDecisionIntervalSeconds
+        ) else { return }
+        if let state = intervalWorkoutState {
+            guard let startedAt = intervalWorkoutStartedAt,
+                  state.permitsHeartRateDecision(at: startedAt.duration(to: instant)) else { return }
+        }
+        let unitsDecision = controllerUnitsGateDecision()
+        guard unitsDecision.allowed else {
+            hrStatusLine = "HR‑контроль: ожидание подтверждения единиц скорости"
+            hrDecisionDetails = unitsDecision.blockReason?.userMessage ?? "Единицы скорости не подтверждены"
+            return
+        }
+        hrLastDecisionAt = instant
+        hrNextDecisionSeconds = max(HRDomainService.minimumDecisionIntervalSeconds, hrDecisionIntervalSeconds)
+        let hrTargetBPM = activeHRControlTargetBPM
+        if intervalWorkoutState?.phase == .recovery {
+            reduceIntervalRecoverySpeed()
+            return
+        }
+        let trend = currentHrTrendBpmPerSecond()
+        let controlUseEvidence = makeHeartRateControlUseEvidence(
+            trendUsed: trend != nil,
+            occurredAt: Date()
+        )
+        defer { observeHeartRateControlUse(controlUseEvidence) }
+        let performanceInterval = telemetryPerformanceObservation
+            .beginControlCycle()
+        defer {
+            telemetryPerformanceObservation.endControlCycle(
+                performanceInterval
+            )
+        }
+        let predictedValue = trend.map { Double(heartRateBPM) + $0 * hrPredictSeconds }
+        let predictedBpm = predictedValue.map { Int(round($0)) }
+        let effectiveBpm = max(heartRateBPM, predictedBpm ?? heartRateBPM)
+        let diff = effectiveBpm - hrTargetBPM
+        let predictionEvaluatedAt = Date()
+        let prediction = HeartRatePredictionSnapshot(
+            evaluatedAt: predictionEvaluatedAt,
+            currentBeatsPerMinute: heartRateBPM,
+            controllerInputAt: hrLastValueAt,
+            controllerInputAgeSeconds: hrLastValueAt.map {
+                predictionEvaluatedAt.timeIntervalSince($0)
+            },
+            trendBeatsPerMinutePerSecond: trend,
+            trendWindowSeconds: hrTrendWindowSeconds,
+            smoothingAlpha: hrTrendEmaAlpha,
+            trendLimitBeatsPerMinutePerSecond: hrTrendSlopeMaxBpmPerSecond,
+            horizonSeconds: hrPredictSeconds,
+            predictedBeatsPerMinute: predictedBpm,
+            effectiveBeatsPerMinute: effectiveBpm,
+            phase: intervalWorkoutState?.telemetryPhase ?? .main,
+            intervalContext: intervalWorkoutState?.evidence()
+        )
+        let decisionPrefix: String = {
+            if let predictedBpm, predictedBpm > heartRateBPM {
+                return "HR \(heartRateBPM) / прогноз \(predictedBpm) / цель \(hrTargetBPM) (Δ \(diff))"
+            }
+            return "HR \(heartRateBPM) / цель \(hrTargetBPM) (Δ \(diff))"
+        }()
+        let fixedStep = max(0.1, min(2.0, hrSpeedStepKmh))
+        let absDiff = abs(diff)
+        let adaptiveThresholds = adaptiveThresholdPercentsSnapshot()
+        let absDiffPercent = adaptiveDiffPercent(absDiff, targetBpm: hrTargetBPM)
+        let deadbandBpm = adaptiveDeadbandBpm(targetBpm: hrTargetBPM, thresholds: adaptiveThresholds)
+        let direction: Double = diff > 0 ? -1.0 : 1.0
+        let stepDirectionLabel = diff > 0 ? "DOWN" : (diff < 0 ? "UP" : "HOLD")
+        let isIncreasingSpeed = direction > 0
+        let stepSelection: AdaptiveStepSelection = {
+            if hrAdaptiveStepEnabled {
+                return adaptiveStepFromDiff(
+                    diffPercent: absDiffPercent,
+                    isIncreasingSpeed: isIncreasingSpeed,
+                    thresholds: adaptiveThresholds
+                )
+            }
+            return AdaptiveStepSelection(level: 4, stepKmh: quantizeSpeedStep(fixedStep))
+        }()
+        // KS-F0 accepts 0.1 km/h increments, so quantize before applying.
+        let step = quantizeSpeedStep(stepSelection.stepKmh)
+        let stepModeLabel = hrAdaptiveStepEnabled ? "L\(stepSelection.level)" : "FIXED"
+        let stepDebugLabel = "\(stepDirectionLabel)-\(stepModeLabel)"
+
+        let currentTarget = (deviceTargetSpeedKmh > 0.1) ? deviceTargetSpeedKmh : clampRunningSpeedKmh(desiredSpeedKmh)
+        if absDiff <= deadbandBpm {
+            let holdModeLabel = hrAdaptiveStepEnabled ? "L0" : "FIXED"
+            recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_hold")
+            hrStatusLine = "HR‑контроль: цель удерживается"
+            hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDirectionLabel)-\(holdModeLabel) \(String(format: "%.1f", step)) км/ч · deadband ±\(deadbandBpm)bpm (\(String(format: "%.1f", adaptiveThresholds.deadband))%) · скорость \(String(format: "%.1f", currentTarget)) → без изменений"
+
+            observeSemanticHeartRateDecision(
+                action: .noCommand,
+                reason: .withinTarget,
+                heartRateInputs: controlUseEvidence?.inputs ?? [],
+                prediction: prediction,
+                occurredAt: Date()
+            )
+            return
+        }
+        if direction > 0, let trend, trend > 0, let predictedValue {
+            let threshold = Double(hrTargetBPM - hrPredictMarginBpm)
+            if predictedValue >= threshold {
+                recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_inertia_hold")
+                hrStatusLine = "HR‑контроль: инерция"
+                let trendPerMin = trend * 60.0
+                hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · тренд \(String(format: "%+.1f", trendPerMin)) bpm/мин · прогноз \(Int(round(predictedValue))) → без повышения"
+
+                observeSemanticHeartRateDecision(
+                    action: .noCommand,
+                    reason: .heartRateInertiaHold,
+                    heartRateInputs: controlUseEvidence?.inputs ?? [],
+                    prediction: prediction,
+                    occurredAt: Date()
+                )
+                return
+            }
+        }
+        let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)
+        if nextSpeed != currentTarget {
+            lastCommandLine = "CMD HR adjust -> \(String(format: "%.1f", nextSpeed))"
+            let telemetryDecision = makeTreadmillDecision(
+                source: .heartRateControl,
+                intent: .setDesiredSpeed(
+                    DesiredSpeedKilometresPerHour(value: nextSpeed)
+                ),
+                heartRateInputs: controlUseEvidence?.inputs ?? []
+            )
+            defer { observeTreadmillDecision(telemetryDecision) }
+            sendTreadmillSetSpeed(
+                nextSpeed,
+                label: String(format: "SPEED %.1f km/h (HR)", nextSpeed),
+                decision: telemetryDecision,
+                heartRateSpeed: HRDomainService.SpeedCommand(
+                    targetKmh: nextSpeed, increaseSampleAt: nextSpeed > currentTarget ? measuredAt : nil
+                )
+            )
+            hrStatusLine = diff > 0 ? "HR‑контроль: уменьшаем скорость" : "HR‑контроль: увеличиваем скорость"
+            hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → \(String(format: "%+.1f", nextSpeed - currentTarget)) км/ч"
+
+            observeSemanticHeartRateDecision(
+                action: .enqueueSpeed(
+                    DesiredSpeedKilometresPerHour(value: nextSpeed)
+                ),
+                reason: diff < 0 ? .belowTarget : .aboveTarget,
+                heartRateInputs: controlUseEvidence?.inputs ?? [],
+                prediction: prediction,
+                occurredAt: Date()
+            )
+        } else {
+            hrStatusLine = "HR‑контроль: предел скорости"
+            hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → предел скорости"
+
+            observeSemanticHeartRateDecision(
+                action: .noCommand,
+                reason: .heartRateSpeedLimit,
+                heartRateInputs: controlUseEvidence?.inputs ?? [],
+                prediction: prediction,
+                occurredAt: Date()
+            )
+        }
     }
 
     private func tickTelemetry() {
@@ -5529,227 +5799,13 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     hrProgress = hrSessionTotalSeconds > 0 ? (1.0 - (Double(hrRemainingSeconds) / Double(hrSessionTotalSeconds))) : 0
                 }
 
-                if hrNextDecisionSeconds > 0 {
-                    hrNextDecisionSeconds -= 1
-                }
-                if hrNextDecisionSeconds <= 0 {
-                    hrNextDecisionSeconds = hrDecisionIntervalSeconds
-
-                    guard isTreadmillControlReady else {
-                        let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-
-                        hrControlFailed = true
-                        infoToastMessage = "HR‑контроль остановлен — дорожка не готова к управлению. Остановка запрошена, но ещё не подтверждена."
-                        isHrControlRunning = false
-                        hrStatusLine = "HR‑контроль остановлен — дорожка не готова"
-                        hrNextDecisionSeconds = 0
-                        hrRemainingSeconds = 0
-                        hrProgress = 0
-                        hrDecisionDetails = ""
-                        hrPredictorStatusLine = ""
-                        clearCooldownRuntimeState()
-                        hrNoDataSeconds = 0
-                        recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
-                        hrControlStartedAt = nil
-                        hrControlStartedBelt = false
-                        stopLegacyWatchHeartRateIfNeeded()
-                        stopBeltWithToggle(reason: "hr_control_not_ready")
-                        endTelemetryV2Session(reason: "hr_control_not_ready")
-                        return
-                    }
-                    let intervalHeartRateIsFresh = intervalWorkoutState == nil || hrLastValueAt.map {
-                        let age = Date().timeIntervalSince($0)
-                        return age >= 0 && age <= 7
-                    } == true
-                    guard hrStreamingActive, heartRateBPM > 0, intervalHeartRateIsFresh else {
-                        if withinGrace {
-                            hrStatusLine = "HR‑контроль: ожидание пульса"
-                            hrDecisionDetails = "Ожидание данных пульса…"
-                            return
-                        }
-                        let missingSeconds = HRDomainService
-                            .missingHeartRateSignalSeconds(
-                                lastReceivedAt: hrLastValueAt,
-                                now: Date(),
-                                noDataMaximumSeconds: hrNoDataMaxSeconds
-                            )
-                        if !HRDomainService.shouldStopForMissingHeartRateSignal(
-                            missingSeconds: missingSeconds,
-                            noDataMaximumSeconds: hrNoDataMaxSeconds
-                        ) {
-                            hrStatusLine = "HR‑контроль: нет сигнала (\(missingSeconds)с)"
-                            hrDecisionDetails = "Данные пульса пропали, удерживаем скорость"
-                            return
-                        }
-                        let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-
-                        hrControlFailed = true
-                        infoToastMessage = "HR‑контроль остановлен — нет данных пульса. Остановка дорожки запрошена, но ещё не подтверждена."
-                        isHrControlRunning = false
-                        hrStatusLine = "HR‑контроль остановлен — нет данных пульса"
-                        hrNextDecisionSeconds = 0
-                        hrRemainingSeconds = 0
-                        hrProgress = 0
-                        hrDecisionDetails = ""
-                        hrPredictorStatusLine = ""
-                        clearCooldownRuntimeState()
-                        hrNoDataSeconds = 0
-                        recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
-                        hrControlStartedAt = nil
-                        hrControlStartedBelt = false
-                        stopLegacyWatchHeartRateIfNeeded()
-                        stopBeltWithToggle(reason: "hr_no_signal")
-                        endTelemetryV2Session(reason: "hr_no_signal")
-                        return
-                    }
-
-                    if intervalWorkoutState?.phase == .recovery {
-                        reduceIntervalRecoverySpeed()
-                        return
-                    }
-                    let trend = currentHrTrendBpmPerSecond()
-                    let controlUseEvidence = makeHeartRateControlUseEvidence(
-                        trendUsed: trend != nil,
-                        occurredAt: Date()
+                if let lastDecisionAt = hrLastDecisionAt {
+                    hrNextDecisionSeconds = HRDomainService.heartRateDecisionRemainingSeconds(
+                        elapsedSinceLastDecision: lastDecisionAt.duration(to: ContinuousClock.now),
+                        intervalSeconds: hrDecisionIntervalSeconds
                     )
-                    defer { observeHeartRateControlUse(controlUseEvidence) }
-                    let performanceInterval = telemetryPerformanceObservation
-                        .beginControlCycle()
-                    defer {
-                        telemetryPerformanceObservation.endControlCycle(
-                            performanceInterval
-                        )
-                    }
-                    let predictedValue = trend.map { Double(heartRateBPM) + $0 * hrPredictSeconds }
-                    let predictedBpm = predictedValue.map { Int(round($0)) }
-                    let effectiveBpm = max(heartRateBPM, predictedBpm ?? heartRateBPM)
-                    let diff = effectiveBpm - hrTargetBPM
-                    let predictionEvaluatedAt = Date()
-                    let prediction = HeartRatePredictionSnapshot(
-                        evaluatedAt: predictionEvaluatedAt,
-                        currentBeatsPerMinute: heartRateBPM,
-                        controllerInputAt: hrLastValueAt,
-                        controllerInputAgeSeconds: hrLastValueAt.map {
-                            predictionEvaluatedAt.timeIntervalSince($0)
-                        },
-                        trendBeatsPerMinutePerSecond: trend,
-                        trendWindowSeconds: hrTrendWindowSeconds,
-                        smoothingAlpha: hrTrendEmaAlpha,
-                        trendLimitBeatsPerMinutePerSecond: hrTrendSlopeMaxBpmPerSecond,
-                        horizonSeconds: hrPredictSeconds,
-                        predictedBeatsPerMinute: predictedBpm,
-                        effectiveBeatsPerMinute: effectiveBpm,
-                        phase: intervalWorkoutState?.telemetryPhase ?? .main,
-                        intervalContext: intervalWorkoutState?.evidence()
-                    )
-                    let decisionPrefix: String = {
-                        if let predictedBpm, predictedBpm > heartRateBPM {
-                            return "HR \(heartRateBPM) / прогноз \(predictedBpm) / цель \(hrTargetBPM) (Δ \(diff))"
-                        }
-                        return "HR \(heartRateBPM) / цель \(hrTargetBPM) (Δ \(diff))"
-                    }()
-                    let fixedStep = max(0.1, min(2.0, hrSpeedStepKmh))
-                    let absDiff = abs(diff)
-                    let adaptiveThresholds = adaptiveThresholdPercentsSnapshot()
-                    let absDiffPercent = adaptiveDiffPercent(absDiff, targetBpm: hrTargetBPM)
-                    let deadbandBpm = adaptiveDeadbandBpm(targetBpm: hrTargetBPM, thresholds: adaptiveThresholds)
-                    let direction: Double = diff > 0 ? -1.0 : 1.0
-                    let stepDirectionLabel = diff > 0 ? "DOWN" : (diff < 0 ? "UP" : "HOLD")
-                    let isIncreasingSpeed = direction > 0
-                    let stepSelection: AdaptiveStepSelection = {
-                        if hrAdaptiveStepEnabled {
-                            return adaptiveStepFromDiff(
-                                diffPercent: absDiffPercent,
-                                isIncreasingSpeed: isIncreasingSpeed,
-                                thresholds: adaptiveThresholds
-                            )
-                        }
-                        return AdaptiveStepSelection(level: 4, stepKmh: quantizeSpeedStep(fixedStep))
-                    }()
-                    // KS-F0 accepts 0.1 km/h increments, so quantize before applying.
-                    let step = quantizeSpeedStep(stepSelection.stepKmh)
-                    let stepModeLabel = hrAdaptiveStepEnabled ? "L\(stepSelection.level)" : "FIXED"
-                    let stepDebugLabel = "\(stepDirectionLabel)-\(stepModeLabel)"
-
-                    let currentTarget = (deviceTargetSpeedKmh > 0.1) ? deviceTargetSpeedKmh : clampRunningSpeedKmh(desiredSpeedKmh)
-                    if absDiff <= deadbandBpm {
-                        let holdModeLabel = hrAdaptiveStepEnabled ? "L0" : "FIXED"
-                        recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_hold")
-                        hrStatusLine = "HR‑контроль: цель удерживается"
-                        hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDirectionLabel)-\(holdModeLabel) \(String(format: "%.1f", step)) км/ч · deadband ±\(deadbandBpm)bpm (\(String(format: "%.1f", adaptiveThresholds.deadband))%) · скорость \(String(format: "%.1f", currentTarget)) → без изменений"
-
-                        observeSemanticHeartRateDecision(
-                            action: .noCommand,
-                            reason: .withinTarget,
-                            heartRateInputs: controlUseEvidence?.inputs ?? [],
-                            prediction: prediction,
-                            occurredAt: Date()
-                        )
-                        return
-                    }
-                    if direction > 0, let trend, trend > 0, let predictedValue {
-                        let threshold = Double(hrTargetBPM - hrPredictMarginBpm)
-                        if predictedValue >= threshold {
-                            recordSpeedChange(from: currentTarget, to: currentTarget, reason: "hr_inertia_hold")
-                            hrStatusLine = "HR‑контроль: инерция"
-                            let trendPerMin = trend * 60.0
-                            hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · тренд \(String(format: "%+.1f", trendPerMin)) bpm/мин · прогноз \(Int(round(predictedValue))) → без повышения"
-
-                            observeSemanticHeartRateDecision(
-                                action: .noCommand,
-                                reason: .heartRateInertiaHold,
-                                heartRateInputs: controlUseEvidence?.inputs ?? [],
-                                prediction: prediction,
-                                occurredAt: Date()
-                            )
-                            return
-                        }
-                    }
-                    let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)
-                    if nextSpeed != currentTarget {
-                        let old = deviceTargetSpeedKmh
-                        desiredSpeedKmh = nextSpeed
-                        deviceTargetSpeedKmh = nextSpeed
-                        recordSpeedChange(from: old, to: nextSpeed, reason: "hr_decision_set")
-                        lastCommandLine = "CMD HR adjust -> \(String(format: "%.1f", nextSpeed))"
-                        let telemetryDecision = makeTreadmillDecision(
-                            source: .heartRateControl,
-                            intent: .setDesiredSpeed(
-                                DesiredSpeedKilometresPerHour(value: nextSpeed)
-                            ),
-                            heartRateInputs: controlUseEvidence?.inputs ?? []
-                        )
-                        defer { observeTreadmillDecision(telemetryDecision) }
-                        sendTreadmillSetSpeed(
-                            nextSpeed,
-                            label: String(format: "SPEED %.1f km/h (HR)", nextSpeed),
-                            decision: telemetryDecision
-                        )
-                        hrStatusLine = diff > 0 ? "HR‑контроль: уменьшаем скорость" : "HR‑контроль: увеличиваем скорость"
-                        hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → \(String(format: "%+.1f", nextSpeed - currentTarget)) км/ч"
-
-                        observeSemanticHeartRateDecision(
-                            action: .enqueueSpeed(
-                                DesiredSpeedKilometresPerHour(value: nextSpeed)
-                            ),
-                            reason: diff < 0 ? .belowTarget : .aboveTarget,
-                            heartRateInputs: controlUseEvidence?.inputs ?? [],
-                            prediction: prediction,
-                            occurredAt: Date()
-                        )
-                    } else {
-                        hrStatusLine = "HR‑контроль: предел скорости"
-                        hrDecisionDetails = "\(decisionPrefix) · шаг \(stepDebugLabel) \(String(format: "%.1f", step)) км/ч · скорость \(String(format: "%.1f", currentTarget)) → предел скорости"
-
-                        observeSemanticHeartRateDecision(
-                            action: .noCommand,
-                            reason: .heartRateSpeedLimit,
-                            heartRateInputs: controlUseEvidence?.inputs ?? [],
-                            prediction: prediction,
-                            occurredAt: Date()
-                        )
-                    }
                 }
+                maintainHeartRateControlSafety()
             } else if cooldownRuntimeState == nil {
                 hrNextDecisionSeconds = 0
                 let output = telemetryPerformanceObservation.measureControlCycle {
@@ -5866,7 +5922,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         label: String,
         highPriority: Bool = false,
         requiresControlReadiness: Bool = false,
-        telemetryRequest: TreadmillCommandTelemetryRequest? = nil
+        telemetryRequest: TreadmillCommandTelemetryRequest? = nil,
+        heartRateSpeed: HRDomainService.SpeedCommand? = nil
     ) {
 #if STOP_TRUTH_EXPERIMENT_CAPABILITY
         guard stopTruthExperimentController?.isActive != true else {
@@ -5878,7 +5935,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             label: label,
             highPriority: highPriority,
             requiresControlReadiness: requiresControlReadiness,
-            telemetryRequest: telemetryRequest
+            telemetryRequest: telemetryRequest,
+            heartRateSpeed: heartRateSpeed
         )
     }
 
@@ -5911,12 +5969,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         label: String,
         highPriority: Bool,
         requiresControlReadiness: Bool,
-        telemetryRequest: TreadmillCommandTelemetryRequest?
+        telemetryRequest: TreadmillCommandTelemetryRequest?,
+        heartRateSpeed: HRDomainService.SpeedCommand? = nil
     ) {
         let command = CommandQueueService.Command(
             data: data,
             label: label,
-            requiresControlReadiness: requiresControlReadiness
+            requiresControlReadiness: requiresControlReadiness,
+            heartRateSpeed: heartRateSpeed
         )
         let request = telemetryRequest ?? treadmillCommandRequest(kind: .other(label))
         let enqueue = request.prepareEnqueue(
@@ -5965,14 +6025,17 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 isSpeedLabel: isSpeedCommandLabel
             )
         }
-        if result.coalescedSpeedCount > 0 {
-
-        }
-        processCommandQueue()
         observeSupersededTreadmillCommands(superseded)
         if let publication = enqueue.publication {
             observeTreadmillTelemetry(.commandEnqueued(publication), sessionID: request.sessionID)
         }
+        if result.coalescedSpeedCommands.contains(where: {
+            $0.heartRateSpeed?.consumeAutoStartCompensation() == true
+        }) {
+            stopHrControlAfterAutoStartFailure()
+            return
+        }
+        processCommandQueue()
     }
 
     private func observeCancelledTreadmillCommands(
@@ -6024,19 +6087,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         }
         let epoch = commandQueueEpoch
-        // A cancelled query wakeup does not own the replacement queue or its Stop.
-        let queuedReadOnlyQuery = commandQueue.first.map {
-            CommandQueueService.isReadOnlyQueryLabel($0.label)
-        } ?? false
+        // An invalidated callback never owns the replacement queue or its Stop.
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             guard self.commandQueueEpoch == epoch else {
-                if !queuedReadOnlyQuery {
-                    self.isCommandQueueProcessing = false
-                    self.nativeWorkoutStopTransportInvocationFailedIfNeeded(
-                        reason: "Очередь Stop была сброшена"
-                    )
-                }
                 return
             }
             let discardedQueries = CommandQueueService.discardReadOnlyQueries(
@@ -6097,25 +6151,57 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryEvidence = nil
                 queuedSessionID = self.activeTelemetryV2SessionID
             }
-            postWriteTelemetry.append(
-                contentsOf: self.performWrite(
-                    next.data,
-                    label: next.label,
-                    requiresControlReadiness: next.requiresControlReadiness,
-                    telemetryEvidence: telemetryEvidence
+            let hrBlockReason = next.heartRateSpeed.flatMap {
+                HRDomainService.speedCommandBlockReason(
+                    $0, isRunning: self.isHrControlRunning && self.hrRemainingSeconds > 0,
+                    unitsAllowed: self.controllerUnitsGateDecision().allowed, now: Date()
                 )
-            )
-            self.nextCommandAllowedAt = Date().addingTimeInterval(self.commandMinIntervalSecondsForCurrentProtocol())
-            self.isCommandQueueProcessing = false
-            if !self.commandQueue.isEmpty {
-                self.processCommandQueue()
             }
+            if let hrBlockReason {
+                if let telemetryEvidence {
+                    postWriteTelemetry.append(.commandCancelled(
+                        TreadmillCommandCancellationObservation(
+                            commandID: telemetryEvidence.commandID,
+                            decisionID: telemetryEvidence.decisionID,
+                            connectionEpoch: telemetryEvidence.connectionEpoch,
+                            occurredAt: Date(), reason: .other(hrBlockReason)
+                        )
+                    ))
+                }
+                if self.isHrControlRunning && self.hrRemainingSeconds > 0 {
+                    self.hrStatusLine = "HR‑контроль: изменение скорости отменено"
+                    self.hrDecisionDetails = hrBlockReason == "hr_units_blocked_before_write"
+                        ? "Дождитесь подтверждения единиц скорости"
+                        : "Дождитесь свежего измерения пульса"
+                }
+            } else {
+                postWriteTelemetry.append(
+                    contentsOf: self.performWrite(
+                        next.data,
+                        label: next.label,
+                        requiresControlReadiness: next.requiresControlReadiness,
+                        telemetryEvidence: telemetryEvidence,
+                        heartRateSpeed: next.heartRateSpeed
+                    )
+                )
+                self.nextCommandAllowedAt = Date().addingTimeInterval(self.commandMinIntervalSecondsForCurrentProtocol())
+            }
+            let needsCompensatingStop = self.isSpeedCommandLabel(next.label)
+                && next.heartRateSpeed?.consumeAutoStartCompensation() == true
+            self.isCommandQueueProcessing = false
             for evidence in postWriteTelemetry {
                 self.observeTreadmillTelemetry(evidence, sessionID: queuedSessionID)
             }
             self.observeCancelledTreadmillCommands(
                 lostEntries, reason: .other("telemetry_sidecar_order_mismatch")
             )
+            if needsCompensatingStop {
+                self.stopHrControlAfterAutoStartFailure()
+                return
+            }
+            if !self.commandQueue.isEmpty {
+                self.processCommandQueue()
+            }
             self.finalizeCompletedStopIfReady()
             if let lifecycle = self.stopObservationLifecycle, lifecycle.finalReason?.hasPrefix("stop_command_not_sent") == true {
                 self.telemetryV2Coordinator.stopAttemptFinalized(attemptID: lifecycle.attemptID)
@@ -6127,7 +6213,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         _ data: Data,
         label: String,
         requiresControlReadiness: Bool,
-        telemetryEvidence: TreadmillCommandEnqueuedEvidence?
+        telemetryEvidence: TreadmillCommandEnqueuedEvidence?,
+        heartRateSpeed: HRDomainService.SpeedCommand? = nil
     ) -> [TreadmillTelemetryEvidence] {
         if requiresControlReadiness && !isTreadmillControlReady {
             if label == "STOP" {
@@ -6197,6 +6284,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         lastCommandAckedAt = (type == .withResponse) ? nil : lastCommandSentAt
 
         p.writeValue(data, for: ch, type: type)
+        if let heartRateSpeed {
+            if isSpeedCommandLabel(label) {
+                heartRateSpeed.recordSpeedWrite()
+                let old = deviceTargetSpeedKmh
+                desiredSpeedKmh = heartRateSpeed.targetKmh
+                deviceTargetSpeedKmh = heartRateSpeed.targetKmh
+                recordSpeedChange(from: old, to: heartRateSpeed.targetKmh, reason: "hr_decision_set")
+            } else {
+                // Only the paired FTMS/FitShow auto-starts carry this context here.
+                heartRateSpeed.recordAutoStartWrite()
+            }
+        }
         if label != "QUERY STATUS", label != "QUERY PARAMS",
            var lifecycle = stopObservationLifecycle, lifecycle.finalResult == nil {
             lifecycle.markMotionWrite(at: lastCommandSentAt ?? Date(), requiresResponse: type == .withResponse)
@@ -6646,7 +6745,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             let remainder = cooldownState.elapsedSeconds % interval
             return remainder == 0 ? interval : interval - remainder
         }
-        return min(hrNextDecisionSeconds, hrRemainingSeconds)
+        return WalkingPadStatusRefreshPolicy.motionLeadSeconds(
+            decisionRemainingSeconds: hrNextDecisionSeconds,
+            phaseRemainingSeconds: intervalWorkoutState?.remainingSeconds ?? hrRemainingSeconds
+        )
     }
 
     private func controllerUnitsResponseContext(
@@ -6747,7 +6849,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private func sendTreadmillSetSpeed(
         _ kmh: Double,
         label: String,
-        decision: TreadmillControlDecisionEvidence? = nil
+        decision: TreadmillControlDecisionEvidence? = nil,
+        heartRateSpeed: HRDomainService.SpeedCommand? = nil
     ) {
         guard !blocksNonStopTreadmillMotion else {
             return
@@ -6767,7 +6870,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
-                )
+                ),
+                heartRateSpeed: heartRateSpeed
             )
         case .ftms:
             enqueueFtmsRequestControlIfNeeded(decision: decision)
@@ -6779,7 +6883,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("auto_start"),
                         decision: decision
-                    )
+                    ),
+                    heartRateSpeed: heartRateSpeed
                 )
             }
             writeCommand(
@@ -6789,7 +6894,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
-                )
+                ),
+                heartRateSpeed: heartRateSpeed
             )
         case .fitShow:
             if shouldAutoStartForSpeedChange(kmh: kmh) {
@@ -6800,7 +6906,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     telemetryRequest: treadmillCommandRequest(
                         kind: .other("auto_start"),
                         decision: decision
-                    )
+                    ),
+                    heartRateSpeed: heartRateSpeed
                 )
             }
             writeCommand(
@@ -6810,7 +6917,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 telemetryRequest: treadmillCommandRequest(
                     kind: treadmillSetSpeedCommandKind(kmh),
                     decision: decision
-                )
+                ),
+                heartRateSpeed: heartRateSpeed
             )
         case .unknown:
             break
@@ -7170,6 +7278,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func endTelemetryV2Session(reason: String) {
+        hrLastDecisionAt = nil
         if let state = intervalWorkoutState {
             _ = telemetryV2Coordinator.observeWorkoutPhase(
                 .finished, occurredAt: Date(), intervalContext: state.evidence(reason: state.finishReason ?? reason)
@@ -8613,6 +8722,7 @@ extension BluetoothManager: WCSessionDelegate {
                         )
                     }
                 )
+                self.evaluateHeartRateControlDecision()
             }
         }
         if let uuid = payload["workout_uuid"] as? String {

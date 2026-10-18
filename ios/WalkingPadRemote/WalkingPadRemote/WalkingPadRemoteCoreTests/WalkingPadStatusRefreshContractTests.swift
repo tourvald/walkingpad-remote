@@ -3,6 +3,16 @@ import XCTest
 @testable import WalkingPadCoreLogic
 
 final class WalkingPadStatusRefreshContractTests: XCTestCase {
+    func testWaitingForHeartRateRetainsPhaseBoundaryProtection() throws {
+        let lead = try functionBody("private var controllerUnitsNextScheduledMotionLeadSeconds:", in: managerSource())
+        XCTAssertTrue(lead.contains("WalkingPadStatusRefreshPolicy.motionLeadSeconds("))
+        XCTAssertTrue(lead.contains("decisionRemainingSeconds: hrNextDecisionSeconds"))
+        XCTAssertTrue(lead.contains("phaseRemainingSeconds: intervalWorkoutState?.remainingSeconds ?? hrRemainingSeconds"))
+        let cooldown = try XCTUnwrap(lead.range(of: "if let cooldownState"))
+        let waiting = try XCTUnwrap(lead.range(of: "WalkingPadStatusRefreshPolicy.motionLeadSeconds("))
+        XCTAssertLessThan(cooldown.lowerBound, waiting.lowerBound)
+    }
+
     func testRequestCannotPublishOrInferFactualSpeed() throws {
         let manager = try managerSource()
         let request = try functionBody(

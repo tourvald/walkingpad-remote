@@ -7,6 +7,21 @@ final class IntervalWorkoutRuntimeTests: XCTestCase {
         .init(plan: .init(maximumHeartRate: 200, cycles: cycles)!)
     }
 
+    func testDeliveredSamplesWaitForTickerAtPhaseBoundaries() {
+        var value = state(cycles: 2)
+        XCTAssertTrue(value.permitsHeartRateDecision(at: .milliseconds(299_999)))
+        XCTAssertFalse(value.permitsHeartRateDecision(at: .seconds(300)))
+        value.tick(elapsed: 300, heartRate: 130, validForSeconds: 7)
+        XCTAssertFalse(value.permitsHeartRateDecision(at: .seconds(299)))
+        XCTAssertTrue(value.permitsHeartRateDecision(at: .seconds(300)))
+        XCTAssertFalse(value.permitsHeartRateDecision(at: .seconds(540)))
+        value.tick(elapsed: 540, heartRate: 180, validForSeconds: 7)
+        XCTAssertTrue(value.permitsHeartRateDecision(at: .seconds(540)))
+        XCTAssertFalse(value.permitsHeartRateDecision(at: .seconds(720)))
+        value.tick(elapsed: 720, heartRate: 141, validForSeconds: 7)
+        XCTAssertFalse(value.permitsHeartRateDecision(at: .seconds(720)))
+    }
+
     func testTemporaryWarmupAndFixedWorkIncludeRampTime() {
         var value = state()
         XCTAssertEqual(value.durationSeconds, 300)
@@ -24,6 +39,7 @@ final class IntervalWorkoutRuntimeTests: XCTestCase {
         value.tick(elapsed: 540, heartRate: 160, validForSeconds: 7)
         XCTAssertEqual(value.phase, .cooldown)
         XCTAssertEqual(value.finishReason, "cycles_completed")
+        XCTAssertFalse(value.permitsHeartRateDecision(at: .seconds(value.elapsedSeconds)))
         XCTAssertEqual(value.workElapsedSeconds, 240)
         XCTAssertEqual(value.inRangeSeconds, 0)
         XCTAssertEqual(value.coveredWorkSeconds, 8)
@@ -99,7 +115,9 @@ final class IntervalWorkoutRuntimeTests: XCTestCase {
     func testAcceptedExcursionSurvivesNewerBelowLimitSampleUntilTick() {
         var value = state()
         value.tick(elapsed: 300, heartRate: 180, validForSeconds: 7)
+        XCTAssertTrue(value.permitsHeartRateDecision(at: .seconds(value.elapsedSeconds)))
         XCTAssertTrue(value.observeHeartRate(191, sampleAgeSeconds: 0.5))
+        XCTAssertFalse(value.permitsHeartRateDecision(at: .seconds(value.elapsedSeconds)))
         XCTAssertFalse(value.observeHeartRate(180, sampleAgeSeconds: 0.1))
         XCTAssertEqual(value.phase, .work)
         value.tick(elapsed: 301, heartRate: 180, validForSeconds: 7)

@@ -17,6 +17,12 @@ enum WalkingPadStatusRefreshPolicy {
     static let preferredStatusQueryInterval: TimeInterval = 4
     static let maximumStatusQueryInterval: TimeInterval = 5
 
+    static func motionLeadSeconds(decisionRemainingSeconds: Int, phaseRemainingSeconds: Int) -> Int {
+        // Waiting for HR releases only its deadline; the phase boundary still reserves motion.
+        decisionRemainingSeconds > 0
+            ? min(decisionRemainingSeconds, phaseRemainingSeconds) : phaseRemainingSeconds
+    }
+
     static func activeWorkoutRefresh(
         isWorkoutOrCooldownActive: Bool,
         transportReady: Bool,

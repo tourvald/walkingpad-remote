@@ -3393,8 +3393,8 @@ private struct HRParametersFormView: View {
 
                 Stepper(value: Binding(
                     get: { manager.hrDecisionIntervalSeconds },
-                    set: { manager.hrDecisionIntervalSeconds = max(1, min(60, $0)) }
-                ), in: 1...60, step: 1) {
+                    set: { manager.hrDecisionIntervalSeconds = max(HRDomainService.minimumDecisionIntervalSeconds, min(60, $0)) }
+                ), in: HRDomainService.minimumDecisionIntervalSeconds...60, step: 1) {
                     Text("Интервал решения: \(manager.hrDecisionIntervalSeconds) сек")
                         .monospacedDigit()
                 }
