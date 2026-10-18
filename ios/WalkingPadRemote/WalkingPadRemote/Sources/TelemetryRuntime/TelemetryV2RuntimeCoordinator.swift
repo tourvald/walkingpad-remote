@@ -379,6 +379,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         let action: ControlAction
         let reason: ControlDecisionReason
         let heartRateInputs: [HeartRateCausalReference]
+        let prediction: HeartRatePredictionSnapshot?
         let occurredAt: Date
     }
 
@@ -1001,6 +1002,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         action: ControlAction,
         reason: ControlDecisionReason,
         heartRateInputs: [HeartRateCausalReference],
+        prediction: HeartRatePredictionSnapshot? = nil,
         occurredAt: Date
     ) -> TelemetryYieldDisposition? {
         let evidence = PendingHeartRateControlDecision(
@@ -1009,6 +1011,7 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
             action: action,
             reason: reason,
             heartRateInputs: heartRateInputs,
+            prediction: prediction,
             occurredAt: occurredAt
         )
         guard let disposition = withActiveSession({ session in session.observeHeartRateControlDecision(evidence) }) else {
@@ -1778,7 +1781,8 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
             action: evidence.action,
             reason: evidence.reason,
             versions: descriptor.versions,
-            configurationSnapshotID: configurationSnapshotID
+            configurationSnapshotID: configurationSnapshotID,
+            heartRatePrediction: evidence.prediction
         )
         return yieldEvent(
             .controlDecision(decision),

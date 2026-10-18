@@ -48,6 +48,60 @@ final class EventSessionAndAnalysisTests: XCTestCase {
         try assertCodableRoundTrip(decision)
     }
 
+    func testPredictionRoundTripsWithoutTurningMissingTrendIntoZero() throws {
+        for trend in [nil, Optional(0.2)] {
+            let prediction = HeartRatePredictionSnapshot(
+                evaluatedAt: TelemetryDomainFixtures.baseDate.addingTimeInterval(0.125),
+                currentBeatsPerMinute: 140,
+                controllerInputAt: nil,
+                controllerInputAgeSeconds: nil,
+                trendBeatsPerMinutePerSecond: trend,
+                trendWindowSeconds: 27,
+                smoothingAlpha: 0.3,
+                trendLimitBeatsPerMinutePerSecond: 0.5,
+                horizonSeconds: 15,
+                predictedBeatsPerMinute: trend == nil ? nil : 143,
+                effectiveBeatsPerMinute: trend == nil ? 140 : 143,
+                phase: .main
+            )
+            let decision = makeDecision(prediction: prediction)
+            try assertCodableRoundTrip(decision)
+            let decoded = try JSONDecoder().decode(
+                ControlDecision.self, from: JSONEncoder().encode(decision)
+            )
+            XCTAssertEqual(decoded.heartRatePrediction, prediction)
+            let portableEncoder = JSONEncoder()
+            portableEncoder.dateEncodingStrategy = .iso8601
+            let portableDecoder = JSONDecoder()
+            portableDecoder.dateDecodingStrategy = .iso8601
+            let portable = try portableDecoder.decode(
+                ControlDecision.self, from: portableEncoder.encode(decision)
+            )
+            XCTAssertEqual(portable.heartRatePrediction?.evaluatedAt, prediction.evaluatedAt)
+        }
+    }
+
+    func testHistoricalDecisionDecodesWithoutPredictionAndOldReadersIgnoreIt() throws {
+        let original = makeDecision()
+        let data = try JSONEncoder().encode(original)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json.removeValue(forKey: "heartRatePrediction")
+        XCTAssertNil(try JSONDecoder().decode(
+            ControlDecision.self, from: JSONSerialization.data(withJSONObject: json)
+        ).heartRatePrediction)
+
+        struct HistoricalDecision: Decodable {
+            let decisionID: DecisionID
+            let action: ControlAction
+        }
+        json["heartRatePrediction"] = ["futureField": true]
+        let historical = try JSONDecoder().decode(
+            HistoricalDecision.self, from: JSONSerialization.data(withJSONObject: json)
+        )
+        XCTAssertEqual(historical.decisionID, original.decisionID)
+        XCTAssertEqual(historical.action, original.action)
+    }
+
     func testHeartRateNoCommandReasonsPreserveVersionOneOtherWireRepresentation() throws {
         let encoder = JSONEncoder()
         let cases: [(ControlDecisionReason, ControlDecisionReason)] = [
@@ -258,7 +312,7 @@ final class EventSessionAndAnalysisTests: XCTestCase {
         try assertCodableRoundTrip(analysis)
     }
 
-    private func makeDecision() -> ControlDecision {
+    private func makeDecision(prediction: HeartRatePredictionSnapshot? = nil) -> ControlDecision {
         ControlDecision(
             decisionID: DecisionID(),
             observationsUsed: [.heartRate(TelemetryDomainFixtures.observationID)],
@@ -266,7 +320,8 @@ final class EventSessionAndAnalysisTests: XCTestCase {
             action: .enqueueSpeed(DesiredSpeedKilometresPerHour(value: 5.5)),
             reason: .aboveTarget,
             versions: TelemetryDomainFixtures.versions,
-            configurationSnapshotID: TelemetryDomainFixtures.configurationID
+            configurationSnapshotID: TelemetryDomainFixtures.configurationID,
+            heartRatePrediction: prediction
         )
     }
 

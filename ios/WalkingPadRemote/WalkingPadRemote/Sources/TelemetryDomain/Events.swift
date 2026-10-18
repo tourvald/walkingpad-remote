@@ -56,6 +56,52 @@ public extension ControlDecisionReason {
     static let heartRateSpeedLimit = Self.other("speedLimit")
 }
 
+/// Observes the values already consumed by control; never supplies control inputs.
+public struct HeartRatePredictionSnapshot: Codable, Hashable, Sendable {
+    // Portable JSONL encodes Date to whole seconds; preserve forecast timing here.
+    public let evaluatedAtUnixSeconds: Double
+    public var evaluatedAt: Date { Date(timeIntervalSince1970: evaluatedAtUnixSeconds) }
+    public let currentBeatsPerMinute: Int
+    public let controllerInputAt: Date?
+    public let controllerInputAgeSeconds: Double?
+    public let trendBeatsPerMinutePerSecond: Double?
+    public let trendWindowSeconds: Double
+    public let smoothingAlpha: Double
+    public let trendLimitBeatsPerMinutePerSecond: Double
+    public let horizonSeconds: Double
+    public let predictedBeatsPerMinute: Int?
+    public let effectiveBeatsPerMinute: Int
+    public let phase: WorkoutPhase
+
+    public init(
+        evaluatedAt: Date,
+        currentBeatsPerMinute: Int,
+        controllerInputAt: Date?,
+        controllerInputAgeSeconds: Double?,
+        trendBeatsPerMinutePerSecond: Double?,
+        trendWindowSeconds: Double,
+        smoothingAlpha: Double,
+        trendLimitBeatsPerMinutePerSecond: Double,
+        horizonSeconds: Double,
+        predictedBeatsPerMinute: Int?,
+        effectiveBeatsPerMinute: Int,
+        phase: WorkoutPhase
+    ) {
+        self.evaluatedAtUnixSeconds = evaluatedAt.timeIntervalSince1970
+        self.currentBeatsPerMinute = currentBeatsPerMinute
+        self.controllerInputAt = controllerInputAt
+        self.controllerInputAgeSeconds = controllerInputAgeSeconds
+        self.trendBeatsPerMinutePerSecond = trendBeatsPerMinutePerSecond
+        self.trendWindowSeconds = trendWindowSeconds
+        self.smoothingAlpha = smoothingAlpha
+        self.trendLimitBeatsPerMinutePerSecond = trendLimitBeatsPerMinutePerSecond
+        self.horizonSeconds = horizonSeconds
+        self.predictedBeatsPerMinute = predictedBeatsPerMinute
+        self.effectiveBeatsPerMinute = effectiveBeatsPerMinute
+        self.phase = phase
+    }
+}
+
 public struct ControlDecision: Codable, Hashable, Sendable {
     public let decisionID: DecisionID
     public let observationsUsed: [ObservationReference]
@@ -64,6 +110,7 @@ public struct ControlDecision: Codable, Hashable, Sendable {
     public let reason: ControlDecisionReason
     public let versions: RuntimeVersionContext
     public let configurationSnapshotID: ConfigurationSnapshotID
+    public let heartRatePrediction: HeartRatePredictionSnapshot?
 
     public init(
         decisionID: DecisionID,
@@ -72,7 +119,8 @@ public struct ControlDecision: Codable, Hashable, Sendable {
         action: ControlAction,
         reason: ControlDecisionReason,
         versions: RuntimeVersionContext,
-        configurationSnapshotID: ConfigurationSnapshotID
+        configurationSnapshotID: ConfigurationSnapshotID,
+        heartRatePrediction: HeartRatePredictionSnapshot? = nil
     ) {
         self.decisionID = decisionID
         self.observationsUsed = observationsUsed
@@ -81,6 +129,7 @@ public struct ControlDecision: Codable, Hashable, Sendable {
         self.reason = reason
         self.versions = versions
         self.configurationSnapshotID = configurationSnapshotID
+        self.heartRatePrediction = heartRatePrediction
     }
 }
 

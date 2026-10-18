@@ -5464,6 +5464,23 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                     let predictedBpm = predictedValue.map { Int(round($0)) }
                     let effectiveBpm = max(heartRateBPM, predictedBpm ?? heartRateBPM)
                     let diff = effectiveBpm - hrTargetBPM
+                    let predictionEvaluatedAt = Date()
+                    let prediction = HeartRatePredictionSnapshot(
+                        evaluatedAt: predictionEvaluatedAt,
+                        currentBeatsPerMinute: heartRateBPM,
+                        controllerInputAt: hrLastValueAt,
+                        controllerInputAgeSeconds: hrLastValueAt.map {
+                            predictionEvaluatedAt.timeIntervalSince($0)
+                        },
+                        trendBeatsPerMinutePerSecond: trend,
+                        trendWindowSeconds: hrTrendWindowSeconds,
+                        smoothingAlpha: hrTrendEmaAlpha,
+                        trendLimitBeatsPerMinutePerSecond: hrTrendSlopeMaxBpmPerSecond,
+                        horizonSeconds: hrPredictSeconds,
+                        predictedBeatsPerMinute: predictedBpm,
+                        effectiveBeatsPerMinute: effectiveBpm,
+                        phase: .main
+                    )
                     let decisionPrefix: String = {
                         if let predictedBpm, predictedBpm > heartRateBPM {
                             return "HR \(heartRateBPM) / прогноз \(predictedBpm) / цель \(hrTargetBPM) (Δ \(diff))"
@@ -5504,6 +5521,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             action: .noCommand,
                             reason: .withinTarget,
                             heartRateInputs: controlUseEvidence?.inputs ?? [],
+                            prediction: prediction,
                             occurredAt: Date()
                         )
                         return
@@ -5520,6 +5538,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                                 action: .noCommand,
                                 reason: .heartRateInertiaHold,
                                 heartRateInputs: controlUseEvidence?.inputs ?? [],
+                                prediction: prediction,
                                 occurredAt: Date()
                             )
                             return
@@ -5554,6 +5573,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             ),
                             reason: diff < 0 ? .belowTarget : .aboveTarget,
                             heartRateInputs: controlUseEvidence?.inputs ?? [],
+                            prediction: prediction,
                             occurredAt: Date()
                         )
                     } else {
@@ -5564,6 +5584,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                             action: .noCommand,
                             reason: .heartRateSpeedLimit,
                             heartRateInputs: controlUseEvidence?.inputs ?? [],
+                            prediction: prediction,
                             occurredAt: Date()
                         )
                     }
@@ -7688,6 +7709,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         action: ControlAction,
         reason: ControlDecisionReason,
         heartRateInputs: [HeartRateCausalReference],
+        prediction: HeartRatePredictionSnapshot,
         occurredAt: Date
     ) {
         _ = telemetryV2Coordinator.observeHeartRateControlDecision(
@@ -7695,6 +7717,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             action: action,
             reason: reason,
             heartRateInputs: heartRateInputs,
+            prediction: prediction,
             occurredAt: occurredAt
         )
     }

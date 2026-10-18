@@ -1742,6 +1742,20 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
 
     func testProductionShapedLegacyAndSemanticHrDecisionsPersistInOccurrenceOrder() async throws {
         let fixture = Issue50ProductionDecisionFixture.fixture
+        let prediction = HeartRatePredictionSnapshot(
+            evaluatedAt: fixture.startedAt,
+            currentBeatsPerMinute: 118,
+            controllerInputAt: fixture.startedAt.addingTimeInterval(-2),
+            controllerInputAgeSeconds: 2,
+            trendBeatsPerMinutePerSecond: 0.2,
+            trendWindowSeconds: 27,
+            smoothingAlpha: 0.3,
+            trendLimitBeatsPerMinutePerSecond: 0.5,
+            horizonSeconds: 15,
+            predictedBeatsPerMinute: 121,
+            effectiveBeatsPerMinute: 121,
+            phase: .main
+        )
         let persistence = RuntimePersistence()
         let factoryGate = DispatchSemaphore(value: 0)
         let clock = ManualRuntimeClock(date: fixture.startedAt)
@@ -1765,6 +1779,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
                     action: row.action,
                     reason: row.reason,
                     heartRateInputs: [row.heartRateInput],
+                    prediction: prediction,
                     occurredAt: row.occurredAt
                 ),
                 .enqueued
@@ -1817,6 +1832,7 @@ final class TelemetryV2RuntimeCoordinatorTests: XCTestCase {
             )
             XCTAssertEqual(decision.versions, descriptor.versions)
             XCTAssertEqual(decision.configurationSnapshotID, header.configuration.id)
+            XCTAssertEqual(decision.heartRatePrediction, prediction)
             XCTAssertEqual(event.sourceID, events.first?.sourceID)
             XCTAssertNotNil(event.sourceID)
             XCTAssertEqual(event.timestamp.occurredAt, row.occurredAt)

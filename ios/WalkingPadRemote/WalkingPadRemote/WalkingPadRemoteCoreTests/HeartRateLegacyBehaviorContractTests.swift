@@ -161,6 +161,28 @@ final class HeartRateLegacyBehaviorContractTests: XCTestCase {
         }
     }
 
+    func testPredictionObservationCopiesComputedValuesWithoutBecomingControlAuthority() throws {
+        let tick = try functionBody("private func tickTelemetry()", in: managerSource)
+        assertOrdered([
+            "let predictedValue = trend.map",
+            "let predictedBpm = predictedValue.map",
+            "let effectiveBpm = max(heartRateBPM",
+            "let diff = effectiveBpm - hrTargetBPM",
+            "let prediction = HeartRatePredictionSnapshot(",
+            "predictedBeatsPerMinute: predictedBpm",
+            "effectiveBeatsPerMinute: effectiveBpm",
+            "if absDiff <= deadbandBpm",
+        ], in: tick)
+        XCTAssertEqual(tick.components(separatedBy: "prediction: prediction,").count - 1, 4)
+        XCTAssertFalse(tick.contains("prediction.predictedBeatsPerMinute"))
+        XCTAssertFalse(tick.contains("prediction.effectiveBeatsPerMinute"))
+        let observer = try functionBody("private func observeSemanticHeartRateDecision(", in: managerSource)
+        XCTAssertTrue(observer.contains("prediction: prediction"))
+        for forbidden in ["sendTreadmill", "stopBelt", "startWithSpeed", "JSONEncoder", "FileHandle"] {
+            XCTAssertFalse(observer.contains(forbidden))
+        }
+    }
+
     func testStartAffordanceIsSeparateFromRuntimeAuthorization() throws {
         let recompute = try functionBody(
             "private func recomputeHrStartAllowed()",
