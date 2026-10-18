@@ -5,12 +5,14 @@ import HealthKit
 enum AppleHeartRateZoneProvider {
     enum ReadError: LocalizedError {
         case unavailable
+        case runtimeUnavailable
         case missing
         case incompatible
 
         var errorDescription: String? {
             switch self {
             case .unavailable: return "Apple Health недоступен на этом устройстве."
+            case .runtimeUnavailable: return "Чтение пульсовых зон недоступно в этой версии iOS. Используйте ручной ввод."
             case .missing: return "Не удалось прочитать зоны. Проверьте разрешения в приложении «Здоровье» и настройки зон на часах."
             case .incompatible: return "Эти границы Apple Health пока не поддерживаются. Можно задать зоны вручную."
             }
@@ -18,6 +20,20 @@ enum AppleHeartRateZoneProvider {
     }
 
     static func read(from store: HKHealthStore, requestAuthorization: Bool) async throws -> HeartRateZoneSettings.AppleSnapshot {
+        // Some runtimes pass the OS check but lack the SDK's weak-linked zone symbols.
+        // Keep their metadata out of this entry point, including before authorization.
+        if #_hasSymbol(HKWorkoutZoneConfiguration.self),
+           #_hasSymbol(HKWorkoutZoneConfiguration.ConfigurationType.self),
+           #_hasSymbol(HKWorkoutZoneConfiguration.Source.self),
+           #_hasSymbol(HKWorkoutZone.self),
+           #_hasSymbol(store.preferredWorkoutZoneConfiguration(for:)) {
+            return try await readAvailableZones(from: store, requestAuthorization: requestAuthorization)
+        }
+        throw ReadError.runtimeUnavailable
+    }
+
+    @inline(never)
+    private static func readAvailableZones(from store: HKHealthStore, requestAuthorization: Bool) async throws -> HeartRateZoneSettings.AppleSnapshot {
         guard HKHealthStore.isHealthDataAvailable() else { throw ReadError.unavailable }
         let type = HKQuantityType(.heartRate)
         if requestAuthorization {
