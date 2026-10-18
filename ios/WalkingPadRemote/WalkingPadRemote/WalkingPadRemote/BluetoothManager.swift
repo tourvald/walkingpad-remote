@@ -414,19 +414,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         installationID = generated
     }
 
-    private func migrateLegacyProfileStoresIfNeeded(to profileID: UUID) {
-        let defaults = UserDefaults.standard
-
-        for baseKey in [hrSettingsStoreKey, zonePlanStoreKey] {
-            let scopedKey = profileScopedStoreKey(baseKey, profileID: profileID)
-            guard defaults.object(forKey: scopedKey) == nil,
-                  let legacyValue = defaults.object(forKey: baseKey) else {
-                continue
-            }
-            defaults.set(legacyValue, forKey: scopedKey)
-        }
-    }
-
     private func saveProfilesState() {
         let dto = UserProfilesStateDTO(
             profiles: sortedProfiles(userProfiles).map { userProfileDTO(from: $0) },
@@ -460,7 +447,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         )
         userProfiles = [defaultProfile]
         activeUserProfileID = defaultProfile.id
-        migrateLegacyProfileStoresIfNeeded(to: defaultProfile.id)
         saveProfilesState()
     }
 
@@ -528,6 +514,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     @Published private(set) var profileErasureInFlight = false
+    private var profileExportOperations = 0
     private var erasedProfiles: Set<String> = []
     private var profileErasureStateLoaded = false
     private let legacyFallbackProfileStoreKey = "legacy_fallback_profile_v1"
@@ -542,7 +529,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             stopPending: stopObservationLifecycle.map { $0.finalResult == nil } == true
                 || unavailableStopAttempt != nil || blocksNonStopTreadmillMotion
                 || telemetryV2Coordinator.hasSessionStorageOwnership,
-            erasureInFlight: profileErasureInFlight,
+            erasureInFlight: profileErasureInFlight || profileExportOperations > 0,
             linkageInFlight: nativeHealthKitLinkageQueryInFlight
         )
     }
@@ -557,6 +544,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             guard let self else { return }
             do {
                 erasedProfiles = try await telemetryV2Coordinator.erasedProfileIdentifiers()
+                if let profileID = activeUserProfileID,
+                   ProfileErasureSettings.migrateLegacySettings(
+                    userDefaults: .standard, profileID: profileID.uuidString,
+                    legacyFallback: UserDefaults.standard.string(forKey: legacyFallbackProfileStoreKey),
+                    erasedProfiles: erasedProfiles
+                   ) { loadActiveProfileScopedData() }
                 profileErasureStateLoaded = true
                 resolveDeferredNativeHealthKitLinkageIfPossible()
                 if !profileDataAvailable {
@@ -566,20 +559,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 infoToastMessage = "Не удалось проверить состояние локальных данных. Запуск тренировки недоступен."
             }
             recomputeHrStartAllowed()
-        }
-    }
-
-    private func removeStoredData(for profileID: UUID) {
-        let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: profileScopedStoreKey(hrSettingsStoreKey, profileID: profileID))
-        defaults.removeObject(forKey: profileScopedStoreKey(zonePlanStoreKey, profileID: profileID))
-        for value in [profileID.uuidString, profileID.uuidString.lowercased()] {
-            defaults.removeObject(forKey: "workout_history_v1_profile_\(value)")
-        }
-        if defaults.string(forKey: legacyFallbackProfileStoreKey)?.lowercased() == profileID.uuidString.lowercased() {
-            for key in [hrSettingsStoreKey, zonePlanStoreKey, "workout_history_v1"] {
-                defaults.removeObject(forKey: key)
-            }
         }
     }
 
@@ -679,7 +658,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 guard persistDeferredNativeHealthKitLinkages() else {
                     throw CocoaError(.fileWriteUnknown)
                 }
-                removeStoredData(for: id)
+                ProfileErasureSettings.removeProfileSettings(userDefaults: .standard, profileID: id.uuidString, legacyFallback: fallback)
                 guard let selection = ProfileErasurePolicy.selection(
                     afterDeleting: id, from: userProfiles.map(\.id), activeID: activeUserProfileID
                 ) else { return }
@@ -1476,6 +1455,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         scope: WorkoutDiagnosticExportScope,
         archiveName: String
     ) async throws -> DiagnosticBundleArtifact {
+        guard !profileErasureInFlight, let profileID = activeUserProfileID else {
+            throw TelemetryWorkoutReadError.unavailable("profile-export-unavailable")
+        }
+        profileExportOperations += 1
+        defer { profileExportOperations -= 1 }
         let supportSnapshot = diagnosticSupportSnapshot()
         let workoutArtifact: WorkoutExportArtifact
         do {
@@ -1483,20 +1467,20 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            return try await DiagnosticBundlePackager.createSupportOnly(
+            return try markDiagnosticOwnership(try await DiagnosticBundlePackager.createSupportOnly(
                 supportSnapshot: supportSnapshot,
                 archiveName: archiveName,
                 workoutEvidenceFailureCategory: diagnosticWorkoutExportFailureCategory(error)
-            )
+            ), profileID: profileID)
         }
         if workoutArtifact.exportedWorkoutCount == 0 {
             try? FileManager.default.removeItem(at: workoutArtifact.directoryURL)
-            return try await DiagnosticBundlePackager.createSupportOnly(
+            return try markDiagnosticOwnership(try await DiagnosticBundlePackager.createSupportOnly(
                 supportSnapshot: supportSnapshot,
                 archiveName: archiveName,
                 workoutEvidenceStatus: "not_present",
                 workoutEvidenceFailureCategory: "no_completed_workout"
-            )
+            ), profileID: profileID)
         }
         do {
             return try await DiagnosticBundlePackager.create(
@@ -1506,6 +1490,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             )
         } catch {
             try? FileManager.default.removeItem(at: workoutArtifact.directoryURL)
+            throw error
+        }
+    }
+
+    private func markDiagnosticOwnership(_ artifact: DiagnosticBundleArtifact, profileID: UUID) throws -> DiagnosticBundleArtifact {
+        do {
+            try ProfileErasureFiles.mark(artifact.directoryURL, profiles: [profileID.uuidString])
+            return artifact
+        } catch {
+            try? FileManager.default.removeItem(at: artifact.directoryURL)
             throw error
         }
     }

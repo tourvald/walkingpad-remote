@@ -362,10 +362,7 @@ enum LegacyTelemetryMigrationParser {
             "workout_uuid",
         ])
         var warnings: [String] = []
-        let explicitProfile = stableIdentifier(
-            object,
-            keys: ["profile_id", "profileId"]
-        )?.lowercased()
+        let explicitProfile = explicitProfileIdentifier(in: object)
         let profile: String?
         if let explicitProfile {
             if knownProfiles.contains(explicitProfile) {
@@ -666,6 +663,16 @@ enum LegacyTelemetryMigrationParser {
                 : Date(timeIntervalSinceReferenceDate: seconds)
         }
         return jsonlDate(value)
+    }
+
+    static let profileIdentifierKeys = ["profile_id", "profileId"]
+
+    static func explicitProfileIdentifier(in object: [String: Any]) -> String? {
+        stableIdentifier(object, keys: profileIdentifierKeys)?.lowercased()
+    }
+
+    static func explicitProfileIdentifiers(in object: [String: Any]) -> Set<String> {
+        Set(profileIdentifierKeys.compactMap { stableIdentifier(object, keys: [$0])?.lowercased() })
     }
 
     private static func stableIdentifier(

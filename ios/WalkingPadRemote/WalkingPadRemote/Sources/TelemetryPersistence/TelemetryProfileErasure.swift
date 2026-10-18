@@ -110,8 +110,11 @@ extension TelemetryStore: TelemetryProfileErasureCapability {
             logsDirectory: logsDirectory, temporaryDirectory: temporaryDirectory
         )
         let migrations = try modelContext.fetch(FetchDescriptor<TelemetryLegacyMigrationSourceV2>())
+        let ownedLogPaths = Set(files.filter { $0.pathExtension.lowercased() == "jsonl" }.map { $0.standardizedFileURL.path })
         let erasedSourceIDs = sourceIDs.union(migrations.filter {
-            $0.exactProfileLocalIdentifier?.lowercased() == profile
+            ownedLogPaths.contains($0.locator)
+                || ($0.sourceKindKey == LegacyMigrationSourceKind.workoutHistory.rawValue
+                    && $0.exactProfileLocalIdentifier?.lowercased() == profile)
         }.map(\.sourceID))
         try recordErasure(profile, sourceIDs: erasedSourceIDs)
         try afterJournalForTesting?()
@@ -137,8 +140,7 @@ extension TelemetryStore: TelemetryProfileErasureCapability {
                 || row.importedWorkoutID.map(ownedImportedIDs.contains) == true {
                 modelContext.delete(row)
             }
-            for source in migrations where sourceIDs.contains(source.sourceID)
-                || source.exactProfileLocalIdentifier?.lowercased() == profile {
+            for source in migrations where erasedSourceIDs.contains(source.sourceID) {
                 modelContext.delete(source)
             }
             let retained = sessions.filter { $0.profileLocalIdentifier.lowercased() != profile }
@@ -173,10 +175,10 @@ extension TelemetryStore: TelemetryProfileErasureCapability {
 
 /// File ownership is checked before any erasure; uncertain or mixed artifacts
 /// remain intact and prevent a false complete-success result.
-enum ProfileErasureFiles {
+public enum ProfileErasureFiles {
     static let ownerFileName = ".profile-owner.json"
 
-    static func mark(_ directory: URL, profiles: Set<String>) throws {
+    public static func mark(_ directory: URL, profiles: Set<String>) throws {
         try JSONEncoder().encode(Set(profiles.map { $0.lowercased() }))
             .write(to: directory.appendingPathComponent(ownerFileName), options: .atomic)
     }
@@ -195,9 +197,13 @@ enum ProfileErasureFiles {
                 while let element = try reader.next() {
                     guard let data = element.data else { throw ProfileErasureError.ambiguousOwnership(file.lastPathComponent) }
                     if data.allSatisfy({ $0 == 13 || $0 == 32 }) { continue }
-                    guard let row = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let owner = (row["profile_id"] as? String) ?? legacyFallback,
-                          !owner.isEmpty else {
+                    guard let row = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        throw ProfileErasureError.ambiguousOwnership(file.lastPathComponent)
+                    }
+                    let explicit = LegacyTelemetryMigrationParser.explicitProfileIdentifiers(in: row)
+                    guard explicit.count <= 1,
+                          !(explicit.isEmpty && LegacyTelemetryMigrationParser.profileIdentifierKeys.contains(where: { row[$0] != nil })),
+                          let owner = LegacyTelemetryMigrationParser.explicitProfileIdentifier(in: row) ?? legacyFallback else {
                         throw ProfileErasureError.ambiguousOwnership(file.lastPathComponent)
                     }
                     owners.insert(owner.lowercased())
@@ -212,8 +218,8 @@ enum ProfileErasureFiles {
         }
         for file in try fm.contentsOfDirectory(at: temporaryDirectory, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
             let name = file.lastPathComponent
-            let directory = ["TelemetryV2Export_", "WorkoutAnalysisExport_"].contains { name.hasPrefix($0) }
-            let legacy = ["Training_History_", "Training_Summary_", "Training_Session_Summary_", "WalkingPad_Diagnostics_"].contains { name.hasPrefix($0) }
+            let directory = ["TelemetryV2Export_", "WorkoutAnalysisExport_", "WalkingPadSupportExport_"].contains { name.hasPrefix($0) }
+            let legacy = ["Training_History_", "Training_Summary_", "Training_Session_Summary_", "WalkingPad_Diagnostics_", "HR_Failures_"].contains { name.hasPrefix($0) }
             guard directory || legacy else { continue }
             guard try file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
                 throw ProfileErasureError.ambiguousOwnership(name)
@@ -222,12 +228,41 @@ enum ProfileErasureFiles {
             let marker = file.appendingPathComponent(ownerFileName)
             guard fm.fileExists(atPath: marker.path) else { throw ProfileErasureError.ambiguousOwnership(name) }
             let owners = try JSONDecoder().decode(Set<String>.self, from: Data(contentsOf: marker))
-            guard !owners.contains("*") else { throw ProfileErasureError.ambiguousOwnership(name) }
+            guard !owners.isEmpty, !owners.contains("*") else { throw ProfileErasureError.ambiguousOwnership(name) }
             if owners.contains(profile) {
                 guard owners == [profile] else { throw ProfileErasureError.ambiguousOwnership(name) }
                 result.append(file)
             }
         }
         return result
+    }
+}
+
+/// Existing profile preference keys share the same stable legacy owner as imports.
+public enum ProfileErasureSettings {
+    private static let keys = ["hr_settings_v1", "zone_plan_v1", "workout_history_v1"]
+
+    @discardableResult
+    public static func migrateLegacySettings(userDefaults: UserDefaults, profileID: String, legacyFallback: String?, erasedProfiles: Set<String>) -> Bool {
+        let profile = profileID.lowercased()
+        guard legacyFallback?.lowercased() == profile, !erasedProfiles.contains(profile) else { return false }
+        var changed = false
+        for key in keys.prefix(2) {
+            let scoped = "\(key)_profile_\(profile)"
+            if userDefaults.object(forKey: scoped) == nil, let value = userDefaults.object(forKey: key) {
+                userDefaults.set(value, forKey: scoped)
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    public static func removeProfileSettings(userDefaults: UserDefaults, profileID: String, legacyFallback: String?) {
+        for key in keys {
+            for variant in Set([profileID, profileID.lowercased()]) {
+                userDefaults.removeObject(forKey: "\(key)_profile_\(variant)")
+            }
+            if legacyFallback?.lowercased() == profileID.lowercased() { userDefaults.removeObject(forKey: key) }
+        }
     }
 }

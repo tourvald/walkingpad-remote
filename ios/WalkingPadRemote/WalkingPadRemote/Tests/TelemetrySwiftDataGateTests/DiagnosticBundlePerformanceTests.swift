@@ -41,6 +41,36 @@ private struct WorkoutAnalysisExportBenchmarkResult: Codable {
 }
 
 final class DiagnosticBundlePerformanceTests: XCTestCase {
+    func testSupportOnlyArtifactsRespectProfileErasureAfterReopen() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("test.store")
+        var store: TelemetryStore? = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        var directories: [URL] = []
+        for profile in ["profile-a", "profile-b"] {
+            let artifact = try await DiagnosticBundlePackager.createSupportOnly(
+                supportSnapshot: benchmarkSupportSnapshot(), archiveName: "diagnostics.zip",
+                workoutEvidenceFailureCategory: "fixture"
+            )
+            let owned = root.appendingPathComponent(artifact.directoryURL.lastPathComponent)
+            try FileManager.default.moveItem(at: artifact.directoryURL, to: owned)
+            directories.append(owned)
+            if profile == "profile-a" {
+                do { try await store!.eraseProfile(profile, legacyFallback: nil, logsDirectory: nil, temporaryDirectory: root); XCTFail("Old unowned support artifact ignored") }
+                catch {}
+            }
+            try ProfileErasureFiles.mark(owned, profiles: [profile])
+        }
+        store = nil
+        let reopened = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        try await reopened.eraseProfile("profile-a", legacyFallback: nil, logsDirectory: nil, temporaryDirectory: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directories[0].path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directories[1].appendingPathComponent("diagnostics.zip").path))
+        let data = try Data(contentsOf: directories[1].appendingPathComponent("support_diagnostics_v1.json"))
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("walkingpad-support-diagnostics-v1"))
+    }
+
     func testEmptyStoreProducesSupportOnlyBundle() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let export = try await store.exportWorkouts(

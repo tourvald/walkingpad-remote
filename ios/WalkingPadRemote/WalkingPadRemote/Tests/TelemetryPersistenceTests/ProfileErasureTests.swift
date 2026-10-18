@@ -42,19 +42,27 @@ final class ProfileErasureTests: XCTestCase {
         let aFile = logs.appendingPathComponent("a.jsonl")
         let bFile = logs.appendingPathComponent("b.jsonl")
         let a = Data("{\"event\":\"session_start\",\"session_id\":\"a\",\"profile_id\":\"profile-a\",\"ts\":1800000000}\n".utf8)
-        let b = Data("{\"event\":\"session_start\",\"session_id\":\"b\",\"profile_id\":\"profile-b\",\"ts\":1800000001}\n".utf8)
+        let b = Data("{\"event\":\"session_start\",\"session_id\":\"b\",\"profileId\":\"profile-b\",\"ts\":1800000001}\n".utf8)
         try a.write(to: aFile); try b.write(to: bFile)
-        let request = LegacyTelemetryMigrationRequest(jsonlSources: [.init(url: aFile, deterministicFallbackProfileLocalIdentifier: nil), .init(url: bFile, deterministicFallbackProfileLocalIdentifier: nil)], workoutHistorySources: [], knownProfileLocalIdentifiers: ["profile-a", "profile-b"])
-        let store = try TelemetryStoreFactory.make(.inMemory)
+        let defaults = UserDefaults(suiteName: "ProfileErasure-\(UUID().uuidString)")!
+        let request = LegacyTelemetryMigrationSourceDiscovery.makeRequest(userDefaults: defaults,
+            trainingLogsDirectory: logs, knownProfileLocalIdentifiers: ["profile-a", "profile-b"],
+            deterministicLegacyFallbackProfileLocalIdentifier: "profile-a")
+        let storeURL = root.appendingPathComponent("legacy.store")
+        let store = try TelemetryStoreFactory.make(.onDisk(storeURL))
         _ = await LegacyTelemetryMigrator(store: store).run(request)
         let before = try await store.fetchLegacyImportedRecords().filter { $0.profileLocalIdentifier == "profile-b" }
-        try await store.eraseProfile("profile-a", legacyFallback: nil, logsDirectory: logs, temporaryDirectory: root)
+        let bSources = try await store.fetchLegacyMigrationSources().filter { $0.locator == bFile.path }
+        try await store.eraseProfile("profile-a", legacyFallback: "profile-a", logsDirectory: logs, temporaryDirectory: root)
+        let bSourcesAfter = try await store.fetchLegacyMigrationSources().filter { $0.locator == bFile.path }
+        XCTAssertEqual(bSourcesAfter, bSources)
         XCTAssertFalse(FileManager.default.fileExists(atPath: aFile.path))
         XCTAssertEqual(try Data(contentsOf: bFile), b)
         // Replay an already captured stale request, including a restored source file.
         try a.write(to: aFile)
-        _ = await LegacyTelemetryMigrator(store: store).run(request)
-        let after = try await store.fetchLegacyImportedRecords()
+        let reopened = try TelemetryStoreFactory.make(.onDisk(storeURL))
+        _ = await LegacyTelemetryMigrator(store: reopened).run(request)
+        let after = try await reopened.fetchLegacyImportedRecords()
         XCTAssertEqual(after.filter { $0.profileLocalIdentifier == "profile-b" }, before)
         XCTAssertFalse(after.contains { $0.profileLocalIdentifier == "profile-a" })
         let candidates = try await store.fetchLegacyWorkoutCandidates()
@@ -73,7 +81,7 @@ final class ProfileErasureTests: XCTestCase {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = TelemetryPersistenceFixtures.session(seed: 1)
         try await store.insertSession(session)
-        for data in [mixed, Data("{corrupt".utf8), Data("{}\n".utf8)] {
+        for data in [mixed, Data("{corrupt".utf8), Data("{}\n".utf8), Data("{\"profile_id\":\"profile-a\",\"profileId\":\"profile-b\"}\n".utf8)] {
             try data.write(to: file)
             do { try await store.eraseProfile("profile-a", legacyFallback: nil, logsDirectory: logs, temporaryDirectory: root); XCTFail("Unknown ownership accepted") }
             catch {}
@@ -211,6 +219,56 @@ final class ProfileErasureTests: XCTestCase {
         XCTAssertEqual(samples, [retainedSample])
         let counts = try await store.counts()
         XCTAssertEqual(counts.heartRateSamples, 1)
+    }
+
+    func testLegacySettingsReopenCannotRebindErasedFallbackAndPreservesB() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "ProfileErasure-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data("private-a".utf8), forKey: "hr_settings_v1")
+        defaults.set(Data("zone-a".utf8), forKey: "zone_plan_v1")
+        defaults.set(Data("private-b".utf8), forKey: "hr_settings_v1_profile_profile-b")
+        defaults.set("shared", forKey: "known_peripherals_v1")
+        let url = root.appendingPathComponent("test.store")
+        var store: TelemetryStore? = try TelemetryStoreFactory.make(.onDisk(url))
+        do {
+            try await store!.eraseProfile("profile-a", legacyFallback: nil, logsDirectory: nil,
+                temporaryDirectory: root, afterJournalForTesting: { throw CocoaError(.fileWriteUnknown) })
+            XCTFail("Injected interruption ignored")
+        } catch {}
+        store = nil
+        defaults.set(Data("corrupt-profile-list".utf8), forKey: "user_profiles_state_v1")
+        let reopened = try TelemetryStoreFactory.make(.onDisk(url))
+        let erased = try await reopened.erasedProfileIdentifiers()
+        XCTAssertFalse(ProfileErasureSettings.migrateLegacySettings(userDefaults: defaults,
+            profileID: "replacement", legacyFallback: "profile-a", erasedProfiles: erased))
+        XCTAssertFalse(ProfileErasureSettings.migrateLegacySettings(userDefaults: defaults,
+            profileID: "profile-a", legacyFallback: "profile-a", erasedProfiles: erased))
+        XCTAssertNil(defaults.data(forKey: "hr_settings_v1_profile_replacement"))
+        XCTAssertNil(defaults.data(forKey: "zone_plan_v1_profile_replacement"))
+        ProfileErasureSettings.removeProfileSettings(userDefaults: defaults, profileID: "profile-a", legacyFallback: "profile-a")
+        XCTAssertNil(defaults.data(forKey: "hr_settings_v1"))
+        XCTAssertNil(defaults.data(forKey: "zone_plan_v1"))
+        XCTAssertEqual(defaults.data(forKey: "hr_settings_v1_profile_profile-b"), Data("private-b".utf8))
+        XCTAssertEqual(defaults.string(forKey: "known_peripherals_v1"), "shared")
+    }
+
+    func testFirstLegacySettingsMigrationCopiesOnlyItsConfirmedOwnerAndKeepsExistingValues() {
+        let suite = "ProfileErasure-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data("legacy".utf8), forKey: "hr_settings_v1")
+        defaults.set(Data("current-zones".utf8), forKey: "zone_plan_v1_profile_profile-a")
+        defaults.set(Data("legacy-zones".utf8), forKey: "zone_plan_v1")
+        XCTAssertTrue(ProfileErasureSettings.migrateLegacySettings(userDefaults: defaults,
+            profileID: "profile-a", legacyFallback: "profile-a", erasedProfiles: []))
+        XCTAssertEqual(defaults.data(forKey: "hr_settings_v1_profile_profile-a"), Data("legacy".utf8))
+        XCTAssertEqual(defaults.data(forKey: "zone_plan_v1_profile_profile-a"), Data("current-zones".utf8))
+        XCTAssertFalse(ProfileErasureSettings.migrateLegacySettings(userDefaults: defaults,
+            profileID: "profile-b", legacyFallback: "profile-a", erasedProfiles: []))
+        XCTAssertNil(defaults.data(forKey: "hr_settings_v1_profile_profile-b"))
     }
 
     func testNewExportAfterDeletionContainsOnlyRetainedProfile() async throws {

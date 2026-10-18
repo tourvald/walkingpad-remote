@@ -61,7 +61,7 @@ the binding batch contract. Never run these checks on real user history.
 - `ProfileErasurePolicyTests.testConfirmedIdentityPreservesNewActiveProfileAndSoleDeletionIsIdempotent`: explicit UUID, inactive/sole/repeat selection.
 - `testEveryRuntimeOwnerIndependentlyBlocksErasure`: all eight independent guards. The manager additionally checks coordinator ownership of pending/active/stop-tail sessions; the coordinator rechecks before accessing storage.
 - `ProfileErasureTests.testDiskErasurePreservesBAndRejectsStaleSessionAfterReopenAndRetry`: disk reopen, B identity/content and idempotent retry.
-- `testLegacyReplayCannotResurrectErasedProfileAndPreservesOtherHistory`: original file deletion, stored/imported records/candidates/source-progress deletion and stale request replay.
+- `testLegacyReplayCannotResurrectErasedProfileAndPreservesOtherHistory`: normal discovery with fallback A, camelCase owner B, original file deletion, B source progress and data preserved through reopen/replay. JSONL fallback metadata is never treated as source ownership.
 - `testMixedAndCorruptSourcesFailWithoutPurgingAnyProfile`: mixed, malformed and unassigned fixtures.
 - `testPendingJournalSurvivesReopenAndAllowsRetryAfterDatabaseBoundaryFailure`: injected ordinary storage error after marker commit, reopen, start rejection and retry. This is not a physical file-protection or process-kill experiment.
 - `testOwnedTemporaryExportErasedOtherExportPreservedAndAmbiguityFails`: owned/unowned artifacts and B preservation.
@@ -98,3 +98,35 @@ Apple's [ModelContext.transaction](https://developer.apple.com/documentation/swi
 commits inserts/changes/deletes when the closure completes; this uses the existing
 `explicitTransaction` owner. File/SwiftData/UserDefaults writes are not one atomic
 transaction, hence the earlier durable denylist and truthful retry state.
+
+## Review corrections and extra regressions
+
+The first independent critiques found camelCase legacy owner misclassification,
+JSONL fallback/source-owner confusion, a startup settings-rebinding path and
+missing support-only diagnostic artifacts. The A/B discovery regression failed
+on the initial implementation (B file and source progress disappeared) before
+correction. Erasure now shares the canonical explicit-profile parser; conflicting
+or malformed explicit ownership never falls back. Source progress is erased only
+when actual records/candidates or a positively owned original file prove ownership
+(or the source is an exactly owned workout-history source).
+
+`testLegacySettingsReopenCannotRebindErasedFallbackAndPreservesB` uses a disposable
+UserDefaults domain plus an on-disk interrupted-erasure journal and corrupt
+profile-list fixture. `testFirstLegacySettingsMigrationCopiesOnlyItsConfirmedOwnerAndKeepsExistingValues`
+protects ordinary migration. Legacy settings copy waits for successful journal
+loading and stable original fallback ownership; it cannot rebind erased A into a
+new UUID. Settings cleanup is centralized in the same persistence seam.
+
+`testSupportOnlyArtifactsRespectProfileErasureAfterReopen` uses the actual
+`DiagnosticBundlePackager.createSupportOnly` producer and preserves B's diagnostic
+JSON/ZIP while deleting A. Old support artifacts without owner metadata prevent
+complete success. Historical `HR_Failures_*.txt` artifacts are similarly treated
+as unresolved ownership, never silently ignored. The manager retains operation
+ownership throughout detached diagnostic packaging, so deletion cannot overlap
+creation of a late support-only artifact. UI/background overlap still requires
+the deferred installed-app check.
+
+An initial full suite exposed a CSV-export directory-count assumption after the
+new hidden internal sidecar. Its assertion now counts public files while all
+CSV privacy/content/determinism checks remain; the sidecar is not a share URL or
+ZIP entry. Focused correction tests cover that existing regression as well.

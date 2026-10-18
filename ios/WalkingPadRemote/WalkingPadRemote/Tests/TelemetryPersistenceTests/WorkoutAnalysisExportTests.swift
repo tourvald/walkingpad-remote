@@ -518,7 +518,8 @@ final class WorkoutAnalysisExportTests: XCTestCase {
         XCTAssertEqual(
             try FileManager.default.contentsOfDirectory(
                 at: first.fileURL.deletingLastPathComponent(),
-                includingPropertiesForKeys: nil
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
             ).count,
             1
         )

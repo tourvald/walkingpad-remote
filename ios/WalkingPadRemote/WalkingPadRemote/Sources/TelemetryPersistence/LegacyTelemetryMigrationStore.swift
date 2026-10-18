@@ -15,7 +15,9 @@ extension TelemetryStore {
         now: Date
     ) throws -> LegacyMigrationSourceProgress {
         try requireWritableLegacySource(definition.sourceID)
-        if let profile = definition.exactProfileLocalIdentifier { try requireWritableProfile(profile) }
+        if definition.kind == .workoutHistory, let profile = definition.exactProfileLocalIdentifier {
+            try requireWritableProfile(profile)
+        }
         if let existing = try legacySourceModel(definition.sourceID) {
             guard existing.sourceKindKey == definition.kind.rawValue,
                   existing.contentHashDigest == definition.contentHashDigest,
