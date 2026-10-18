@@ -226,6 +226,7 @@ final class TrainingResultBehaviorTests: XCTestCase {
         }
         final class Fixture {
             var didStartApplicationRuntime = true
+            var profileErasureStateLoaded = true
             var pendingActiveWorkoutRecoveryResult: (HKWorkoutSession?, Error?)?
             var nativeWorkoutRecoveryLoadResult: NativeWorkoutRecoveryLoadResult = .missing
             var activeNativeWorkoutRecoveryRecord: NativeWorkoutRecoveryRecord?
@@ -337,6 +338,19 @@ final class TrainingResultBehaviorTests: XCTestCase {
                 precondition(try! Data(contentsOf: archive) == original)
                 buffered.handleActiveWorkoutRecovery(session: HKWorkoutSession(), error: nil)
                 precondition(buffered.finished == 0)
+                try FileManager.default.removeItem(at: archive)
+                try store.save(record)
+                let resaved = try Data(contentsOf: store.fileURL)
+                let awaitingPreferences = fixture()
+                awaitingPreferences.profileErasureStateLoaded = false
+                awaitingPreferences.handleActiveWorkoutRecovery(session: nil, error: nil)
+                precondition(!awaitingPreferences.unlocked && awaitingPreferences.pendingActiveWorkoutRecoveryResult != nil, "Recovery must wait for profile preferences")
+                awaitingPreferences.processNoActiveWorkoutRecoveryIfPossible()
+                precondition(!awaitingPreferences.unlocked && awaitingPreferences.healthStore.calls == 0, "No early recovery probe")
+                awaitingPreferences.profileErasureStateLoaded = true
+                awaitingPreferences.processPendingActiveWorkoutRecoveryIfPossible()
+                precondition(awaitingPreferences.unlocked && !awaitingPreferences.failed && store.load() == .missing, "Buffered recovery must resume after preferences")
+                precondition(try! Data(contentsOf: archive) == resaved)
             }
         }
         """

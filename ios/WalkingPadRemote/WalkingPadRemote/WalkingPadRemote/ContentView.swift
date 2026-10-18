@@ -3272,6 +3272,7 @@ private struct HRParametersFormView: View {
     @State private var showCreateProfileAlert = false
     @State private var showRenameProfileAlert = false
     @State private var showDeleteProfileAlert = false
+    @State private var profilePendingDeletion: UUID?
     @State private var newProfileName = ""
     @State private var renamedProfileName = ""
 
@@ -3307,9 +3308,10 @@ private struct HRParametersFormView: View {
                 .disabled(manager.isHrControlRunning || manager.activeUserProfileID == nil)
 
                 Button("Удалить текущий", role: .destructive) {
+                    profilePendingDeletion = manager.activeUserProfileID
                     showDeleteProfileAlert = true
                 }
-                .disabled(manager.isHrControlRunning || manager.userProfiles.count <= 1)
+                .disabled(!manager.canDeleteUserProfile || manager.activeUserProfileID == nil)
 
                 if manager.isHrControlRunning {
                     Text("Во время активной тренировки переключение и редактирование профиля заблокировано.")
@@ -3729,10 +3731,10 @@ private struct HRParametersFormView: View {
         .alert("Удалить профиль?", isPresented: $showDeleteProfileAlert) {
             Button("Отмена", role: .cancel) {}
             Button("Удалить", role: .destructive) {
-                manager.deleteActiveUserProfile()
+                if let id = profilePendingDeletion { manager.deleteUserProfile(id: id) }
             }
         } message: {
-            Text("Будут удалены локальные настройки и история текущего профиля. Уже записанные raw-логи на диске останутся как архив.")
+            Text("Будут удалены локальные тренировки, диагностика, настройки и временные экспорты выбранного профиля. Для единственного профиля будет создан новый пустой. Записи Apple Health и ранее переданные копии останутся. При неполном удалении можно повторить попытку.")
         }
     }
 

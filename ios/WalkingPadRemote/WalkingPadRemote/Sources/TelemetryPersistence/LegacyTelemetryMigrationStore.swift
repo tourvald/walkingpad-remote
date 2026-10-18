@@ -14,6 +14,10 @@ extension TelemetryStore {
         emptyAggregateStatePayload: Data,
         now: Date
     ) throws -> LegacyMigrationSourceProgress {
+        try requireWritableLegacySource(definition.sourceID)
+        if definition.kind == .workoutHistory, let profile = definition.exactProfileLocalIdentifier {
+            try requireWritableProfile(profile)
+        }
         if let existing = try legacySourceModel(definition.sourceID) {
             guard existing.sourceKindKey == definition.kind.rawValue,
                   existing.contentHashDigest == definition.contentHashDigest,
@@ -70,6 +74,7 @@ extension TelemetryStore {
         completing: Bool,
         now: Date
     ) throws -> Int {
+        try requireWritableLegacySource(sourceID)
         guard let source = try legacySourceModel(sourceID) else {
             throw TelemetryStoreError.corruptStoredRecord("missing migration source \(sourceID)")
         }
@@ -81,6 +86,12 @@ extension TelemetryStore {
             throw TelemetryStoreError.corruptStoredRecord(
                 "regressed migration checkpoint \(sourceID)"
             )
+        }
+        for record in records {
+            if let profile = record.profileLocalIdentifier { try requireWritableProfile(profile) }
+        }
+        for candidate in candidates {
+            if let profile = candidate.profileLocalIdentifier { try requireWritableProfile(profile) }
         }
         var insertedRecordCount = 0
         try explicitTransaction {

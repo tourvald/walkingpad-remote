@@ -146,6 +146,9 @@ public extension TelemetryStore {
         _ request: WorkoutAnalysisExportRequest,
         temporaryFileCreatedForTesting: (@Sendable () async -> Void)?
     ) async throws -> WorkoutAnalysisExportArtifact {
+        activeProfileExports += 1
+        defer { activeProfileExports -= 1 }
+        try requireWritableProfile(request.exactProfileLocalIdentifier)
         let batchSize = min(256, max(1, request.batchSize))
         let sessionKey = request.sessionID.description
         let profileKey = request.exactProfileLocalIdentifier
@@ -175,6 +178,7 @@ public extension TelemetryStore {
                 at: directoryURL,
                 withIntermediateDirectories: true
             )
+            try ProfileErasureFiles.mark(directoryURL, profiles: [request.exactProfileLocalIdentifier])
             let stream = try WorkoutAnalysisCSVStream(fileURL: fileURL)
             defer { stream.close() }
             // The normal export path has no suspension at this test-only acknowledgement.

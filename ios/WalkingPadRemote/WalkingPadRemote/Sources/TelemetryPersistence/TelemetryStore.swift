@@ -134,6 +134,9 @@ public enum TelemetryStoreFactory {
 public actor TelemetryStore {
     private var onDiskStoreURL: URL?
     private var explicitTransactionDepth = 0
+    var memoryErasureJournal = ProfileErasureJournal()
+    var activeProfileExports = 0
+    var onDiskErasureStoreURL: URL? { onDiskStoreURL }
 
     init(modelContainer: ModelContainer, onDiskStoreURL: URL?) {
         let modelContext = ModelContext(modelContainer)
@@ -143,6 +146,7 @@ public actor TelemetryStore {
     }
 
     public func insertSession(_ record: WorkoutSessionRecord) throws {
+        try requireWritableProfile(record.profileLocalIdentifier)
         let sessionKey = record.sessionID.description
         let recordKey = record.recordID.description
         let configurationKey = record.configuration.id.description

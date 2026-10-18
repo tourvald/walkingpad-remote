@@ -389,6 +389,27 @@ struct NativeWorkoutRecoveryStore {
         }
     }
 
+    func eraseInterruptedArchives(for profileID: UUID, fileManager: FileManager = .default) throws {
+        guard load(fileManager: fileManager) == .missing else {
+            throw NativeWorkoutRecoveryStoreError.invalidRecord
+        }
+        let root = fileURL.deletingLastPathComponent()
+        guard fileManager.fileExists(atPath: root.path) else { return }
+        var owned: [URL] = []
+        for archive in try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey])
+            where archive.lastPathComponent.hasPrefix("interrupted_native_workout_") {
+            guard try archive.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
+                throw NativeWorkoutRecoveryStoreError.invalidRecord
+            }
+            let record = try JSONDecoder().decode(NativeWorkoutRecoveryRecord.self, from: Data(contentsOf: archive))
+            guard record.isStructurallyValid, let owner = record.profileID else {
+                throw NativeWorkoutRecoveryStoreError.invalidRecord
+            }
+            if owner == profileID { owned.append(archive) }
+        }
+        for archive in owned { try fileManager.removeItem(at: archive) }
+    }
+
     func clear(fileManager: FileManager = .default) throws {
         guard fileManager.fileExists(atPath: fileURL.path) else { return }
         try fileManager.removeItem(at: fileURL)

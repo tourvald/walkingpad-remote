@@ -639,6 +639,28 @@ public final class TelemetryV2RuntimeCoordinator: HeartRateTelemetrySink,
         )
     }
 
+    public var hasSessionStorageOwnership: Bool {
+        withLock { pendingSession != nil || activeSession != nil || stopTail != nil }
+    }
+
+    public func eraseProfile(_ identifier: String, legacyFallback: String?, logsDirectory: URL?, temporaryDirectory: URL) async throws {
+        _ = try await requireWorkoutReadCapability()
+        guard !hasSessionStorageOwnership else { throw TelemetryWorkoutReadError.unavailable("profile-erasure-session-busy") }
+        guard let eraser = withLock({ persistence as? any TelemetryProfileErasureCapability }) else {
+            throw TelemetryWorkoutReadError.unavailable("profile-erasure-unavailable")
+        }
+        try await eraser.eraseProfile(identifier, legacyFallback: legacyFallback, logsDirectory: logsDirectory, temporaryDirectory: temporaryDirectory)
+        projectionChangeHandler?()
+    }
+
+    public func erasedProfileIdentifiers() async throws -> Set<String> {
+        _ = try await requireWorkoutReadCapability()
+        guard let eraser = withLock({ persistence as? any TelemetryProfileErasureCapability }) else {
+            throw TelemetryWorkoutReadError.unavailable("profile-erasure-unavailable")
+        }
+        return try await eraser.erasedProfileIdentifiers()
+    }
+
     public func exportWorkouts(
         _ request: WorkoutExportRequest
     ) async throws -> WorkoutExportArtifact {

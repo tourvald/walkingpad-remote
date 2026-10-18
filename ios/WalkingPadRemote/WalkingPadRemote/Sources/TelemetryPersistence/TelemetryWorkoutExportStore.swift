@@ -358,12 +358,24 @@ public extension TelemetryStore {
     func exportWorkouts(
         _ request: WorkoutExportRequest
     ) async throws -> WorkoutExportArtifact {
+        activeProfileExports += 1
+        defer { activeProfileExports -= 1 }
+        let profiles: Set<String>
+        switch request.filter.profileScope {
+        case .exact(let profile):
+            try requireWritableProfile(profile)
+            profiles = [profile]
+        case .all, .unassigned:
+            for session in try fetchSessions() { try requireWritableProfile(session.profileLocalIdentifier) }
+            profiles = ["*"]
+        }
         let batchSize = min(256, max(1, request.batchSize))
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TelemetryV2Export_\(UUID().uuidString)", isDirectory: true)
         let stream: WorkoutExportStream
         do {
             stream = try WorkoutExportStream(root: directoryURL)
+            try ProfileErasureFiles.mark(directoryURL, profiles: profiles)
         } catch {
             try? FileManager.default.removeItem(at: directoryURL)
             throw TelemetryWorkoutReadError.exportFailed("create-export: \(error)")
