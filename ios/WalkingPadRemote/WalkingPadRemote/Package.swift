@@ -128,6 +128,7 @@ let package = Package(
                 "DevicePickerView.swift",
                 "IPhoneHealthKitLiveHeartRateProvider.swift",
                 "Info.plist",
+                "PrivacyInfo.xcprivacy",
                 "PlankTimerView.swift",
                 "StatsRightAlignedBlock.swift",
                 "StatusPillsRow.swift",
