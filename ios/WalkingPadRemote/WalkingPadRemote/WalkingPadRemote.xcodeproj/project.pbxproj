@@ -7,6 +7,22 @@
 	objects = {
 
 /* Workout Live Activity extension */
+		AA2370010000000000000001 = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.xml;
+			path = PrivacyInfo.xcprivacy;
+			sourceTree = "<group>";
+		};
+		AA2370010000000000000002 = {
+			isa = PBXBuildFile;
+			fileRef = AA2370010000000000000001;
+		};
+		AA2370010000000000000003 = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (AA2370010000000000000002);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D195168A3B424BE2B27B1ACD = {
 			isa = "PBXFileReference";
 			lastKnownFileType = "sourcecode.swift";
@@ -31,7 +47,7 @@
 			isa = "PBXGroup";
 			path = "WorkoutLiveActivity";
 			sourceTree = "<group>";
-			children = ("D195168A3B424BE2B27B1ACD", "505F2AB01C45498F973206AF");
+			children = (AA2370010000000000000001, "D195168A3B424BE2B27B1ACD", "505F2AB01C45498F973206AF");
 		};
 		0DF38B43E5AC4D59A314601E = {
 			isa = "PBXSourcesBuildPhase";
@@ -98,7 +114,7 @@
 			productType = "com.apple.product-type.app-extension";
 			productReference = "7E0C78291C42449295B049F5";
 			buildConfigurationList = "7067188757344D47895C61E3";
-			buildPhases = ("0DF38B43E5AC4D59A314601E");
+			buildPhases = ("0DF38B43E5AC4D59A314601E", AA2370010000000000000003);
 			buildRules = ();
 			dependencies = ();
 		};
