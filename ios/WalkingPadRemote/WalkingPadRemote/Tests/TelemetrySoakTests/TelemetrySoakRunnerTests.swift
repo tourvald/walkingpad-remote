@@ -570,8 +570,8 @@ final class TelemetrySoakRunnerTests: XCTestCase {
         )
 
         // The harness reflects the full cooldown output, including diagnostic telemetry.
-        // Elapsed-time tracking and removal of unused completion fields change that representation.
-        XCTAssertEqual(checksum, "e9041eacf2f9840a")
+        // The cadence checkpoint includes no-op decisions; its renamed field changes that representation.
+        XCTAssertEqual(checksum, "8f53dfac2f66d670")
         XCTAssertEqual(checksum, TelemetrySoakRunner.controlChecksumWithoutRecording(
             simulatedMinutes: TelemetrySoakWorkload.shortCI.simulatedMinutes
         ))

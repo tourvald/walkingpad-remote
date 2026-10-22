@@ -6651,9 +6651,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private var controllerUnitsNextScheduledMotionLeadSeconds: Int {
         if let cooldownState = cooldownRuntimeState {
-            let interval = max(1, cooldownState.stepIntervalSeconds)
-            let remainder = cooldownState.elapsedSeconds % interval
-            return remainder == 0 ? interval : interval - remainder
+            return cooldownState.nextSpeedDecisionRemainingSeconds
         }
         return WalkingPadStatusRefreshPolicy.motionLeadSeconds(
             decisionRemainingSeconds: hrNextDecisionSeconds,

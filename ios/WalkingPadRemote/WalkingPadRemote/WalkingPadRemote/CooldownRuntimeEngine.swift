@@ -61,7 +61,7 @@ enum CooldownRuntimeEngine {
         var remainingSeconds: Int
         let startSpeedKmh: Double
         var lastSentSpeedKmh: Double
-        var lastSpeedStepElapsedSeconds: Int
+        var lastSpeedDecisionElapsedSeconds: Int
         let baseStepKmh: Double
         let stepIntervalSeconds: Int
         var startBpm: Int
@@ -80,6 +80,10 @@ enum CooldownRuntimeEngine {
 
         var elapsedSeconds: Int {
             max(0, totalSeconds - remainingSeconds)
+        }
+
+        var nextSpeedDecisionRemainingSeconds: Int {
+            min(remainingSeconds, max(0, stepIntervalSeconds - (elapsedSeconds - lastSpeedDecisionElapsedSeconds)))
         }
 
         var progress: Double {
@@ -271,7 +275,7 @@ enum CooldownRuntimeEngine {
             remainingSeconds: cooldownPlan.totalSeconds,
             startSpeedKmh: startSpeedKmh,
             lastSentSpeedKmh: startSpeedKmh,
-            lastSpeedStepElapsedSeconds: 0,
+            lastSpeedDecisionElapsedSeconds: 0,
             baseStepKmh: max(0.1, min(2.0, config.baseStepKmh)),
             stepIntervalSeconds: max(1, config.stepIntervalSeconds),
             startBpm: startBpm,
@@ -418,27 +422,28 @@ enum CooldownRuntimeEngine {
 
         if nextState.remainingSeconds > 0, !stableOk,
            nextState.stepIntervalSeconds > 0,
-           elapsed - nextState.lastSpeedStepElapsedSeconds >= nextState.stepIntervalSeconds,
-           let speedEffect = makeSetSpeedEffectIfNeeded(
+           elapsed - nextState.lastSpeedDecisionElapsedSeconds >= nextState.stepIntervalSeconds {
+            nextState.lastSpeedDecisionElapsedSeconds = elapsed
+            if let speedEffect = makeSetSpeedEffectIfNeeded(
                 state: &nextState,
                 config: config,
                 currentBpm: input.decisionBpm,
                 controllerSpeedKmh: input.speedSnapshot.controllerSpeedKmh,
                 elapsedSeconds: elapsed,
                 trigger: "interval"
-           ) {
-            nextState.lastSpeedStepElapsedSeconds = elapsed
-            effects.append(.setSpeed(speedEffect))
-            effects.append(.telemetry(.speedSet(SpeedSetTelemetry(
-                hrBpm: speedEffect.hrBpm,
-                targetBpm: config.targetBpm,
-                adaptiveFactor: speedEffect.adaptiveFactor,
-                stepKmh: speedEffect.stepKmh,
-                speedBeforeKmh: speedEffect.speedBeforeKmh,
-                speedAfterKmh: speedEffect.speedAfterKmh,
-                elapsedSeconds: speedEffect.elapsedSeconds,
-                trigger: speedEffect.trigger
-            ))))
+            ) {
+                effects.append(.setSpeed(speedEffect))
+                effects.append(.telemetry(.speedSet(SpeedSetTelemetry(
+                    hrBpm: speedEffect.hrBpm,
+                    targetBpm: config.targetBpm,
+                    adaptiveFactor: speedEffect.adaptiveFactor,
+                    stepKmh: speedEffect.stepKmh,
+                    speedBeforeKmh: speedEffect.speedBeforeKmh,
+                    speedAfterKmh: speedEffect.speedAfterKmh,
+                    elapsedSeconds: speedEffect.elapsedSeconds,
+                    trigger: speedEffect.trigger
+                ))))
+            }
         }
 
         let completionReason: String?

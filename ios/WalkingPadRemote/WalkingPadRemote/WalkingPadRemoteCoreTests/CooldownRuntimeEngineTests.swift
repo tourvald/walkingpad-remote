@@ -17,6 +17,45 @@ final class CooldownRuntimeEngineTests: XCTestCase {
         }
     }
 
+    func testShiftedCadenceReservesMotionAndReleasesNoOpWindows() {
+        let config = makeConfig()
+        var state = startOutput(config: config).state
+        state = tickOutput(state: state, config: config, hrBpm: 130,
+            observedSpeedKmh: 5.5, controllerSpeedKmh: state.lastSentSpeedKmh,
+            factualSpeedKmh: 5.5, elapsedSeconds: 33).state
+        XCTAssertEqual(state.lastSpeedDecisionElapsedSeconds, 33)
+        state = tickOutput(state: state, config: config, hrBpm: 130,
+            observedSpeedKmh: 5.5, controllerSpeedKmh: state.lastSentSpeedKmh,
+            factualSpeedKmh: 5.5, elapsedSeconds: 42).state
+        XCTAssertEqual(state.nextSpeedDecisionRemainingSeconds, 1)
+        let now = Date()
+        XCTAssertFalse(WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
+            isWorkoutOrCooldownActive: true, transportReady: true, motionQueueIdle: true,
+            secondsUntilNextScheduledMotion: state.nextSpeedDecisionRemainingSeconds,
+            lastStatusQueryAt: nil, lastControllerUnitsQueryAt: nil, now: now
+        ).shouldRequest)
+
+        // At the floor, a due no-op decision must release polling instead of reserving motion forever.
+        state.lastSentSpeedKmh = config.minSpeedKmh
+        let noOp = tickOutput(state: state, config: config, hrBpm: 130,
+            observedSpeedKmh: config.minSpeedKmh, controllerSpeedKmh: config.minSpeedKmh,
+            factualSpeedKmh: config.minSpeedKmh, elapsedSeconds: 43)
+        XCTAssertEqual(noOp.state.lastSpeedDecisionElapsedSeconds, 43)
+        XCTAssertEqual(noOp.state.nextSpeedDecisionRemainingSeconds, 10)
+        XCTAssertFalse(noOp.effects.contains { if case .setSpeed = $0 { return true }; return false })
+        XCTAssertTrue(WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
+            isWorkoutOrCooldownActive: true, transportReady: true, motionQueueIdle: true,
+            secondsUntilNextScheduledMotion: noOp.state.nextSpeedDecisionRemainingSeconds,
+            lastStatusQueryAt: nil, lastControllerUnitsQueryAt: nil, now: now
+        ).shouldRequest)
+        var nearTimeout = noOp.state
+        nearTimeout.remainingSeconds = 2
+        nearTimeout.lastSpeedDecisionElapsedSeconds = nearTimeout.elapsedSeconds
+        XCTAssertEqual(nearTimeout.nextSpeedDecisionRemainingSeconds, 2)
+        nearTimeout.remainingSeconds = 0
+        XCTAssertEqual(nearTimeout.nextSpeedDecisionRemainingSeconds, 0)
+    }
+
     func testDelayedTimeoutDoesNotIssueAnotherSpeedCommand() {
         let config = makeConfig()
         let state = startOutput(config: config).state
