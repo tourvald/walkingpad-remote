@@ -228,7 +228,6 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         )
         let consume = try functionBody("func consumeConnectErrorMessage()", in: managerSource)
         let contentSource = source(relativePath: "WalkingPadRemote/ContentView.swift")
-        let statusSource = source(relativePath: "WalkingPadRemote/StatusPillsRow.swift")
 
         assertOrdered(
             ["guard self.connectingPeripheralId == peripheralID", "self.connectErrorMessage = nil", "self.isConnected = true"],
@@ -237,10 +236,6 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertTrue(consume.contains("connectErrorMessage = nil"))
         XCTAssertEqual(
             contentSource.components(separatedBy: "manager.consumeConnectErrorMessage()").count - 1,
-            2
-        )
-        XCTAssertEqual(
-            statusSource.components(separatedBy: "manager.consumeConnectErrorMessage()").count - 1,
             2
         )
     }
@@ -480,7 +475,9 @@ final class BluetoothAutoConnectBehaviorContractTests: XCTestCase {
         XCTAssertTrue(valueUpdate.contains("peripheral === connectedPeripheral"))
         XCTAssertTrue(valueUpdate.contains("isCurrentCharacteristicCallback(characteristic)"))
         XCTAssertTrue(valueUpdate.contains("isCurrentCharacteristicCallback(characteristic) else {\n            return\n        }"))
-        XCTAssertTrue(valueUpdate.contains("ftmsControlRequestConnection == currentTreadmillControlConnection"))
+        XCTAssertTrue(valueUpdate.contains("let connection = currentTreadmillControlConnection"))
+        XCTAssertTrue(valueUpdate.contains("ftmsControlState.receive("))
+        XCTAssertTrue(valueUpdate.contains("connection: connection"))
         XCTAssertTrue(writeUpdate.contains("characteristic === commandCharacteristic"))
         XCTAssertTrue(writeUpdate.contains("isCurrentCharacteristicCallback(characteristic)"))
         XCTAssertTrue(modifiedServices.contains("$0 === selectedService"))

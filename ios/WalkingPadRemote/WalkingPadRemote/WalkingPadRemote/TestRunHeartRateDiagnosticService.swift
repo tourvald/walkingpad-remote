@@ -36,6 +36,7 @@ struct TestRunHeartRateDiagnosticService {
         case userRequested = "user_requested"
         case appInactive = "app_inactive"
         case connectionInvalidated = "connection_invalidated"
+        case commandRejected = "command_rejected"
         case providerFailure = "provider_failure"
         case timeout = "first_qualifying_sample_timeout"
     }
@@ -258,7 +259,7 @@ struct TestRunHeartRateDiagnosticService {
         switch reason {
         case .testRunCompleted:
             phase = .completed
-        case .providerFailure, .timeout:
+        case .providerFailure, .timeout, .commandRejected:
             phase = .failed
         case .userRequested, .appInactive, .connectionInvalidated:
             phase = .cancelled

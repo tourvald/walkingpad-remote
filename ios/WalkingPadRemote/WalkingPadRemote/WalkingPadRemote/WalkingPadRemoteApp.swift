@@ -2,13 +2,14 @@ import SwiftUI
 import HealthKit
 import HealthKitUI
 import UIKit
+import UserNotifications
 
 @available(iOS 26.0, *)
 final class WalkingPadRemoteSceneDelegate: UIResponder, UIWindowSceneDelegate {}
 
 @available(iOS 26.0, *)
 @MainActor
-final class WalkingPadRemoteAppDelegate: NSObject, UIApplicationDelegate {
+final class WalkingPadRemoteAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     typealias RecoveryHandler = (HKWorkoutSession?, Error?) -> Void
 
     var recoveryAvailabilityHandler: ((Bool) -> Void)? {
@@ -26,6 +27,18 @@ final class WalkingPadRemoteAppDelegate: NSObject, UIApplicationDelegate {
     private var pendingRecoveryAvailability: Bool?
     private var recoveryRequestPendingDelivery = false
     private var pendingRecoveryResult: (HKWorkoutSession?, Error?)?
+
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler(notification.request.identifier.hasPrefix("plank.") ? [.sound] : [])
+    }
 
     func application(
         _ application: UIApplication,

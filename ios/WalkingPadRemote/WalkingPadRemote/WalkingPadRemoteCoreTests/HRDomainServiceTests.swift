@@ -340,14 +340,14 @@ final class HRDomainServiceTests: XCTestCase {
         XCTAssertTrue(
             HRDomainService.heartRateRuntimePrerequisitesAllowStart(
                 treadmillConnected: true,
-                watchReachable: true,
+                heartRateSourceAvailable: true,
                 currentHeartRateVisible: true
             )
         )
         XCTAssertFalse(
             HRDomainService.heartRateRuntimePrerequisitesAllowStart(
                 treadmillConnected: true,
-                watchReachable: false,
+                heartRateSourceAvailable: false,
                 currentHeartRateVisible: true
             )
         )

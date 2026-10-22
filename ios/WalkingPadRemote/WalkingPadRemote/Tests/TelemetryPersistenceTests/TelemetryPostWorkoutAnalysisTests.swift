@@ -5,6 +5,55 @@ import TelemetryDomain
 import XCTest
 
 final class TelemetryPostWorkoutAnalysisTests: XCTestCase {
+    func testReopenCacheRetainsIdentityAndLateEvidenceInvalidatesIt() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("TelemetryV2.store")
+        let session = fixtureSession(seed: 20, lifecycle: .completed)
+        var writer: TelemetryStore? = try TelemetryStoreFactory.make(.onDisk(url))
+        try await writer!.insertSession(session)
+        let first = try await writer!.analyzeTerminalWorkout(sessionID: session.sessionID,
+                                                            generatedAt: session.endedAt!)
+        writer = nil
+        let reopened = try TelemetryStoreFactory.make(.onDisk(url))
+        let resumed = await reopened.resumePendingWorkoutAnalyses()
+        XCTAssertEqual(resumed, [.existing])
+        let cached = try await reopened.analyzeTerminalWorkout(sessionID: session.sessionID,
+            generatedAt: session.endedAt!.addingTimeInterval(60))
+        XCTAssertEqual(cached.analysis, first.analysis)
+        // The new record predates generatedAt; timestamps alone cannot invalidate a cache.
+        try await reopened.insertEvent(phaseEvent(seed: 21, session: session,
+                                                 elapsedSeconds: 0, previous: nil, current: .main))
+        let updated = try await reopened.analyzeTerminalWorkout(sessionID: session.sessionID,
+            generatedAt: session.endedAt!.addingTimeInterval(120))
+        XCTAssertEqual(updated.triggerResult, .inserted)
+        XCTAssertNotEqual(updated.analysis?.evidenceHash, first.analysis?.evidenceHash)
+        let analyses = try await reopened.fetchAnalyses(sessionID: session.sessionID)
+        XCTAssertEqual(analyses.count, 2)
+        let events = try await reopened.fetchEvents(sessionID: session.sessionID)
+        XCTAssertEqual(events.count, 1)
+        try await reopened.associateHealthKitWorkout(sessionID: session.sessionID, workoutIdentifier: UUID())
+        let linked = try await reopened.analyzeTerminalWorkout(sessionID: session.sessionID,
+            generatedAt: session.endedAt!.addingTimeInterval(180))
+        XCTAssertEqual(linked.triggerResult, .inserted)
+        XCTAssertNotEqual(linked.analysis?.evidenceHash, updated.analysis?.evidenceHash)
+    }
+
+    func testConcurrentAnalysisHasOneInsertAndErasedSessionRemainsIneligible() async throws {
+        let store = try TelemetryStoreFactory.make(.inMemory)
+        let session = fixtureSession(seed: 22, lifecycle: .completed)
+        try await store.insertSession(session)
+        async let first = store.analyzeTerminalWorkout(sessionID: session.sessionID, generatedAt: session.endedAt!)
+        async let second = store.analyzeTerminalWorkout(sessionID: session.sessionID, generatedAt: session.endedAt!)
+        let results = try await [first.triggerResult, second.triggerResult]
+        XCTAssertEqual(results.filter { $0 == .inserted }.count, 1)
+        XCTAssertEqual(results.filter { $0 == .existing }.count, 1)
+        try await store.deleteSession(session.sessionID)
+        let erased = try await store.analyzeTerminalWorkout(sessionID: session.sessionID, generatedAt: session.endedAt!)
+        XCTAssertEqual(erased.triggerResult, .ineligible)
+    }
+
     func testCompletedMainPhaseZoneExposureReachesScopedStatisticsWithoutSpeed() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)
         let session = fixtureSession(seed: 61, lifecycle: .completed)

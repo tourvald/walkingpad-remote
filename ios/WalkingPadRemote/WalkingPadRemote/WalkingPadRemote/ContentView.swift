@@ -10,17 +10,6 @@ import TelemetryDomain
 import UIKit
 #endif
 
-// Fallback definition to satisfy references in this file if the app doesn't define it elsewhere.
-#if !canImport(HrFailureReportModule)
-struct HrFailureReport: Identifiable {
-    let id = UUID()
-    let reason: String
-    let start: Date
-    let end: Date
-    let lines: [String]
-}
-#endif
-
 struct ContentView: View {
     @EnvironmentObject private var manager: BluetoothManager
     @Environment(\.scenePhase) private var scenePhase
@@ -63,8 +52,8 @@ struct ContentView: View {
                 }
                 .tag(RootTab.control)
 
-            WorkoutStatsView()
-                .environmentObject(manager)
+            WorkoutStatsView(manager: manager)
+                .equatable()
                 .tabItem {
                     Label("Статистика", systemImage: "chart.bar")
                 }
@@ -99,9 +88,7 @@ struct ContentView: View {
             #if DEBUG
             guard !isTrainingPreviewLaunch else { return }
             #endif
-            if phase == .active {
-                manager.pingWatch()
-            } else {
+            if phase != .active {
                 manager.treadmillTestRunAppBecameInactive()
             }
             updateNativeHeartRateLifecycle(phase)
@@ -624,6 +611,23 @@ private func makeProductionActiveWorkoutPresentation(
 }
 
 private extension TrainingUIObservationBoundary {
+    convenience init(statisticsManager manager: BluetoothManager) {
+        self.init(signals: [
+            manager.$activeUserProfileID.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2WorkoutHistory.map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2WorkoutHistoryState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2WorkoutHistoryHasMore.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2Statistics.map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2StatisticsState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$telemetryV2ProjectionGeneration.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$zonePlanMinutes.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrZone1Max.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrZone2Max.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrZone3Max.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            manager.$hrZone4Max.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+        ])
+    }
+
     convenience init(manager: BluetoothManager) {
         self.init(signals: [
             manager.$intervalWorkoutSelected.map { _ in () }.eraseToAnyPublisher(),
@@ -1700,6 +1704,7 @@ private struct ActiveWorkoutShell: View {
     let onExtend: () -> Void
     let onStop: () -> Void
     var stopEnabled = true
+    var onReconnect: (() -> Void)? = nil
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
@@ -1741,8 +1746,8 @@ private struct ActiveWorkoutShell: View {
         VStack(spacing: 14) {
             TrainingReadinessStrip(
                 items: presentation.readiness,
-                treadmillInteractive: false,
-                onTreadmillTap: {}
+                treadmillInteractive: onReconnect != nil && !presentation.isPreview,
+                onTreadmillTap: { onReconnect?() }
             )
             liveHero
             if !usesAccessibilityControlInset {
@@ -2540,7 +2545,8 @@ private struct ControlSwipeView: View, Equatable {
                 presentation: activePresentation,
                 onExtend: { manager.extendHrSession(minutes: 5) },
                 onStop: { manager.stopHrControl() },
-                stopEnabled: manager.canStopPresentedWorkout
+                stopEnabled: manager.canStopPresentedWorkout,
+                onReconnect: manager.isTreadmillControlReady ? nil : { showDevicePicker = true }
             )
         } else if let pendingTrainingResult, pendingTrainingResult.profileID != manager.activeUserProfileID {
             trainingHub
@@ -3808,8 +3814,20 @@ private struct HRParametersFormView: View {
     }
 }
 
-private struct WorkoutStatsView: View {
-    @EnvironmentObject private var manager: BluetoothManager
+private struct WorkoutStatsView: View, Equatable {
+    let manager: BluetoothManager
+    @StateObject private var statisticsObservation: TrainingUIObservationBoundary
+
+    init(manager: BluetoothManager) {
+        self.manager = manager
+        _statisticsObservation = StateObject(
+            wrappedValue: TrainingUIObservationBoundary(statisticsManager: manager)
+        )
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.manager === rhs.manager
+    }
 
     private enum StatsScope: String, CaseIterable, Hashable {
         case week
@@ -3837,6 +3855,7 @@ private struct WorkoutStatsView: View {
     @State private var showPlanSheet: Bool = false
     @State private var pageHeights: [StatsScope: CGFloat] = [:]
     @State private var statisticsRetryGeneration: [StatsScope: UInt] = [:]
+    @State private var referenceDate = Date()
     @State private var workoutAnalysisExportTask: Task<Void, Never>?
     @State private var exportingWorkoutID: String?
 
@@ -3890,7 +3909,17 @@ private struct WorkoutStatsView: View {
                 }
             }
             .sheet(isPresented: $showPlanSheet) {
-                ZonePlanSheet(planMinutes: $manager.zonePlanMinutes, ranges: zoneRanges)
+                ZonePlanSheet(
+                    planMinutes: Binding(
+                        get: { manager.zonePlanMinutes },
+                        set: { manager.zonePlanMinutes = $0 }
+                    ),
+                    ranges: zoneRanges
+                )
+            }
+            .onAppear { referenceDate = Date() }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+                referenceDate = Date()
             }
             .onDisappear {
                 workoutAnalysisExportTask?.cancel()
@@ -4129,7 +4158,7 @@ private struct WorkoutStatsView: View {
     }
 
     private func interval(for scope: StatsScope, offset: Int) -> DateInterval {
-        let now = Date()
+        let now = referenceDate
         switch scope {
         case .week:
             let base = calendar.date(byAdding: .weekOfYear, value: offset, to: now) ?? now
@@ -4153,37 +4182,27 @@ private struct WorkoutStatsView: View {
         let start = interval.start
         let end = calendar.date(byAdding: .day, value: -1, to: interval.end) ?? interval.end
 
+        func formatted(_ date: Date, _ format: Date.FormatString) -> String {
+            date.formatted(.verbatim(
+                format,
+                locale: Locale.current,
+                timeZone: .current,
+                calendar: Locale.current.calendar
+            ))
+        }
+
         switch scope {
         case .month:
-            let formatter = DateFormatter()
-            formatter.locale = Locale.current
-            formatter.dateFormat = "LLLL yyyy"
-            return formatter.string(from: start).capitalized
+            return formatted(start, "\(standaloneMonth: .wide) \(year: .defaultDigits)").capitalized
         case .week:
-            let sameMonth = calendar.isDate(start, equalTo: end, toGranularity: .month)
-            let sameYear = calendar.isDate(start, equalTo: end, toGranularity: .year)
-
-            if sameMonth {
-                let dayFormatter = DateFormatter()
-                dayFormatter.locale = Locale.current
-                dayFormatter.dateFormat = "d"
-                let monthFormatter = DateFormatter()
-                monthFormatter.locale = Locale.current
-                monthFormatter.dateFormat = "MMM"
-                return "\(dayFormatter.string(from: start))–\(dayFormatter.string(from: end)) \(monthFormatter.string(from: start))"
+            if calendar.isDate(start, equalTo: end, toGranularity: .month) {
+                return "\(formatted(start, "\(day: .defaultDigits)"))–\(formatted(end, "\(day: .defaultDigits)")) \(formatted(start, "\(month: .abbreviated)"))"
             }
 
-            if sameYear {
-                let formatter = DateFormatter()
-                formatter.locale = Locale.current
-                formatter.dateFormat = "d MMM"
-                return "\(formatter.string(from: start)) – \(formatter.string(from: end))"
-            }
-
-            let formatter = DateFormatter()
-            formatter.locale = Locale.current
-            formatter.dateFormat = "d MMM yyyy"
-            return "\(formatter.string(from: start)) – \(formatter.string(from: end))"
+            let format: Date.FormatString = calendar.isDate(start, equalTo: end, toGranularity: .year)
+                ? "\(day: .defaultDigits) \(month: .abbreviated)"
+                : "\(day: .defaultDigits) \(month: .abbreviated) \(year: .defaultDigits)"
+            return "\(formatted(start, format)) – \(formatted(end, format))"
         }
     }
 
@@ -4742,45 +4761,6 @@ private struct DebugView: View {
         return ISO8601DateFormatter().string(from: date)
     }
 
-    private var hrFailuresCardPresentation: DebugHrFailuresCard.Presentation {
-        let reports = manager.hrFailureReports
-        let latestFailureDate = reports.map(\.end).max()
-        let reportPreviews = reports.prefix(3).map { report in
-            DebugHrFailuresCard.Presentation.ReportPreview(
-                id: report.id,
-                title: report.reason,
-                subtitle: "\(report.start.formatted(date: .abbreviated, time: .shortened)) → \(report.end.formatted(date: .abbreviated, time: .shortened))",
-                body: report.lines.isEmpty
-                    ? "Подробных строк нет."
-                    : report.lines.prefix(8).joined(separator: "\n")
-            )
-        }
-
-        return DebugHrFailuresCard.Presentation(
-            subtitle: "Сохранённые инциденты потери или сбоя пульса",
-            metrics: [
-                .init(id: "reports_total", title: "Отчётов", value: "\(reports.count)", tint: .orange),
-                .init(id: "reports_visible", title: "Показано", value: "\(reportPreviews.count)", tint: .blue),
-                .init(
-                    id: "reports_latest",
-                    title: "Последний",
-                    value: latestFailureDate.map { $0.formatted(date: .omitted, time: .shortened) } ?? "—",
-                    tint: .red
-                )
-            ],
-            exportSubtitle: reports.isEmpty ? "Нет данных" : "\(reports.count) отчётов",
-            canExport: !reports.isEmpty,
-            clearSubtitle: reports.isEmpty ? "Список уже пуст" : "Удалить \(reports.count) отчётов",
-            canClear: !reports.isEmpty,
-            clearConfirmationMessage: "Будут удалены все сохранённые HR failure reports в Debug. Structured training logs и история тренировок не изменятся.",
-            reports: Array(reportPreviews),
-            emptyState: reports.isEmpty ? "Ошибок пульса пока нет." : nil,
-            footer: reports.count > reportPreviews.count
-                ? "Показаны последние \(reportPreviews.count) отчёта из \(reports.count). Полный набор уйдёт в export."
-                : "HR failure export сохраняет полный набор инцидентов."
-        )
-    }
-
     private var hrControlPreviewPresentation: TrainingHubPresentation {
         let isCooldown = hrControlPreviewMode == .cooldown
         return makeHRControlActivePresentation(
@@ -4875,15 +4855,6 @@ private struct DebugView: View {
                         }
                     )
 
-                    DebugHrFailuresCard(
-                        presentation: hrFailuresCardPresentation,
-                        onExport: {
-                            exportHrFailures(reports: manager.hrFailureReports)
-                        },
-                        onClear: {
-                            manager.clearHrFailureReports()
-                        }
-                    )
                 }
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -5036,60 +5007,6 @@ private func activeRootViewController() -> UIViewController? {
     return controller
 }
 
-// Overload to accept manager's nested type and forward to the existing exporter
-private func exportHrFailures(reports: [BluetoothManager.HrFailureReport]) {
-    let mapped: [HrFailureReport] = reports.map { r in
-        HrFailureReport(
-            reason: r.reason,
-            start: r.start,
-            end: r.end,
-            lines: r.lines
-        )
-    }
-    exportHrFailures(reports: mapped)
-}
-
-private func exportHrFailures(reports: [HrFailureReport]) {
-    guard !reports.isEmpty else { return }
-    var parts: [String] = []
-    parts.append("HR Failure Reports: \(reports.count)")
-    let headerFormatter = DateFormatter()
-    headerFormatter.dateStyle = .short
-    headerFormatter.timeStyle = .short
-    for (idx, r) in reports.enumerated() {
-        parts.append("")
-        parts.append("=== Report \(idx + 1) ===")
-        parts.append("Reason: \(r.reason)")
-        parts.append("Start: \(headerFormatter.string(from: r.start))")
-        parts.append("End: \(headerFormatter.string(from: r.end))")
-        if !r.lines.isEmpty {
-            parts.append("Lines:")
-            parts.append(contentsOf: r.lines)
-        }
-    }
-    let text = parts.joined(separator: "\n")
-
-    let tsFormatter = DateFormatter()
-    tsFormatter.dateFormat = "yyyyMMdd_HHmmss"
-    let ts = tsFormatter.string(from: Date())
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("HR_Failures_\(ts).txt")
-
-    let present: (UIActivityViewController) -> Void = { vc in
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-           let root = scene.windows.first?.rootViewController {
-            root.present(vc, animated: true)
-        }
-    }
-
-    do {
-        try text.write(to: url, atomically: true, encoding: .utf8)
-        let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        present(vc)
-    } catch {
-        let vc = UIActivityViewController(activityItems: [text], applicationActivities: nil)
-        present(vc)
-    }
-}
 #endif
 
 private struct StatsRightAlignedRow: View {

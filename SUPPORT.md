@@ -17,7 +17,7 @@ Use the GitHub issue forms for normal project support:
 - treadmill model
 - protocol if known (`WalkingPad`, `FTMS`, or `FitShow`)
 - iPhone / iOS version
-- Apple Watch / watchOS version
+- Heart-rate sensor model and its connection through Apple Health (for HR issues)
 - Xcode version
 - Python version
 - logs, screenshots, or exported telemetry snippets with sensitive data removed

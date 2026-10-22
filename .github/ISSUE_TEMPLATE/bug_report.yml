@@ -18,7 +18,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Device, OS, Xcode, watchOS, treadmill model, or Python version if relevant.
+      description: Device, OS, Xcode, heart-rate sensor, treadmill model, or Python version if relevant.
       placeholder: iPhone 15 Pro, iOS 26.2, Apple Watch Series 9, WalkingPad A1 Pro
     validations:
       required: true
@@ -31,7 +31,6 @@ body:
         - BLE / treadmill connection
         - Stats / telemetry
         - Plank tab
-        - Watch app
         - Python tools
         - Build / CI
         - Other

@@ -1,7 +1,7 @@
 # Required-reason API audit (#237)
 
 Baseline: `870a8511b5bf848d1ebc4c94702987bd59db9828`. Audit date: 2026-10-18.
-Scope: Release iOS app, embedded watchOS app, Live Activity extension and their
+Scope: Release iOS app, Live Activity extension and their
 linked local-package code. No external Swift package or vendored binary SDK is
 linked. Apple system frameworks are platform dependencies, not redistributed SDKs.
 
@@ -10,7 +10,6 @@ linked. Apple system frameworks are platform dependencies, not redistributed SDK
 | iOS app | `UserDefaults`, SwiftUI `@AppStorage`: BluetoothManager profiles/settings/device preferences, ContentView navigation, PlankTimerView; TelemetryPersistence legacy-source discovery | UserDefaults `CA92.1`: app-private preferences only, no App Group or managed/global preferences |
 | iOS app | `ProcessInfo.systemUptime`: BluetoothManager treadmill test-run scheduling | SystemBootTime `35F9.1`: elapsed intervals/timers within the app; only elapsed test-run progress enters telemetry, no raw system uptime |
 | iOS app | `URLResourceKey.contentModificationDateKey`: TelemetryRuntime DiagnosticZipArchive | FileTimestamp `C617.1`: metadata of app-managed temporary diagnostic files used for ZIP entries |
-| watchOS app | WorkoutSessionController, TreadmillStatsPublisher and watch target sources | No required-reason API found; empty API list |
 | Live Activity extension | WorkoutLiveActivityWidget + WorkoutActivityAttributes | No required-reason API found; empty API list |
 
 The local Swift package is statically linked into the iOS executable, so the
@@ -22,7 +21,7 @@ active-keyboard APIs were found in shipped sources. File size alone is not an
 additional API category. Re-audit when targets, dependencies, usage or Apple
 reasons change; this inventory is not a general SDK certification.
 
-Each target has its own `PrivacyInfo.xcprivacy`. Synchronized iOS/watch groups
+Each target has its own `PrivacyInfo.xcprivacy`. The synchronized iOS group
 include resources automatically. The explicit Live Activity group has a focused
 resource build phase. SwiftPM core tests exclude the iOS app manifest; no new
 package resource bundle or runtime owner is necessary. All manifests declare
@@ -31,10 +30,10 @@ customer-support receipt of user-selected diagnostics/messages. The iPhone app
 manifest now declares Health, Fitness, Name, EmailAddress, UserID, CustomerSupport
 and OtherDiagnosticData, linked to identity, for AppFunctionality and not tracking.
 This matches the prepared App Privacy worksheet; absence of an automatic uploader
-is not an exemption. The watch and Live Activity bundles have no support/share
-entry or independent developer-collection path and retain empty collected-type
-arrays; watch-origin health data in phone-submitted files is covered by the
-iPhone disclosure. No SDK, collection mechanism or requested permission changes.
+is not an exemption. The Live Activity bundle has no support/share
+entry or independent developer-collection path and retains an empty collected-type
+array. Health data in phone-submitted files is covered by the iPhone disclosure.
+The custom Watch bundle and its direct transport have been removed.
 
 ## Verification and release gates
 

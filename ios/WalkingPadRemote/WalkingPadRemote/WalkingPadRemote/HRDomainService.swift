@@ -2,6 +2,11 @@ import Foundation
 import TelemetryDomain
 
 enum HRDomainService {
+    static func remainingSessionSeconds(totalSeconds: Int, elapsed: Duration) -> Int {
+        let total = max(0, totalSeconds)
+        return total - min(total, Int(clamping: max(0, elapsed.components.seconds)))
+    }
+
     final class SpeedCommand: Equatable {
         let targetKmh: Double
         let increaseSampleAt: Date?
@@ -103,10 +108,10 @@ enum HRDomainService {
 
     static func heartRateRuntimePrerequisitesAllowStart(
         treadmillConnected: Bool,
-        watchReachable: Bool,
+        heartRateSourceAvailable: Bool,
         currentHeartRateVisible: Bool
     ) -> Bool {
-        treadmillConnected && watchReachable && currentHeartRateVisible
+        treadmillConnected && heartRateSourceAvailable && currentHeartRateVisible
     }
 
     static func applyHeartRateDelivery(

@@ -47,6 +47,7 @@ public enum DeterministicControlReplay {
                         state: cooldownState,
                         config: cooldownConfig,
                         input: CooldownRuntimeEngine.TickInput(
+                            elapsedSeconds: cooldownState.elapsedSeconds + 1,
                             hrBpm: bpm,
                             decisionBpm: bpm,
                             hrAvailable: true,
@@ -305,14 +306,14 @@ public extension DeterministicControlReplay {
     ) -> SemanticControlReplayResult {
         let treadmillConnected = scenario != .disconnect
         let currentHeartRateVisible = scenario != .missingHeartRate
-        let watchReachable = scenario != .startAffordanceRuntimeAuthorization
+        let heartRateSourceAvailable = scenario != .startAffordanceRuntimeAuthorization
         let affordance = HRDomainService.heartRateStartAffordanceAvailable(
             treadmillConnected: treadmillConnected,
             currentHeartRateVisible: currentHeartRateVisible
         )
         let runtimeAuthorization = HRDomainService.heartRateRuntimePrerequisitesAllowStart(
             treadmillConnected: treadmillConnected,
-            watchReachable: watchReachable,
+            heartRateSourceAvailable: heartRateSourceAvailable,
             currentHeartRateVisible: currentHeartRateVisible
         )
 

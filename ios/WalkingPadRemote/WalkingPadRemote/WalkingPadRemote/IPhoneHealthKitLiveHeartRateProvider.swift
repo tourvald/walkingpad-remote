@@ -285,11 +285,15 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
         guard let builder else {
             throw HealthKitLiveWorkoutDriverError.missingWorkout
         }
+        guard beginCollectionContinuation == nil else {
+            throw HealthKitLiveWorkoutDriverError.operationCancelled
+        }
         try await withCheckedThrowingContinuation { continuation in
             beginCollectionContinuation = continuation
-            builder.beginCollection(withStart: date) { [weak self] success, error in
-                DispatchQueue.main.async {
-                    self?.completeVoidOperation(
+            builder.beginCollection(withStart: date) { [weak self, weak builder] success, error in
+                DispatchQueue.main.async { [weak self, weak builder] in
+                    guard let self, let builder, builder === self.builder else { return }
+                    self.completeVoidOperation(
                         keyPath: \.beginCollectionContinuation,
                         success: success,
                         error: error
@@ -328,11 +332,15 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
         guard let builder else {
             throw HealthKitLiveWorkoutDriverError.missingWorkout
         }
+        guard endCollectionContinuation == nil else {
+            throw HealthKitLiveWorkoutDriverError.operationCancelled
+        }
         try await withCheckedThrowingContinuation { continuation in
             endCollectionContinuation = continuation
-            builder.endCollection(withEnd: date) { [weak self] success, error in
-                DispatchQueue.main.async {
-                    self?.completeVoidOperation(
+            builder.endCollection(withEnd: date) { [weak self, weak builder] success, error in
+                DispatchQueue.main.async { [weak self, weak builder] in
+                    guard let self, let builder, builder === self.builder else { return }
+                    self.completeVoidOperation(
                         keyPath: \.endCollectionContinuation,
                         success: success,
                         error: error
@@ -346,6 +354,9 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
         guard let builder else {
             throw HealthKitLiveWorkoutDriverError.missingWorkout
         }
+        guard finishContinuation == nil else {
+            throw HealthKitLiveWorkoutDriverError.operationCancelled
+        }
         return try await withCheckedThrowingContinuation { [weak self] continuation in
             guard let self else {
                 continuation.resume(
@@ -354,9 +365,10 @@ private final class HealthKitLiveWorkoutDriver: NSObject, IPhoneHealthKitWorkout
                 return
             }
             self.finishContinuation = continuation
-            builder.finishWorkout { [weak self] workout, error in
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, let continuation = self.finishContinuation else { return }
+            builder.finishWorkout { [weak self, weak builder] workout, error in
+                DispatchQueue.main.async { [weak self, weak builder] in
+                    guard let self, let builder, builder === self.builder,
+                          let continuation = self.finishContinuation else { return }
                     self.finishContinuation = nil
                     if let error {
                         continuation.resume(throwing: error)

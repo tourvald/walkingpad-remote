@@ -474,20 +474,15 @@ final class IPhoneHealthKitHeartRateProviderCoreTests: XCTestCase {
             ),
             encoding: .utf8
         )
-        let watch = try String(
-            contentsOf: packageDirectory.appendingPathComponent(
-                "WalkingPadRemoteWatch Watch App/WatchHeartRateManager.swift"
-            ),
-            encoding: .utf8
-        )
-
         XCTAssertTrue(manager.contains("IPhoneHealthKitLiveHeartRateProvider"))
         for forbidden in [
             "sendTreadmill", "WCSession", "watchReachable", "start_hr", "CoreBluetooth",
         ] {
             XCTAssertFalse(provider.contains(forbidden), forbidden)
         }
-        XCTAssertTrue(watch.contains("final class WatchHeartRateManager"))
+        XCTAssertFalse(manager.contains("WCSession"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: packageDirectory
+            .appendingPathComponent("WalkingPadRemoteWatch Watch App").path))
     }
 
     private func makeProvider() -> (

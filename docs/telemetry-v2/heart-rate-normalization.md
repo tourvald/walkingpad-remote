@@ -1,133 +1,46 @@
 # Telemetry V2 heart-rate normalization
 
-Status: Issue #28 implementation note. The normative Telemetry V2 contracts in
-this directory remain authoritative.
-
-Issue #28 adds an observational, provider-neutral heart-rate seam without
-binding it to the recorder, a Telemetry V2 session, or persistence. Issue #30
-owns that application/session binding. The current HR Control provider remains
-the existing Watch workout stream.
-
-## Legacy path and observation point
-
-The unchanged controller-facing path is:
+## Current production path
 
 ```text
-HKLiveWorkoutBuilder callback on Watch
-  -> WatchConnectivity payload
-  -> BluetoothManager.handleWatchPayload
-  -> heartRateBPM / lastKnownHeartRateBPM / hrLastValueAt
-  -> recordHrSample
-  -> existing stale timer and HR decision timer
+Native iPhone HKWorkoutSession / HKLiveWorkoutBuilder
+  -> IPhoneHealthKitLiveHeartRateProvider
+  -> BluetoothManager.handleNativeHeartRateObservation
+  -> native attempt/generation and measurement-freshness gates
+  -> controller state, normalization and control-use evidence
 ```
 
-The Watch payload still contains the legacy `hr` value. It now also carries the
-optional `hr_callback_observed_at` and `hr_sequence` fields. The phone accepts
-old `hr`-only payloads, ignores unknown fields, and treats malformed optional
-metadata as telemetry quality evidence rather than an HR rejection.
+The custom watchOS app and WatchConnectivity transport have been removed.
+The provider requests HealthKit heart-rate collection without a device filter;
+its application-stream identity is `healthKitSelected` with stable key
+`iphone-healthkit-selected`. This does not identify the physical sensor.
+HealthKit can supply compatible external sensors and supported headphones.
+Apple documents Watch workout mirroring as originating in a watchOS app, so
+Watch-only continuous live delivery is not guaranteed by this iPhone-only app.
+See [Track workouts with HealthKit](https://developer.apple.com/videos/play/wwdc2025/322/)
+and [AirPods heart-rate support](https://support.apple.com/123184).
 
-`BluetoothManager` first performs the legacy state and predictor updates in the
-same order as before. Only then does the synchronous, non-throwing observational
-tee normalize the delivery and call an optional sink. No task, actor hop,
-persistence call, retry, or telemetry timer is added to this HR hot path. A
-missing or rejecting sink therefore changes telemetry completeness only.
+The live provider keeps measurement interval timestamps separate from callback
+and receipt times. Delayed or repeated measurements cannot refresh the controller
+merely because a callback arrives. No latest-historical-sample fallback exists.
+Native lifecycle generation/attempt checks reject obsolete callbacks. Start,
+increase, stale-signal, controller-unit and factual Stop gates remain authoritative.
 
-## Provider and time semantics
+## Delivery and persisted compatibility
 
-`HeartRateProviderObservation` represents a provider without selecting any new
-provider. The production source is explicitly `legacyWatchWorkoutStream`; this
-is a stable application-stream identity, not a claim about the physical sensor
-that contributed HealthKit data.
+The normalizer preserves delivery order and records quality and causal references.
+A canonical scientific observation and a controller-facing delivery have distinct
+identities. Canonicalization requires a real provider-native identity scoped by a
+stable source identity; similar BPM/timestamps are not a synthetic identity.
+Control-use evidence is emitted where the controller consumes the measurement.
+Neither telemetry normalization nor cached analysis authorizes treadmill motion.
 
-The current `HKLiveWorkoutBuilderDelegate` callback exposes the collected sample
-types and builder statistics, but not the delivered `HKObject`, its UUID, or an
-original sample timestamp. Consequently:
-
-- `measuredAt` is `nil` for the current path;
-- `sourceCallbackObservedAt` is the Watch-side time at which the app observed
-  the builder callback, not HealthKit measurement time;
-- `receivedAt` is captured on iPhone before dispatching the payload to the main
-  queue;
-- `recordedAt` is the normalization observation time on iPhone;
-- `providerNativeIdentity` is `nil` for the current path;
-- Watch and iPhone wall clocks are explicitly independent, so their timestamps
-  are not subtracted to claim delivery latency or clock regression;
-- no identity is synthesized from BPM, time, sequence, arrival order, workout
-  UUID, or contributor-source metadata.
-
-These semantics follow the documented API shape of
-[`HKLiveWorkoutBuilderDelegate`](https://developer.apple.com/documentation/healthkit/hkliveworkoutbuilderdelegate),
-[`HKWorkoutBuilder.statistics(for:)`](https://developer.apple.com/documentation/healthkit/hkworkoutbuilder/statistics%28for%3A%29),
-and [`HKObject.uuid`](https://developer.apple.com/documentation/healthkit/hkobject/uuid).
-The API documentation does not promise callback scheduling latency or order, so
-the implementation makes no such claim.
-
-## Delivery, sequence, and quality
-
-Every valid legacy HR payload receives a distinct `HeartRateDeliveryID` and a
-monotonic phone-local `arrivalOrder` in the exact order in which normalization
-observes deliveries. Neither field claims provider causality.
-
-The Watch `hr_sequence` is a Watch-app-local callback delivery sequence reset
-when the existing workout start path begins. It records app-observed callback
-arrival only; it is not an HK sample ordinal, native identity, or guarantee
-about HealthKit callback ordering. The phone preserves it verbatim as
-`providerSequence` and never rewrites controller delivery order around it.
-
-Quality flags describe missing/malformed metadata, repeated values, duplicate
-or out-of-order sequence, and gaps. Delay or clock-regression flags are produced
-only for a future provider that explicitly declares its source timestamp
-comparable to the receiver clock; the current cross-device Watch path does not.
-They never deduplicate, reorder, debounce, suppress, or gate a controller HR
-delivery. Source available/unavailable, started/stopped, stale/recovered, and an
-observable stop-then-start restart are derived from existing production state
-transitions; there is no second lifecycle or staleness state machine. A first
-active sample is not called recovered, and the legacy inactive tick after an
-explicit stop does not create a false stale event.
-
-## Canonical observations and causal references
-
-Scientific and delivery identity are separate:
-
-- a canonical scientific observation has one
-  `HeartRateCanonicalObservationID`;
-- every controller-facing arrival has its own `HeartRateDeliveryID`;
-- control-use evidence references both IDs.
-
-Canonicalization is permitted only for a real, non-blank provider-native sample
-identity scoped by a non-blank stable source identity. A missing/blank stable
-source key disables canonicalization and is flagged; it cannot collapse native
-IDs from unrelated sources. An exact native redelivery creates a
-new delivery record that points to the already persisted canonical observation;
-it does not create a second scientific row or a dangling causal identifier.
-When native identity is absent, apparently identical BPM/time/sequence inputs
-remain distinct scientific observations. The existing persisted source stable
-key, provider-native identity, and observation ID are sufficient for the future
-#30 adapter to restore canonical bindings after reopening; #28 adds no schema.
-
-Ingress records only that the legacy controller state accepted the delivery.
-It does not claim the sample was used. Separate `HeartRateControlUseEvidence` is
-emitted at the existing HR speed-decision branch after that branch has consumed
-the current HR and, when available, the exact trend-window deliveries. The event
-therefore records actual current-controller use rather than inferring use from
-freshness, sequence, or quality.
-
-## Safety invariant and remaining integration
-
-The Start HR Control affordance is available when the treadmill is connected and
-current/fresh HR is visible. Watch reachability and controller-units readiness
-remain runtime authorization checks after a tap; they can still reject the start
-request before any automated motion. Telemetry health, sink presence, recorder
-state, persistence availability, metadata quality, sequence anomalies, and
-canonicalization participate in neither UI availability nor runtime
-authorization. Telemetry also does not start, stop, or change treadmill speed,
-staleness, grace, cooldown, manual stop, or units behavior.
-
-Issue #30 must supply a real Telemetry V2 session, bind the optional sink to the
-recorder/persistence adapter, persist delivery and control-use evidence using
-the established contracts, and restore canonical bindings from persisted
-stable-native identities. It must preserve this failure-isolated observation
-order and must not fabricate a session or provider identity.
+Persisted source kinds including `legacyWatchWorkoutStream` and
+`mirroredWatchWorkout` remain readable for existing history and exports. These
+values do not enable a live transport. Historical cross-device timestamps retain
+their independent-clock semantics; missing measurement time remains unknown.
+The retired Watch payload decoder, callback sequence transport and observational
+tee are no longer part of the application.
 
 ## Passive prediction snapshots
 

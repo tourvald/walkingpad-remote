@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import TelemetryAnalysis
 import TelemetryDomain
 
@@ -24,13 +25,17 @@ public extension TelemetryStore {
         guard let input = try terminalAnalysisInput(sessionID: sessionID) else {
             return StoredWorkoutAnalysisOutcome(triggerResult: .ineligible, analysis: nil)
         }
+        let hash = try await Task.detached(priority: .utility) {
+            try WorkoutAnalyzerV1.evidenceHash(for: input, policy: policy)
+        }.value
+        if let existing = try analysisMatching(sessionID: sessionID, hash: hash) {
+            return StoredWorkoutAnalysisOutcome(triggerResult: .existing, analysis: existing)
+        }
         let analysis = try await Task.detached(priority: .utility) {
             try WorkoutAnalyzerV1.analyze(input, generatedAt: generatedAt, policy: policy)
         }.value
-        let existing = try fetchAnalyses(
-            sessionID: sessionID,
-            analyzerVersion: WorkoutAnalyzerV1.analyzerVersion
-        ).first { $0.evidenceHash == analysis.evidenceHash }
+        // Another actor caller can insert the same result while calculation is suspended.
+        let existing = try analysisMatching(sessionID: sessionID, hash: analysis.evidenceHash)
         if let existing {
             guard existing.logicalResult == analysis.logicalResult else {
                 throw TelemetryStoreError.conflictingAnalysis(
@@ -44,21 +49,31 @@ public extension TelemetryStore {
     }
 
     func pendingTerminalAnalysisSessionIDs() throws -> [SessionID] {
-        try fetchSessions().filter { session in
-            Self.isAnalysisTerminal(session.lifecycleState)
-        }.map(\.sessionID).sorted { lhs, rhs in
-            lhs.description < rhs.description
+        let completed = SessionLifecycleState.completed.rawValue
+        let incomplete = SessionLifecycleState.incomplete.rawValue
+        let cancelled = SessionLifecycleState.cancelled.rawValue
+        let descriptor = FetchDescriptor<TelemetryWorkoutSessionV1>(
+            predicate: #Predicate {
+                $0.lifecycleStateKey == completed || $0.lifecycleStateKey == incomplete
+                    || $0.lifecycleStateKey == cancelled
+            }, sortBy: [SortDescriptor(\TelemetryWorkoutSessionV1.sessionID)]
+        )
+        return try modelContext.fetch(descriptor).map {
+            try Self.uuid($0.sessionID, as: SessionIDTag.self)
         }
     }
 
     private func terminalAnalysisInput(
         sessionID: SessionID
     ) throws -> WorkoutAnalysisInput? {
-        guard let session = try fetchSessions().first(where: {
-            $0.sessionID == sessionID
-        }), Self.isAnalysisTerminal(session.lifecycleState) else {
-            return nil
-        }
+        let key = sessionID.description
+        var descriptor = FetchDescriptor<TelemetryWorkoutSessionV1>(
+            predicate: #Predicate { $0.sessionID == key }
+        )
+        descriptor.fetchLimit = 1
+        guard let model = try modelContext.fetch(descriptor).first else { return nil }
+        let session = try Self.domainSession(model)
+        guard Self.isAnalysisTerminal(session.lifecycleState) else { return nil }
         return WorkoutAnalysisInput(
             session: session,
             heartRate: try fetchHeartRate(sessionID: sessionID),
@@ -66,6 +81,17 @@ public extension TelemetryStore {
             events: try fetchEvents(sessionID: sessionID),
             frames: try fetchFrames(sessionID: sessionID)
         )
+    }
+
+    private func analysisMatching(sessionID: SessionID, hash: ContentHash) throws -> WorkoutAnalysisResult? {
+        let key = try Self.analysisIdentityKey(
+            sessionID: sessionID, analyzerVersion: WorkoutAnalyzerV1.analyzerVersion, hash: hash
+        )
+        var descriptor = FetchDescriptor<TelemetryWorkoutAnalysisV1>(
+            predicate: #Predicate { $0.analysisIdentityKey == key }
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first.map(Self.domainAnalysis)
     }
 
     private static func isAnalysisTerminal(_ state: SessionLifecycleState) -> Bool {

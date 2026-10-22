@@ -129,7 +129,7 @@ final class ControllerUnitsSafetyPolicyTests: XCTestCase {
         let runtimePrerequisitesAllowStart = HRDomainService
             .heartRateRuntimePrerequisitesAllowStart(
                 treadmillConnected: true,
-                watchReachable: true,
+                heartRateSourceAvailable: true,
                 currentHeartRateVisible: true
             )
         XCTAssertTrue(runtimePrerequisitesAllowStart)

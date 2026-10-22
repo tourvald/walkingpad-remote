@@ -570,8 +570,8 @@ final class TelemetrySoakRunnerTests: XCTestCase {
         )
 
         // The harness reflects the full cooldown output, including diagnostic telemetry.
-        // The additive factual-speed properties change this vector without changing control effects.
-        XCTAssertEqual(checksum, "c04d272e8a312b32")
+        // Elapsed-time tracking and removal of unused completion fields change that representation.
+        XCTAssertEqual(checksum, "e9041eacf2f9840a")
         XCTAssertEqual(checksum, TelemetrySoakRunner.controlChecksumWithoutRecording(
             simulatedMinutes: TelemetrySoakWorkload.shortCI.simulatedMinutes
         ))

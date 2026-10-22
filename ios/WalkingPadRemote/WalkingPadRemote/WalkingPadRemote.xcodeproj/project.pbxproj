@@ -151,40 +151,16 @@
 		C30000012FA0000000000001 /* TelemetryDomain in Frameworks */ = {isa = PBXBuildFile; productRef = C30000022FA0000000000002 /* TelemetryDomain */; };
 		C30100012FA0000000000001 /* TelemetryPersistence in Frameworks */ = {isa = PBXBuildFile; productRef = C30100022FA0000000000002 /* TelemetryPersistence */; };
 		C30200012FA0000000000001 /* TelemetryRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = C30200022FA0000000000002 /* TelemetryRuntime */; };
-		E31F57CB2F293B5600C6C470 /* WorkoutSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */; };
-		E31F57CD2F293B7100C6C470 /* TreadmillStatsPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */; };
-		E37051C22F233FC100D2FA22 /* WalkingPadRemoteWatch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = E37051B82F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		E37051C02F233FC100D2FA22 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = E370516E2F22AB0C00D2FA22 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = E37051B72F233FBE00D2FA22;
-			remoteInfo = "WalkingPadRemoteWatch Watch App";
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		E37051C62F233FC100D2FA22 /* Embed Watch Content */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
-			dstSubfolderSpec = 16;
-			files = (
-				E37051C22F233FC100D2FA22 /* WalkingPadRemoteWatch Watch App.app in Embed Watch Content */,
-			);
-			name = "Embed Watch Content";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutSessionController.swift; sourceTree = "<group>"; };
-		E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreadmillStatsPublisher.swift; sourceTree = "<group>"; };
 		E37051762F22AB0C00D2FA22 /* WalkingPadRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WalkingPadRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		E37051B82F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "WalkingPadRemoteWatch Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -206,11 +182,6 @@
 			path = WalkingPadRemote;
 			sourceTree = "<group>";
 		};
-		E37051B92F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "WalkingPadRemoteWatch Watch App";
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -224,13 +195,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		E37051B52F233FBE00D2FA22 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -239,10 +203,7 @@
 			children = (
 				E37051782F22AB0C00D2FA22 /* WalkingPadRemote */,
 				01F74F30DDDA4D37B04FF165 /* WorkoutLiveActivity */,
-				E37051B92F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */,
 				E37051772F22AB0C00D2FA22 /* Products */,
-				E31F57CA2F293B5500C6C470 /* WorkoutSessionController.swift */,
-				E31F57CC2F293B7100C6C470 /* TreadmillStatsPublisher.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -251,7 +212,6 @@
 			children = (
 				E37051762F22AB0C00D2FA22 /* WalkingPadRemote.app */,
 				7E0C78291C42449295B049F5 /* WorkoutLiveActivity.appex */,
-				E37051B82F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -266,13 +226,11 @@
 				E37051722F22AB0C00D2FA22 /* Sources */,
 				E37051732F22AB0C00D2FA22 /* Frameworks */,
 				E37051742F22AB0C00D2FA22 /* Resources */,
-				E37051C62F233FC100D2FA22 /* Embed Watch Content */,
 				344C718DF88E45C4B2D7CB43 /* Embed Workout Live Activity */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				E37051C12F233FC100D2FA22 /* PBXTargetDependency */,
 				E66389E9ACE64C6C8B11CBED /* Workout Live Activity */,
 			);
 			fileSystemSynchronizedGroups = (
@@ -286,28 +244,6 @@
 			);
 			productName = WalkingPadRemote;
 			productReference = E37051762F22AB0C00D2FA22 /* WalkingPadRemote.app */;
-			productType = "com.apple.product-type.application";
-		};
-		E37051B72F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = E37051C32F233FC100D2FA22 /* Build configuration list for PBXNativeTarget "WalkingPadRemoteWatch Watch App" */;
-			buildPhases = (
-				E37051B42F233FBE00D2FA22 /* Sources */,
-				E37051B52F233FBE00D2FA22 /* Frameworks */,
-				E37051B62F233FBE00D2FA22 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				E37051B92F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */,
-			);
-			name = "WalkingPadRemoteWatch Watch App";
-			packageProductDependencies = (
-			);
-			productName = "WalkingPadRemoteWatch Watch App";
-			productReference = E37051B82F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -327,9 +263,6 @@
 								enabled = 1;
 							};
 						};
-					};
-					E37051B72F233FBE00D2FA22 = {
-						CreatedOnToolsVersion = 26.2;
 					};
 				};
 			};
@@ -352,20 +285,12 @@
 			targets = (
 				E37051752F22AB0C00D2FA22 /* WalkingPadRemote */,
 				43C0944E0C4E4381BEE3AA0A /* WorkoutLiveActivity */,
-				E37051B72F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		E37051742F22AB0C00D2FA22 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		E37051B62F233FBE00D2FA22 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -379,26 +304,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E31F57CB2F293B5600C6C470 /* WorkoutSessionController.swift in Sources */,
-				E31F57CD2F293B7100C6C470 /* TreadmillStatsPublisher.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		E37051B42F233FBE00D2FA22 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		E37051C12F233FC100D2FA22 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = E37051B72F233FBE00D2FA22 /* WalkingPadRemoteWatch Watch App */;
-			targetProxy = E37051C02F233FC100D2FA22 /* PBXContainerItemProxy */;
-		};
 /* End PBXTargetDependency section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -620,78 +531,6 @@
 			};
 			name = Release;
 		};
-		E37051C42F233FC100D2FA22 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "WalkingPadRemoteWatch Watch App/WalkingPadRemoteWatch Watch App.entitlements";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = WalkingPadRemoteWatch;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Пульс, активная энергия, дистанция и шаги используются во время тренировки. Пульс передаётся на связанный iPhone для контроля нагрузки.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Приложение сохраняет тренировку, активную энергию, дистанцию и шаги в Apple Здоровье.";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = sw.WalkingPadRemote;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sw.WalkingPadRemote.watchkitapp;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 26.2;
-			};
-			name = Debug;
-		};
-		E37051C52F233FC100D2FA22 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "WalkingPadRemoteWatch Watch App/WalkingPadRemoteWatch Watch App.entitlements";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 2RYNTGDXDJ;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = WalkingPadRemoteWatch;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Пульс, активная энергия, дистанция и шаги используются во время тренировки. Пульс передаётся на связанный iPhone для контроля нагрузки.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Приложение сохраняет тренировку, активную энергию, дистанцию и шаги в Apple Здоровье.";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = sw.WalkingPadRemote;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = sw.WalkingPadRemote.watchkitapp;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 26.2;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -709,15 +548,6 @@
 			buildConfigurations = (
 				E37051822F22AB0F00D2FA22 /* Debug */,
 				E37051832F22AB0F00D2FA22 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		E37051C32F233FC100D2FA22 /* Build configuration list for PBXNativeTarget "WalkingPadRemoteWatch Watch App" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				E37051C42F233FC100D2FA22 /* Debug */,
-				E37051C52F233FC100D2FA22 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

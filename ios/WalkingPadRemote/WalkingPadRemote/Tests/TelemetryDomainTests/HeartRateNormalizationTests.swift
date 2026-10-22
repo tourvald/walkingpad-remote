@@ -9,81 +9,9 @@ final class HeartRateNormalizationTests: XCTestCase {
     )
     private let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
 
-    func testLegacyPayloadWithoutMetadataStillDecodesHeartRate() throws {
-        let decoded = try XCTUnwrap(
-            WatchHeartRatePayloadDecoder.decode(["hr": 123.4])
-        )
 
-        XCTAssertEqual(decoded.beatsPerMinute, 123)
-        XCTAssertNil(decoded.sourceCallbackObservedAt)
-        XCTAssertNil(decoded.providerSequence)
-        XCTAssertTrue(decoded.quality.contains(.missingSourceObservationTime))
-        XCTAssertTrue(decoded.quality.contains(.missingProviderSequence))
-    }
 
-    func testMalformedOptionalMetadataDoesNotRejectLegacyHeartRate() throws {
-        let decoded = try XCTUnwrap(
-            WatchHeartRatePayloadDecoder.decode([
-                "hr": 121.0,
-                HeartRateWatchPayloadKey.sourceCallbackObservedAt: "not-a-date",
-                HeartRateWatchPayloadKey.providerSequence: "not-a-sequence",
-            ])
-        )
 
-        XCTAssertEqual(decoded.beatsPerMinute, 121)
-        XCTAssertNil(decoded.sourceCallbackObservedAt)
-        XCTAssertNil(decoded.providerSequence)
-        XCTAssertTrue(decoded.quality.contains(.malformedSourceObservationTime))
-        XCTAssertTrue(decoded.quality.contains(.malformedProviderSequence))
-    }
-
-    func testEachOptionalMetadataFailureLeavesLegacyHeartRateValid() throws {
-        let validTimestamp = baseDate.timeIntervalSince1970
-        let cases: [([String: Any], HeartRateNormalizationQualityFlag)] = [
-            ([
-                "hr": 121.0,
-                HeartRateWatchPayloadKey.providerSequence: Int64(1),
-            ], .missingSourceObservationTime),
-            ([
-                "hr": 121.0,
-                HeartRateWatchPayloadKey.sourceCallbackObservedAt: "bad",
-                HeartRateWatchPayloadKey.providerSequence: Int64(1),
-            ], .malformedSourceObservationTime),
-            ([
-                "hr": 121.0,
-                HeartRateWatchPayloadKey.sourceCallbackObservedAt: validTimestamp,
-            ], .missingProviderSequence),
-            ([
-                "hr": 121.0,
-                HeartRateWatchPayloadKey.sourceCallbackObservedAt: validTimestamp,
-                HeartRateWatchPayloadKey.providerSequence: "bad",
-            ], .malformedProviderSequence),
-        ]
-
-        for (payload, expectedFlag) in cases {
-            let decoded = try XCTUnwrap(WatchHeartRatePayloadDecoder.decode(payload))
-            XCTAssertEqual(decoded.beatsPerMinute, 121)
-            XCTAssertTrue(decoded.quality.contains(expectedFlag))
-        }
-    }
-
-    func testAdditivePayloadKeepsTimestampAndSequenceRolesDistinct() throws {
-        let callbackTime = baseDate.timeIntervalSince1970
-        let decoded = try XCTUnwrap(
-            WatchHeartRatePayloadDecoder.decode([
-                "hr": 119.6,
-                HeartRateWatchPayloadKey.sourceCallbackObservedAt: callbackTime,
-                HeartRateWatchPayloadKey.providerSequence: Int64(44),
-                "future_unknown_metadata": "ignored",
-            ])
-        )
-
-        XCTAssertEqual(decoded.beatsPerMinute, 120)
-        XCTAssertEqual(decoded.sourceCallbackObservedAt, baseDate)
-        XCTAssertEqual(decoded.providerSequence, 44)
-        XCTAssertFalse(decoded.quality.contains(.missingSourceObservationTime))
-        XCTAssertFalse(decoded.quality.contains(.missingProviderSequence))
-    }
 
     func testArrivalOrderIsPreservedWhileDuplicateOutOfOrderAndGapAreOnlyFlagged() {
         var normalizer = HeartRateObservationNormalizer(receiveDelayThreshold: 3)
@@ -342,73 +270,7 @@ final class HeartRateNormalizationTests: XCTestCase {
         )
     }
 
-    func testFixedLegacyTracePreservesEveryDuplicateAndOutOfOrderDelivery() throws {
-        let payloads: [[String: Any]] = [
-            ["hr": 120.0, HeartRateWatchPayloadKey.providerSequence: Int64(2)],
-            ["hr": 120.0, HeartRateWatchPayloadKey.providerSequence: Int64(2)],
-            ["hr": 119.0, HeartRateWatchPayloadKey.providerSequence: Int64(1)],
-            ["hr": 121.0, HeartRateWatchPayloadKey.providerSequence: Int64(4)],
-        ]
-        var current = 0
-        var lastKnown = 0
-        var lastReceivedAt: Date?
-        var controllerDeliveries: [Int] = []
-        var predictorInputs: [Int] = []
 
-        for payload in payloads {
-            let decoded = try XCTUnwrap(WatchHeartRatePayloadDecoder.decode(payload))
-            HeartRateObservationalTee.deliver(
-                decoded.beatsPerMinute,
-                toLegacyController: { bpm in
-                    current = bpm
-                    lastKnown = bpm
-                    lastReceivedAt = baseDate
-                    predictorInputs.append(bpm)
-                    controllerDeliveries.append(bpm)
-                },
-                observe: { .rejected }
-            )
-        }
-
-        XCTAssertEqual(controllerDeliveries, [120, 120, 119, 121])
-        XCTAssertEqual(predictorInputs, controllerDeliveries)
-        XCTAssertEqual(current, 121)
-        XCTAssertEqual(lastKnown, 121)
-        XCTAssertEqual(lastReceivedAt, baseDate)
-    }
-
-    func testObservationalTeeDeliversLegacyValueBeforeEveryTelemetryDisposition() {
-        for disposition in HeartRateTelemetrySinkDisposition.allCases {
-            var trace: [String] = []
-            let inputs = [123, 123, 121, 125]
-            for input in inputs {
-                let result = HeartRateObservationalTee.deliver(
-                    input,
-                    toLegacyController: { value in trace.append("legacy:\(value)") },
-                    observe: {
-                        trace.append("telemetry:\(disposition.rawValue)")
-                        return disposition
-                    }
-                )
-                XCTAssertEqual(result, disposition)
-            }
-
-            XCTAssertEqual(
-                trace,
-                inputs.flatMap {
-                    ["legacy:\($0)", "telemetry:\(disposition.rawValue)"]
-                }
-            )
-        }
-
-        var delivered: [Int] = []
-        HeartRateObservationalTee.deliver(
-            124,
-            toLegacyController: { delivered.append($0) },
-            observe: nil
-        )
-        XCTAssertEqual(delivered, [124])
-    }
 
     private func observation(
         bpm: Int,

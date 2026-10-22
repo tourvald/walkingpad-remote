@@ -129,7 +129,7 @@ jobs:
         run: xcodebuild -list -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj
 
   xcode-build:
-    name: iOS/watchOS App Build (unsigned, exact head)
+    name: iOS App Build (unsigned, exact head)
     runs-on: xcode-27
     timeout-minutes: 25
 
@@ -153,9 +153,8 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks
 
-          if ! ios_sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)" ||
-             ! watchos_sdk_version="$(xcrun --sdk watchos --show-sdk-version)"; then
-            echo "::error title=Hosted runner toolchain limitation::The required iOS/watchOS SDKs are unavailable; the app-build gate fails closed."
+          if ! ios_sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"; then
+            echo "::error title=Hosted runner toolchain limitation::The required iOS SDKs are unavailable; the app-build gate fails closed."
             exit 1
           fi
 
@@ -173,13 +172,12 @@ jobs:
             }'
           }
 
-          if ! version_at_least "$ios_sdk_version" "27.0" ||
-             ! version_at_least "$watchos_sdk_version" "26.2"; then
-            echo "::error title=Hosted runner toolchain limitation::The app requires iOS 27.0 and watchOS 26.2 or newer SDKs, but this runner provides iOS $ios_sdk_version and watchOS $watchos_sdk_version; the app-build gate fails closed."
+          if ! version_at_least "$ios_sdk_version" "27.0"; then
+            echo "::error title=Hosted runner toolchain limitation::The app requires iOS 27.0 or newer SDK, but this runner provides iOS $ios_sdk_version; the app-build gate fails closed."
             exit 1
           fi
 
-      - name: Build iOS/watchOS app without code signing
+      - name: Build iOS app without code signing
         run: >
           xcodebuild
           -project ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj
