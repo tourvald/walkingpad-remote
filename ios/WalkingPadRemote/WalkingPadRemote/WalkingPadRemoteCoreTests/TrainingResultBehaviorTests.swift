@@ -203,10 +203,11 @@ final class TrainingResultBehaviorTests: XCTestCase {
                         owner.run(opcode)
                         precondition(owner.commandQueueEpoch == 4 && !owner.isCommandQueueProcessing)
                         precondition(owner.nextCommandAllowedAt == .distantPast)
-                        precondition(owner.cancelled == [1, 2])
-                        precondition(owner.commandQueue.map(\.id) == (queuedStop ? [42] : []))
-                        precondition(owner.treadmillCommandTelemetrySidecar.queued.map(\.id) == (queuedStop ? [42] : []))
-                        let expectedWrites = queuedStop ? [42] : (opcode == 0x08 ? [] : [99])
+                        let preservesStop = queuedStop && opcode != 0x08
+                        precondition(owner.cancelled == [1, 2] + (queuedStop && opcode == 0x08 ? [42] : []))
+                        precondition(owner.commandQueue.map(\.id) == (preservesStop ? [42] : []))
+                        precondition(owner.treadmillCommandTelemetrySidecar.queued.map(\.id) == (preservesStop ? [42] : []))
+                        let expectedWrites = opcode == 0x08 ? [] : (queuedStop ? [42] : [99])
                         precondition(owner.written == expectedWrites)
                         precondition(owner.failedStops == (opcode == 0x08 ? 1 : 0))
                         precondition(owner.stoppedSessions == (active ? 1 : 0))
@@ -222,6 +223,109 @@ final class TrainingResultBehaviorTests: XCTestCase {
         }}
         """#
         try executeFixture(program, name: "FTMSRejection")
+    }
+
+    func testFTMSControlLossTerminatesAutomaticOwnersWithoutRequestingStop() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let failure = try declaration("private func failFTMSControl()", in: source)
+        let program = #"""
+        import Foundation
+        struct ControlState {
+            var blocked = false
+            mutating func invalidate() { blocked = true }
+        }
+        final class Owner {
+            var ftmsControlState = ControlState()
+            var isTreadmillControlReady = true, isHrControlRunning = false
+            var testRunActive = false, cooldownActive = false
+            var infoToastMessage = ""
+            var queue = ["START", "SPEED", "STOP"], epoch = 0
+            var stopRequests = 0, terminations = 0, testRunCancellations = 0
+            func resetCommandQueue(reason: String) { queue.removeAll(); epoch += 1 }
+            func markInitialStopCommandNotSent(reason: String) {}
+            func nativeWorkoutStopTransportInvocationFailedIfNeeded(reason: String) {}
+            func recomputeHrStartAllowed() {}
+            func cancelTreadmillTestRunForConnectionInvalidation() {
+                precondition(ftmsControlState.blocked && !isTreadmillControlReady)
+                if testRunActive { testRunActive = false; testRunCancellations += 1 }
+            }
+            func stopHrControlAfterCommandFailure(reason: String, requestStop: Bool) {
+                precondition(ftmsControlState.blocked && !isTreadmillControlReady)
+                precondition(reason == "ftms_control_unavailable")
+                if requestStop { stopRequests += 1 }
+                terminations += 1; isHrControlRunning = false; cooldownActive = false
+            }
+        """# + "\n" + failure + "\n" + #"""
+            func fail() { failFTMSControl() }
+        }
+        @main struct Main { static func main() {
+            for hrActive in [false, true] {
+                for cooldown in [false, true] where !cooldown || hrActive {
+                    for testRun in [false, true] {
+                        let owner = Owner()
+                        owner.isHrControlRunning = hrActive
+                        owner.cooldownActive = cooldown; owner.testRunActive = testRun
+                        owner.fail(); owner.fail()
+                        precondition(owner.ftmsControlState.blocked && !owner.isTreadmillControlReady)
+                        precondition(!owner.isHrControlRunning && !owner.cooldownActive && !owner.testRunActive)
+                        precondition(owner.queue.isEmpty && owner.epoch == 2)
+                        precondition(owner.stopRequests == 0 && owner.terminations == (hrActive ? 1 : 0))
+                        precondition(owner.testRunCancellations == (testRun ? 1 : 0))
+                    }
+                }
+            }
+        }}
+        """#
+        try executeFixture(program, name: "FTMSControlLoss")
+    }
+
+    func testFTMSValueErrorsInvalidateOnlyTheCurrentConnection() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let handler = try declaration("func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor", in: source)
+        let boundary = try XCTUnwrap(handler.range(of: "guard let data = characteristic.value"))
+        let entry = String(handler[..<boundary.lowerBound]) + "acceptedValues += 1\n}"
+        let program = #"""
+        import Foundation
+        final class CBPeripheral { let identifier = UUID() }
+        final class CBCharacteristic {}
+        enum ProtocolKind { case walkingPad, ftms, fitShow }
+        final class Owner {
+            let connectedPeripheral = CBPeripheral()
+            var connectedPeripheralId: UUID { connectedPeripheral.identifier }
+            var treadmillProtocol = ProtocolKind.ftms
+            var callbackCurrent = true, failures = 0, acceptedValues = 0
+            func isCurrentCharacteristicCallback(_ characteristic: CBCharacteristic) -> Bool { callbackCurrent }
+            func failFTMSControl() { failures += 1 }
+        """# + "\n" + entry + "\n" + #"""
+        }
+        @main struct Main { static func main() {
+            for kind in [ProtocolKind.walkingPad, .ftms, .fitShow] {
+                for foreign in [false, true] {
+                    for current in [false, true] {
+                        for failed in [false, true] {
+                            let owner = Owner(); owner.treadmillProtocol = kind; owner.callbackCurrent = current
+                            owner.peripheral(foreign ? CBPeripheral() : owner.connectedPeripheral,
+                                didUpdateValueFor: CBCharacteristic(),
+                                error: failed ? NSError(domain: "fixture", code: 1) : nil)
+                            precondition(owner.failures == (!foreign && current && failed && kind == .ftms ? 1 : 0))
+                            precondition(owner.acceptedValues == (!foreign && current && !failed ? 1 : 0))
+                        }
+                    }
+                }
+            }
+        }}
+        """#
+        try executeFixture(program, name: "FTMSValueError")
+        let ftms = try XCTUnwrap(handler.range(of: "case .ftms:"))
+        let fitShow = try XCTUnwrap(handler.range(of: "case .fitShow:", range: ftms.upperBound..<handler.endIndex))
+        // CoreBluetooth already delivers callbacks on main; no old value may be deferred across reconnect.
+        XCTAssertFalse(handler[ftms.lowerBound..<fitShow.lowerBound].contains("DispatchQueue"))
+        let central = try declaration("private func ensureCentral()", in: source)
+        XCTAssertTrue(central.contains("CBCentralManager(delegate: self, queue: nil"))
     }
 
     func testMainCountdownAndExtensionUseTheOriginalMonotonicAnchor() throws {

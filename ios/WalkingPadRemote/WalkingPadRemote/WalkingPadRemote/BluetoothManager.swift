@@ -3735,6 +3735,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         telemetryRequest: TreadmillCommandTelemetryRequest
     ) -> Bool {
         guard isConnected else { return false }
+        guard treadmillProtocol != .ftms || !ftmsControlState.isBlocked else { return false }
         let old = deviceTargetSpeedKmh
         desiredSpeedKmh = 0
         deviceTargetSpeedKmh = 0
@@ -3904,7 +3905,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             attemptedAt: attemptedAt,
             commandSentAt: nil
         )
-        let transportCanSend = isConnected && commandCharacteristic != nil && buildTreadmillStopPacket() != nil
+        let transportCanSend = isConnected && commandCharacteristic != nil
+            && !(treadmillProtocol == .ftms && ftmsControlState.isBlocked)
+            && buildTreadmillStopPacket() != nil
 
         let telemetryEvidence = treadmillTelemetryConnectionEpoch.map {
             TreadmillStopTruthEvidence(
@@ -6736,23 +6739,28 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         markInitialStopCommandNotSent(reason: "ftms_control_unavailable")
         nativeWorkoutStopTransportInvocationFailedIfNeeded(reason: "FTMS не подтвердил управление")
         isTreadmillControlReady = false
+        cancelTreadmillTestRunForConnectionInvalidation()
+        if isHrControlRunning {
+            stopHrControlAfterCommandFailure(reason: "ftms_control_unavailable", requestStop: false)
+        }
         infoToastMessage = "Управление FTMS недоступно. Проверьте остановку дорожки и переподключитесь."
         recomputeHrStartAllowed()
     }
 
     private func handleFTMSProcedureRejection(opcode: UInt8) {
         cancelTreadmillTestRun(reason: .commandRejected, requestProductionStop: false)
-        // Invalidate delayed motion too, without replacing an already queued Stop.
+        // A rejected Stop must also discard queued Stops, avoiding an implicit retry.
+        let rejectedStop = opcode == 0x08
         commandQueueEpoch += 1
         isCommandQueueProcessing = false
         nextCommandAllowedAt = .distantPast
-        commandQueue.removeAll { $0.label != "STOP" }
+        commandQueue.removeAll { rejectedStop || $0.label != "STOP" }
         observeCancelledTreadmillCommands(
-            treadmillCommandTelemetrySidecar.removeQueued { $0 != "STOP" },
+            treadmillCommandTelemetrySidecar.removeQueued { rejectedStop || $0 != "STOP" },
             reason: .other("ftms_procedure_rejected")
         )
         let hasQueuedStop = !commandQueue.isEmpty
-        let requestStop = opcode != 0x08 && !hasQueuedStop
+        let requestStop = !rejectedStop && !hasQueuedStop
         if isHrControlRunning {
             stopHrControlAfterCommandFailure(reason: "ftms_procedure_rejected", requestStop: requestStop)
         } else if requestStop {
@@ -8167,7 +8175,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         if error != nil {
-
+            if treadmillProtocol == .ftms { failFTMSControl() }
             return
         }
         guard let data = characteristic.value else { return }
@@ -8359,39 +8367,35 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         case .ftms:
             if characteristic.uuid == ftmsCharSupportedSpeedRange, let range = parseFtmsSupportedSpeedRange(data) {
-                DispatchQueue.main.async {
-                    self.treadmillMinSpeedKmh = range.minSpeedKmh
-                    self.treadmillMaxSpeedKmh = range.maxSpeedKmh
-                    self.treadmillSpeedIncrementKmh = range.minIncrementKmh
+                self.treadmillMinSpeedKmh = range.minSpeedKmh
+                self.treadmillMaxSpeedKmh = range.maxSpeedKmh
+                self.treadmillSpeedIncrementKmh = range.minIncrementKmh
 
-                    // Clamp any already-chosen targets to avoid "infinite increase" loops.
-                    let maxSpeed = self.treadmillSpeedBoundsSnapshot().max
-                    if self.desiredSpeedKmh > maxSpeed { self.desiredSpeedKmh = maxSpeed }
-                    if self.deviceTargetSpeedKmh > maxSpeed { self.deviceTargetSpeedKmh = maxSpeed }
-                }
+                // Clamp any already-chosen targets to avoid "infinite increase" loops.
+                let maxSpeed = self.treadmillSpeedBoundsSnapshot().max
+                if self.desiredSpeedKmh > maxSpeed { self.desiredSpeedKmh = maxSpeed }
+                if self.deviceTargetSpeedKmh > maxSpeed { self.deviceTargetSpeedKmh = maxSpeed }
 
             } else if characteristic.uuid == ftmsCharTreadmillData, let parsed = parseFtmsTreadmillData(data) {
-                DispatchQueue.main.async {
-                    self.deviceReportedSpeedKmh = parsed.instantaneousSpeedKmh
-                    self.deviceReportedAppSpeedKmh = parsed.instantaneousSpeedKmh
-                    self.deviceReportedState = parsed.isMoving ? 1 : 0
-                    self.deviceReportedRawHex = ""
-                    self.publishTrainingUITreadmillSpeedIfNeeded()
-                    if peripheral.identifier == self.connectedPeripheralId,
-                       characteristic.uuid == self.ftmsCharTreadmillData,
-                       let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
-                        _ = self.observeTreadmillProviderObservation(
-                            .ftms(
-                                speedRawHundredthsKmh: Int(
-                                    parsed.instantaneousSpeedRawHundredthsKmh
-                                ),
-                                rawState: parsed.isMoving ? 1 : 0,
-                                deviceState: parsed.isMoving ? .moving : .stopped,
-                                connectionEpoch: connectionEpoch,
-                                receivedAt: now
-                            )
+                self.deviceReportedSpeedKmh = parsed.instantaneousSpeedKmh
+                self.deviceReportedAppSpeedKmh = parsed.instantaneousSpeedKmh
+                self.deviceReportedState = parsed.isMoving ? 1 : 0
+                self.deviceReportedRawHex = ""
+                self.publishTrainingUITreadmillSpeedIfNeeded()
+                if peripheral.identifier == self.connectedPeripheralId,
+                   characteristic.uuid == self.ftmsCharTreadmillData,
+                   let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
+                    _ = self.observeTreadmillProviderObservation(
+                        .ftms(
+                            speedRawHundredthsKmh: Int(
+                                parsed.instantaneousSpeedRawHundredthsKmh
+                            ),
+                            rawState: parsed.isMoving ? 1 : 0,
+                            deviceState: parsed.isMoving ? .moving : .stopped,
+                            connectionEpoch: connectionEpoch,
+                            receivedAt: now
                         )
-                    }
+                    )
                 }
 
             } else if characteristic.uuid == ftmsCharControlPoint, let resp = parseFtmsControlPointResponse(data) {

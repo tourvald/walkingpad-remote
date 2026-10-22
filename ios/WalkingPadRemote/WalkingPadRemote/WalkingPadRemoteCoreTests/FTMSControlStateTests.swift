@@ -60,6 +60,10 @@ final class FTMSControlStateTests: XCTestCase {
                 XCTAssertFalse(state.isBlocked)
                 XCTAssertTrue(state.canSend(opcode: 0x08))
                 XCTAssertFalse(state.needsRequestControl)
+                // A new explicit Stop is permitted; its own completion still gates later writes.
+                state.sent(opcode: 0x08, connection: connection, at: .now)
+                XCTAssertFalse(state.canSend(opcode: 0x08))
+                XCTAssertEqual(state.receive(opcode: 0x08, resultCode: 0x01, connection: connection), true)
             }
         }
     }
