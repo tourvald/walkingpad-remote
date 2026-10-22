@@ -125,7 +125,7 @@ public extension TelemetryStore {
                 scanCursor = candidate.cursor
                 if let lowerBound = filter.startedAtOrAfter {
                     guard let startedAt = candidate.cursor.startedAt,
-                          startedAt >= lowerBound else {
+                          startedAt.timeIntervalSinceReferenceDate >= lowerBound.timeIntervalSinceReferenceDate else {
                         return WorkoutHistoryPage(
                             items: projections,
                             nextCursor: nil,
@@ -652,7 +652,7 @@ private extension TelemetryStore {
         if let lower = filter.startedAtOrAfter, date < lower {
             return false
         }
-        if let upper = filter.startedBefore, date >= upper {
+        if let upper = filter.startedBefore, date.timeIntervalSinceReferenceDate >= upper.timeIntervalSinceReferenceDate {
             return false
         }
         return true

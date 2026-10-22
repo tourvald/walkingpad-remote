@@ -28,7 +28,7 @@ struct AutoConnectRetryPolicy {
               !knownPeripheralIDs.isEmpty,
               knownPeripheralIDs.isSubset(of: failedPeripheralIDs),
               let threshold = retryNotBefore[peripheralID],
-              now >= threshold else {
+              now.timeIntervalSinceReferenceDate >= threshold.timeIntervalSinceReferenceDate else {
             return false
         }
 

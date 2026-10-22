@@ -336,11 +336,11 @@ struct TestRunHeartRateDiagnosticService {
             return .sourceIsNotNativeHealthKit
         }
         guard observation.beatsPerMinute > 0 else { return .invalidBPM }
-        guard observation.receivedAt >= collectionStartedAt else {
+        guard observation.receivedAt.timeIntervalSinceReferenceDate >= collectionStartedAt.timeIntervalSinceReferenceDate else {
             return .receivedBeforeCollection
         }
         let factualDate = observation.measuredAt ?? observation.receivedAt
-        guard factualDate >= collectionStartedAt else {
+        guard factualDate.timeIntervalSinceReferenceDate >= collectionStartedAt.timeIntervalSinceReferenceDate else {
             return .measuredBeforeCollection
         }
         if now.timeIntervalSince(factualDate) > freshnessLimit {

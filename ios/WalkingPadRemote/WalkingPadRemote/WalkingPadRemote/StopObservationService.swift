@@ -266,13 +266,13 @@ struct StopObservationLifecycle {
         guard observation.context == expectedContext else {
             return evaluation(.wrongContext, reason: "connection_or_notification_context_changed")
         }
-        guard observation.observedAt >= attemptAt else {
+        guard observation.observedAt.timeIntervalSinceReferenceDate >= attemptAt.timeIntervalSinceReferenceDate else {
             return evaluation(.beforeAttempt, reason: "observation_predates_attempt")
         }
         guard let commandSentAt else {
             return evaluation(.commandNotSent, reason: "initial_stop_command_not_sent")
         }
-        guard observation.observedAt >= commandSentAt else {
+        guard observation.observedAt.timeIntervalSinceReferenceDate >= commandSentAt.timeIntervalSinceReferenceDate else {
             return evaluation(.beforeCommand, reason: "observation_predates_initial_stop_write")
         }
 

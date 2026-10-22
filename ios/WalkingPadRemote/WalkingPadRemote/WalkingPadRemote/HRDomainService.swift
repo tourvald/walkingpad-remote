@@ -245,7 +245,7 @@ enum HRDomainService {
         now: Date,
         freshnessLimit: TimeInterval
     ) -> Bool {
-        guard let observedAt, let sessionStartedAt, observedAt >= sessionStartedAt else { return false }
+        guard let observedAt, let sessionStartedAt, observedAt.timeIntervalSinceReferenceDate >= sessionStartedAt.timeIntervalSinceReferenceDate else { return false }
         let age = now.timeIntervalSince(observedAt)
         return age >= 0 && age <= freshnessLimit
     }

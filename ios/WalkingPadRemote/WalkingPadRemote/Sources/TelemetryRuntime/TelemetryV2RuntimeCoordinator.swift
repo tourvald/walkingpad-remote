@@ -2036,7 +2036,7 @@ private final class TelemetryV2ActiveSession: @unchecked Sendable {
         measurementComparable: Bool
     ) -> ElapsedDuration {
         guard measurementComparable, let measured = timestamp.measuredElapsed,
-              let measuredAt = timestamp.measuredAt, measuredAt <= timestamp.receivedAt,
+              let measuredAt = timestamp.measuredAt, measuredAt.timeIntervalSinceReferenceDate <= timestamp.receivedAt.timeIntervalSinceReferenceDate,
               measured <= timestamp.receivedElapsed else { return timestamp.receivedElapsed }
         return measured
     }

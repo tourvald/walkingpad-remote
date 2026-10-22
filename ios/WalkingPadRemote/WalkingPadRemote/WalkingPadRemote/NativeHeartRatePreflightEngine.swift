@@ -307,16 +307,16 @@ struct NativeWorkoutRecoveryRecord: Codable, Equatable {
                     && healthKitStopActivityAt == nil
             case .stopping:
                 terminalIsValid = (terminalRequestedAt.map {
-                    $0 >= controlledWorkoutStartedAt
+                    $0.timeIntervalSinceReferenceDate >= controlledWorkoutStartedAt.timeIntervalSinceReferenceDate
                 } ?? false) && healthKitStopActivityAt == nil
             case .finishing:
                 guard let terminalRequestedAt else {
                     terminalIsValid = false
                     break
                 }
-                terminalIsValid = terminalRequestedAt >= controlledWorkoutStartedAt
+                terminalIsValid = terminalRequestedAt.timeIntervalSinceReferenceDate >= controlledWorkoutStartedAt.timeIntervalSinceReferenceDate
                     && (healthKitStopActivityAt.map {
-                        $0 >= terminalRequestedAt
+                        $0.timeIntervalSinceReferenceDate >= terminalRequestedAt.timeIntervalSinceReferenceDate
                     } ?? true)
             }
             return preflightLatency >= 0
@@ -705,11 +705,11 @@ struct NativeHeartRatePreflightEngine {
         ) -> Bool {
             guard source == .nativeHealthKit,
                   beatsPerMinute > 0,
-                  receivedAt >= collectionStartedAt else {
+                  receivedAt.timeIntervalSinceReferenceDate >= collectionStartedAt.timeIntervalSinceReferenceDate else {
                 return false
             }
             let factualDate = measuredAt ?? receivedAt
-            return factualDate >= collectionStartedAt
+            return factualDate.timeIntervalSinceReferenceDate >= collectionStartedAt.timeIntervalSinceReferenceDate
                 && now.timeIntervalSince(factualDate) <= freshnessLimit
         }
     }
@@ -1025,7 +1025,7 @@ struct NativeHeartRatePreflightEngine {
     }
 
     private func deadlineReached(for intent: Intent, now: Date) -> Bool {
-        now >= intent.requestedAt.addingTimeInterval(Self.timeoutSeconds)
+        now.timeIntervalSinceReferenceDate >= intent.requestedAt.addingTimeInterval(Self.timeoutSeconds).timeIntervalSinceReferenceDate
     }
 
     private static func startBlockReason(_ safety: SafetyFacts) -> String {
