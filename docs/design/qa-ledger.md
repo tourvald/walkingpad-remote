@@ -371,3 +371,37 @@ history persistence, app screen layout, or background modes change.
 - Verification: unsigned generic simulator build, UI scope checker against f719e4b,
   governance checker and `git diff --check` passed. No logic test added for a
   presentation-only layout; visual simulator checks exercise the reported defect.
+
+### 2026-10-24 — Shared active workout template
+
+- Owner: `ActiveWorkoutShell`; contract: [active-workout-template.md](active-workout-template.md).
+  Scope is presentation and synthetic fixtures only; runtime callbacks/gates,
+  providers, persistence, telemetry and project/signing settings are unchanged.
+- PASS: unsigned generic simulator build; full Swift suite: 905 cases, one skipped,
+  zero failures. Two focused legacy UI-contract tests also pass after the final
+  action-layout change. Their obsolete top-inset/font-cap/single-line assertions
+  were first reproduced failing, then updated; transport/safety checks remain.
+- PASS: four native UI tests on iPhone 17 and three on iPhone SE. Seven mode
+  fixtures preserve target/metric separation. Long labels, source names and
+  `1:01:01` durations at Accessibility XXXL remain reachable by scrolling; Stop
+  stays pinned and context-menu selection of heart rate remains available.
+- Landscape correction: fixed AX-only action stacking left just 82 points above
+  Stop on the compact simulator. Actions now choose layout by actual label widths.
+  The regression checks landscape geometry, both controls' hit regions, horizontal
+  separation and remaining content height, including at Accessibility XXXL.
+- Test-driver correction: generic ScrollView swipes landed in the pinned actions
+  on SE; gestures now start and end inside the content viewport. An explicit
+  XCTest drag argument and independent-of-status-bar coordinates make the driver
+  compile and work on both simulators; these failures were not hidden as passes.
+- Evidence: `/tmp/wp-active-template-{full-tests,contract-final,build-final}.log`,
+  `/tmp/wp-active-template-{ui-tests-final,compact-ui-tests-final}.log`, and final
+  landscape reruns `/tmp/wp-active-template-landscape-{compact,standard}-strict.log`.
+  Result bundles and screenshots are local under `/tmp/wp-active-template-qa-build/Logs/Test`
+  and `/tmp/wp-active-template-qa-shots`; all use synthetic fixtures.
+- The standalone test driver lives under `/tmp/wp-active-template-qa`; no test
+  target, dependency or project/signing change is shipped. Full-app accessibility,
+  physical device behavior and real hardware are not claimed by these checks.
+- Final independent read-only Astra review: both initial P2 verification findings
+  corrected; no open P0–P3 code findings. Root separately inspected the strict
+  landscape `XCUIScreen` attachment: both controls fit; the earlier app-cropped
+  PNG is excluded. Code-review approval does not imply CI, merge or deployment.
