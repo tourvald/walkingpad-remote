@@ -6,7 +6,7 @@ This repository is intentionally small and focused. Good contributions usually i
 
 - treadmill protocol support and diagnostics
 - HR-control logic and test coverage
-- iOS/watchOS UX and reliability
+- iOS UX and reliability
 - telemetry export and analysis workflow
 - documentation and contributor experience
 
@@ -19,12 +19,12 @@ This repository is intentionally small and focused. Good contributions usually i
 
 ## Local setup
 
-### iOS / watchOS
+### iOS
 
 1. Open `ios/WalkingPadRemote/WalkingPadRemote/WalkingPadRemote.xcodeproj`.
-2. Select your own signing team for the iPhone and watch targets.
+2. Select your own signing team for the iPhone and Live Activity targets.
 3. Use a real iPhone for BLE work. The iOS Simulator does not support Bluetooth.
-4. Pair an Apple Watch if you need to validate HR-driven sessions.
+4. Use a HealthKit-compatible live heart-rate sensor to validate HR-driven sessions.
 
 ### Python tools
 

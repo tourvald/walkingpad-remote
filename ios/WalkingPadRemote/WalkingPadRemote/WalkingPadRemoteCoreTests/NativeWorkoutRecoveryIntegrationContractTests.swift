@@ -20,7 +20,7 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         let app = try source("WalkingPadRemote/WalkingPadRemoteApp.swift")
         let manager = try source("WalkingPadRemote/BluetoothManager.swift")
         let configuration = try functionBody(
-            "func application(",
+            "func application(\n",
             in: app
         )
         let reconcile = try functionBody(
@@ -123,7 +123,7 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         XCTAssertTrue(process.contains(
             "recoveredCollectionStarted: lifecycle.collectionStarted"
         ))
-        XCTAssertTrue(restore.contains("pendingHealthkitTelemetryV2SessionID"))
+        XCTAssertTrue(restore.contains("record.telemetrySessionID != nil"))
         XCTAssertTrue(restore.contains("nativeWorkoutRecoverySessionRecovered = true"))
     }
 
@@ -397,22 +397,18 @@ final class NativeWorkoutRecoveryIntegrationContractTests: XCTestCase {
         XCTAssertTrue(core.contains("missingRecoveredStopDate"))
     }
 
-    func testDurationExtensionAndLegacyIdentityPersistBeforeRuntimeExposure() throws {
+    func testDurationExtensionPersistsBeforeRuntimeExposure() throws {
         let manager = try source("WalkingPadRemote/BluetoothManager.swift")
         let extend = try functionBody("func extendHrSession(", in: manager)
-        let legacy = try functionBody(
-            "private func recordHrWorkoutIfNeeded(durationOverride: Int?, failed: Bool?)",
-            in: manager
-        )
+
 
         assertOrdered([
             "recoveryRecord.planningDuration(seconds: newTotalSeconds)",
             "hrSessionTotalSeconds = newTotalSeconds",
         ], in: extend)
-        assertOrdered([
-            "pendingHealthkitTelemetryV2SessionID = attachedWorkoutUUID == nil",
-            "hrWorkoutRecorded = true",
-        ], in: legacy)
+        XCTAssertFalse(manager.contains("pendingHealthkitTelemetryV2SessionID"))
+        let restore = try functionBody("private func restoreCommittedNativeWorkout(", in: manager)
+        XCTAssertTrue(restore.contains("record.telemetrySessionID != nil"))
     }
 
     func testSavedProofIsDurableBeforeRecoveryClearsAndLinkageCannotGateStart() throws {

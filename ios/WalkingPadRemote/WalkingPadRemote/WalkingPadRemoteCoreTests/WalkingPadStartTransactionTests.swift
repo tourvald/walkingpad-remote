@@ -187,7 +187,7 @@ final class WalkingPadStartTransactionTests: XCTestCase {
         ], in: try functionBody("private func scheduleWrite("))
         assertOrdered([
             "if highPriority", "resetCommandQueue(",
-            "CommandQueueService.replaceWithHighPriority", "processCommandQueue()",
+            "enqueueFtmsRequestControlIfNeeded()", "commandQueue.append(command)", "processCommandQueue()",
         ], in: try functionBody("private func enqueueCommand("))
         assertOrdered([
             "CommandQueueService.clear(queue: &commandQueue)", "commandQueueEpoch += 1",

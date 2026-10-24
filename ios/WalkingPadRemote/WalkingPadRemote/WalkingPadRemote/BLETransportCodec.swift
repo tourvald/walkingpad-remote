@@ -1,6 +1,10 @@
 import Foundation
 
 enum BLETransportCodec {
+    static func ftmsControlPermissionWasLost(_ data: Data) -> Bool {
+        data.count == 1 && data.first == 0xFF
+    }
+
     enum StopTruthExperimentCommandRole: String, CaseIterable, Codable {
         case queryParams = "query_params"
         case modeManual = "mode_manual"

@@ -184,27 +184,18 @@ final class NativeHeartRatePreflightIntegrationContractTests: XCTestCase {
         XCTAssertFalse(providerFactory.contains("nativeHeartRateProviderLifecycle.generation"))
     }
 
-    func testNativeHeartRateMarksFreshImmediatelyAndLegacyWatchCannotRace() throws {
+    func testNativeHeartRateMarksFreshImmediatelyWithoutWatchTransport() throws {
         let nativeDelivery = try functionBody(
             "private func handleNativeHeartRateObservation(",
             in: managerSource
         )
-        let watchPayload = try functionBody(
-            "private func handleWatchPayload(_ payload: [String: Any])",
-            in: managerSource
-        )
-
         assertOrdered([
             "hrStreamingActive = HRDomainService.heartRateStreamIsActive(",
             "isNativeHeartRateCurrent = hrStreamingActive",
             "nativeHeartRatePreflightEngine.receive(",
         ], in: nativeDelivery)
-        XCTAssertTrue(watchPayload.contains("guard !self.nativeHeartRateFlowOwnsController"))
-        let ownershipGuard = "guard !self.nativeHeartRateFlowOwnsController else {\n                    return\n                }"
-        XCTAssertEqual(watchPayload.components(separatedBy: ownershipGuard).count - 1, 2)
-        assertOrdered([ownershipGuard, "HeartRateObservationalTee.deliver("], in: watchPayload)
-        let workoutPayload = try XCTUnwrap(watchPayload.range(of: "if let uuid = payload[\"workout_uuid\"]"))
-        assertOrdered([ownershipGuard, "self.attachHealthkitWorkoutUUID("], in: String(watchPayload[workoutPayload.lowerBound...]))
+        XCTAssertFalse(managerSource.contains("WatchConnectivity"))
+        XCTAssertFalse(managerSource.contains("handleWatchPayload"))
     }
 
     func testLifecycleAndCancellationStayPrecommitOnly() throws {

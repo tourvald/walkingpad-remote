@@ -1008,11 +1008,15 @@ extension TelemetryStore {
     }
 
     static func analysisIdentityKey(_ analysis: WorkoutAnalysisResult) throws -> String {
+        try analysisIdentityKey(sessionID: analysis.sessionID,
+                                analyzerVersion: analysis.analyzerVersion, hash: analysis.evidenceHash)
+    }
+
+    static func analysisIdentityKey(sessionID: SessionID, analyzerVersion: AnalyzerVersion,
+                                    hash: ContentHash) throws -> String {
         try encode([
-            analysis.sessionID.description,
-            analysis.analyzerVersion.rawValue,
-            analysis.evidenceHash.algorithm.rawValue,
-            analysis.evidenceHash.lowercaseHexDigest,
+            sessionID.description, analyzerVersion.rawValue,
+            hash.algorithm.rawValue, hash.lowercaseHexDigest,
         ]).base64EncodedString()
     }
 

@@ -129,7 +129,7 @@ final class StopCommandBehaviorContractTests: XCTestCase {
         let stopHrBody = try functionBody("func stopHrControl()")
         assertOrdered(
             [
-                "recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: false)",
+                "isHrControlRunning = false",
                 "stopBeltWithToggle(reason: \"hr\")"
             ],
             in: stopHrBody

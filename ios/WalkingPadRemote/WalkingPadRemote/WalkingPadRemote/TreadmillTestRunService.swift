@@ -68,6 +68,7 @@ struct TreadmillTestRunService {
         case userRequested = "user_requested"
         case appInactive = "app_inactive"
         case connectionInvalidated = "connection_invalidated"
+        case commandRejected = "command_rejected"
     }
 
     enum State: Equatable {

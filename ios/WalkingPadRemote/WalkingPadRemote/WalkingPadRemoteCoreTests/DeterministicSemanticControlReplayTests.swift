@@ -74,6 +74,8 @@ final class DeterministicSemanticControlReplayTests: XCTestCase {
         let manager = source(relativePath: "WalkingPadRemote/BluetoothManager.swift")
         let replay = source(relativePath: "WalkingPadRemote/DeterministicControlReplay.swift")
         let tick = try functionBody("private func tickTelemetry()", in: manager)
+        let decision = try functionBody("private func evaluateHeartRateControlDecision()", in: manager)
+        let safety = try functionBody("private func maintainHeartRateControlSafety()", in: manager)
         let affordance = try functionBody(
             "var isHrControlStartAffordanceAvailable: Bool",
             in: manager
@@ -87,7 +89,7 @@ final class DeterministicSemanticControlReplayTests: XCTestCase {
 
         assertOrdered(
             [
-                "let predictedValue = trend.map",
+                "let predictedValue =",
                 "let effectiveBpm = max(heartRateBPM, predictedBpm ?? heartRateBPM)",
                 "let diff = effectiveBpm - hrTargetBPM",
                 "let absDiffPercent = adaptiveDiffPercent",
@@ -98,10 +100,10 @@ final class DeterministicSemanticControlReplayTests: XCTestCase {
                 "if direction > 0, let trend, trend > 0, let predictedValue",
                 "let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)",
             ],
-            in: tick
+            in: decision
         )
-        XCTAssertTrue(tick.contains(".missingHeartRateSignalSeconds("))
-        XCTAssertTrue(tick.contains("HRDomainService.shouldStopForMissingHeartRateSignal("))
+        XCTAssertTrue(safety.contains(".missingHeartRateSignalSeconds("))
+        XCTAssertTrue(safety.contains("HRDomainService.shouldStopForMissingHeartRateSignal("))
         XCTAssertTrue(tick.contains("CooldownRuntimeEngine.start("))
         XCTAssertTrue(tick.contains("CooldownRuntimeEngine.tick("))
         XCTAssertTrue(affordance.contains("isHrControlStartAllowed"))

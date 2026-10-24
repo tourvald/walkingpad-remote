@@ -34,8 +34,6 @@ Paths below are relative to `ios/WalkingPadRemote/WalkingPadRemote/`.
 | `WalkingPadRemote/BluetoothManager.swift`: profiles, HR settings, zone plans, deferred linkage | Local profile labels/UUIDs, targets/zones, workout settings and history shadows; workout/recovery linkage identifiers | Profile-scoped and shared `UserDefaults`; no app account or login |
 | `WalkingPadRemote/IPhoneHealthKitLiveHeartRateProvider.swift`: authorization and data source | Requests heart-rate read and workout write access. Native builder disables collection of other quantity types. Reads live heart rate for workout control; finishes or discards the workout through HealthKit | HealthKit plus local telemetry; this path does not request a general health-history export |
 | `WalkingPadRemote/BluetoothManager.swift`: `resolveDeferredNativeHealthKitLinkageIfPossible` | Queries workout records around an interrupted finish to link an existing HealthKit workout; records workout UUID locally | HealthKit query, local deferred queue and telemetry linkage; local profile deletion does not delete HealthKit records |
-| `WalkingPadRemoteWatch Watch App/WatchHeartRateManager.swift`: authorization, builder and `addStats` | Requests read: heart rate, active energy, walking/running distance, steps; write: workout, energy, distance, steps. Workout builder collects workout data; supplied distance/step deltas may be added | Apple Watch HealthKit; workout is finished/saved at the end |
-| Same watch owner plus iPhone `BluetoothManager` WatchConnectivity methods | Watch sends pulse, callback time, sequence, status and saved workout UUID/end time. Phone sends target and commands; the watch also accepts workout-event/statistics messages, without an active phone sender established in the inspected manager | Paired phone/watch via `WCSession` messages, application context or queued user info. This transfer is distinct from a developer-operated server |
 | `WalkingPadRemote/BluetoothManager.swift`: CoreBluetooth delegates and commands | Nearby treadmill identity/protocol, status/speed and workout observations; control and diagnostics | BLE between phone and treadmill; shared device preferences and local telemetry |
 | `Sources/TelemetryPersistence/TelemetryStore.swift`, models and coordinator | Workout sessions, pulse/speed samples, timestamps, events, decision/configuration snapshots, quality/failure information, source/session identifiers and analyses | Local SwiftData store and sidecars; no expiry-based purge is established by this inventory |
 | `Sources/TelemetryPersistence/LegacyTelemetryMigration*` | Old workout-history preferences and `TrainingLogs` JSONL; records can contain installation/profile identifiers, profile labels, health/workout values and raw payloads | Original local sources plus imported candidates, reconciliation and source-progress evidence. Migration does not imply source deletion |
@@ -45,7 +43,6 @@ Paths below are relative to `ios/WalkingPadRemote/WalkingPadRemote/`.
 | `Sources/TelemetryRuntime/DiagnosticSupportArtifact.swift` and `BluetoothManager.diagnosticSupportSnapshot` | Diagnostic ZIP: available selected workout evidence plus technical snapshot. Support-only fallback still contains versions, timing, preflight/failure state, protocol/unit evidence and connection epochs | Temporary app-managed files; user chooses whether and where to share. No automatic email/upload is implemented |
 | `WalkingPadRemote/ContentView.swift`: share wrappers; `BluetoothManager.finalizeDiagnosticBundle` | System share sheet sends selected artifacts to chosen app/service | Diagnostic temporary directory is removed on share completion or cancellation; source workout evidence remains. Crashes/errors may leave temporary artifacts |
 | `WalkingPadRemote/WorkoutLiveActivityController.swift`, `WorkoutActivityAttributes.swift`, `WorkoutLiveActivity/WorkoutLiveActivityWidget.swift` | Session UUID, workout phase and countdown deadline; visible phase/countdown on Lock Screen/Dynamic Island | Local ActivityKit presentation, `pushType: nil`; no remote activity push service implemented |
-| Watch manager `configureNotifications` | Optional local start/stop/failure notification and sound | Local notifications; no remote push registration established |
 
 The production Swift sources, entitlements and project were searched for
 `URLSession`, HTTP URLs, `NWConnection`, CloudKit and collection SDK integration.
@@ -53,7 +50,7 @@ No app-operated network upload, backend, advertising, tracking or analytics SDK
 was found in these targets. This is source inspection, not a packet capture or
 proof about Apple services, the selected share destination, or a future website.
 No iCloud container entitlement is configured. Do not describe all data as
-remaining on one device: paired-watch transfer, HealthKit/system services,
+remaining on one device: HealthKit/system services,
 backups and explicit sharing are separate paths.
 
 ## Retention, backups and deletion
@@ -88,9 +85,9 @@ installed-device gaps. This inventory does not upgrade those gaps to PASS.
 ## Permission wording applied in #238
 
 The existing Debug/Release `INFOPLIST_KEY_*UsageDescription` values now use
-Russian purpose strings, consistent with the current Russian app UI. Previously
-generic watch write wording omitted distance/steps/energy. No authorization type,
-entitlement or capability is widened. Built iPhone/watch Info.plist values are
+Russian purpose strings, consistent with the current Russian app UI.
+The custom watchOS target and direct transport have been removed. No authorization type,
+entitlement or capability is widened. Built iPhone Info.plist values are
 checked separately from source configuration:
 
 | Target / permission | Customer-facing text |
@@ -98,8 +95,6 @@ checked separately from source configuration:
 | iPhone Bluetooth | «Bluetooth нужен для подключения к дорожке, чтения её состояния и управления тренировкой.» |
 | iPhone Health read | «Пульс из Apple Здоровья используется для контроля нагрузки и подстройки скорости во время тренировки.» |
 | iPhone Health write | «Приложение создаёт и сохраняет тренировку в Apple Здоровье, чтобы получать пульс во время занятия и связать результат с историей.» |
-| Watch Health read | «Пульс, активная энергия, дистанция и шаги используются во время тренировки. Пульс передаётся на связанный iPhone для контроля нагрузки.» |
-| Watch Health write | «Приложение сохраняет тренировку, активную энергию, дистанцию и шаги в Apple Здоровье.» |
 
 The parameters Form now opens `AboutPrivacyView`, without an HR/equipment gate.
 Its local summary/contact/permission information is readable without consent;
@@ -133,11 +128,11 @@ Retain the broader local-data inventory above even where a type is not collected
 Re-audit the actual received format if support later adds other upload/analytics
 channels; Apple/system-service collection is distinct from developer access.
 The iPhone privacy manifest declares these same seven collected types, linked
-for AppFunctionality without tracking. Watch/Live Activity have no independent
-support submission path; watch-origin data in phone diagnostics is covered by
+for AppFunctionality without tracking. The Live Activity extension has no independent
+support submission path; health data in phone diagnostics is covered by
 the iPhone declaration. Required-reason API declarations are unchanged.
 
-These prepared answers cover iPhone, watch and Live Activity flows, not only the
+These prepared answers cover iPhone and Live Activity flows, not only the
 main UI. The operator has approved support processing; account-side App Store
 Connect entry/submission remains an explicit release step, not performed here.
 
@@ -171,3 +166,14 @@ About view without BluetoothManager/HealthKit; it does not prove installed-app
 runtime or denied-permission behavior. No phone install/launch, real data erasure,
 HealthKit deletion or App Store submission is performed. Public deployment and
 engineering merge are distinct from those deferred release gates.
+
+## Plank completion notification — 2026-10-22
+
+The iPhone app requests alert/sound permission in the explicit countdown-start flow.
+One non-repeating local UserNotifications request is scheduled per set; reset
+removes that request. Its fixed completion text contains no health data or profile
+identity. There is no push server, background polling, or new data collection.
+Foreground presentation uses the existing application delegate; system sound and
+Focus settings remain authoritative. Without notification sound authorization,
+the existing foreground timer/signal remains available with an inline explanation.
+Countdown recovery after process termination is not implemented.

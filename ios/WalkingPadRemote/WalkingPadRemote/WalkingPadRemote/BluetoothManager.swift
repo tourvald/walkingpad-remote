@@ -10,9 +10,6 @@ import TelemetryRuntime
 #if canImport(UIKit)
 import UIKit
 #endif
-#if canImport(WatchConnectivity)
-import WatchConnectivity
-#endif
 
 final class TreadmillFactualObservationPublisher: ObservableObject {
     func publish() {
@@ -79,9 +76,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var treadmillProtocol: TreadmillProtocol = .unknown
     private var treadmillProtocolService: CBService?
     private var treadmillProtocolConnection: TreadmillControlConnectionIdentity?
-    private var ftmsHasControl: Bool = false
-    private var ftmsControlRequestInFlight: Bool = false
-    private var ftmsControlRequestConnection: TreadmillControlConnectionIdentity?
+    private var ftmsControlState = FTMSControlState()
     private var ftmsDidReadSupportedSpeedRange: Bool = false
     private var fitShowDidRequestInitialStatus: Bool = false
     private var shouldBeScanning: Bool = false
@@ -91,10 +86,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var knownDiscoveryGraceCompleted = false
     private var autoConnectRetryPolicy = AutoConnectRetryPolicy()
     private var connectTimeoutWorkItem: DispatchWorkItem?
-#if canImport(WatchConnectivity)
-    private var wcSession: WCSession?
-    private var pendingWatchCommand: String? = nil
-#endif
     private var connectingPeripheralId: UUID? = nil
     private var connectingPeripheral: CBPeripheral? = nil
     private var cancellingConnectionPeripheralId: UUID? = nil
@@ -194,6 +185,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var hrSessionTotalSeconds: Int = 0
     private var hrControlStartedBelt: Bool = false
     private var cooldownRuntimeState: CooldownRuntimeEngine.State? = nil
+    private var cooldownStartedInstant: ContinuousClock.Instant?
     @Published var hrCooldownMinSpeed: Double = 3.5 { didSet { saveHrSettingsIfNeeded() } }
     @Published var hrCooldownTargetBpm: Int = HRSettingsDefaults.defaultCooldownTargetBpm { didSet { saveHrSettingsIfNeeded() } }
     @Published var hrCooldownMaxMinutes: Int = 5 { didSet { saveHrSettingsIfNeeded() } }
@@ -203,8 +195,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let hrStartGraceSeconds: Int = 15
     private var hrAverageSum: Int = 0
     private var hrAverageCount: Int = 0
-    private var hrWorkoutRecorded: Bool = false
-    private let workoutMinSaveMinutes: Int = 5
     private let hrTrendMinSamples: Int = 4
     private let hrPredictSeconds: Double = 15
     private let hrPredictMarginBpm: Int = 2
@@ -241,10 +231,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private var isCommandQueueProcessing: Bool = false
     private var commandQueueEpoch: Int = 0
     private var nextCommandAllowedAt: Date = .distantPast
-    private var pendingHealthkitWorkoutUUID: String? = nil
     private(set) var activeTelemetryV2SessionID: SessionID? = nil
     private(set) var activeTelemetryV2ProfileID: UUID?
-    private var pendingHealthkitTelemetryV2SessionID: SessionID? = nil
     private let deferredNativeHealthKitLinkageStoreKey = "deferred_native_healthkit_linkage_v1"
     private var deferredNativeHealthKitLinkages: [DeferredNativeHealthKitLinkage] = []
     private var nativeHealthKitAcquisitionStartedAt: Date?
@@ -267,10 +255,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     )?
     private var isRestoringNativeWorkoutRecoveryState = false
     private var hrControlFailed: Bool = false
-    private let legacyWatchHeartRateSource = HeartRateProviderIdentity(
-        kind: .legacyWatchWorkoutStream,
-        stableLocalKey: "legacyWatchWorkoutStream"
-    )
     private var heartRateObservationNormalizer = HeartRateObservationNormalizer()
     private var heartRateTelemetrySink: (any HeartRateTelemetrySink)?
     private var latestHeartRateDelivery: HeartRateDeliveryEvidence?
@@ -709,7 +693,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             applyHeartRateZoneBounds(heartRateZoneSettings.effectiveUpperBounds)
             isLoadingHrSettings = false
             saveHrSettingsIfNeeded()
-            sendHrTargetBpm()
         }
 
         guard let activeUserProfileID else { return }
@@ -940,7 +923,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     @Published var allowAutoConnectUnknown: Bool = false
 
-    // Watch / HR
+    // Heart rate
     let heartRateFactualState = HeartRateFactualState()
     var heartRateBPM: Int {
         get { heartRateFactualState.heartRateBPM }
@@ -963,10 +946,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             publishTrainingUIHeartRateIfNeeded()
         }
     }
-    @Published var watchReachable: Bool = false
-    @Published var watchPaired: Bool = false
-    @Published var watchAppInstalled: Bool = false
-    @Published var hrPermissionGranted: Bool = false
     var hrLastValueAt: Date? {
         get { heartRateFactualState.lastValueAt }
         set {
@@ -1062,7 +1041,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published private(set) var intervalCycleCount = 1
     @Published private(set) var intervalWorkoutState: IntervalWorkoutRuntime.State?
     private var pendingIntervalPlan: IntervalWorkoutRuntime.Plan?
-    private var intervalWorkoutStartedAt: ContinuousClock.Instant?
+    private var hrControlStartedInstant: ContinuousClock.Instant?
 
     var intervalStartBlockReason: String? {
         intervalWorkoutSelected && IntervalWorkoutRuntime.Plan(
@@ -1112,7 +1091,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     @Published var hrTargetBPM: Int = 130 {
         didSet {
             guard !isRestoringNativeWorkoutRecoveryState else { return }
-            sendHrTargetBpm()
             saveHrSettingsIfNeeded()
         }
     }
@@ -1197,9 +1175,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     private let mainQueue = DispatchQueue.main
 
     // Logs / failures
-    struct HrFailureReport: Identifiable { let id = UUID(); let reason: String; let start: Date; let end: Date; let lines: [String] }
-    @Published var hrFailureReports: [HrFailureReport] = []
-    private var lastCommandLine: String = ""
 
     private func zoneSecondsSnapshot() -> [Int] {
         var out = Array(hrZoneSeconds.prefix(5))
@@ -1224,6 +1199,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func clearCooldownRuntimeState() {
         cooldownRuntimeState = nil
+        cooldownStartedInstant = nil
         syncPublishedCooldownRuntimeState()
     }
 
@@ -1283,20 +1259,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func applyCooldownOutput(
-        _ output: CooldownRuntimeEngine.Output,
-        sessionElapsedSeconds: Int?
+        _ output: CooldownRuntimeEngine.Output
     ) {
         cooldownRuntimeState = output.state
         syncPublishedCooldownRuntimeState()
 
         for effect in output.effects {
-            executeCooldownEffect(effect, sessionElapsedSeconds: sessionElapsedSeconds)
+            executeCooldownEffect(effect)
         }
     }
 
     private func executeCooldownEffect(
-        _ effect: CooldownRuntimeEngine.Effect,
-        sessionElapsedSeconds: Int?
+        _ effect: CooldownRuntimeEngine.Effect
     ) {
         switch effect {
         case .status(let presentation):
@@ -1313,7 +1287,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             desiredSpeedKmh = speedEffect.targetKmh
             deviceTargetSpeedKmh = speedEffect.targetKmh
             recordSpeedChange(from: old, to: speedEffect.targetKmh, reason: "cooldown_set")
-            lastCommandLine = String(format: "CMD cooldown adjust -> %.1f", speedEffect.targetKmh)
             let telemetryDecision = makeTreadmillDecision(
                 source: .cooldown,
                 intent: .setDesiredSpeed(
@@ -1331,17 +1304,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             logCooldownTelemetry(telemetryEffect)
 
         case .complete(let completionEffect):
-            if completionEffect.shouldRecordWorkout {
-                recordHrWorkoutIfNeeded(durationOverride: sessionElapsedSeconds, failed: false)
-            }
             if completionEffect.shouldStopSession {
                 isHrControlRunning = false
                 hrControlStartedAt = nil
             }
 
-            if completionEffect.shouldStopWatch {
-                stopLegacyWatchHeartRateIfNeeded()
-            }
             if completionEffect.shouldStopBelt {
                 stopBeltWithToggle(reason: "hr_cooldown_done")
             }
@@ -2011,9 +1978,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 return
             }
             nativeHealthKitAcquisitionStartedAt = record.acquisitionStartedAt
-            pendingHealthkitTelemetryV2SessionID = record.telemetrySessionID.map {
-                SessionID(rawValue: $0)
-            }
             guard retainDeferredNativeHealthKitLinkage(
                 record: record,
                 finishRequestedAt: finishRequestedAt,
@@ -2084,7 +2048,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     ) {
         guard let controlledWorkoutStartedAt = record.controlledWorkoutStartedAt,
               record.profileID != nil,
-              let telemetrySessionID = record.telemetrySessionID else {
+              record.telemetrySessionID != nil else {
             discardRecoveredUncommittedWorkout()
             return
         }
@@ -2095,7 +2059,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         nativeWorkoutRecoverySessionRecovered = true
         nativeWorkoutRecoveryStopRequested = false
         nativeHealthKitAcquisitionStartedAt = record.acquisitionStartedAt
-        pendingHealthkitTelemetryV2SessionID = SessionID(rawValue: telemetrySessionID)
         hrControlStartedAt = controlledWorkoutStartedAt
         restoreNativeWorkoutRecoveryPresentation(record)
         isNativeWorkoutRecoveryActive = true
@@ -2157,6 +2120,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     func start() {
+        guard !didStartApplicationRuntime else { return }
         ensureCentral()
         autoConnectSuppressed = false
         autoConnectRetryPolicy.reset()
@@ -2180,28 +2144,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         didStartApplicationRuntime = true
         processNoActiveWorkoutRecoveryIfPossible()
         processPendingActiveWorkoutRecoveryIfPossible()
-#if canImport(WatchConnectivity)
-        startWatchConnectivity()
-#endif
         recomputeHrStartAllowed()
         startHrStaleTimer()
         // Optionally kick off scanning so UI has something to connect to
         startDiscoveryScan()
         attemptAutoConnectIfNeeded()
-    }
-
-    // Watch
-    func pingWatch() {
-#if canImport(WatchConnectivity)
-        if wcSession == nil { startWatchConnectivity() }
-        if let s = wcSession {
-            refreshWatchState(s)
-            if canSendToWatch(s), s.isReachable {
-                s.sendMessage(["cmd": "ping"], replyHandler: nil, errorHandler: nil)
-            }
-        }
-#endif
-        recomputeHrStartAllowed()
     }
 
     // Discovery controls
@@ -2241,40 +2188,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
         }
     }
-#if canImport(WatchConnectivity)
-    private func refreshWatchState(_ session: WCSession) {
-        DispatchQueue.main.async {
-            let wasReachable = self.watchReachable
-            self.watchReachable = session.isReachable
-            self.watchPaired = session.isPaired
-            self.watchAppInstalled = session.isWatchAppInstalled
-            self.recomputeHrStartAllowed()
-            if self.watchReachable != wasReachable {
-                self.observeHeartRateSourceLifecycle(
-                    self.watchReachable ? .available : .unavailable
-                )
-            }
-        }
-    }
-
-    private func startWatchConnectivity() {
-        guard WCSession.isSupported() else { return }
-        let session = WCSession.default
-        session.delegate = self
-        session.activate()
-        wcSession = session
-        refreshWatchState(session)
-        DispatchQueue.main.async {
-        }
-        sendHrTargetBpm()
-    }
-
-    private func canSendToWatch(_ session: WCSession) -> Bool {
-        guard session.activationState == .activated else { return false }
-        guard session.isPaired, session.isWatchAppInstalled else { return false }
-        return true
-    }
-#endif
 
     // Auto-connect policy helper
     private var orderedAutoConnectCandidateIDs: [UUID] {
@@ -3290,7 +3203,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         invalidateTreadmillTestRunScheduling()
         syncTreadmillTestRunPresentation()
-        if !requestProductionStop {
+        // Procedure rejection owns queue filtering and preserves an existing Stop.
+        if !requestProductionStop && reason != .commandRejected {
             resetCommandQueue(reason: "Test Run cancelled without safe Stop context")
         }
         executeTreadmillTestRunActions(transition.actions)
@@ -3590,6 +3504,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         case .userRequested: return .userRequested
         case .appInactive: return .appInactive
         case .connectionInvalidated: return .connectionInvalidated
+        case .commandRejected: return .commandRejected
         }
     }
 
@@ -3642,7 +3557,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         desiredSpeedKmh = v
         deviceTargetSpeedKmh = v
         recordSpeedChange(from: old, to: v, reason: "manual_go")
-        lastCommandLine = "CMD start speed=\(String(format: "%.1f", v))"
         let shouldSendStart = speedKmh <= 0.2 && old <= 0.1
         switch treadmillProtocol {
         case .walkingPad:
@@ -3775,7 +3689,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         desiredSpeedKmh = 0
         deviceTargetSpeedKmh = 0
         recordSpeedChange(from: old, to: 0, reason: "stop_belt")
-        lastCommandLine = "CMD stop"
         resetSessionStats()
         if treadmillProtocol == .ftms {
             enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
@@ -3797,22 +3710,24 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             highPriority: true,
             telemetryRequest: telemetryRequest
         )
-        scheduleWrite(
-            packet,
-            label: "STOP retry",
-            after: 2.0,
-            telemetryRequest: telemetryRequest,
-            stopAttemptID: stopAttemptID
-        )
-        scheduleWrite(
-            packet,
-            label: "STOP retry",
-            after: 4.0,
-            telemetryRequest: telemetryRequest,
-            stopAttemptID: stopAttemptID
-        )
+        if treadmillProtocol != .ftms {
+            scheduleWrite(
+                packet,
+                label: "STOP retry",
+                after: 2.0,
+                telemetryRequest: telemetryRequest,
+                stopAttemptID: stopAttemptID
+            )
+            scheduleWrite(
+                packet,
+                label: "STOP retry",
+                after: 4.0,
+                telemetryRequest: telemetryRequest,
+                stopAttemptID: stopAttemptID
+            )
+        }
         beginStopObservation(source: "direct", telemetryChain: telemetryChain,
-            scheduledStopEffects: 2, attemptID: stopAttemptID)
+            scheduledStopEffects: treadmillProtocol == .ftms ? 0 : 2, attemptID: stopAttemptID)
     }
 
     private func stopBeltOnce(
@@ -3820,11 +3735,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         telemetryRequest: TreadmillCommandTelemetryRequest
     ) -> Bool {
         guard isConnected else { return false }
+        guard treadmillProtocol != .ftms || !ftmsControlState.isBlocked else { return false }
         let old = deviceTargetSpeedKmh
         desiredSpeedKmh = 0
         deviceTargetSpeedKmh = 0
         recordSpeedChange(from: old, to: 0, reason: "stop_belt_once")
-        lastCommandLine = "CMD stop"
         resetSessionStats()
         if treadmillProtocol == .ftms {
             enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
@@ -3889,9 +3804,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 ),
                 stopAttemptID: stopAttemptID
             )
+            let epoch = commandQueueEpoch
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
                 guard let self else { return }
-                defer { self.completeScheduledStopEffect(attemptID: stopAttemptID, cancelled: false) }
+                let cancelled = self.commandQueueEpoch != epoch
+                defer { self.completeScheduledStopEffect(attemptID: stopAttemptID, cancelled: cancelled) }
+                guard !cancelled else { return }
                 let reported = self.deviceReportedSpeedKmh
                 let observed = max(self.speedKmh, reported)
                 if observed > 0.2 {
@@ -3905,11 +3823,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 }
             }
 
-        case .ftms, .fitShow, .unknown:
+        case .ftms:
+            break // Control Point completion/timeout owns this single Stop attempt.
+        case .fitShow, .unknown:
             if let stopPacket = buildTreadmillStopPacket() {
-                if treadmillProtocol == .ftms {
-                    enqueueFtmsRequestControlIfNeeded(decision: telemetryDecision)
-                }
                 scheduleWrite(
                     stopPacket,
                     label: "STOP retry",
@@ -3925,7 +3842,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             }
         }
         beginStopObservation(source: reason, telemetryChain: telemetryChain,
-            scheduledStopEffects: treadmillProtocol == .walkingPad ? 2 : nil, attemptID: stopAttemptID)
+            scheduledStopEffects: treadmillProtocol == .walkingPad ? 2 : 0, attemptID: stopAttemptID)
         return stopCommandWasEnqueued
     }
 
@@ -3988,7 +3905,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             attemptedAt: attemptedAt,
             commandSentAt: nil
         )
-        let transportCanSend = isConnected && commandCharacteristic != nil && buildTreadmillStopPacket() != nil
+        let transportCanSend = isConnected && commandCharacteristic != nil
+            && !(treadmillProtocol == .ftms && ftmsControlState.isBlocked)
+            && buildTreadmillStopPacket() != nil
 
         let telemetryEvidence = treadmillTelemetryConnectionEpoch.map {
             TreadmillStopTruthEvidence(
@@ -4233,7 +4152,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         guard abs(v - old) >= 0.01 else { return }
         deviceTargetSpeedKmh = v
         recordSpeedChange(from: old, to: v, reason: "manual_slider")
-        lastCommandLine = "CMD set speed=\(String(format: "%.1f", v))"
         let telemetryDecision = makeTreadmillDecision(
             source: .manual,
             intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: v))
@@ -4255,7 +4173,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         desiredSpeedKmh = v
         deviceTargetSpeedKmh = v
         recordSpeedChange(from: old, to: v, reason: "manual_adjust")
-        lastCommandLine = "CMD adjust delta=\(String(format: "%.1f", delta)) -> \(String(format: "%.1f", v))"
         let telemetryDecision = makeTreadmillDecision(
             source: .manual,
             intent: .setDesiredSpeed(DesiredSpeedKilometresPerHour(value: v))
@@ -4270,8 +4187,12 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     // HR control actions
     var canExtendHrSession: Bool {
-        guard isHrControlRunning, hrRemainingSeconds > 0, intervalWorkoutState == nil else { return false }
+        guard isHrControlRunning, intervalWorkoutState == nil,
+              let startedAt = hrControlStartedInstant else { return false }
         return hrSessionTotalSeconds < (hrMaxSessionMinutes * 60)
+            && HRDomainService.remainingSessionSeconds(
+                totalSeconds: hrSessionTotalSeconds, elapsed: startedAt.duration(to: .now)
+            ) > 0
     }
 
     var shouldPresentActiveWorkout: Bool {
@@ -4311,7 +4232,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     var hrSessionMaxMinutes: Int { hrMaxSessionMinutes }
 
     func extendHrSession(minutes: Int = 5) {
-        guard isHrControlRunning, hrRemainingSeconds > 0, intervalWorkoutState == nil else { return }
+        guard canExtendHrSession else { return }
         let addSeconds = max(0, minutes * 60)
         guard addSeconds > 0 else { return }
         let maxTotalSeconds = hrMaxSessionMinutes * 60
@@ -4327,8 +4248,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         hrSessionTotalSeconds = newTotalSeconds
-        hrRemainingSeconds += addedSeconds
-        hrProgress = hrSessionTotalSeconds > 0 ? (1.0 - (Double(hrRemainingSeconds) / Double(hrSessionTotalSeconds))) : 0
+        syncHrSessionTiming()
     }
 
     func startHrControl() {
@@ -4346,7 +4266,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             maximumHeartRate: heartRateZoneSettings.maximumHeartRate, cycles: intervalCycleCount
         ) : nil
         intervalWorkoutState = nil
-        intervalWorkoutStartedAt = nil
+        hrControlStartedInstant = nil
         let now = Date()
         let intent = NativeHeartRatePreflightEngine.Intent(
             id: UUID(),
@@ -4688,7 +4608,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if let measuredAt = hrLastValueAt {
             observeIntervalHeartRate(heartRateBPM, measuredAt: measuredAt, now: Date())
         }
-        intervalWorkoutStartedAt = pendingIntervalPlan == nil ? nil : ContinuousClock.now
+        hrControlStartedInstant = ContinuousClock.now
         hrSessionTotalSeconds = pendingIntervalPlan?.totalSeconds ?? max(60, hrDurationMinutes * 60)
         hrRemainingSeconds = hrSessionTotalSeconds
         hrLastDecisionAt = ContinuousClock.now
@@ -4697,7 +4617,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrControlStartedAt = controlledWorkoutStartedAt
         hrDecisionDetails = ""
         hrPredictorStatusLine = ""
-        hrWorkoutRecorded = false
         hrTrendSamples.removeAll()
         hrTrendEmaBpm = nil
         hrNoDataSeconds = 0
@@ -4711,7 +4630,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             _ = telemetryV2Coordinator.observeWorkoutPhase(
                 state.telemetryPhase, occurredAt: Date(), intervalContext: state.evidence()
             )
-            sendHrTargetBpm()
         }
         if treadmillProtocol == .walkingPad,
            let connectionEpoch = treadmillTelemetryConnectionEpoch {
@@ -5146,7 +5064,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             stopRecoveredNativeWorkout()
             return
         }
-        let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
 
         isHrControlRunning = false
         hrStatusLine = "HR‑контроль завершён • остановка дорожки запрошена"
@@ -5158,11 +5075,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         clearCooldownRuntimeState()
         hrNoDataSeconds = 0
         hrControlStartBlockReasonText = nil
-        recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: false)
         hrControlStartedAt = nil
         hrControlStartedBelt = false
         stopBeltWithToggle(reason: "hr")
-        stopLegacyWatchHeartRateIfNeeded()
         endTelemetryV2Session(reason: "manual_stop")
     }
 
@@ -5173,12 +5088,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         stopBeltWithToggle(reason: "recovered_hr_manual_stop")
     }
 
-    private func stopHrControlAfterAutoStartFailure() {
-        let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
+    private func stopHrControlAfterCommandFailure(
+        reason: String = "hr_auto_start_speed_cancelled",
+        requestStop: Bool = true
+    ) {
         hrControlFailed = true
         isHrControlRunning = false
-        hrStatusLine = "HR‑контроль остановлен — скорость после запуска не задана"
-        infoToastMessage = "Скорость после запуска не задана. Остановка дорожки запрошена, но ещё не подтверждена."
+        hrStatusLine = "HR‑контроль остановлен — команда дорожки не выполнена"
+        infoToastMessage = "Команда дорожки не выполнена. Остановка ещё не подтверждена."
         hrNextDecisionSeconds = 0
         hrRemainingSeconds = 0
         hrProgress = 0
@@ -5186,12 +5103,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrPredictorStatusLine = ""
         clearCooldownRuntimeState()
         hrNoDataSeconds = 0
-        recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
         hrControlStartedAt = nil
         hrControlStartedBelt = false
-        stopLegacyWatchHeartRateIfNeeded()
-        stopBeltWithToggle(reason: "hr_auto_start_speed_cancelled")
-        endTelemetryV2Session(reason: "hr_auto_start_speed_cancelled")
+        if requestStop { stopBeltWithToggle(reason: reason) }
+        endTelemetryV2Session(reason: reason)
     }
 
     private func beginNativeWorkoutStopTerminalRequestIfNeeded() {
@@ -5244,13 +5159,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         infoToastMessage = "\(reason). Проверьте подключение и повторите Stop."
         recomputeHrStartAllowed()
     }
-
-    private func stopLegacyWatchHeartRateIfNeeded() {
-        guard !nativeHeartRateFlowOwnsController else { return }
-        sendWatchCommand("stop_hr")
-    }
-
-    func clearHrFailureReports() { hrFailureReports.removeAll() }
 
     private func ensureCentral() {
         if central == nil {
@@ -5358,7 +5266,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         hrStaleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             let hasLast = (self.hrLastValueAt != nil)
-            let wasActive = self.hrStreamingActive
             let secs: Int
             if let last = self.hrLastValueAt {
                 secs = max(0, Int(Date().timeIntervalSince(last)))
@@ -5377,15 +5284,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 if self.nativeHeartRateFlowOwnsController {
                     self.isNativeHeartRateCurrent = active
                 }
-                if active != wasActive {
-
-                }
                 self.recomputeHrStartAllowed()
-                if active != wasActive && !self.nativeHeartRateFlowOwnsController {
-                    self.observeHeartRateSourceLifecycle(
-                        active ? .recovered : .stale
-                    )
-                }
             }
         }
         if let t = hrStaleTimer {
@@ -5404,9 +5303,18 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         intervalWorkoutState = state
     }
 
+    private func syncHrSessionTiming(now: ContinuousClock.Instant = .now) {
+        guard intervalWorkoutState == nil, let startedAt = hrControlStartedInstant else { return }
+        hrRemainingSeconds = HRDomainService.remainingSessionSeconds(
+            totalSeconds: hrSessionTotalSeconds, elapsed: startedAt.duration(to: now)
+        )
+        hrProgress = hrSessionTotalSeconds > 0
+            ? 1.0 - Double(hrRemainingSeconds) / Double(hrSessionTotalSeconds) : 0
+    }
+
     private func advanceIntervalWorkout() {
         guard var state = intervalWorkoutState,
-              let startedAt = intervalWorkoutStartedAt, state.phase != .cooldown else { return }
+              let startedAt = hrControlStartedInstant, state.phase != .cooldown else { return }
         let previousPhase = state.phase
         let duration = startedAt.duration(to: ContinuousClock.now).components
         let elapsed = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
@@ -5425,7 +5333,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             observeSemanticHeartRateDecision(action: .noCommand,
                 reason: .other("interval_phase_target"), heartRateInputs: [], occurredAt: Date())
         }
-        sendHrTargetBpm()
         if state.phase == .cooldown, state.finishReason != "cycles_completed" {
             infoToastMessage = state.finishReason == "above_95_percent"
                 ? "Пульс выше 95% максимального — переходим к заминке"
@@ -5468,12 +5375,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func maintainHeartRateControlSafety() {
-        guard isHrControlRunning, hrRemainingSeconds > 0 else { return }
+        guard isHrControlRunning, cooldownRuntimeState == nil else { return }
         let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
             startedAt: hrControlStartedAt, now: Date(), graceSeconds: hrStartGraceSeconds
         )
         guard isTreadmillControlReady else {
-            let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
 
             hrControlFailed = true
             infoToastMessage = "HR‑контроль остановлен — дорожка не готова к управлению. Остановка запрошена, но ещё не подтверждена."
@@ -5486,10 +5392,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrPredictorStatusLine = ""
             clearCooldownRuntimeState()
             hrNoDataSeconds = 0
-            recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
             hrControlStartedAt = nil
             hrControlStartedBelt = false
-            stopLegacyWatchHeartRateIfNeeded()
             stopBeltWithToggle(reason: "hr_control_not_ready")
             endTelemetryV2Session(reason: "hr_control_not_ready")
             return
@@ -5518,7 +5422,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 hrDecisionDetails = "Данные пульса пропали, удерживаем скорость"
                 return
             }
-            let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
 
             hrControlFailed = true
             infoToastMessage = "HR‑контроль остановлен — нет данных пульса. Остановка дорожки запрошена, но ещё не подтверждена."
@@ -5531,10 +5434,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             hrPredictorStatusLine = ""
             clearCooldownRuntimeState()
             hrNoDataSeconds = 0
-            recordHrWorkoutIfNeeded(durationOverride: elapsed, failed: true)
             hrControlStartedAt = nil
             hrControlStartedBelt = false
-            stopLegacyWatchHeartRateIfNeeded()
             stopBeltWithToggle(reason: "hr_no_signal")
             endTelemetryV2Session(reason: "hr_no_signal")
             return
@@ -5555,7 +5456,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             intervalSeconds: hrDecisionIntervalSeconds
         ) else { return }
         if let state = intervalWorkoutState {
-            guard let startedAt = intervalWorkoutStartedAt,
+            guard let startedAt = hrControlStartedInstant,
                   state.permitsHeartRateDecision(at: startedAt.duration(to: instant)) else { return }
         }
         let unitsDecision = controllerUnitsGateDecision()
@@ -5671,7 +5572,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         let nextSpeed = clampRunningSpeedKmh(currentTarget + direction * step)
         if nextSpeed != currentTarget {
-            lastCommandLine = "CMD HR adjust -> \(String(format: "%.1f", nextSpeed))"
             let telemetryDecision = makeTreadmillDecision(
                 source: .heartRateControl,
                 intent: .setDesiredSpeed(
@@ -5745,7 +5645,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             avgSpeedKmh = ((avgSpeedKmh * Double(max(0, timeSec - 1))) + speedKmh) / Double(max(1, timeSec))
         }
 
-        // Update HR averages only from real data (avoid overwriting watch values)
+        // Update HR averages only from measured data.
         if hrStreamingActive && heartRateBPM > 0 {
             let bpm = heartRateBPM
             hrAverageSum += bpm
@@ -5761,8 +5661,11 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             beatsPerMeter = nil
         }
 
+        maintainHeartRateControlSafety()
+
         if isHrControlRunning {
             advanceIntervalWorkout()
+            syncHrSessionTiming()
             let hrTargetBPM = activeHRControlTargetBPM
             let withinGrace = HRDomainService.isWithinInitialHeartRateGrace(
                 startedAt: hrControlStartedAt,
@@ -5794,19 +5697,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 hrPredictorStatusLine = "Нет данных пульса"
             }
             if hrRemainingSeconds > 0 {
-                if intervalWorkoutState == nil {
-                    hrRemainingSeconds = max(0, hrRemainingSeconds - 1)
-                    hrProgress = hrSessionTotalSeconds > 0 ? (1.0 - (Double(hrRemainingSeconds) / Double(hrSessionTotalSeconds))) : 0
-                }
-
                 if let lastDecisionAt = hrLastDecisionAt {
                     hrNextDecisionSeconds = HRDomainService.heartRateDecisionRemainingSeconds(
                         elapsedSinceLastDecision: lastDecisionAt.duration(to: ContinuousClock.now),
                         intervalSeconds: hrDecisionIntervalSeconds
                     )
                 }
-                maintainHeartRateControlSafety()
             } else if cooldownRuntimeState == nil {
+                cooldownStartedInstant = .now
                 hrNextDecisionSeconds = 0
                 let output = telemetryPerformanceObservation.measureControlCycle {
                     CooldownRuntimeEngine.start(
@@ -5819,15 +5717,16 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                     )
                 }
-                let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-                applyCooldownOutput(output, sessionElapsedSeconds: elapsed)
-            } else if let cooldownState = cooldownRuntimeState {
+                applyCooldownOutput(output)
+            } else if let cooldownState = cooldownRuntimeState,
+                      let cooldownStartedInstant {
                 hrNextDecisionSeconds = 0
                 let output = telemetryPerformanceObservation.measureControlCycle {
                     CooldownRuntimeEngine.tick(
                         state: cooldownState,
                         config: currentCooldownConfig(),
                         input: CooldownRuntimeEngine.TickInput(
+                            elapsedSeconds: Int(clamping: max(0, cooldownStartedInstant.duration(to: .now).components.seconds)),
                             hrBpm: heartRateBPM,
                             decisionBpm: heartRateBPM > 0 ? heartRateBPM : hrCooldownTargetBpm,
                             hrAvailable: heartRateBPM > 0 && HRDomainService.cooldownEvidenceIsCurrent(
@@ -5841,8 +5740,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                         )
                     )
                 }
-                let elapsed = hrControlStartedAt.map { Int(Date().timeIntervalSince($0)) }
-                applyCooldownOutput(output, sessionElapsedSeconds: elapsed)
+                applyCooldownOutput(output)
             }
         }
         updateTreadmillStatus()
@@ -5881,6 +5779,9 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             treadmillStatusText = "stopped • \(awakeText) • \(proto)"
         }
 
+        if treadmillProtocol == .ftms, ftmsControlState.hasTimedOut(at: .now) {
+            failFTMSControl()
+        }
         var observedLegacyCommandTimeout = false
         if lastCommandAwaitingAck, let sentAt = lastCommandSentAt {
             if now.timeIntervalSince(sentAt) > commandAckTimeoutSeconds {
@@ -5990,13 +5891,15 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 reason: "high priority → \(label)",
                 observeTelemetryImmediately: false
             )
-            CommandQueueService.replaceWithHighPriority(queue: &commandQueue, command: command)
+            enqueueFtmsRequestControlIfNeeded()
+            commandQueue.append(command)
             var superseded: [TreadmillCommandTelemetrySidecar.Entry] = []
             if let telemetryEvidence {
-                superseded = treadmillCommandTelemetrySidecar.replaceWithHighPriority(
+                superseded = treadmillCommandTelemetrySidecar.enqueueRegular(
                     label: label,
                     evidence: telemetryEvidence,
-                    sessionID: request.sessionID
+                    sessionID: request.sessionID,
+                    isSpeedLabel: isSpeedCommandLabel
                 )
             }
             processCommandQueue()
@@ -6032,7 +5935,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         if result.coalescedSpeedCommands.contains(where: {
             $0.heartRateSpeed?.consumeAutoStartCompensation() == true
         }) {
-            stopHrControlAfterAutoStartFailure()
+            stopHrControlAfterCommandFailure()
             return
         }
         processCommandQueue()
@@ -6079,7 +5982,14 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private func processCommandQueue() {
         guard !isCommandQueueProcessing else { return }
-        guard !commandQueue.isEmpty else { return }
+        guard let next = commandQueue.first else { return }
+        if treadmillProtocol == .ftms {
+            if ftmsControlState.isBlocked {
+                failFTMSControl()
+                return
+            }
+            guard let opcode = next.data.first, ftmsControlState.canSend(opcode: opcode) else { return }
+        }
         isCommandQueueProcessing = true
         let now = Date()
         let delay = max(0, nextCommandAllowedAt.timeIntervalSince(now))
@@ -6196,7 +6106,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 lostEntries, reason: .other("telemetry_sidecar_order_mismatch")
             )
             if needsCompensatingStop {
-                self.stopHrControlAfterAutoStartFailure()
+                self.stopHrControlAfterCommandFailure()
                 return
             }
             if !self.commandQueue.isEmpty {
@@ -6283,6 +6193,10 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         lastCommandAwaitingAck = (type == .withResponse)
         lastCommandAckedAt = (type == .withResponse) ? nil : lastCommandSentAt
 
+        if treadmillProtocol == .ftms, let opcode = data.first,
+           let connection = currentTreadmillControlConnection {
+            ftmsControlState.sent(opcode: opcode, connection: connection, at: .now)
+        }
         p.writeValue(data, for: ch, type: type)
         if let heartRateSpeed {
             if isSpeedCommandLabel(label) {
@@ -6420,9 +6334,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         treadmillProtocol = .unknown
         treadmillProtocolService = nil
         treadmillProtocolConnection = nil
-        ftmsHasControl = false
-        ftmsControlRequestInFlight = false
-        ftmsControlRequestConnection = nil
+        ftmsControlState = FTMSControlState()
         ftmsDidReadSupportedSpeedRange = false
         fitShowDidRequestInitialStatus = false
         commandCharacteristic = nil
@@ -6533,7 +6445,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 )
             }
         }
-        let ready = TreadmillControlReadinessPolicy.isReady(
+        let ready = !ftmsControlState.isBlocked && TreadmillControlReadinessPolicy.isReady(
             TreadmillControlReadinessSnapshot(
                 currentConnection: currentTreadmillControlConnection,
                 protocolKind: treadmillControlProtocolKind,
@@ -6566,9 +6478,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
         commandCharacteristicConnection = nil
         notifyCharacteristicConnection = nil
-        ftmsHasControl = false
-        ftmsControlRequestInFlight = false
-        ftmsControlRequestConnection = nil
+        if treadmillProtocol == .ftms { failFTMSControl() }
         recomputeTreadmillControlReadiness()
     }
 
@@ -6741,9 +6651,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
     private var controllerUnitsNextScheduledMotionLeadSeconds: Int {
         if let cooldownState = cooldownRuntimeState {
-            let interval = max(1, cooldownState.stepIntervalSeconds)
-            let remainder = cooldownState.elapsedSeconds % interval
-            return remainder == 0 ? interval : interval - remainder
+            return cooldownState.nextSpeedDecisionRemainingSeconds
         }
         return WalkingPadStatusRefreshPolicy.motionLeadSeconds(
             decisionRemainingSeconds: hrNextDecisionSeconds,
@@ -6804,8 +6712,8 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         decision: TreadmillControlDecisionEvidence? = nil
     ) {
         guard treadmillProtocol == .ftms else { return }
-        guard !ftmsHasControl else { return }
-        guard !ftmsControlRequestInFlight else { return }
+        guard ftmsControlState.needsRequestControl,
+              !commandQueue.contains(where: { $0.label == "FTMS REQUEST CONTROL" }) else { return }
         guard let ch = commandCharacteristic, ch.uuid == ftmsCharControlPoint else {
             return
         }
@@ -6813,8 +6721,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
               commandCharacteristicConnection == connection else {
             return
         }
-        ftmsControlRequestInFlight = true
-        ftmsControlRequestConnection = connection
         writeCommand(
             buildFtmsRequestControlPacket(),
             label: "FTMS REQUEST CONTROL",
@@ -6823,6 +6729,48 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 decision: decision
             )
         )
+    }
+
+    private func failFTMSControl() {
+        ftmsControlState.invalidate()
+        resetCommandQueue(reason: "FTMS control unavailable")
+        markInitialStopCommandNotSent(reason: "ftms_control_unavailable")
+        nativeWorkoutStopTransportInvocationFailedIfNeeded(reason: "FTMS не подтвердил управление")
+        isTreadmillControlReady = false
+        cancelTreadmillTestRunForConnectionInvalidation()
+        if isHrControlRunning {
+            stopHrControlAfterCommandFailure(reason: "ftms_control_unavailable", requestStop: false)
+        }
+        infoToastMessage = "Управление FTMS недоступно. Проверьте остановку дорожки и переподключитесь."
+        recomputeHrStartAllowed()
+    }
+
+    private func handleFTMSProcedureRejection(opcode: UInt8) {
+        cancelTreadmillTestRun(reason: .commandRejected, requestProductionStop: false)
+        // A rejected Stop must also discard queued Stops, avoiding an implicit retry.
+        let rejectedStop = opcode == 0x08
+        commandQueueEpoch += 1
+        isCommandQueueProcessing = false
+        nextCommandAllowedAt = .distantPast
+        commandQueue.removeAll { rejectedStop || $0.label != "STOP" }
+        observeCancelledTreadmillCommands(
+            treadmillCommandTelemetrySidecar.removeQueued { rejectedStop || $0 != "STOP" },
+            reason: .other("ftms_procedure_rejected")
+        )
+        let hasQueuedStop = !commandQueue.isEmpty
+        let requestStop = !rejectedStop && !hasQueuedStop
+        if isHrControlRunning {
+            stopHrControlAfterCommandFailure(reason: "ftms_procedure_rejected", requestStop: requestStop)
+        } else if requestStop {
+            stopBeltWithToggle(reason: "ftms_procedure_rejected")
+        }
+        if opcode == 0x08 {
+            nativeWorkoutStopTransportInvocationFailedIfNeeded(reason: "Дорожка отклонила Stop")
+            infoToastMessage = "Дорожка отклонила остановку. Проверьте полотно и повторите Stop."
+        } else {
+            infoToastMessage = "Дорожка отклонила команду. Остановка запрошена, но ещё не подтверждена."
+        }
+        if hasQueuedStop { processCommandQueue() }
     }
 
     private func commandMinIntervalSecondsForCurrentProtocol() -> TimeInterval {
@@ -7285,7 +7233,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             )
         }
         pendingIntervalPlan = nil
-        intervalWorkoutStartedAt = nil
+        hrControlStartedInstant = nil
         treadmillObservationNormalizer.endWorkout()
         finishNativeHealthKitWorkoutIfNeeded()
         telemetryV2Coordinator.endSession(reason: reason)
@@ -7869,31 +7817,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
     }
 
     private func observeHeartRateDelivery(
-        _ decoded: DecodedWatchHeartRatePayload,
-        receivedAt: Date
-    ) -> HeartRateTelemetrySinkDisposition {
-        let result = heartRateObservationNormalizer.normalize(
-            HeartRateProviderObservation(
-                source: legacyWatchHeartRateSource,
-                beatsPerMinute: decoded.beatsPerMinute,
-                providerSequence: decoded.providerSequence,
-                providerNativeIdentity: nil,
-                measuredAt: nil,
-                sourceCallbackObservedAt: decoded.sourceCallbackObservedAt,
-                sourceClockRelationship: .independent,
-                receivedAt: receivedAt,
-                metadataQuality: decoded.quality
-            ),
-            canonicalObservationID: HeartRateCanonicalObservationID(),
-            deliveryID: HeartRateDeliveryID(),
-            recordedAt: Date()
-        )
-        latestHeartRateDelivery = result.delivery
-        attachTelemetryDeliveryToLatestHrTrendSample(result.delivery)
-        return heartRateTelemetrySink?.observeHeartRate(result) ?? .unavailable
-    }
-
-    private func observeHeartRateDelivery(
         _ observation: HeartRateProviderObservation,
         recordedAt: Date
     ) {
@@ -7941,18 +7864,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             inputs: [result.delivery.causalReference],
             occurredAt: Date()
         ))
-    }
-
-    private func observeHeartRateSourceLifecycle(
-        _ transition: HeartRateSourceLifecycleInput,
-        occurredAt: Date = Date()
-    ) {
-        guard let evidence = heartRateObservationNormalizer.observeLifecycle(
-            transition,
-            source: legacyWatchHeartRateSource,
-            occurredAt: occurredAt
-        ) else { return }
-        _ = heartRateTelemetrySink?.observeSourceLifecycle(evidence)
     }
 
     private func makeHeartRateControlUseEvidence(
@@ -8025,61 +7936,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         return max(-hrTrendSlopeMaxBpmPerSecond, min(hrTrendSlopeMaxBpmPerSecond, slope))
     }
 
-    private func recordHrWorkoutIfNeeded() {
-        recordHrWorkoutIfNeeded(durationOverride: nil, failed: nil)
-    }
-
-    private func recordHrWorkoutIfNeeded(durationOverride: Int?, failed: Bool?) {
-        guard !hrWorkoutRecorded else { return }
-        let actualDuration: Int = {
-            if let durationOverride { return max(0, durationOverride) }
-            if let start = hrControlStartedAt {
-                return max(0, Int(Date().timeIntervalSince(start)))
-            }
-            let elapsed = max(0, hrSessionTotalSeconds - hrRemainingSeconds)
-            return elapsed > 0 ? elapsed : timeSec
-        }()
-        guard !(failed ?? hrControlFailed),
-              actualDuration >= max(0, workoutMinSaveMinutes * 60) else { return }
-        let attachedWorkoutUUID = pendingHealthkitWorkoutUUID
-        pendingHealthkitWorkoutUUID = nil
-        pendingHealthkitTelemetryV2SessionID = attachedWorkoutUUID == nil
-            ? activeTelemetryV2SessionID : nil
-        hrWorkoutRecorded = true
-        if let attachedWorkoutUUID,
-           let workoutIdentifier = UUID(uuidString: attachedWorkoutUUID),
-           let sessionID = activeTelemetryV2SessionID {
-            associateHealthKitWorkoutWithTelemetryV2(
-                sessionID: sessionID, workoutIdentifier: workoutIdentifier
-            )
-        }
-    }
-
-    private func attachHealthkitWorkoutUUID(_ uuid: String, endedAt: Date?) {
-        guard let workoutIdentifier = UUID(uuidString: uuid) else { return }
-        if let sessionID = pendingHealthkitTelemetryV2SessionID ?? activeTelemetryV2SessionID {
-            pendingHealthkitTelemetryV2SessionID = nil
-            associateHealthKitWorkoutWithTelemetryV2(
-                sessionID: sessionID, workoutIdentifier: workoutIdentifier
-            )
-        } else {
-            pendingHealthkitWorkoutUUID = uuid
-        }
-    }
-
-    private func associateHealthKitWorkoutWithTelemetryV2(
-        sessionID: SessionID,
-        workoutIdentifier: UUID
-    ) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            _ = await persistHealthKitWorkoutAssociationWithTelemetryV2(
-                sessionID: sessionID,
-                workoutIdentifier: workoutIdentifier
-            )
-        }
-    }
-
     private func persistHealthKitWorkoutAssociationWithTelemetryV2(
         sessionID: SessionID,
         workoutIdentifier: UUID
@@ -8129,36 +7985,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         }
     }
 
-    private func sendHrTargetBpm() {
-#if canImport(WatchConnectivity)
-        guard let session = wcSession, canSendToWatch(session) else { return }
-        let payload: [String: Any] = ["target_bpm": activeHRControlTargetBPM]
-        if session.isReachable {
-            session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
-        } else {
-            try? session.updateApplicationContext(payload)
-        }
-#endif
-    }
-
-    private func sendWatchCommand(_ cmd: String) {
-#if canImport(WatchConnectivity)
-        guard let session = wcSession else {
-            pendingWatchCommand = cmd
-            return
-        }
-        guard canSendToWatch(session) else {
-            pendingWatchCommand = cmd
-            return
-        }
-        let payload: [String: Any] = ["cmd": cmd]
-        if session.isReachable {
-            session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
-        } else {
-            try? session.updateApplicationContext(payload)
-        }
-#endif
-    }
 
     // MARK: - CBPeripheralDelegate
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
@@ -8219,9 +8045,6 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         notifyCharacteristicConnection = nil
         characteristicConnections.removeAll()
         extraNotifyCharacteristics.removeAll()
-        ftmsHasControl = false
-        ftmsControlRequestInFlight = false
-        ftmsControlRequestConnection = nil
 
         switch treadmillProtocol {
         case .walkingPad:
@@ -8316,6 +8139,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         if error != nil || !characteristic.isNotifying {
+            if treadmillProtocol == .ftms { failFTMSControl() }
             telemetryV2Coordinator.invalidateStopTail()
         }
         if error != nil {
@@ -8349,7 +8173,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
             return
         }
         if error != nil {
-
+            if treadmillProtocol == .ftms { failFTMSControl() }
             return
         }
         guard let data = characteristic.value else { return }
@@ -8541,54 +8365,58 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
 
         case .ftms:
             if characteristic.uuid == ftmsCharSupportedSpeedRange, let range = parseFtmsSupportedSpeedRange(data) {
-                DispatchQueue.main.async {
-                    self.treadmillMinSpeedKmh = range.minSpeedKmh
-                    self.treadmillMaxSpeedKmh = range.maxSpeedKmh
-                    self.treadmillSpeedIncrementKmh = range.minIncrementKmh
+                self.treadmillMinSpeedKmh = range.minSpeedKmh
+                self.treadmillMaxSpeedKmh = range.maxSpeedKmh
+                self.treadmillSpeedIncrementKmh = range.minIncrementKmh
 
-                    // Clamp any already-chosen targets to avoid "infinite increase" loops.
-                    let maxSpeed = self.treadmillSpeedBoundsSnapshot().max
-                    if self.desiredSpeedKmh > maxSpeed { self.desiredSpeedKmh = maxSpeed }
-                    if self.deviceTargetSpeedKmh > maxSpeed { self.deviceTargetSpeedKmh = maxSpeed }
-                }
+                // Clamp any already-chosen targets to avoid "infinite increase" loops.
+                let maxSpeed = self.treadmillSpeedBoundsSnapshot().max
+                if self.desiredSpeedKmh > maxSpeed { self.desiredSpeedKmh = maxSpeed }
+                if self.deviceTargetSpeedKmh > maxSpeed { self.deviceTargetSpeedKmh = maxSpeed }
 
             } else if characteristic.uuid == ftmsCharTreadmillData, let parsed = parseFtmsTreadmillData(data) {
-                DispatchQueue.main.async {
-                    self.deviceReportedSpeedKmh = parsed.instantaneousSpeedKmh
-                    self.deviceReportedAppSpeedKmh = parsed.instantaneousSpeedKmh
-                    self.deviceReportedState = parsed.isMoving ? 1 : 0
-                    self.deviceReportedRawHex = ""
-                    self.publishTrainingUITreadmillSpeedIfNeeded()
-                    if peripheral.identifier == self.connectedPeripheralId,
-                       characteristic.uuid == self.ftmsCharTreadmillData,
-                       let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
-                        _ = self.observeTreadmillProviderObservation(
-                            .ftms(
-                                speedRawHundredthsKmh: Int(
-                                    parsed.instantaneousSpeedRawHundredthsKmh
-                                ),
-                                rawState: parsed.isMoving ? 1 : 0,
-                                deviceState: parsed.isMoving ? .moving : .stopped,
-                                connectionEpoch: connectionEpoch,
-                                receivedAt: now
-                            )
+                self.deviceReportedSpeedKmh = parsed.instantaneousSpeedKmh
+                self.deviceReportedAppSpeedKmh = parsed.instantaneousSpeedKmh
+                self.deviceReportedState = parsed.isMoving ? 1 : 0
+                self.deviceReportedRawHex = ""
+                self.publishTrainingUITreadmillSpeedIfNeeded()
+                if peripheral.identifier == self.connectedPeripheralId,
+                   characteristic.uuid == self.ftmsCharTreadmillData,
+                   let connectionEpoch = self.treadmillTelemetryConnectionEpoch {
+                    _ = self.observeTreadmillProviderObservation(
+                        .ftms(
+                            speedRawHundredthsKmh: Int(
+                                parsed.instantaneousSpeedRawHundredthsKmh
+                            ),
+                            rawState: parsed.isMoving ? 1 : 0,
+                            deviceState: parsed.isMoving ? .moving : .stopped,
+                            connectionEpoch: connectionEpoch,
+                            receivedAt: now
                         )
-                    }
+                    )
                 }
 
             } else if characteristic.uuid == ftmsCharControlPoint, let resp = parseFtmsControlPointResponse(data) {
-                if resp.requestedOpcode == 0x00 {
-                    guard ftmsControlRequestInFlight,
-                          ftmsControlRequestConnection == currentTreadmillControlConnection,
-                          characteristic === commandCharacteristic else {
-                        return
-                    }
-                    ftmsControlRequestInFlight = false
-                    ftmsControlRequestConnection = nil
-                    if resp.resultCode == 0x01 {
-                        ftmsHasControl = true
-                    }
+                guard characteristic === commandCharacteristic,
+                      let connection = currentTreadmillControlConnection,
+                      let succeeded = ftmsControlState.receive(
+                        opcode: resp.requestedOpcode, resultCode: resp.resultCode,
+                        connection: connection
+                      ) else { return }
+                if succeeded {
+                    processCommandQueue()
+                } else {
+                    observeTreadmillTelemetry(.commandFailed(TreadmillCommandFailureObservation(
+                        commandID: nil, decisionID: nil, attemptID: nil,
+                        connectionEpoch: treadmillTelemetryConnectionEpoch, occurredAt: now,
+                        reason: .other("ftms_response_\(resp.requestedOpcode)_\(resp.resultCode)")
+                    )))
+                    if ftmsControlState.isBlocked { failFTMSControl() }
+                    else { handleFTMSProcedureRejection(opcode: resp.requestedOpcode) }
                 }
+            } else if characteristic.uuid == ftmsCharMachineStatus,
+                      BLETransportCodec.ftmsControlPermissionWasLost(data) {
+                failFTMSControl()
 
             }
 
@@ -8627,6 +8455,7 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
                 )
             )
         }
+        if treadmillProtocol == .ftms, error != nil { failFTMSControl() }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
@@ -8645,128 +8474,3 @@ final class BluetoothManager: NSObject, ObservableObject, CBCentralManagerDelega
         invalidateTreadmillControlReadinessEvidence(includingProtocol: true)
     }
 }
-
-#if canImport(WatchConnectivity)
-extension BluetoothManager: WCSessionDelegate {
-    func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
-        refreshWatchState(session)
-        DispatchQueue.main.async {
-        }
-        if activationState == .activated {
-            sendHrTargetBpm()
-            if let cmd = pendingWatchCommand {
-                pendingWatchCommand = nil
-                sendWatchCommand(cmd)
-            }
-        }
-    }
-    func sessionReachabilityDidChange(_ session: WCSession) {
-        refreshWatchState(session)
-        DispatchQueue.main.async {
-        }
-    }
-    func sessionWatchStateDidChange(_ session: WCSession) {
-        refreshWatchState(session)
-        DispatchQueue.main.async {
-        }
-        if session.activationState == .activated {
-            sendHrTargetBpm()
-            if let cmd = pendingWatchCommand {
-                pendingWatchCommand = nil
-                sendWatchCommand(cmd)
-            }
-        }
-    }
-
-    // iOS-specific lifecycle hooks
-    func sessionDidBecomeInactive(_ session: WCSession) {}
-    func sessionDidDeactivate(_ session: WCSession) { session.activate() }
-
-    func session(_ session: WCSession, didReceiveMessage message: [String : Any]) {
-        handleWatchPayload(message)
-    }
-
-    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String : Any]) {
-        handleWatchPayload(applicationContext)
-    }
-
-    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any] = [:]) {
-        handleWatchPayload(userInfo)
-    }
-
-    private func handleWatchPayload(_ payload: [String: Any]) {
-        let phoneReceivedAt = Date()
-        if let decoded = WatchHeartRatePayloadDecoder.decode(payload) {
-            DispatchQueue.main.async {
-                guard !self.nativeHeartRateFlowOwnsController else {
-                    return
-                }
-                HeartRateObservationalTee.deliver(
-                    decoded.beatsPerMinute,
-                    toLegacyController: { bpm in
-                        HRDomainService.applyHeartRateDelivery(
-                            bpm,
-                            now: Date.init,
-                            updateCurrent: { self.heartRateBPM = $0 },
-                            updateLastKnown: { self.lastKnownHeartRateBPM = $0 },
-                            updateLastReceivedAt: { self.hrLastValueAt = $0 },
-                            recordPredictorInput: { self.recordHrSample($0) }
-                        )
-                        // hrStreamingActive will be derived by the staleness timer
-
-                    },
-                    observe: {
-                        self.observeHeartRateDelivery(
-                            decoded,
-                            receivedAt: phoneReceivedAt
-                        )
-                    }
-                )
-                self.evaluateHeartRateControlDecision()
-            }
-        }
-        if let uuid = payload["workout_uuid"] as? String {
-            let endDate: Date? = {
-                if let ts = payload["workout_end"] as? TimeInterval {
-                    return Date(timeIntervalSince1970: ts)
-                }
-                return nil
-            }()
-            DispatchQueue.main.async {
-                guard !self.nativeHeartRateFlowOwnsController else {
-                    return
-                }
-                self.attachHealthkitWorkoutUUID(uuid, endedAt: endDate)
-
-            }
-        }
-        if let status = payload["status"] as? String {
-            DispatchQueue.main.async {
-                guard !self.nativeHeartRateFlowOwnsController else { return }
-                var lifecycleTransition: HeartRateSourceLifecycleInput?
-                switch status.lowercased() {
-                case "hr_started":
-                    self.hrPermissionGranted = true
-
-                    lifecycleTransition = .started
-                case "hr_stopped":
-                    // Keep permission as last-known; clear last timestamp to mark no data
-                    self.hrLastValueAt = nil
-                    self.heartRateBPM = 0
-
-                    lifecycleTransition = .stopped
-                case "watch_ok":
-                    self.watchReachable = true
-
-                default:
-                    break
-                }
-                self.recomputeHrStartAllowed()
-                if let lifecycleTransition {
-                    self.observeHeartRateSourceLifecycle(lifecycleTransition)
-                }
-            }
-        }
-    }
-}
-#endif

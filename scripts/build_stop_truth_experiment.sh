@@ -58,20 +58,13 @@ xcodebuild \
 
 products="$derived_data/Build/Products"
 ios_app="$products/Debug-iphoneos/WalkingPadRemote.app"
-watch_app="$ios_app/Watch/WalkingPadRemoteWatch Watch App.app"
 binding="-issue14-stop-truth-v1-e${expected_sha}-a${actual_sha}"
 ios_executable="WalkingPadRemote${binding}"
-watch_executable="WalkingPadRemoteWatch Watch App${binding}"
 
 if [[ ! -x "$ios_app/$ios_executable" ]]; then
   echo "Missing exact-bound unsigned iOS executable: $ios_app/$ios_executable" >&2
   exit 6
 fi
-if [[ ! -x "$watch_app/$watch_executable" ]]; then
-  echo "Missing embedded exact-bound unsigned watchOS executable: $watch_app/$watch_executable" >&2
-  exit 7
-fi
 
 echo "Verified unsigned iOS app: $ios_app"
-echo "Verified embedded unsigned watchOS app: $watch_app"
 echo "Verified exact build binding: expected=$expected_sha actual=$actual_sha"

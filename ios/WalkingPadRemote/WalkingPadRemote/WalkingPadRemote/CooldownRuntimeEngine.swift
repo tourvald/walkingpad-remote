@@ -47,6 +47,7 @@ enum CooldownRuntimeEngine {
     }
 
     struct TickInput: Equatable {
+        let elapsedSeconds: Int
         let hrBpm: Int
         let decisionBpm: Int
         let hrAvailable: Bool
@@ -60,6 +61,7 @@ enum CooldownRuntimeEngine {
         var remainingSeconds: Int
         let startSpeedKmh: Double
         var lastSentSpeedKmh: Double
+        var lastSpeedDecisionElapsedSeconds: Int
         let baseStepKmh: Double
         let stepIntervalSeconds: Int
         var startBpm: Int
@@ -78,6 +80,10 @@ enum CooldownRuntimeEngine {
 
         var elapsedSeconds: Int {
             max(0, totalSeconds - remainingSeconds)
+        }
+
+        var nextSpeedDecisionRemainingSeconds: Int {
+            min(remainingSeconds, max(0, stepIntervalSeconds - (elapsedSeconds - lastSpeedDecisionElapsedSeconds)))
         }
 
         var progress: Double {
@@ -232,10 +238,8 @@ enum CooldownRuntimeEngine {
     struct CompletionEffect: Equatable {
         let reason: String
         let timeoutBlocker: String
-        let shouldRecordWorkout: Bool
         let shouldStopSession: Bool
         let shouldStopBelt: Bool
-        let shouldStopWatch: Bool
         let structuredLogReason: String
     }
 
@@ -271,6 +275,7 @@ enum CooldownRuntimeEngine {
             remainingSeconds: cooldownPlan.totalSeconds,
             startSpeedKmh: startSpeedKmh,
             lastSentSpeedKmh: startSpeedKmh,
+            lastSpeedDecisionElapsedSeconds: 0,
             baseStepKmh: max(0.1, min(2.0, config.baseStepKmh)),
             stepIntervalSeconds: max(1, config.stepIntervalSeconds),
             startBpm: startBpm,
@@ -335,7 +340,12 @@ enum CooldownRuntimeEngine {
 
     static func tick(state: State, config: Config, input: TickInput) -> Output {
         var nextState = state
-        nextState.remainingSeconds = max(0, nextState.remainingSeconds - 1)
+        let elapsed = max(state.elapsedSeconds, min(state.totalSeconds, max(0, input.elapsedSeconds)))
+        let elapsedDelta = elapsed - state.elapsedSeconds
+        nextState.remainingSeconds = state.totalSeconds - elapsed
+        // A delayed callback is one observation, not evidence for the missing interval.
+        let observedSeconds = min(1, elapsedDelta)
+        if elapsedDelta > 1 { nextState.stableSeconds = 0 }
 
         if input.hrAvailable && input.hrBpm > 0 {
             if nextState.startBpm <= 0 {
@@ -345,7 +355,6 @@ enum CooldownRuntimeEngine {
             nextState.peakBpm = max(nextState.peakBpm, input.hrBpm)
         }
 
-        let elapsed = nextState.elapsedSeconds
         let observedSpeed = input.speedSnapshot.observedSpeedKmh
         let hrOk = input.hrAvailable && input.hrBpm > 0 && input.hrBpm <= config.targetBpm
         let minSpeedOk = input.speedSnapshot.factualSpeedKmh.map {
@@ -366,17 +375,17 @@ enum CooldownRuntimeEngine {
             nextState.firstMinSpeedElapsedSeconds = elapsed
         }
         if hrOk {
-            nextState.belowTargetSeconds += 1
+            nextState.belowTargetSeconds += observedSeconds
         }
         if minSpeedOk {
-            nextState.minSpeedSeconds += 1
+            nextState.minSpeedSeconds += observedSeconds
         }
         if stableOk && nextState.firstStableElapsedSeconds == nil {
             nextState.firstStableElapsedSeconds = elapsed
         }
         if stableOk {
-            nextState.stableSeconds += 1
-            nextState.targetAndMinSpeedSeconds += 1
+            nextState.stableSeconds += observedSeconds
+            nextState.targetAndMinSpeedSeconds += observedSeconds
             nextState.maxStableStreakSeconds = max(nextState.maxStableStreakSeconds, nextState.stableSeconds)
         } else {
             nextState.stableSeconds = 0
@@ -411,28 +420,30 @@ enum CooldownRuntimeEngine {
             sessionAggregates: input.sessionAggregates
         ))))
 
-        if nextState.totalSeconds > 0,
+        if nextState.remainingSeconds > 0, !stableOk,
            nextState.stepIntervalSeconds > 0,
-           elapsed % nextState.stepIntervalSeconds == 0,
-           let speedEffect = makeSetSpeedEffectIfNeeded(
+           elapsed - nextState.lastSpeedDecisionElapsedSeconds >= nextState.stepIntervalSeconds {
+            nextState.lastSpeedDecisionElapsedSeconds = elapsed
+            if let speedEffect = makeSetSpeedEffectIfNeeded(
                 state: &nextState,
                 config: config,
                 currentBpm: input.decisionBpm,
                 controllerSpeedKmh: input.speedSnapshot.controllerSpeedKmh,
                 elapsedSeconds: elapsed,
                 trigger: "interval"
-           ) {
-            effects.append(.setSpeed(speedEffect))
-            effects.append(.telemetry(.speedSet(SpeedSetTelemetry(
-                hrBpm: speedEffect.hrBpm,
-                targetBpm: config.targetBpm,
-                adaptiveFactor: speedEffect.adaptiveFactor,
-                stepKmh: speedEffect.stepKmh,
-                speedBeforeKmh: speedEffect.speedBeforeKmh,
-                speedAfterKmh: speedEffect.speedAfterKmh,
-                elapsedSeconds: speedEffect.elapsedSeconds,
-                trigger: speedEffect.trigger
-            ))))
+            ) {
+                effects.append(.setSpeed(speedEffect))
+                effects.append(.telemetry(.speedSet(SpeedSetTelemetry(
+                    hrBpm: speedEffect.hrBpm,
+                    targetBpm: config.targetBpm,
+                    adaptiveFactor: speedEffect.adaptiveFactor,
+                    stepKmh: speedEffect.stepKmh,
+                    speedBeforeKmh: speedEffect.speedBeforeKmh,
+                    speedAfterKmh: speedEffect.speedAfterKmh,
+                    elapsedSeconds: speedEffect.elapsedSeconds,
+                    trigger: speedEffect.trigger
+                ))))
+            }
         }
 
         let completionReason: String?
@@ -525,10 +536,8 @@ enum CooldownRuntimeEngine {
             effects.append(.complete(CompletionEffect(
                 reason: completionReason,
                 timeoutBlocker: timeoutBlocker,
-                shouldRecordWorkout: true,
                 shouldStopSession: true,
                 shouldStopBelt: true,
-                shouldStopWatch: true,
                 structuredLogReason: "cooldown_\(completionReason)"
             )))
         } else {

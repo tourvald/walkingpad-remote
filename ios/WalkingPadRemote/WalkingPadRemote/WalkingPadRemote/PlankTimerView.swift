@@ -1,5 +1,5 @@
 import SwiftUI
-import Combine
+import UserNotifications
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -39,7 +39,13 @@ struct PlankTimerView: View {
     @State private var pressStartedAt: Date?
     @State private var showMeasurementStartConfirmation = false
     @State private var showCompletionBanner = false
-    @State private var ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var timerStartedAt: ContinuousClock.Instant?
+    @State private var completionNotificationID: String?
+    @State private var usesCompletionNotification = false
+    @State private var notificationNotice: String?
+
+    private var isStarting: Bool { completionNotificationID != nil && !isRunning }
 
     private var safeBaseDurationSeconds: Int {
         min(maxDurationSeconds, max(minBaseDurationSeconds, baseDurationSeconds))
@@ -389,8 +395,18 @@ struct PlankTimerView: View {
                             }
                             .frame(width: 270, height: 270)
                             .contentShape(Circle())
+                            .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Таймер планки")
+                            .accessibilityValue("\(timeText). \(isStarting ? "Подготовка таймера" : statusText)")
                             .accessibilityAddTraits(.isButton)
+                            .accessibilityAction { handleCircleTap() }
+                            .accessibilityActions {
+                                if isRunning || isStarting {
+                                    Button("Остановить подход") { resetTimer() }
+                                } else if !isMeasuring {
+                                    Button("Начать замер") { showMeasurementStartConfirmation = true }
+                                }
+                            }
                             .simultaneousGesture(
                                 DragGesture(minimumDistance: 0)
                                     .onChanged { _ in
@@ -401,11 +417,18 @@ struct PlankTimerView: View {
                                     }
                             )
 
-                            Text(statusText)
+                            Text(isStarting ? "Подготовка таймера…" : statusText)
                                 .font(.footnote)
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
                                 .frame(maxWidth: 280)
+
+                            if let notificationNotice {
+                                Text(notificationNotice)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
 
                             if showCompletionBanner {
                                 Label("Подход завершён", systemImage: "checkmark.circle.fill")
@@ -512,10 +535,10 @@ struct PlankTimerView: View {
                             RoundedRectangle(cornerRadius: 20, style: .continuous)
                                 .stroke(Color(.tertiarySystemFill), lineWidth: 1)
                         )
-                        .disabled(isRunning || isMeasuring)
-                        .opacity((isRunning || isMeasuring) ? 0.6 : 1.0)
+                        .disabled(isRunning || isMeasuring || isStarting)
+                        .opacity((isRunning || isMeasuring || isStarting) ? 0.6 : 1.0)
 
-                        if isRunning {
+                        if isRunning || isStarting {
                             Button {
                                 resetTimer()
                             } label: {
@@ -536,8 +559,13 @@ struct PlankTimerView: View {
             .navigationTitle("Планка")
             .navigationBarTitleDisplayMode(.large)
         }
-        .onReceive(ticker) { _ in
-            tick()
+        .task(id: scenePhase == .active && (isRunning || isMeasuring)) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled && (isRunning || isMeasuring) {
+                tick()
+                do { try await Task.sleep(for: .seconds(1)) }
+                catch { return }
+            }
         }
         .onAppear {
             if baseDurationSeconds != safeBaseDurationSeconds {
@@ -619,6 +647,7 @@ struct PlankTimerView: View {
     }
 
     private func beginCirclePressIfNeeded() {
+        guard !isStarting else { return }
         guard !isCirclePressed else { return }
         isCirclePressed = true
         pressStartedAt = Date()
@@ -705,7 +734,7 @@ struct PlankTimerView: View {
     }
 
     private func startIfNeeded() {
-        guard !isRunning else { return }
+        guard !isRunning, !isStarting else { return }
         guard !isMeasuring else { return }
         resetHoldProgress()
         lastMeasuredBaselineSeconds = nil
@@ -714,36 +743,79 @@ struct PlankTimerView: View {
             activeSetTotalSeconds = targetSeconds
             remainingSeconds = targetSeconds
         }
+        let identifier = "plank.\(UUID().uuidString)"
+        completionNotificationID = identifier
+        Task { await prepareCountdown(identifier: identifier, seconds: targetSeconds) }
+    }
+
+    @MainActor
+    private func prepareCountdown(identifier: String, seconds: Int) async {
+        let center = UNUserNotificationCenter.current()
+        var settings = await center.notificationSettings()
+        guard completionNotificationID == identifier else { return }
+        if settings.authorizationStatus == .notDetermined {
+            _ = try? await center.requestAuthorization(options: [.alert, .sound])
+            guard completionNotificationID == identifier else { return }
+            settings = await center.notificationSettings()
+        }
+        guard completionNotificationID == identifier else { return }
+        timerStartedAt = .now
+        usesCompletionNotification = false
+        notificationNotice = "Без разрешения на звук сигнал доступен только на экране таймера."
+        if settings.authorizationStatus == .authorized, settings.soundSetting == .enabled {
+            let content = UNMutableNotificationContent()
+            content.title = "Подход завершён"
+            content.body = "Таймер планки завершён."
+            content.sound = .default
+            let request = UNNotificationRequest(identifier: identifier, content: content,
+                trigger: UNTimeIntervalNotificationTrigger(timeInterval: Double(seconds), repeats: false))
+            do {
+                try await center.add(request)
+                guard completionNotificationID == identifier else {
+                    center.removePendingNotificationRequests(withIdentifiers: [identifier])
+                    return
+                }
+                usesCompletionNotification = true
+                notificationNotice = nil
+            } catch {
+                guard completionNotificationID == identifier else { return }
+                notificationNotice = "Не удалось включить фоновый сигнал. Оставьте экран таймера открытым."
+            }
+        }
         isRunning = true
     }
 
     private func tick() {
+        guard let timerStartedAt else { return }
+        let elapsed = PlankTimerTiming.elapsedSeconds(since: timerStartedAt, at: .now,
+                                                     limit: maxDurationSeconds)
         if isMeasuring {
-            measurementElapsedSeconds = min(maxDurationSeconds, measurementElapsedSeconds + 1)
-            return
-        }
-        guard isRunning else { return }
-        guard remainingSeconds > 0 else {
-            finish()
-            return
-        }
-
-        remainingSeconds -= 1
-        if remainingSeconds == 0 {
-            finish()
+            measurementElapsedSeconds = elapsed
+        } else if isRunning {
+            remainingSeconds = max(0, activeSetTotalSeconds - elapsed)
+            if remainingSeconds == 0 { finish() }
         }
     }
 
     private func finish() {
         guard isRunning else { return }
         isRunning = false
+        timerStartedAt = nil
+        completionNotificationID = nil
         completedSetsCount += 1
         showCompletionBannerTemporarily()
-        playCompletionSignal()
+        // The system also presents the scheduled sound in the foreground.
+        if !usesCompletionNotification { playCompletionSignal() }
     }
 
     private func resetTimer() {
+        if let completionNotificationID {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [completionNotificationID])
+        }
+        completionNotificationID = nil
+        usesCompletionNotification = false
         isRunning = false
+        timerStartedAt = nil
         lastMeasuredBaselineSeconds = nil
         activeSetTotalSeconds = nextSetTotalSeconds
         remainingSeconds = activeSetTotalSeconds
@@ -756,7 +828,7 @@ struct PlankTimerView: View {
     }
 
     private func syncIdleTimerToCurrentProgram(forceReset: Bool = false) {
-        guard !isRunning else { return }
+        guard !isRunning, !isStarting else { return }
         guard !isMeasuring else { return }
         let targetSeconds = nextSetTotalSeconds
         if forceReset || remainingSeconds > 0 {
@@ -766,17 +838,21 @@ struct PlankTimerView: View {
     }
 
     private func startMeasurement() {
+        guard !isStarting else { return }
         guard !isRunning else { return }
         guard !isMeasuring else { return }
         resetHoldProgress()
         measurementElapsedSeconds = 0
+        timerStartedAt = .now
         isMeasuring = true
         lastMeasuredBaselineSeconds = nil
     }
 
     private func finishMeasurement() {
         guard isMeasuring else { return }
+        tick()
         isMeasuring = false
+        timerStartedAt = nil
 
         let measured = min(maxDurationSeconds, max(minBaseDurationSeconds, measurementElapsedSeconds))
         baseDurationSeconds = measured

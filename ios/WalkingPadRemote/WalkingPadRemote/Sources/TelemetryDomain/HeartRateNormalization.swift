@@ -148,109 +148,8 @@ public struct HeartRateNormalizationQualityFlags: Codable, Hashable, Sendable,
     }
 }
 
-public enum HeartRateWatchPayloadKey {
-    public static let sourceCallbackObservedAt = "hr_callback_observed_at"
-    public static let providerSequence = "hr_sequence"
-}
 
-public struct DecodedWatchHeartRatePayload: Hashable, Sendable {
-    public let beatsPerMinute: Int
-    public let sourceCallbackObservedAt: Date?
-    public let providerSequence: Int64?
-    public let quality: HeartRateNormalizationQualityFlags
 
-    public init(
-        beatsPerMinute: Int,
-        sourceCallbackObservedAt: Date?,
-        providerSequence: Int64?,
-        quality: HeartRateNormalizationQualityFlags
-    ) {
-        self.beatsPerMinute = beatsPerMinute
-        self.sourceCallbackObservedAt = sourceCallbackObservedAt
-        self.providerSequence = providerSequence
-        self.quality = quality
-    }
-}
-
-public enum WatchHeartRatePayloadDecoder {
-    public static func decode(_ payload: [String: Any]) -> DecodedWatchHeartRatePayload? {
-        guard let heartRate = payload["hr"] as? Double, heartRate.isFinite else {
-            return nil
-        }
-
-        var quality: HeartRateNormalizationQualityFlags = []
-        let sourceCallbackObservedAt: Date?
-        if let value = payload[HeartRateWatchPayloadKey.sourceCallbackObservedAt] {
-            if let seconds = finiteDouble(value) {
-                sourceCallbackObservedAt = Date(timeIntervalSince1970: seconds)
-            } else {
-                sourceCallbackObservedAt = nil
-                quality.insert(.malformedSourceObservationTime)
-            }
-        } else {
-            sourceCallbackObservedAt = nil
-            quality.insert(.missingSourceObservationTime)
-        }
-
-        let providerSequence: Int64?
-        if let value = payload[HeartRateWatchPayloadKey.providerSequence] {
-            if let sequence = exactInt64(value) {
-                providerSequence = sequence
-            } else {
-                providerSequence = nil
-                quality.insert(.malformedProviderSequence)
-            }
-        } else {
-            providerSequence = nil
-            quality.insert(.missingProviderSequence)
-        }
-
-        return DecodedWatchHeartRatePayload(
-            beatsPerMinute: Int(heartRate.rounded()),
-            sourceCallbackObservedAt: sourceCallbackObservedAt,
-            providerSequence: providerSequence,
-            quality: quality
-        )
-    }
-
-    private static func finiteDouble(_ value: Any) -> Double? {
-        guard !(value is Bool) else {
-            return nil
-        }
-        if let value = value as? Double, value.isFinite {
-            return value
-        }
-        if let value = value as? NSNumber {
-            let double = value.doubleValue
-            return double.isFinite ? double : nil
-        }
-        return nil
-    }
-
-    private static func exactInt64(_ value: Any) -> Int64? {
-        guard !(value is Bool) else {
-            return nil
-        }
-        if let value = value as? Int64 {
-            return value
-        }
-        if let value = value as? Int {
-            return Int64(exactly: value)
-        }
-        if let value = value as? NSNumber {
-            let double = value.doubleValue
-            guard double.isFinite,
-                  double.rounded(.towardZero) == double,
-                  double >= Double(Int64.min),
-                  double < 9_223_372_036_854_775_808
-            else {
-                return nil
-            }
-            return Int64(double)
-        }
-        return nil
-    }
-}
 
 public struct HeartRateProviderObservation: Codable, Hashable, Sendable {
     public let source: HeartRateProviderIdentity
@@ -719,16 +618,4 @@ public protocol HeartRateTelemetrySink: AnyObject {
     func observeControlUse(
         _ evidence: HeartRateControlUseEvidence
     ) -> HeartRateTelemetrySinkDisposition
-}
-
-public enum HeartRateObservationalTee {
-    @discardableResult
-    public static func deliver(
-        _ beatsPerMinute: Int,
-        toLegacyController: (Int) -> Void,
-        observe: (() -> HeartRateTelemetrySinkDisposition)?
-    ) -> HeartRateTelemetrySinkDisposition {
-        toLegacyController(beatsPerMinute)
-        return observe?() ?? .unavailable
-    }
 }

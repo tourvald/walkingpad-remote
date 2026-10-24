@@ -11,6 +11,8 @@ final class WalkingPadStatusRefreshContractTests: XCTestCase {
         let cooldown = try XCTUnwrap(lead.range(of: "if let cooldownState"))
         let waiting = try XCTUnwrap(lead.range(of: "WalkingPadStatusRefreshPolicy.motionLeadSeconds("))
         XCTAssertLessThan(cooldown.lowerBound, waiting.lowerBound)
+        XCTAssertTrue(lead.contains("return cooldownState.nextSpeedDecisionRemainingSeconds"))
+        XCTAssertFalse(lead.contains("elapsedSeconds %"))
     }
 
     func testRequestCannotPublishOrInferFactualSpeed() throws {

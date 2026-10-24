@@ -11,7 +11,6 @@ EXPECTED = {
         "NSPrivacyAccessedAPICategoryFileTimestamp": ["C617.1"],
         "NSPrivacyAccessedAPICategorySystemBootTime": ["35F9.1"],
     },
-    "WalkingPadRemoteWatch Watch App": {},
     "WorkoutLiveActivity": {},
 }
 SUPPORT_TYPES = [
@@ -54,7 +53,6 @@ def main():
     if args.app:
         bundles = {
             "WalkingPadRemote": args.app,
-            "WalkingPadRemoteWatch Watch App": args.app / "Watch/WalkingPadRemoteWatch Watch App.app",
             "WorkoutLiveActivity": args.app / "PlugIns/WorkoutLiveActivity.appex",
         }
         for target, bundle in bundles.items():

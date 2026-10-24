@@ -4,11 +4,695 @@ import XCTest
 
 /// Executes the production methods verbatim with dependency fixtures, without extracting a production layer.
 final class TrainingResultBehaviorTests: XCTestCase {
+    func testPlankNotificationOwnershipAcrossPermissionAddResetAndCompletion() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("PlankTimerView.swift"), encoding: .utf8)
+        let methods = try ["private func prepareCountdown(", "private func startIfNeeded()",
+                           "private func finish()", "private func resetTimer()"].map {
+            try declaration($0, in: source)
+        }.joined(separator: "\n")
+        let program = #"""
+        import Foundation
+        enum Authorization { case notDetermined, authorized, denied, provisional }
+        enum SoundSetting { case enabled, disabled }
+        struct Settings { var authorizationStatus: Authorization = .authorized; var soundSetting: SoundSetting = .enabled }
+        enum Option { case alert, sound }
+        enum Sound { case `default` }
+        final class UNMutableNotificationContent { var title = "", body = ""; var sound: Sound? }
+        struct UNTimeIntervalNotificationTrigger { let timeInterval: Double; let repeats: Bool }
+        struct UNNotificationRequest { let identifier: String; let content: UNMutableNotificationContent; let trigger: UNTimeIntervalNotificationTrigger }
+        enum Failure: Error { case unavailable }
+        @MainActor final class UNUserNotificationCenter {
+            static var instance = UNUserNotificationCenter()
+            static func current() -> UNUserNotificationCenter { instance }
+            var settings = Settings(), authorizationCalls = 0
+            var requests: [String] = ["unrelated"], additions = 0, failAdd = false
+            var onAuthorization: (() -> Void)?, onAdd: (() -> Void)?
+            func notificationSettings() async -> Settings { settings }
+            func requestAuthorization(options: [Option]) async throws -> Bool {
+                authorizationCalls += 1; onAuthorization?()
+                settings.authorizationStatus = .authorized
+                return true
+            }
+            func add(_ request: UNNotificationRequest) async throws {
+                additions += 1; onAdd?()
+                if failAdd { throw Failure.unavailable }
+                precondition(request.trigger.timeInterval == 60 && !request.trigger.repeats)
+                precondition(request.content.sound != nil)
+                requests.append(request.identifier)
+            }
+            func removePendingNotificationRequests(withIdentifiers ids: [String]) {
+                requests.removeAll { ids.contains($0) }
+            }
+        }
+        @MainActor final class Owner {
+            var completionNotificationID: String? = "old"
+            var timerStartedAt: ContinuousClock.Instant?
+            var usesCompletionNotification = false, isRunning = false, isMeasuring = false
+            var notificationNotice: String?, lastMeasuredBaselineSeconds: Int?
+            var activeSetTotalSeconds = 60, nextSetTotalSeconds = 60, remainingSeconds = 60
+            var completedSetsCount = 0, sounds = 0, banners = 0
+            var isStarting: Bool { completionNotificationID != nil && !isRunning }
+            func resetHoldProgress() {}
+            func playCompletionSignal() { sounds += 1 }
+            func showCompletionBannerTemporarily() { banners += 1 }
+        """# + "\n" + methods + "\n" + #"""
+            func prepare() async { await prepareCountdown(identifier: "old", seconds: 60) }
+            func cancel() { resetTimer() }
+            func complete() { finish() }
+            func start() { startIfNeeded() }
+        }
+        @main struct Main {
+            @MainActor static func main() async {
+                for scenario in ["authorized", "denied", "silent", "provisional", "add_error",
+                                 "cancel_permission", "replace_permission", "cancel_add", "replace_add", "cancel_add_error"] {
+                    let center = UNUserNotificationCenter()
+                    UNUserNotificationCenter.instance = center
+                    let owner = Owner()
+                    if scenario == "denied" { center.settings.authorizationStatus = .denied }
+                    if scenario == "silent" { center.settings.soundSetting = .disabled }
+                    if scenario == "provisional" { center.settings.authorizationStatus = .provisional }
+                    if scenario.contains("error") { center.failAdd = true }
+                    if scenario.contains("permission") {
+                        center.settings.authorizationStatus = .notDetermined
+                        center.onAuthorization = {
+                            owner.cancel()
+                            if scenario == "replace_permission" { owner.completionNotificationID = "new" }
+                        }
+                    }
+                    if scenario.hasPrefix("cancel_add") || scenario == "replace_add" {
+                        center.onAdd = {
+                            owner.cancel()
+                            if scenario == "replace_add" { owner.completionNotificationID = "new" }
+                        }
+                    }
+                    await owner.prepare()
+                    if scenario.hasPrefix("cancel") || scenario.hasPrefix("replace") {
+                        precondition(!owner.isRunning && owner.timerStartedAt == nil, scenario)
+                        precondition(center.requests == ["unrelated"], scenario)
+                        precondition(owner.completionNotificationID == (scenario.hasPrefix("replace") ? "new" : nil), scenario)
+                    } else {
+                        precondition(owner.isRunning && owner.timerStartedAt != nil, scenario)
+                        let notified = scenario == "authorized"
+                        precondition(owner.usesCompletionNotification == notified, scenario)
+                        owner.complete(); owner.complete()
+                        precondition(owner.completedSetsCount == 1 && owner.banners == 1, scenario)
+                        precondition(owner.sounds == (notified ? 0 : 1), scenario)
+                        precondition(center.requests == (notified ? ["unrelated", "old"] : ["unrelated"]), scenario)
+                    }
+                }
+                let center = UNUserNotificationCenter()
+                UNUserNotificationCenter.instance = center
+                let owner = Owner(); owner.completionNotificationID = nil
+                owner.start(); let identifier = owner.completionNotificationID; owner.start()
+                precondition(identifier != nil && owner.completionNotificationID == identifier)
+                for _ in 0..<100 { if owner.isRunning { break }; await Task.yield() }
+                precondition(owner.isRunning && center.additions == 1)
+                owner.cancel()
+                precondition(!owner.isRunning && center.requests == ["unrelated"])
+            }
+        }
+        """#
+        try executeFixture(program, name: "PlankNotificationOwnership")
+    }
+
+    func testFTMSRejectionPreservesStopIdentityAndTerminatesAutomaticMotion() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let rejection = try declaration("private func handleFTMSProcedureRejection(", in: source)
+        let termination = try declaration("private func stopHrControlAfterCommandFailure(", in: source)
+        let cancelTestRun = try declaration("private func cancelTreadmillTestRun(", in: source)
+        let testRun = try String(contentsOf: app.appendingPathComponent("TreadmillTestRunService.swift"), encoding: .utf8)
+        let program = testRun + "\n" + #"""
+        import Foundation
+        struct Command { let label: String; let id: Int }
+        enum Reason { case other(String) }
+        struct Sidecar {
+            var queued: [Command] = []
+            mutating func removeQueued(where predicate: (String) -> Bool) -> [Command] {
+                let removed = queued.filter { predicate($0.label) }
+                queued.removeAll { predicate($0.label) }
+                return removed
+            }
+        }
+        final class Owner {
+            var commandQueueEpoch = 3, isCommandQueueProcessing = true
+            var nextCommandAllowedAt = Date()
+            var commandQueue: [Command] = []
+            var treadmillCommandTelemetrySidecar = Sidecar()
+            var isHrControlRunning = false, hrControlFailed = false, hrControlStartedBelt = true
+            var hrControlStartedAt: Date? = Date()
+            var hrNextDecisionSeconds = 5, hrRemainingSeconds = 60, hrNoDataSeconds = 0
+            var hrProgress = 1.0
+            var hrStatusLine = "", infoToastMessage = "", hrDecisionDetails = "", hrPredictorStatusLine = ""
+            var stoppedSessions = 0, newStops = 0, failedStops = 0
+            var cancelled: [Int] = [], written: [Int] = []
+            var cooldown = true
+            var treadmillTestRunService = TreadmillTestRunService()
+            var treadmillTestRunHeartRateDiagnosticSnapshot = (runID: UUID?.none, unused: false)
+            var testRunTimerActive = false, diagnosticFinishes = 0
+            var cancelledTestRunActions: [TreadmillTestRunService.Action] = []
+            func invalidateTreadmillTestRunScheduling() { testRunTimerActive = false }
+            func syncTreadmillTestRunPresentation() {}
+            func resetCommandQueue(reason: String) { preconditionFailure("Must preserve Stop ownership") }
+            func executeTreadmillTestRunActions(_ actions: [TreadmillTestRunService.Action]) {
+                cancelledTestRunActions += actions
+            }
+            func treadmillTestRunHeartRateTerminalReason(for reason: TreadmillTestRunService.CancellationReason) -> String {
+                reason.rawValue
+            }
+            func finishCurrentTreadmillTestRunHeartRateDiagnostic(expectedRunID: UUID, reason: String) {
+                precondition(expectedRunID == treadmillTestRunHeartRateDiagnosticSnapshot.runID)
+                precondition(reason == "command_rejected")
+                diagnosticFinishes += 1
+            }
+            func clearCooldownRuntimeState() { cooldown = false }
+            func endTelemetryV2Session(reason: String) {
+                precondition(reason == "ftms_procedure_rejected"); stoppedSessions += 1
+            }
+            func stopBeltWithToggle(reason: String) {
+                precondition(reason == "ftms_procedure_rejected")
+                newStops += 1; written.append(99)
+            }
+            func observeCancelledTreadmillCommands(_ commands: [Command], reason: Reason) {
+                cancelled += commands.map(\.id)
+            }
+            func nativeWorkoutStopTransportInvocationFailedIfNeeded(reason: String) { failedStops += 1 }
+            func processCommandQueue() { written += commandQueue.map(\.id) }
+        """# + "\n" + rejection + "\n" + termination + "\n" + cancelTestRun + "\n" + #"""
+            func run(_ opcode: UInt8) { handleFTMSProcedureRejection(opcode: opcode) }
+        }
+        @main struct Main { static func main() {
+            for active in [false, true] {
+              for testRunActive in [false, true] {
+                for queuedStop in [false, true] {
+                    for opcode: UInt8 in [0x02, 0x07, 0x08] {
+                        let owner = Owner()
+                        owner.isHrControlRunning = active
+                        let runID = UUID()
+                        if testRunActive {
+                            _ = owner.treadmillTestRunService.start(at: 0, runID: runID)
+                            owner.treadmillTestRunHeartRateDiagnosticSnapshot.runID = runID
+                            owner.testRunTimerActive = true
+                        }
+                        owner.commandQueue = [.init(label: "SPEED old", id: 1), .init(label: "START", id: 2)]
+                        if queuedStop { owner.commandQueue.append(.init(label: "STOP", id: 42)) }
+                        owner.treadmillCommandTelemetrySidecar.queued = owner.commandQueue
+                        owner.run(opcode)
+                        precondition(owner.commandQueueEpoch == 4 && !owner.isCommandQueueProcessing)
+                        precondition(owner.nextCommandAllowedAt == .distantPast)
+                        let preservesStop = queuedStop && opcode != 0x08
+                        precondition(owner.cancelled == [1, 2] + (queuedStop && opcode == 0x08 ? [42] : []))
+                        precondition(owner.commandQueue.map(\.id) == (preservesStop ? [42] : []))
+                        precondition(owner.treadmillCommandTelemetrySidecar.queued.map(\.id) == (preservesStop ? [42] : []))
+                        let expectedWrites = opcode == 0x08 ? [] : (queuedStop ? [42] : [99])
+                        precondition(owner.written == expectedWrites)
+                        precondition(owner.failedStops == (opcode == 0x08 ? 1 : 0))
+                        precondition(owner.stoppedSessions == (active ? 1 : 0))
+                        precondition(!owner.treadmillTestRunService.isActive && !owner.testRunTimerActive)
+                        precondition(owner.treadmillTestRunService.advance(at: 100, expectedRunID: runID) == nil)
+                        precondition(owner.cancelledTestRunActions.isEmpty)
+                        precondition(owner.diagnosticFinishes == (testRunActive ? 1 : 0))
+                        if active { precondition(owner.hrControlFailed && !owner.isHrControlRunning && !owner.cooldown) }
+                    }
+                }
+              }
+            }
+        }}
+        """#
+        try executeFixture(program, name: "FTMSRejection")
+    }
+
+    func testFTMSControlLossTerminatesAutomaticOwnersWithoutRequestingStop() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let failure = try declaration("private func failFTMSControl()", in: source)
+        let program = #"""
+        import Foundation
+        struct ControlState {
+            var blocked = false
+            mutating func invalidate() { blocked = true }
+        }
+        final class Owner {
+            var ftmsControlState = ControlState()
+            var isTreadmillControlReady = true, isHrControlRunning = false
+            var testRunActive = false, cooldownActive = false
+            var infoToastMessage = ""
+            var queue = ["START", "SPEED", "STOP"], epoch = 0
+            var stopRequests = 0, terminations = 0, testRunCancellations = 0
+            func resetCommandQueue(reason: String) { queue.removeAll(); epoch += 1 }
+            func markInitialStopCommandNotSent(reason: String) {}
+            func nativeWorkoutStopTransportInvocationFailedIfNeeded(reason: String) {}
+            func recomputeHrStartAllowed() {}
+            func cancelTreadmillTestRunForConnectionInvalidation() {
+                precondition(ftmsControlState.blocked && !isTreadmillControlReady)
+                if testRunActive { testRunActive = false; testRunCancellations += 1 }
+            }
+            func stopHrControlAfterCommandFailure(reason: String, requestStop: Bool) {
+                precondition(ftmsControlState.blocked && !isTreadmillControlReady)
+                precondition(reason == "ftms_control_unavailable")
+                if requestStop { stopRequests += 1 }
+                terminations += 1; isHrControlRunning = false; cooldownActive = false
+            }
+        """# + "\n" + failure + "\n" + #"""
+            func fail() { failFTMSControl() }
+        }
+        @main struct Main { static func main() {
+            for hrActive in [false, true] {
+                for cooldown in [false, true] where !cooldown || hrActive {
+                    for testRun in [false, true] {
+                        let owner = Owner()
+                        owner.isHrControlRunning = hrActive
+                        owner.cooldownActive = cooldown; owner.testRunActive = testRun
+                        owner.fail(); owner.fail()
+                        precondition(owner.ftmsControlState.blocked && !owner.isTreadmillControlReady)
+                        precondition(!owner.isHrControlRunning && !owner.cooldownActive && !owner.testRunActive)
+                        precondition(owner.queue.isEmpty && owner.epoch == 2)
+                        precondition(owner.stopRequests == 0 && owner.terminations == (hrActive ? 1 : 0))
+                        precondition(owner.testRunCancellations == (testRun ? 1 : 0))
+                    }
+                }
+            }
+        }}
+        """#
+        try executeFixture(program, name: "FTMSControlLoss")
+    }
+
+    func testFTMSValueErrorsInvalidateOnlyTheCurrentConnection() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let handler = try declaration("func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor", in: source)
+        let boundary = try XCTUnwrap(handler.range(of: "guard let data = characteristic.value"))
+        let entry = String(handler[..<boundary.lowerBound]) + "acceptedValues += 1\n}"
+        let program = #"""
+        import Foundation
+        final class CBPeripheral { let identifier = UUID() }
+        final class CBCharacteristic {}
+        enum ProtocolKind { case walkingPad, ftms, fitShow }
+        final class Owner {
+            let connectedPeripheral = CBPeripheral()
+            var connectedPeripheralId: UUID { connectedPeripheral.identifier }
+            var treadmillProtocol = ProtocolKind.ftms
+            var callbackCurrent = true, failures = 0, acceptedValues = 0
+            func isCurrentCharacteristicCallback(_ characteristic: CBCharacteristic) -> Bool { callbackCurrent }
+            func failFTMSControl() { failures += 1 }
+        """# + "\n" + entry + "\n" + #"""
+        }
+        @main struct Main { static func main() {
+            for kind in [ProtocolKind.walkingPad, .ftms, .fitShow] {
+                for foreign in [false, true] {
+                    for current in [false, true] {
+                        for failed in [false, true] {
+                            let owner = Owner(); owner.treadmillProtocol = kind; owner.callbackCurrent = current
+                            owner.peripheral(foreign ? CBPeripheral() : owner.connectedPeripheral,
+                                didUpdateValueFor: CBCharacteristic(),
+                                error: failed ? NSError(domain: "fixture", code: 1) : nil)
+                            precondition(owner.failures == (!foreign && current && failed && kind == .ftms ? 1 : 0))
+                            precondition(owner.acceptedValues == (!foreign && current && !failed ? 1 : 0))
+                        }
+                    }
+                }
+            }
+        }}
+        """#
+        try executeFixture(program, name: "FTMSValueError")
+        let ftms = try XCTUnwrap(handler.range(of: "case .ftms:"))
+        let fitShow = try XCTUnwrap(handler.range(of: "case .fitShow:", range: ftms.upperBound..<handler.endIndex))
+        // CoreBluetooth already delivers callbacks on main; no old value may be deferred across reconnect.
+        XCTAssertFalse(handler[ftms.lowerBound..<fitShow.lowerBound].contains("DispatchQueue"))
+        let central = try declaration("private func ensureCentral()", in: source)
+        XCTAssertTrue(central.contains("CBCentralManager(delegate: self, queue: nil"))
+    }
+
+    func testMainCountdownAndExtensionUseTheOriginalMonotonicAnchor() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let domain = try String(contentsOf: app.appendingPathComponent("HRDomainService.swift"), encoding: .utf8)
+        let remaining = try declaration("static func remainingSessionSeconds(", in: domain)
+        let methods = try ["var canExtendHrSession: Bool", "private func syncHrSessionTiming(", "func extendHrSession("].map {
+            try declaration($0, in: source)
+        }.joined(separator: "\n")
+        let program = """
+        import Foundation
+        enum HRDomainService { \(remaining) }
+        struct RecoveryRecord { func planningDuration(seconds: Int) -> Self { self } }
+        final class Owner {
+            var isHrControlRunning = true, nativeHealthKitWorkoutCommitted = true
+            var intervalWorkoutState: Int?
+            var hrControlStartedInstant: ContinuousClock.Instant?
+            var hrSessionTotalSeconds = 60, hrRemainingSeconds = 60, hrMaxSessionMinutes = 120
+            var hrProgress = 0.0
+            var activeNativeWorkoutRecoveryRecord: RecoveryRecord? = RecoveryRecord()
+            var infoToastMessage: String?
+            var canPersist = true
+            var persistCalls = 0
+            func persistNativeWorkoutRecoveryRecord(_ record: RecoveryRecord) -> Bool {
+                persistCalls += 1
+                return canPersist
+            }
+            \(methods)
+            func sync(at now: ContinuousClock.Instant) { syncHrSessionTiming(now: now) }
+        }
+        @main struct Main { static func main() {
+            let owner = Owner()
+            let start = ContinuousClock.now
+            owner.hrControlStartedInstant = start
+            owner.sync(at: start.advanced(by: .seconds(1)))
+            precondition(owner.hrRemainingSeconds == 59)
+            owner.sync(at: start.advanced(by: .seconds(20)))
+            precondition(owner.hrRemainingSeconds == 40)
+            owner.sync(at: start.advanced(by: .seconds(90)))
+            precondition(owner.hrRemainingSeconds == 0 && owner.hrProgress == 1)
+            owner.hrSessionTotalSeconds = 600
+            owner.hrRemainingSeconds = 600
+            let original = ContinuousClock.now.advanced(by: .seconds(-20))
+            owner.hrControlStartedInstant = original
+            owner.extendHrSession()
+            precondition(owner.hrSessionTotalSeconds == 900 && (879...880).contains(owner.hrRemainingSeconds))
+            precondition(owner.hrControlStartedInstant == original)
+            let before = owner.hrRemainingSeconds
+            owner.canPersist = false
+            owner.extendHrSession()
+            precondition(owner.hrSessionTotalSeconds == 900 && owner.hrRemainingSeconds == before)
+            owner.intervalWorkoutState = 1
+            owner.sync(at: original.advanced(by: .seconds(1000)))
+            precondition(owner.hrRemainingSeconds == before)
+            owner.intervalWorkoutState = nil
+            owner.hrSessionTotalSeconds = 60
+            owner.hrRemainingSeconds = 1
+            owner.hrControlStartedInstant = .now.advanced(by: .seconds(-90))
+            let persistCalls = owner.persistCalls
+            precondition(!owner.canExtendHrSession)
+            owner.extendHrSession()
+            precondition(owner.hrSessionTotalSeconds == 60 && owner.hrRemainingSeconds == 1)
+            precondition(owner.persistCalls == persistCalls, "Expired main phase must not be extended")
+            precondition(HRDomainService.remainingSessionSeconds(totalSeconds: 60, elapsed: .seconds(-1)) == 60)
+            precondition(HRDomainService.remainingSessionSeconds(totalSeconds: 60, elapsed: .milliseconds(1999)) == 59)
+        }}
+        """
+        try executeFixture(program, name: "MonotonicCountdown")
+        let tick = try declaration("private func tickTelemetry()", in: source)
+        let sync = try XCTUnwrap(tick.range(of: "syncHrSessionTiming()"))
+        let phaseBranch = try XCTUnwrap(tick.range(of: "if hrRemainingSeconds > 0"))
+        XCTAssertLessThan(sync.lowerBound, phaseBranch.lowerBound)
+        XCTAssertTrue(tick.contains("cooldownStartedInstant = .now"))
+        XCTAssertTrue(tick.contains("cooldownStartedInstant.duration(to: .now)"))
+        XCTAssertTrue(try declaration("private func clearCooldownRuntimeState()", in: source)
+            .contains("cooldownStartedInstant = nil"))
+        XCTAssertTrue(try declaration("private func endTelemetryV2Session(", in: source)
+            .contains("hrControlStartedInstant = nil"))
+    }
+
+    func testDelayedMainDeadlineCannotSkipSafetyBeforeCooldown() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let domain = try String(contentsOf: app.appendingPathComponent("HRDomainService.swift"), encoding: .utf8)
+        let rules = try ["static func isWithinInitialHeartRateGrace(", "static func missingHeartRateSignalSeconds(",
+                         "static func shouldStopForMissingHeartRateSignal("].map {
+            try declaration($0, in: domain)
+        }.joined(separator: "\n")
+        let safety = try declaration("private func maintainHeartRateControlSafety()", in: source)
+        let program = """
+        import Foundation
+        enum HRDomainService { \(rules) }
+        final class Owner {
+            var isHrControlRunning = true, isTreadmillControlReady = true, hrStreamingActive = false
+            var hrControlFailed = false, hrControlStartedBelt = true
+            var hrRemainingSeconds = 0, heartRateBPM = 0, hrStartGraceSeconds = 20, hrNoDataMaxSeconds = 60
+            var hrNextDecisionSeconds = 0, hrNoDataSeconds = 0
+            var hrProgress = 1.0
+            var intervalWorkoutState: Int?, cooldownRuntimeState: Int?
+            var hrControlStartedAt: Date? = Date().addingTimeInterval(-140)
+            var hrLastValueAt: Date? = Date().addingTimeInterval(-75)
+            var infoToastMessage = "", hrStatusLine = "", hrDecisionDetails = "", hrPredictorStatusLine = ""
+            var stops: [String] = []
+            func clearCooldownRuntimeState() { cooldownRuntimeState = nil }
+            func stopBeltWithToggle(reason: String) { stops.append(reason) }
+            func endTelemetryV2Session(reason: String) {}
+            \(safety)
+            func run() { maintainHeartRateControlSafety() }
+        }
+        @main struct Main { static func main() {
+            for scenario in ["missing", "not_ready", "healthy", "cooldown", "stopped"] {
+                let owner = Owner()
+                if scenario == "not_ready" { owner.isTreadmillControlReady = false }
+                if scenario == "healthy" { owner.hrStreamingActive = true; owner.heartRateBPM = 120 }
+                if scenario == "cooldown" { owner.cooldownRuntimeState = 1 }
+                if scenario == "stopped" { owner.isHrControlRunning = false }
+                owner.run()
+                let mustStop = scenario == "missing" || scenario == "not_ready"
+                precondition(owner.stops.count == (mustStop ? 1 : 0), "Main deadline must retain safety: " + scenario)
+                precondition(owner.hrControlFailed == mustStop)
+                if mustStop { precondition(!owner.isHrControlRunning && owner.cooldownRuntimeState == nil) }
+                if scenario == "missing" { precondition(owner.stops == ["hr_no_signal"]) }
+                if scenario == "not_ready" { precondition(owner.stops == ["hr_control_not_ready"]) }
+            }
+        }}
+        """
+        try executeFixture(program, name: "DelayedMainSafety")
+        let tick = try declaration("private func tickTelemetry()", in: source)
+        XCTAssertTrue(tick.contains("maintainHeartRateControlSafety()\n\n        if isHrControlRunning {"))
+        let safetyCall = try XCTUnwrap(tick.range(of: "maintainHeartRateControlSafety()"))
+        let phaseAdvance = try XCTUnwrap(tick.range(of: "advanceIntervalWorkout()"))
+        XCTAssertLessThan(safetyCall.lowerBound, phaseAdvance.lowerBound)
+    }
+
+    func testHealthKitBuilderCallbacksCannotCompleteReplacementOperations() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("IPhoneHealthKitLiveHeartRateProvider.swift"), encoding: .utf8)
+        let driver = try declaration("private final class HealthKitLiveWorkoutDriver:", in: source)
+        let methods = try ["func beginCollection(at", "func endCollection(at", "func finishWorkout()",
+                           "func reset()", "private func completeVoidOperation("].map {
+            try declaration($0, in: driver)
+        }.joined(separator: "\n")
+        let program = #"""
+        import Foundation
+        enum HealthKitLiveWorkoutDriverError: Error { case missingWorkout, operationCancelled, operationFailed }
+        final class HKWorkout {}
+        final class Builder {
+            var completion: ((Bool, Error?) -> Void)?
+            var finishCompletion: ((HKWorkout?, Error?) -> Void)?
+            func beginCollection(withStart: Date, completion: @escaping (Bool, Error?) -> Void) { self.completion = completion }
+            func endCollection(withEnd: Date, completion: @escaping (Bool, Error?) -> Void) {
+                precondition(self.completion == nil, "Duplicate pending collection")
+                self.completion = completion
+            }
+            func finishWorkout(completion: @escaping (HKWorkout?, Error?) -> Void) { finishCompletion = completion }
+            func fire(success: Bool, workout: HKWorkout) {
+                let error: Error? = success ? nil : HealthKitLiveWorkoutDriverError.operationFailed
+                completion?(success, error)
+                finishCompletion?(success ? workout : nil, error)
+            }
+        }
+        @MainActor final class HealthKitLiveWorkoutDriver {
+            var builder: Builder? = Builder()
+            var session: NSObject?
+            var pendingStopDate: Date?, stoppedAt: Date?
+            var prepareContinuation: CheckedContinuation<Void, Error>?
+            var beginCollectionContinuation: CheckedContinuation<Void, Error>?
+            var endCollectionContinuation: CheckedContinuation<Void, Error>?
+            var finishContinuation: CheckedContinuation<HKWorkout?, Error>?
+            var stoppedTransitionContinuation: CheckedContinuation<Date, Error>?
+        """# + "\n" + methods + "\n" + #"""
+        }
+        @main struct Main {
+            @MainActor static func call(_ owner: HealthKitLiveWorkoutDriver, _ operation: Int) async throws -> HKWorkout? {
+                switch operation {
+                case 0: try await owner.beginCollection(at: Date()); return nil
+                case 1: try await owner.endCollection(at: Date()); return nil
+                default: return try await owner.finishWorkout()
+                }
+            }
+            @MainActor static func pending(_ owner: HealthKitLiveWorkoutDriver, _ operation: Int) -> Bool {
+                switch operation {
+                case 0: return owner.beginCollectionContinuation != nil
+                case 1: return owner.endCollectionContinuation != nil
+                default: return owner.finishContinuation != nil
+                }
+            }
+            static func barrier() async {
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.main.async { c.resume() }
+                }
+            }
+            @MainActor static func main() async throws {
+                for operation in 0..<3 {
+                    for oldSuccess in [false, true] {
+                        let owner = HealthKitLiveWorkoutDriver()
+                        let old = owner.builder!
+                        let first = Task { try await call(owner, operation) }
+                        while !pending(owner, operation) { await Task.yield() }
+                        owner.reset()
+                        do { _ = try await first.value; preconditionFailure("Reset must cancel") } catch {}
+                        let current = Builder()
+                        owner.builder = current
+                        let second = Task { try await call(owner, operation) }
+                        while !pending(owner, operation) { await Task.yield() }
+                        old.fire(success: oldSuccess, workout: HKWorkout())
+                        await barrier()
+                        precondition(pending(owner, operation), "Old callback stole a new continuation")
+                        let expected = HKWorkout()
+                        current.fire(success: !oldSuccess, workout: expected)
+                        do {
+                            let actual = try await second.value
+                            precondition(!oldSuccess)
+                            precondition(operation != 2 || actual === expected)
+                        } catch HealthKitLiveWorkoutDriverError.operationFailed {
+                            precondition(oldSuccess)
+                        }
+                        precondition(!pending(owner, operation))
+                    }
+                }
+                // Cleanup may request endCollection while finish is already waiting for it.
+                let owner = HealthKitLiveWorkoutDriver()
+                let first = Task { try await owner.endCollection(at: Date()) }
+                while owner.endCollectionContinuation == nil { await Task.yield() }
+                do {
+                    try await owner.endCollection(at: Date())
+                    preconditionFailure("Overlapping endCollection must be rejected")
+                } catch {}
+                owner.builder!.fire(success: true, workout: HKWorkout())
+                try await first.value
+            }
+        }
+        """#
+        try executeFixture(program, name: "BuilderCallbackOwnership")
+    }
+
+    func testRuntimeStartIsIdempotentAcrossWindows() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let method = try declaration("    func start()", in: source)
+        let program = #"""
+        import Foundation
+        final class Dependency { func reset() {}; func cancel() {}; func prepareStoreAndRecover() {} }
+        struct Profile { let id = UUID() }
+        final class UserDefaults {
+            static let standard = UserDefaults()
+            func string(forKey: String) -> String? { "existing" }
+            func set(_ value: String, forKey: String) {}
+        }
+        final class Owner {
+            var didStartApplicationRuntime = false, autoConnectSuppressed = true, knownDiscoveryGraceCompleted = true
+            var autoConnectRetryPolicy = Dependency(), telemetryV2Coordinator = Dependency()
+            var knownDiscoveryGraceWorkItem: Dependency?
+            var legacyFallbackProfileStoreKey = "fallback", userProfiles: [Profile] = []
+            var calls: [String] = []
+            func ensureCentral() { calls.append("central") }
+            func loadKnownPeripherals() { calls.append("known") }
+            func loadLastSuccessfulPeripheral() { calls.append("last") }
+            func loadProfilesState() { calls.append("profiles") }
+            func sortedProfiles(_ profiles: [Profile]) -> [Profile] { profiles }
+            func loadNativeWorkoutRecoveryState() { calls.append("recovery") }
+            func refreshWorkoutHistoryFromV2(reset: Bool) { calls.append("history") }
+            func setHeartRateTelemetrySink(_ sink: Dependency) {}
+            func setTreadmillTelemetrySink(_ sink: Dependency) {}
+            func loadProfileErasureState() { calls.append("erasure") }
+            func scheduleLegacyTelemetryMigration() { calls.append("migration") }
+            func processNoActiveWorkoutRecoveryIfPossible() { precondition(didStartApplicationRuntime) }
+            func processPendingActiveWorkoutRecoveryIfPossible() { precondition(didStartApplicationRuntime) }
+            func recomputeHrStartAllowed() {}
+            func startHrStaleTimer() { calls.append("timer") }
+            func startDiscoveryScan() { calls.append("scan") }
+            func attemptAutoConnectIfNeeded() { calls.append("connect") }
+        """# + "\n" + method + "\n" + #"""
+        }
+        @main struct Main { static func main() {
+            let owner = Owner()
+            owner.start()
+            let initial = owner.calls
+            precondition(initial.contains("recovery") && initial.contains("timer"))
+            owner.autoConnectSuppressed = true
+            owner.start()
+            precondition(owner.calls == initial, "A second window restarted the live runtime")
+            precondition(owner.autoConnectSuppressed)
+        }}
+        """#
+        try executeFixture(program, name: "StartupIdempotence")
+    }
+
+    func testFTMSStopHasNoBlindTimerRetriesAndRecoveryRetainsReconnect() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let direct = try declaration("func stopBelt()", in: source)
+        let retryGuard = try declaration("if treadmillProtocol != .ftms", in: direct)
+        XCTAssertEqual(retryGuard.components(separatedBy: "scheduleWrite(").count - 1, 2)
+        XCTAssertEqual(direct.components(separatedBy: "scheduleWrite(").count - 1, 2)
+        XCTAssertTrue(direct.contains("scheduledStopEffects: treadmillProtocol == .ftms ? 0 : 2"))
+        let stop = try declaration("private func stopBeltWithToggle(", in: source)
+        let ftms = try XCTUnwrap(stop.range(of: "case .ftms:"))
+        let next = try XCTUnwrap(stop.range(of: "case .fitShow, .unknown:", range: ftms.upperBound..<stop.endIndex))
+        XCTAssertFalse(stop[ftms.upperBound..<next.lowerBound].contains("scheduleWrite"))
+        let content = try String(contentsOf: app.appendingPathComponent("ContentView.swift"), encoding: .utf8)
+        let shell = try declaration("private struct ActiveWorkoutShell:", in: content)
+        XCTAssertTrue(shell.contains("treadmillInteractive: onReconnect != nil && !presentation.isPreview"))
+        XCTAssertTrue(shell.contains("onTreadmillTap: { onReconnect?() }"))
+        XCTAssertTrue(content.contains("onReconnect: manager.isTreadmillControlReady ? nil : { showDevicePicker = true }"))
+    }
+
+    func testDelayedConditionalStopCannotCrossQueueOrAttemptEpoch() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
+        let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
+        let stop = try declaration("private func stopBeltWithToggle(", in: source)
+        let callback = try declaration("DispatchQueue.main.asyncAfter(deadline: .now() + 4.0)", in: stop)
+        let prefix = #"""
+        import Foundation
+        extension Double { static func now() -> Double { 0 } }
+        final class DispatchQueue {
+          static let main = DispatchQueue()
+          var pending: [() -> Void] = []
+          func asyncAfter(deadline: Double, execute: @escaping () -> Void) { pending.append(execute) }
+        }
+        final class Owner {
+          var commandQueueEpoch = 1
+          var deviceReportedSpeedKmh = 2.0
+          var speedKmh = 2.0
+          var writes = 0
+          var attempt = UUID()
+          var completed: [Bool] = []
+          func completeScheduledStopEffect(attemptID: UUID?, cancelled: Bool) {
+            if attemptID == attempt { completed.append(cancelled) }
+          }
+          func buildTreadmillStopPacket() -> Data? { Data([0]) }
+          func writeCommand(_ data: Data, label: String, telemetryRequest: Int) { writes += 1 }
+          func schedule() {
+            let epoch = commandQueueEpoch
+            let stopAttemptID = attempt
+            let telemetryRequest = 1
+        """#
+        let driver = #"""
+          }
+        }
+        @main struct Main { static func main() {
+        for scenario in ["moving", "zero", "new_start", "new_stop", "reconnected"] {
+          let owner = Owner()
+          owner.schedule()
+          if scenario == "zero" { owner.speedKmh = 0; owner.deviceReportedSpeedKmh = 0 }
+          if ["new_start", "new_stop", "reconnected"].contains(scenario) { owner.commandQueueEpoch += 1 }
+          if scenario == "new_stop" { owner.attempt = UUID() }
+          DispatchQueue.main.pending.removeFirst()()
+          precondition(owner.writes == (scenario == "moving" ? 1 : 0), scenario)
+          precondition(owner.completed == (scenario == "new_stop" ? [] : [scenario == "new_start" || scenario == "reconnected"]), scenario)
+        }
+        """#
+        try executeFixture(prefix + "\n" + callback + "\n" + driver + "\n}}", name: "DelayedStop")
+    }
+
     func testAutoStartCompensationExecutesFailedUnconfirmedStopTermination() throws {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("WalkingPadRemote")
         let source = try String(contentsOf: app.appendingPathComponent("BluetoothManager.swift"), encoding: .utf8)
-        let method = try declaration("private func stopHrControlAfterAutoStartFailure()", in: source)
+        let method = try declaration("private func stopHrControlAfterCommandFailure(", in: source)
         let program = """
         import Foundation
         final class Owner {
@@ -19,23 +703,19 @@ final class TrainingResultBehaviorTests: XCTestCase {
             var hrProgress = 0.5
             var events: [String] = []
             func clearCooldownRuntimeState() { events.append("clear") }
-            func recordHrWorkoutIfNeeded(durationOverride: Int?, failed: Bool) {
-                precondition(failed); events.append("failed")
-            }
-            func stopLegacyWatchHeartRateIfNeeded() { events.append("watch") }
             func stopBeltWithToggle(reason: String) {
                 precondition(reason == "hr_auto_start_speed_cancelled"); events.append("stop_requested")
             }
             func endTelemetryV2Session(reason: String) { events.append("end") }
             \(method)
-            func run() { stopHrControlAfterAutoStartFailure() }
+            func run() { stopHrControlAfterCommandFailure() }
         }
         let owner = Owner(); owner.run()
         precondition(owner.hrControlFailed && !owner.isHrControlRunning)
         precondition(owner.hrControlStartedAt == nil && !owner.hrControlStartedBelt)
         precondition(owner.hrRemainingSeconds == 0 && owner.hrNextDecisionSeconds == 0)
-        precondition(owner.infoToastMessage.contains("но ещё не подтверждена"))
-        precondition(owner.events == ["clear", "failed", "watch", "stop_requested", "end"])
+        precondition(owner.infoToastMessage.contains("ещё не подтверждена"))
+        precondition(owner.events == ["clear", "stop_requested", "end"])
         """
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -478,8 +1158,10 @@ final class TrainingResultBehaviorTests: XCTestCase {
             routingEnd = queue.index(after: routingEnd)
         }
         let routing = String(queue[routingStart..<routingEnd])
-        let program = lifecycle + "\n" + Self.ownerPrefix + "\n" + [blockedWrite, finish, notSent].map { $0.replacingOccurrences(of: "private func", with: "func") }.joined(separator: "\n")
-            + "\nfunc route(_ postWriteTelemetry: [TreadmillTelemetryEvidence]) { let lostEntries: [Int] = [];\n"
+        let hr = try String(contentsOf: app.appendingPathComponent("HRDomainService.swift"), encoding: .utf8)
+        let speedCommand = "enum HRDomainService { " + (try declaration("final class SpeedCommand", in: hr)) + " }"
+        let program = lifecycle + "\n" + speedCommand + "\n" + Self.ownerPrefix + "\n" + [blockedWrite, finish, notSent].map { $0.replacingOccurrences(of: "private func", with: "func") }.joined(separator: "\n")
+            + "\nfunc route(_ postWriteTelemetry: [TreadmillTelemetryEvidence]) { let lostEntries: [Int] = []; let needsCompensatingStop = false;\n"
             + routing + "\n}\n" + Self.ownerDriver
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -631,8 +1313,14 @@ final class TrainingResultBehaviorTests: XCTestCase {
             ? try declaration("private struct TreadmillCommandTelemetryRequest", in: manager)
             : "private typealias TreadmillCommandTelemetryRequest = TreadmillCommandTelemetrySidecar.Request"
         let enqueue = try declaration("private func enqueueCommand(", in: manager)
+        let requestControl = try declaration("private func enqueueFtmsRequestControlIfNeeded(", in: manager)
+        let controlState = try String(contentsOf: app.appendingPathComponent("FTMSControlState.swift"), encoding: .utf8)
+        let readiness = try String(contentsOf: app.appendingPathComponent("TreadmillControlReadinessPolicy.swift"), encoding: .utf8)
+        let connectionIdentity = try declaration("struct TreadmillControlConnectionIdentity", in: readiness)
         let prefix = #"""
         import Foundation
+        typealias TreadmillControlDecisionEvidence = Int
+        struct Characteristic { let uuid = "2AD9" }
         typealias SessionID = Int
         typealias CommandID = Int
         typealias DecisionID = Int
@@ -646,13 +1334,23 @@ final class TrainingResultBehaviorTests: XCTestCase {
         enum TreadmillTelemetryEvidence { case commandEnqueued(TreadmillCommandEnqueuedEvidence) }
         final class Owner {
           var commandQueue: [CommandQueueService.Command] = []
+          var treadmillProtocol: TreadmillProtocolKind { treadmillTelemetryProtocolKind }
+          var ftmsControlState = FTMSControlState()
+          let ftmsCharControlPoint = "2AD9"
+          let commandCharacteristic: Characteristic? = Characteristic()
+          let currentTreadmillControlConnection: TreadmillControlConnectionIdentity? = .init(peripheralID: UUID(), epoch: UUID())
+          var commandCharacteristicConnection: TreadmillControlConnectionIdentity? { currentTreadmillControlConnection }
+          func buildFtmsRequestControlPacket() -> Data { Data([0x00]) }
+          private func writeCommand(_ data: Data, label: String, telemetryRequest: TreadmillCommandTelemetryRequest) {
+            enqueueCommand(data, label: label, highPriority: false, requiresControlReadiness: false, telemetryRequest: telemetryRequest)
+          }
           var treadmillCommandTelemetrySidecar = TreadmillCommandTelemetrySidecar()
           var treadmillTelemetryConnectionEpoch: Int? = 1
           var treadmillTelemetryProtocolKind = TreadmillProtocolKind.walkingPad
           var emitted: [(Int?, TreadmillCommandEnqueuedEvidence)] = []
           var effects: [String] = []
           func isSpeedCommandLabel(_ label: String) -> Bool { label.hasPrefix("SPEED") }
-          private func treadmillCommandRequest(kind: CommandKind) -> TreadmillCommandTelemetryRequest {
+          private func treadmillCommandRequest(kind: CommandKind, decision: TreadmillControlDecisionEvidence? = nil) -> TreadmillCommandTelemetryRequest {
             .init(sessionID: 1, commandID: 999, decisionID: nil, kind: kind)
           }
           func resetCommandQueue(reason: String, observeTelemetryImmediately: Bool) -> [TreadmillCommandTelemetrySidecar.Entry] {
@@ -660,6 +1358,7 @@ final class TrainingResultBehaviorTests: XCTestCase {
             return treadmillCommandTelemetrySidecar.clear()
           }
           func processCommandQueue() { effects.append("queue") }
+          func stopHrControlAfterCommandFailure() { preconditionFailure("Unexpected HR compensation") }
           func observeCancelledTreadmillCommands(_ entries: [TreadmillCommandTelemetrySidecar.Entry], reason: CommandKind) {}
           func observeSupersededTreadmillCommands(_ entries: [TreadmillCommandTelemetrySidecar.Entry]) {}
           func logTrainingEvent(_ name: String, fields: [String: Any]) {}
@@ -669,6 +1368,18 @@ final class TrainingResultBehaviorTests: XCTestCase {
         """#
         let driver = #"""
           func run() {
+            let ftms = Owner()
+            ftms.treadmillTelemetryProtocolKind = .ftms
+            ftms.enqueueFtmsRequestControlIfNeeded()
+            ftms.enqueueCommand(Data([0x02]), label: "SPEED old", highPriority: false, requiresControlReadiness: false, telemetryRequest: nil)
+            ftms.enqueueCommand(Data([0x08]), label: "STOP", highPriority: true, requiresControlReadiness: false, telemetryRequest: nil)
+            precondition(ftms.commandQueue.map(\.label) == ["FTMS REQUEST CONTROL", "STOP"], "Queued request must survive priority Stop")
+            ftms.ftmsControlState.sent(opcode: 0x00, connection: ftms.currentTreadmillControlConnection!, at: .now)
+            ftms.enqueueCommand(Data([0x08]), label: "STOP", highPriority: true, requiresControlReadiness: false, telemetryRequest: nil)
+            precondition(ftms.commandQueue.map(\.label) == ["STOP"], "Sent request must not be duplicated")
+            precondition(!ftms.ftmsControlState.canSend(opcode: 0x08))
+            _ = ftms.ftmsControlState.receive(opcode: 0x00, resultCode: 0x01, connection: ftms.currentTreadmillControlConnection!)
+            precondition(ftms.ftmsControlState.canSend(opcode: 0x08))
             let stop = TreadmillCommandTelemetryRequest(sessionID: 1, commandID: 100, decisionID: 200, kind: .stop)
             enqueueCommand(Data([1]), label: "STOP", highPriority: true, requiresControlReadiness: false, telemetryRequest: stop)
             enqueueCommand(Data([2]), label: "START/STOP TOGGLE", highPriority: false, requiresControlReadiness: false,
@@ -702,9 +1413,11 @@ final class TrainingResultBehaviorTests: XCTestCase {
         }
         Owner().run()
         """#
-        let program = [try declaration("enum CommandQueueService", in: queue),
+        let hr = try String(contentsOf: app.appendingPathComponent("HRDomainService.swift"), encoding: .utf8)
+        let speedCommand = "enum HRDomainService { " + (try declaration("final class SpeedCommand", in: hr)) + " }"
+        let program = [controlState, connectionIdentity, speedCommand, try declaration("enum CommandQueueService", in: queue),
             try declaration("struct TreadmillCommandTelemetrySidecar", in: sidecar),
-            prefix, request, enqueue, driver].joined(separator: "\n")
+            prefix, request, enqueue, requestControl, driver].joined(separator: "\n")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -741,7 +1454,10 @@ final class TrainingResultBehaviorTests: XCTestCase {
         try process.run()
         process.waitUntilExit()
         let text = try String(contentsOf: log, encoding: .utf8)
-        XCTAssertEqual(process.terminationStatus, 0, text)
+        guard process.terminationStatus == 0 else {
+            XCTFail(text)
+            throw NSError(domain: "FixtureExecutionFailed", code: Int(process.terminationStatus))
+        }
     }
 
     private static let notificationPrefix = #"""
@@ -770,6 +1486,7 @@ final class TrainingResultBehaviorTests: XCTestCase {
      var unitsRequests = 0
      func isCurrentCharacteristicCallback(_ characteristic: CBCharacteristic) -> Bool { callbackIsCurrent }
      func recomputeTreadmillControlReadiness() { readinessUpdates += 1 }
+     func failFTMSControl() {}
      func requestInitialControllerUnitsTruthIfReady() { unitsRequests += 1 }
     """#
 
@@ -904,6 +1621,8 @@ final class TrainingResultBehaviorTests: XCTestCase {
     }
     struct Unavailable { let id: UUID }
     final class Owner {
+     func processCommandQueue() { preconditionFailure("Unexpected queue continuation") }
+     func stopHrControlAfterCommandFailure() { preconditionFailure("Unexpected HR compensation") }
      let telemetryV2Coordinator = Capture()
      var stopObservationLifecycle: StopObservationLifecycle? = .init(attemptID: UUID(), source: "fixture",
       attemptedAt: Date(), context: .init(peripheralID: UUID(), connectionEpoch: UUID(), notificationStreamID: UUID()))

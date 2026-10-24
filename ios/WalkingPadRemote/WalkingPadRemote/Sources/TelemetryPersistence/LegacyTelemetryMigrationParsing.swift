@@ -883,7 +883,7 @@ struct LegacyJSONLAggregateState: Codable, Hashable, Sendable {
         let startedAt = sessionStartedAt ?? firstTimestamp
         let endedAt = sessionEndedAt ?? lastTimestamp
         let durationMicroseconds: Int64? = {
-            guard let startedAt, let endedAt, endedAt >= startedAt else { return nil }
+            guard let startedAt, let endedAt, endedAt.timeIntervalSinceReferenceDate >= startedAt.timeIntervalSinceReferenceDate else { return nil }
             return Int64((endedAt.timeIntervalSince(startedAt) * 1_000_000).rounded())
         }()
         let timestampDerivedAverageHeartRate: Double? = heartRateCoveredMicroseconds > 0

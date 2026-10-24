@@ -5,6 +5,56 @@ import TelemetryDomain
 import XCTest
 
 final class WorkoutAnalysisExportTests: XCTestCase {
+    func testFilteredEventPagesDoNotEndExportOrMisorderFrames() async throws {
+        for includeFrame in [false, true] {
+            let store = try TelemetryStoreFactory.make(.inMemory)
+            let session = semanticsSession()
+            try await store.insertSession(session)
+            // Two completely filtered pages before a visible phase transition.
+            for index in 0..<4 {
+                try await store.insertEvent(event(seed: 800 + index, session: session,
+                    elapsedMicroseconds: Int64(index) * 100_000,
+                    payload: .treadmillEvidence(.unitsTruth(.init(
+                        truth: .notRead(connectionEpoch: .init(rawValue: uuid(400))),
+                        observedAt: session.startedAt
+                    )))
+                ))
+            }
+            try await store.insertEvent(event(seed: 810, session: session,
+                elapsedMicroseconds: 500_000,
+                payload: .workoutPhase(.init(previous: .main, current: .cooldown))))
+            if includeFrame {
+                try await store.insertFrame(frame(seed: 800, session: session, second: 1,
+                                                  heartRate: nil, treadmill: nil))
+            }
+            // A full ignored page at EOF must terminate as well.
+            for index in 0..<2 {
+                try await store.insertEvent(event(seed: 820 + index, session: session,
+                    elapsedMicroseconds: 2_000_000 + Int64(index) * 100_000,
+                    payload: .treadmillEvidence(.unitsTruth(.init(
+                        truth: .notRead(connectionEpoch: .init(rawValue: uuid(400))),
+                        observedAt: session.startedAt
+                    )))
+                ))
+            }
+            var reference: [[String]]?
+            for batchSize in [1, 2, 100] {
+                let csv = try await store.exportWorkoutAnalysis(.init(
+                    sessionID: session.sessionID,
+                    exactProfileLocalIdentifier: session.profileLocalIdentifier, batchSize: batchSize))
+                defer { try? FileManager.default.removeItem(at: csv.fileURL.deletingLastPathComponent()) }
+                let rows = try parseCSV(csv.fileURL)
+                let header = rows[0]
+                let timeline = rows.dropFirst().map { Dictionary(uniqueKeysWithValues: zip(header, $0)) }
+                    .filter { $0["row_type"] == "frame" || $0["row_type"] == "event" }
+                XCTAssertEqual(timeline.map { $0["row_type"]! }, includeFrame ? ["event", "frame"] : ["event"])
+                if includeFrame { XCTAssertEqual(timeline.last?["phase"], "cooldown") }
+                if let reference { XCTAssertEqual(rows, reference) } else { reference = rows }
+                XCTAssertLessThanOrEqual(csv.diagnostics.maximumBufferedTimelineRows, 2 * batchSize)
+            }
+        }
+    }
+
 
     func testIntervalOnlyPhaseExportRetainsExposureAndMarksHealthData() async throws {
         let store = try TelemetryStoreFactory.make(.inMemory)

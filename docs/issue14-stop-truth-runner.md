@@ -39,9 +39,9 @@ capability. Runtime parses the built bundle's `CFBundleExecutable` and requires
 the fixed binding plus identical valid exact SHA values. A normal/default build
 has no such suffix and remains disabled.
 
-The helper builds the generic iOS scheme, which has an explicit Watch App target
-dependency, then fails unless both the unsigned iOS executable and its embedded
-unsigned watchOS executable exist with the exact SHA-bound suffix.
+The helper builds the generic iOS scheme, then fails unless the unsigned iOS
+executable exists with the exact SHA-bound suffix. The custom Watch target has
+been removed.
 
 Building does not authorize installation, launch, BLE connection, treadmill
 commands, or a physical experiment. Those require the separate Issue #11 exact

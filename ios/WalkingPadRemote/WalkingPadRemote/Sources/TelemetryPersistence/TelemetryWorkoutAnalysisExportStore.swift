@@ -245,19 +245,22 @@ public extension TelemetryStore {
 
             func loadEventsIfNeeded() throws {
                 guard eventIndex == events.count, !eventsFinished else { return }
-                let page = try analysisEventPage(
-                    sessionID: sessionKey,
-                    sessionReference: request.sessionID,
-                    afterElapsed: lastEventElapsed,
-                    afterID: lastEventID,
-                    limit: batchSize
-                )
-                fetchCount += 1
-                events = page.projections
-                eventIndex = 0
-                lastEventElapsed = page.cursorElapsed
-                lastEventID = page.cursorID
-                eventsFinished = page.fetchedCount < batchSize
+                repeat {
+                    try Task.checkCancellation()
+                    let page = try analysisEventPage(
+                        sessionID: sessionKey,
+                        sessionReference: request.sessionID,
+                        afterElapsed: lastEventElapsed,
+                        afterID: lastEventID,
+                        limit: batchSize
+                    )
+                    fetchCount += 1
+                    events = page.projections
+                    eventIndex = 0
+                    lastEventElapsed = page.cursorElapsed
+                    lastEventID = page.cursorID
+                    eventsFinished = page.fetchedCount < batchSize
+                } while events.isEmpty && !eventsFinished
             }
 
             while true {

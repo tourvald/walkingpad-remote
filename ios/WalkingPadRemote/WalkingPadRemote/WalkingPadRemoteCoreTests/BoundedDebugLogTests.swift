@@ -7,12 +7,14 @@ final class BoundedDebugLogTests: XCTestCase {
         let manager = try source("BluetoothManager.swift")
         for removed in ["Runtime Snapshot", "Copy Logs", "Button(\"Clear\")", "Toggle(\"Logging\"",
                         "Logging is OFF", "manager.debugLog", "copyLogs(",
-                        "DebugTreadmillFactualObservationRows", "DebugHeartRateFactualObservationRow"] {
+                        "DebugTreadmillFactualObservationRows", "DebugHeartRateFactualObservationRow",
+                        "DebugHrFailuresCard", "HrFailureReport", "exportHrFailures"] {
             XCTAssertFalse(view.contains(removed), removed)
         }
         for removed in ["startDebugLogPresentation", "stopDebugLogPresentation", "makeDebugLogSnapshot",
                         "clearDebugLog", "refreshDebugLogSnapshot", "debugLogPresentationTimer",
-                        "debugLogPublicationState", "@Published private(set) var debugLog"] {
+                        "debugLogPublicationState", "@Published private(set) var debugLog",
+                        "HrFailureReport", "hrFailureReports"] {
             XCTAssertFalse(manager.contains(removed), removed)
             XCTAssertFalse(view.contains(removed), removed)
         }
@@ -25,7 +27,7 @@ final class BoundedDebugLogTests: XCTestCase {
         let view = try source("ContentView.swift")
         let manager = try source("BluetoothManager.swift")
         let card = try source("DebugTrainingLogsCard.swift")
-        for preserved in ["DebugTrainingLogsCard(", "DebugHrFailuresCard(", "manager.startTreadmillTestRun()",
+        for preserved in ["DebugTrainingLogsCard(", "manager.startTreadmillTestRun()",
                           "manager.stopTreadmillTestRun()", "prepareAndPresentDiagnosticBundle(",
                           "manager.refreshWorkoutHistoryFromV2(reset: true)", "diagnosticBundleTask?.cancel()"] {
             XCTAssertTrue(view.contains(preserved), preserved)

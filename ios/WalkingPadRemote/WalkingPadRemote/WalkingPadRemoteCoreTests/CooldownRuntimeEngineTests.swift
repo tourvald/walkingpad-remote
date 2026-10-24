@@ -3,6 +3,97 @@ import TelemetryDomain
 @testable import WalkingPadCoreLogic
 
 final class CooldownRuntimeEngineTests: XCTestCase {
+    func testDelayedTicksAdvanceTimeWithoutReplayingSpeedSteps() {
+        let config = makeConfig()
+        var state = startOutput(config: config).state
+        for (elapsed, expectedSteps) in [(1, 0), (29, 1), (29, 0), (28, 0), (30, 0), (39, 1)] {
+            let output = tickOutput(state: state, config: config, hrBpm: 130,
+                observedSpeedKmh: 5.5, controllerSpeedKmh: state.lastSentSpeedKmh,
+                factualSpeedKmh: 5.5, elapsedSeconds: elapsed)
+            XCTAssertEqual(output.state.remainingSeconds, state.totalSeconds - max(state.elapsedSeconds, elapsed))
+            XCTAssertEqual(output.effects.filter { if case .setSpeed = $0 { return true }; return false }.count,
+                           expectedSteps, "elapsed=\(elapsed)")
+            state = output.state
+        }
+    }
+
+    func testShiftedCadenceReservesMotionAndReleasesNoOpWindows() {
+        let config = makeConfig()
+        var state = startOutput(config: config).state
+        state = tickOutput(state: state, config: config, hrBpm: 130,
+            observedSpeedKmh: 5.5, controllerSpeedKmh: state.lastSentSpeedKmh,
+            factualSpeedKmh: 5.5, elapsedSeconds: 33).state
+        XCTAssertEqual(state.lastSpeedDecisionElapsedSeconds, 33)
+        state = tickOutput(state: state, config: config, hrBpm: 130,
+            observedSpeedKmh: 5.5, controllerSpeedKmh: state.lastSentSpeedKmh,
+            factualSpeedKmh: 5.5, elapsedSeconds: 42).state
+        XCTAssertEqual(state.nextSpeedDecisionRemainingSeconds, 1)
+        let now = Date()
+        XCTAssertFalse(WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
+            isWorkoutOrCooldownActive: true, transportReady: true, motionQueueIdle: true,
+            secondsUntilNextScheduledMotion: state.nextSpeedDecisionRemainingSeconds,
+            lastStatusQueryAt: nil, lastControllerUnitsQueryAt: nil, now: now
+        ).shouldRequest)
+
+        // At the floor, a due no-op decision must release polling instead of reserving motion forever.
+        state.lastSentSpeedKmh = config.minSpeedKmh
+        let noOp = tickOutput(state: state, config: config, hrBpm: 130,
+            observedSpeedKmh: config.minSpeedKmh, controllerSpeedKmh: config.minSpeedKmh,
+            factualSpeedKmh: config.minSpeedKmh, elapsedSeconds: 43)
+        XCTAssertEqual(noOp.state.lastSpeedDecisionElapsedSeconds, 43)
+        XCTAssertEqual(noOp.state.nextSpeedDecisionRemainingSeconds, 10)
+        XCTAssertFalse(noOp.effects.contains { if case .setSpeed = $0 { return true }; return false })
+        XCTAssertTrue(WalkingPadStatusRefreshPolicy.activeWorkoutRefresh(
+            isWorkoutOrCooldownActive: true, transportReady: true, motionQueueIdle: true,
+            secondsUntilNextScheduledMotion: noOp.state.nextSpeedDecisionRemainingSeconds,
+            lastStatusQueryAt: nil, lastControllerUnitsQueryAt: nil, now: now
+        ).shouldRequest)
+        var nearTimeout = noOp.state
+        nearTimeout.remainingSeconds = 2
+        nearTimeout.lastSpeedDecisionElapsedSeconds = nearTimeout.elapsedSeconds
+        XCTAssertEqual(nearTimeout.nextSpeedDecisionRemainingSeconds, 2)
+        nearTimeout.remainingSeconds = 0
+        XCTAssertEqual(nearTimeout.nextSpeedDecisionRemainingSeconds, 0)
+    }
+
+    func testDelayedTimeoutDoesNotIssueAnotherSpeedCommand() {
+        let config = makeConfig()
+        let state = startOutput(config: config).state
+        let output = tickOutput(state: state, config: config, hrBpm: 0, hrAvailable: false,
+            observedSpeedKmh: 5.5, controllerSpeedKmh: state.lastSentSpeedKmh,
+            elapsedSeconds: state.totalSeconds + 20)
+        XCTAssertEqual(output.state.remainingSeconds, 0)
+        XCTAssertEqual(output.state.finishReason, "timeout")
+        XCTAssertFalse(output.state.timeoutBlocker.isEmpty)
+        XCTAssertFalse(output.effects.contains { if case .setSpeed = $0 { return true }; return false })
+        XCTAssertEqual(output.effects.filter { if case .complete = $0 { return true }; return false }.count, 1)
+        XCTAssertEqual(output.state.belowTargetSeconds, 0)
+        XCTAssertEqual(output.state.minSpeedSeconds, 0)
+    }
+
+    func testDelayedObservationDoesNotInventStableSeconds() {
+        let config = makeConfig()
+        var state = startOutput(config: config).state
+        let first = tickOutput(state: state, config: config, hrBpm: 100,
+            observedSpeedKmh: 5.5, controllerSpeedKmh: state.lastSentSpeedKmh,
+            factualSpeedKmh: 5.5, elapsedSeconds: 1)
+        state = first.state
+        // A prior streak cannot bridge a period without observations.
+        state.stableSeconds = 7
+        let delayed = tickOutput(state: state, config: config, hrBpm: 100,
+            observedSpeedKmh: 3.5, controllerSpeedKmh: state.lastSentSpeedKmh,
+            factualSpeedKmh: 3.5, elapsedSeconds: 29)
+        XCTAssertEqual(delayed.state.belowTargetSeconds, 2)
+        XCTAssertEqual(delayed.state.minSpeedSeconds, 1)
+        XCTAssertEqual(delayed.state.targetAndMinSpeedSeconds, 1)
+        XCTAssertEqual(delayed.state.stableSeconds, 1)
+        XCTAssertEqual(delayed.state.finishReason, "target_and_min_speed_reached")
+        let duplicate = tickOutput(state: first.state, config: config, hrBpm: 100,
+            observedSpeedKmh: 5.5, controllerSpeedKmh: first.state.lastSentSpeedKmh,
+            factualSpeedKmh: 5.5, elapsedSeconds: 1)
+        XCTAssertEqual(duplicate.state.belowTargetSeconds, first.state.belowTargetSeconds)
+    }
+
     private let aggregates = CooldownRuntimeEngine.SessionAggregates(
         sessionPeakBpm: 168,
         mainAvgBpm: 148,
@@ -70,12 +161,14 @@ final class CooldownRuntimeEngineTests: XCTestCase {
         hrAvailable: Bool = true,
         observedSpeedKmh: Double,
         controllerSpeedKmh: Double,
-        factualSpeedKmh: Double? = nil
+        factualSpeedKmh: Double? = nil,
+        elapsedSeconds: Int? = nil
     ) -> CooldownRuntimeEngine.Output {
         CooldownRuntimeEngine.tick(
             state: state,
             config: config,
             input: CooldownRuntimeEngine.TickInput(
+                elapsedSeconds: elapsedSeconds ?? state.elapsedSeconds + 1,
                 hrBpm: hrBpm,
                 decisionBpm: decisionBpm ?? hrBpm,
                 hrAvailable: hrAvailable,
@@ -152,7 +245,6 @@ final class CooldownRuntimeEngineTests: XCTestCase {
                 if case .complete = $0 { return true }; return false
             }) else { return XCTFail("Expected unchanged timeout Stop effect: \(name)") }
             XCTAssertTrue(completion.shouldStopBelt, name)
-            XCTAssertTrue(completion.shouldStopWatch, name)
             XCTAssertTrue(completion.shouldStopSession, name)
         }
         for invalid in [Double.nan, Double.infinity, -Double.infinity, -1] {
@@ -255,9 +347,7 @@ final class CooldownRuntimeEngineTests: XCTestCase {
         }) else { return XCTFail("Expected completion on first qualifying evaluation") }
         XCTAssertEqual(effect.reason, "target_and_min_speed_reached")
         XCTAssertTrue(effect.shouldStopBelt)
-        XCTAssertTrue(effect.shouldStopWatch)
         XCTAssertTrue(effect.shouldStopSession)
-        XCTAssertTrue(effect.shouldRecordWorkout)
         XCTAssertEqual(output.state.elapsedSeconds, 1)
         XCTAssertEqual(output.state.finishReason, "target_and_min_speed_reached")
     }
