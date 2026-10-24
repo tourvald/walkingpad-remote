@@ -354,3 +354,20 @@ history persistence, app screen layout, or background modes change.
 - Physical battery cost, real background execution/termination, and device
   installation are unmeasured/not performed. iOS owns visibility and permissions;
   uncertain recovery sessions suppress the optional countdown.
+
+### 2026-10-24 — Active workout target label compression
+
+- P2, corrected: the fixed-width target summary displaced speed and elapsed time
+  during intervals. `ActiveWorkoutShell` now selects a horizontal arrangement only
+  when all three ideal widths fit; otherwise the target sits above the metrics.
+  Accessibility sizes stack the metrics vertically. No control/data behavior changes.
+- PASS: iPhone 17 simulator, interval warm-up (light, Large), interval work (dark,
+  Large), warm-up (dark, Accessibility Medium), ordinary HR session (light, Large).
+  Target, speed and elapsed values remain legible without truncation; Stop remains
+  visible. Synthetic existing preview fixtures only; no physical device or BLE.
+- Evidence: `/tmp/wp-interval-layout-qa/{warmup-large,work-dark,warmup-accessibility-medium,hr-zone-large}.png`.
+  Maximum accessibility size still has pre-existing readiness/zone-scale clipping;
+  this check does not claim full-screen accessibility acceptance at that size.
+- Verification: unsigned generic simulator build, UI scope checker against f719e4b,
+  governance checker and `git diff --check` passed. No logic test added for a
+  presentation-only layout; visual simulator checks exercise the reported defect.

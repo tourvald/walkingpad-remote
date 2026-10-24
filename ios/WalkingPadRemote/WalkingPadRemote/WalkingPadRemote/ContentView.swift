@@ -1790,18 +1790,17 @@ private struct ActiveWorkoutShell: View {
                 }
             }
             if usesAccessibilityControlInset {
-                VStack(spacing: 14) {
-                    heroTargetSummary
-                    HStack(spacing: 12) {
-                        heroMetric($leftMetricID)
-                        heroMetric($rightMetricID)
-                    }
-                }
+                stackedHeroSummary
             } else {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    heroMetric($leftMetricID)
-                    heroTargetSummary.fixedSize(horizontal: true, vertical: false)
-                    heroMetric($rightMetricID)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        heroMetric($leftMetricID)
+                            .fixedSize(horizontal: true, vertical: false)
+                        heroTargetSummary.fixedSize(horizontal: true, vertical: false)
+                        heroMetric($rightMetricID)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    stackedHeroSummary
                 }
             }
             TrainingZoneScale(
@@ -1834,6 +1833,19 @@ private struct ActiveWorkoutShell: View {
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    private var stackedHeroSummary: some View {
+        let metricsLayout = usesAccessibilityControlInset
+            ? AnyLayout(VStackLayout(spacing: 12))
+            : AnyLayout(HStackLayout(spacing: 12))
+        return VStack(spacing: 14) {
+            heroTargetSummary
+            metricsLayout {
+                heroMetric($leftMetricID)
+                heroMetric($rightMetricID)
+            }
         }
     }
 
